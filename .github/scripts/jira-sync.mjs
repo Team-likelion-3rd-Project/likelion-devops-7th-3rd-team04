@@ -50,6 +50,9 @@ const warn = (msg) => console.log(`::warning::${msg}`);
 const linkLabel = (n) => `github-issue-${n}`;
 // 제목 앞의 [FEAT], [LDP-3] 같은 머리말을 모두 걷어냅니다.
 const stripTitlePrefix = (title) => title.replace(/^(\s*\[[^\]]*\]\s*)+/, '').trim();
+// 이슈 템플릿의 "### 예상 완료일" 칸 (YYYY-MM-DD). 비어 있으면 null.
+const dueDateOf = (issue) => (issue.body ?? '').match(/###\s*예상 완료일\s*\n+\s*(\d{4}-\d{2}-\d{2})/)?.[1] ?? null;
+const todayKst = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
 const labelNames = (issue) => issue.labels.map((l) => (typeof l === 'string' ? l : l.name));
 const jiraTypeOf = (issue) => cfg.issueTypeMap[labelNames(issue).find((l) => cfg.issueTypeMap[l])];
 
@@ -181,6 +184,44 @@ async function getIssueTypeId(name) {
   return type.id;
 }
 
+// Jira "시작 날짜" 필드 ID (커스텀 필드라 사이트마다 ID가 다름)
+let startFieldCache;
+async function getStartDateFieldId() {
+  if (startFieldCache !== undefined) return startFieldCache;
+  const fields = await jira('/rest/api/3/field');
+  const field = fields.find((f) => ['Start date', '시작 날짜', '시작일'].includes(f.name));
+  return (startFieldCache = field?.id ?? null);
+}
+
+// 브랜치 생성 시: 시작 날짜가 비어 있을 때만 오늘로 채웁니다. (두 번째 브랜치로 덮어쓰지 않음)
+async function setJiraStartDate(key) {
+  try {
+    const fieldId = await getStartDateFieldId();
+    if (!fieldId) return warn('Jira 에서 "시작 날짜" 필드를 찾지 못했습니다 — 건너뜁니다.');
+    const { fields } = await jira(`/rest/api/3/issue/${key}?fields=${fieldId}`);
+    if (fields[fieldId]) return;
+    const date = todayKst();
+    await jira(`/rest/api/3/issue/${key}`, { method: 'PUT', body: { fields: { [fieldId]: date } } });
+    console.log(`Jira: ${key} 시작 날짜 ${date}`);
+  } catch (e) {
+    warn(`시작 날짜 설정 실패: ${e.message}`);
+  }
+}
+
+// 이미 있는 업무의 기한을 이슈 본문의 예상 완료일에 맞춥니다. (본문이 수정됐을 때 반영)
+async function setJiraDueDate(key, issue) {
+  const due = dueDateOf(issue);
+  if (!due) return;
+  try {
+    const { fields } = await jira(`/rest/api/3/issue/${key}?fields=duedate`);
+    if (fields.duedate === due) return;
+    await jira(`/rest/api/3/issue/${key}`, { method: 'PUT', body: { fields: { duedate: due } } });
+    console.log(`Jira: ${key} 기한 ${due}`);
+  } catch (e) {
+    warn(`기한 설정 실패: ${e.message}`);
+  }
+}
+
 // 이미 만들어 둔 Epic 을 이름으로 찾습니다. 없으면 null (새로 만들지 않음).
 async function findEpicKey(epicName) {
   const epicType = (await getIssueTypes()).find((t) => t.hierarchyLevel === 1);
@@ -238,6 +279,7 @@ async function createJiraIssue(issue, typeName) {
     description: toAdf(issue),
     labels: [linkLabel(issue.number)],
   };
+  if (dueDateOf(issue)) fields.duedate = dueDateOf(issue);
 
   // Epic: role/... 라벨
   const roleLabel = labelNames(issue).find((l) => cfg.epicMap[l]);
@@ -288,13 +330,15 @@ async function jiraKeyFromTitle(issue) {
 //   3) 둘 다 없으면 새로 생성
 async function syncJiraIssue(issue) {
   let key = (await jiraKeyFromTitle(issue)) ?? (await findJiraIssue(issue.number))?.key;
-  if (!key) {
+  if (key) {
+    await setJiraDueDate(key, issue);
+  } else {
     const typeName = jiraTypeOf(issue);
     if (!typeName) {
       console.log(`#${issue.number}: 종류 라벨(${Object.keys(cfg.issueTypeMap).join('/')}) 없음 — Jira 대상이 아닙니다.`);
       return null;
     }
-    key = (await createJiraIssue(issue, typeName)).key;
+    key = (await createJiraIssue(issue, typeName)).key; // 기한은 생성 시 함께 들어감
   }
   await setIssueTitleKey(issue, key);
   return key;
@@ -372,6 +416,7 @@ async function moveTarget({ jiraKey, ghNumber }, step) {
   }
   if (!jiraKey && issue) jiraKey = await syncJiraIssue(issue);
   if (jiraKey) await transitionJira(jiraKey, cfg.jiraStatus[step]);
+  if (jiraKey && step === 'inProgress') await setJiraStartDate(jiraKey);
   if (issue) await setProjectStatus(issue, cfg.ghStatus[step]);
   return jiraKey;
 }
