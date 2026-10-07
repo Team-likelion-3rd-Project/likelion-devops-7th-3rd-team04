@@ -23,7 +23,7 @@
 
 | GitHub | Jira | 비고 |
 |---|---|---|
-| Issue | 업무 | 제목은 `#번호 이슈제목` |
+| Issue | 업무 | 요약(제목)은 이슈 제목 그대로. GitHub 이슈 번호는 레이블 `github-issue-N` 과 설명의 링크로 확인 |
 | `feat` / `fix` / `test` / `docs` / `infra` 라벨 | 같은 이름의 **업무 유형** | **이 라벨이 없으면 Jira에 만들지 않음** (회의록·트러블슈팅 등) |
 | `role/onprem` · `role/cloud` · `role/backend` · `role/frontend` | Epic 온프레미스 · 클라우드 · 백엔드 · 프론트엔드 | Epic은 미리 만들어 둔 것만 연결 |
 | Milestone `M1. ...` | Sprint `M1. ...` | 앞의 **`M번호.`** 만 같으면 연결 (뒷부분 이름은 달라도 됨) |

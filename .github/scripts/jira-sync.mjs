@@ -326,7 +326,8 @@ async function createJiraIssue(issue, typeName) {
   const fields = {
     project: { key: cfg.jiraProject },
     issuetype: { id: await getIssueTypeId(typeName) },
-    summary: `#${issue.number} ${stripTitlePrefix(issue.title)}`.slice(0, 255),
+    // Jira 가 요약으로 브랜치 이름을 지으므로 #번호는 넣지 않습니다. (연결은 github-issue-N 레이블)
+    summary: stripTitlePrefix(issue.title).slice(0, 255),
     description: toAdf(issue),
     labels: [linkLabel(issue.number)],
   };
