@@ -50,8 +50,11 @@ const warn = (msg) => console.log(`::warning::${msg}`);
 const linkLabel = (n) => `github-issue-${n}`;
 // 제목 앞의 [FEAT], [LDP-3] 같은 머리말을 모두 걷어냅니다.
 const stripTitlePrefix = (title) => title.replace(/^(\s*\[[^\]]*\]\s*)+/, '').trim();
-// 이슈 템플릿의 "### 예상 완료일" 칸 (YYYY-MM-DD). 비어 있으면 null.
-const dueDateOf = (issue) => (issue.body ?? '').match(/###\s*예상 완료일\s*\n+\s*(\d{4}-\d{2}-\d{2})/)?.[1] ?? null;
+// 기한: 이슈 템플릿의 "### 예상 완료일" 칸 -> 없으면 Milestone(=Sprint) 마감일 -> 둘 다 없으면 null
+const dueDateOf = (issue) =>
+  (issue.body ?? '').match(/###\s*예상 완료일\s*\n+\s*(\d{4}-\d{2}-\d{2})/)?.[1] ??
+  issue.milestone?.due_on?.slice(0, 10) ??
+  null;
 const todayKst = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
 const labelNames = (issue) => issue.labels.map((l) => (typeof l === 'string' ? l : l.name));
 const jiraTypeOf = (issue) => cfg.issueTypeMap[labelNames(issue).find((l) => cfg.issueTypeMap[l])];
@@ -208,7 +211,7 @@ async function setJiraStartDate(key) {
   }
 }
 
-// 이미 있는 업무의 기한을 이슈 본문의 예상 완료일에 맞춥니다. (본문이 수정됐을 때 반영)
+// 이미 있는 업무의 기한을 예상 완료일 / Milestone 마감일에 맞춥니다. (본문·Milestone 이 바뀌었을 때 반영)
 async function setJiraDueDate(key, issue) {
   const due = dueDateOf(issue);
   if (!due) return;
