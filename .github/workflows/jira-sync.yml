@@ -1,0 +1,44 @@
+name: Jira Sync
+
+# 이슈·브랜치·PR 이벤트를 Jira 업무와 GitHub Projects 보드 상태로 동기화합니다.
+# 로직: .github/scripts/jira-sync.mjs  /  설정: docs/AUTOMATION.md
+on:
+  issues:
+    types: [opened, closed]
+  create:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write # PR 제목에 Jira 키 붙이기
+
+jobs:
+  sync:
+    name: Sync to Jira
+    runs-on: ubuntu-latest
+    # 태그 생성, 포크에서 온 PR(시크릿 접근 불가)은 건너뜁니다.
+    if: >-
+      (github.event_name != 'create' || github.event.ref_type == 'branch') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Sync
+        run: node .github/scripts/jira-sync.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PROJECT_TOKEN: ${{ secrets.GH_PROJECT_TOKEN }}
+          GH_PROJECT_NUMBER: ${{ vars.GH_PROJECT_NUMBER }}
+          JIRA_BASE_URL: https://likelion-devops-7th-3rd-team04.atlassian.net
+          JIRA_PROJECT_KEY: LDP
+          JIRA_BOARD_ID: "2"
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
