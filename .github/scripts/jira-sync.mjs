@@ -109,7 +109,9 @@ async function setPrTitleKey(pr, key) {
 let projectCache;
 async function getProject() {
   if (projectCache) return projectCache;
-  const fields = `id field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } }`;
+  const fields = `id
+    field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } }
+    fields(first: 50) { nodes { ... on ProjectV2Field { id name dataType } } }`;
   for (const ownerType of ['organization', 'user']) {
     const data = await ghGraphql(
       `query($login: String!, $number: Int!) { ${ownerType}(login: $login) { projectV2(number: $number) { ${fields} } } }`,
@@ -121,19 +123,29 @@ async function getProject() {
   throw new Error(`GitHub Project #${cfg.projectNumber} (owner: ${cfg.projectOwner}) 를 찾을 수 없습니다.`);
 }
 
-// statusName 이 없으면 보드에 추가만 합니다.
-async function setProjectStatus(issue, statusName) {
-  if (!cfg.projectToken || !cfg.projectNumber) {
-    warn('GH_PROJECT_TOKEN / GH_PROJECT_NUMBER 미설정 — 보드 갱신을 건너뜁니다.');
-    return;
-  }
+// 이슈를 보드에 올리고 카드(item) id 를 반환합니다. 이미 있으면 기존 카드를 반환합니다.
+async function getProjectItemId(issue) {
   const project = await getProject();
   const { addProjectV2ItemById } = await ghGraphql(
     `mutation($projectId: ID!, $contentId: ID!) {
        addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) { item { id } }
      }`,
     { projectId: project.id, contentId: issue.node_id },
-  ); // 이미 보드에 있으면 기존 item 을 반환합니다.
+  );
+  return addProjectV2ItemById.item.id;
+}
+
+const projectEnabled = () => {
+  if (cfg.projectToken && cfg.projectNumber) return true;
+  warn('GH_PROJECT_TOKEN / GH_PROJECT_NUMBER 미설정 — 보드 갱신을 건너뜁니다.');
+  return false;
+};
+
+// statusName 이 없으면 보드에 추가만 합니다.
+async function setProjectStatus(issue, statusName) {
+  if (!projectEnabled()) return;
+  const project = await getProject();
+  const itemId = await getProjectItemId(issue);
   if (!statusName) return;
 
   const option = project.field?.options.find((o) => o.name.toLowerCase() === statusName.toLowerCase());
@@ -147,9 +159,45 @@ async function setProjectStatus(issue, statusName) {
          projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { singleSelectOptionId: $optionId }
        }) { projectV2Item { id } }
      }`,
-    { projectId: project.id, itemId: addProjectV2ItemById.item.id, fieldId: project.field.id, optionId: option.id },
+    { projectId: project.id, itemId, fieldId: project.field.id, optionId: option.id },
   );
   console.log(`보드: #${issue.number} -> ${option.name}`);
+}
+
+// 보드 카드의 날짜 필드를 설정합니다. onlyIfEmpty: 이미 값이 있으면 그대로 둡니다.
+async function setProjectDate(issue, fieldName, date, { onlyIfEmpty = false } = {}) {
+  if (!date || !projectEnabled()) return;
+  try {
+    const project = await getProject();
+    const field = project.fields.nodes.find((f) => f.name === fieldName && f.dataType === 'DATE');
+    if (!field) return warn(`보드에 날짜 필드 "${fieldName}" 이 없습니다 — 건너뜁니다.`);
+    const itemId = await getProjectItemId(issue);
+    const { node } = await ghGraphql(
+      `query($itemId: ID!, $name: String!) { node(id: $itemId) { ... on ProjectV2Item {
+         fieldValueByName(name: $name) { ... on ProjectV2ItemFieldDateValue { date } } } } }`,
+      { itemId, name: fieldName },
+    );
+    const current = node.fieldValueByName?.date;
+    if (current === date || (onlyIfEmpty && current)) return;
+    await ghGraphql(
+      `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $date: Date!) {
+         updateProjectV2ItemFieldValue(input: {
+           projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { date: $date }
+         }) { projectV2Item { id } }
+       }`,
+      { projectId: project.id, itemId, fieldId: field.id, date },
+    );
+    console.log(`보드: #${issue.number} ${fieldName} ${date}`);
+  } catch (e) {
+    warn(`보드 "${fieldName}" 설정 실패: ${e.message}`);
+  }
+}
+
+// 보드 날짜를 Jira 와 같은 규칙으로 맞춥니다.
+//   Target date = 예상 완료일 -> Milestone 마감일,  Start date = 브랜치 만든 날 (비어 있을 때만)
+async function syncProjectDates(issue, step) {
+  await setProjectDate(issue, 'Target date', dueDateOf(issue));
+  if (step === 'inProgress') await setProjectDate(issue, 'Start date', todayKst(), { onlyIfEmpty: true });
 }
 
 // ---------------------------------------------------------------- Jira
@@ -421,6 +469,7 @@ async function moveTarget({ jiraKey, ghNumber }, step) {
   if (jiraKey) await transitionJira(jiraKey, cfg.jiraStatus[step]);
   if (jiraKey && step === 'inProgress') await setJiraStartDate(jiraKey);
   if (issue) await setProjectStatus(issue, cfg.ghStatus[step]);
+  if (issue) await syncProjectDates(issue, step);
   return jiraKey;
 }
 
@@ -434,7 +483,10 @@ async function main() {
 
   if (eventName === 'issues' && event.action === 'opened') {
     await syncJiraIssue(event.issue);
-    if (cfg.projectToken && cfg.projectNumber) await setProjectStatus(event.issue, null);
+    if (cfg.projectToken && cfg.projectNumber) {
+      await setProjectStatus(event.issue, null);
+      await syncProjectDates(event.issue, 'opened');
+    }
     return;
   }
 
