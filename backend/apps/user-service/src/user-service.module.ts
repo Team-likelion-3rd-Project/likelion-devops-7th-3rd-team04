@@ -8,11 +8,14 @@ import { AdminModule } from './admin/admin.module';
 import { User } from './user/entities/user.entity';
 import { DeletedUser } from './user/entities/deleted-user.entity';
 import { Admin } from './admin/entities/admin.entity';
+import { HealthModule } from '@app/common';
 
 // 루트 모듈은 DB 커넥션 설정과 도메인 모듈(UserModule/AdminModule) 조립만 담당합니다.
 // 실제 고객/관리자 도메인 로직은 각 모듈 안에 캡슐화되어 있습니다.
 @Module({
   imports: [
+    // GET /health 헬스체크 엔드포인트 (libs/common/src/health)
+    HealthModule,
     // 1. .env 환경변수 로드 설정
     ConfigModule.forRoot({
       isGlobal: true,

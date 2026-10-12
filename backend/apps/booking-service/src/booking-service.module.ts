@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ClientsModule } from '@nestjs/microservices';
-import { getGrpcOptions } from '@app/common';
+import { getGrpcOptions, HealthModule } from '@app/common';
 import { BookingServiceController } from './booking-service.controller';
 import { BookingServiceService } from './booking-service.service';
 import { ReservationFacilityService } from './reservation-facility.service';
@@ -11,6 +11,8 @@ import { ReservationFacility } from './entities/reservation-facility.entity';
 
 @Module({
   imports: [
+    // GET /health 헬스체크 엔드포인트 (libs/common/src/health)
+    HealthModule,
     // 1. .env 환경변수 로드 설정
     ConfigModule.forRoot({
       isGlobal: true,

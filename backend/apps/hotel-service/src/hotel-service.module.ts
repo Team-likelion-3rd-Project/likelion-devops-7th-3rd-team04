@@ -10,9 +10,12 @@ import { Room } from './entities/room.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
 import { Facility } from './entities/facility.entity';
+import { HealthModule } from '@app/common';
 
 @Module({
   imports: [
+    // GET /health 헬스체크 엔드포인트 (libs/common/src/health)
+    HealthModule,
     // 1. .env 환경변수 로드 설정
     ConfigModule.forRoot({
       isGlobal: true,

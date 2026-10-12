@@ -12,9 +12,12 @@ import { ChatBotController } from './chat-bot/chat-bot.controller';
 import { ChatBotModule } from './chat-bot/chat-bot.module';
 import { PaymentModule } from './payment/payment.module';
 import { BookingModule } from './booking/booking.module';
+import { HealthModule } from '@app/common';
 
 @Module({
   imports: [
+    // GET /health 헬스체크 엔드포인트 (libs/common/src/health)
+    HealthModule,
     // 게이트웨이 전역 rate limit. 기본값은 기존 라우트에 영향을 주지 않도록 넉넉하게 잡고,
     // 익명 호출을 허용하는 라우트(예: 챗봇 메시지 전송)에서는 @Throttle()로 더 타이트하게 덮어씁니다.
     ThrottlerModule.forRoot([
