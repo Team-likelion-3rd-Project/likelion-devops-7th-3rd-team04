@@ -1,0 +1,27 @@
+---
+# ── 버전 고정 ─────────────────────────────────────────────
+kube_version: "1.33"
+calico_version: "v3.30.7"
+pause_image: "registry.k8s.io/pause:3.10"
+
+# ── 네트워크 ──────────────────────────────────────────────
+pod_subnet: "10.0.0.0/16"
+service_subnet: "10.96.0.0/12"
+# tailscale0 MTU(1280) - VXLAN 오버헤드(50)
+calico_mtu: 1230
+tailscale_interface: tailscale0
+
+# ── 노드 ─────────────────────────────────────────────────
+node_name: "{{ inventory_hostname }}"
+
+# ── 비밀값: 환경변수에서만 읽음 (코드에 값 금지) ──────────────
+ts_oauth_secret: "{{ lookup('env', 'TS_OAUTH_CLIENT_SECRET') }}"
+ts_tags: "{{ lookup('env', 'TS_TAGS') | default('tag:k8s-node', true) }}"
+
+k8s_api_endpoint: "{{ lookup('env', 'K8S_API_ENDPOINT') }}"
+k8s_join_token: "{{ lookup('env', 'K8S_JOIN_TOKEN') }}"
+k8s_ca_cert_hash: "{{ lookup('env', 'K8S_CA_CERT_HASH') }}"
+
+# ── join 정보 / kubeconfig 를 저장할 로컬 경로 (gitignore 대상) ──
+local_secrets_dir: "{{ playbook_dir }}/.secrets"
+kubeadm_token_ttl: "72h"
