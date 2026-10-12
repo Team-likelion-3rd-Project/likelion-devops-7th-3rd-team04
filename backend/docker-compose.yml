@@ -105,6 +105,12 @@ services:
       dockerfile: apps/api-gateway/Dockerfile
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env
     environment:
@@ -133,6 +139,13 @@ services:
       dockerfile: apps/user-service/Dockerfile
     ports:
       - "3001:3001"
+    # gRPC 전용 서비스라 헬스체크용 HTTP 포트(3101)를 따로 엽니다 — 컨테이너 내부 확인용이라 ports:에는 노출하지 않습니다.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3101/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env
     environment:
@@ -144,6 +157,13 @@ services:
       dockerfile: apps/auth-service/Dockerfile
     ports:
       - "3006:3006"
+    # gRPC 전용 서비스라 헬스체크용 HTTP 포트(3106)를 따로 엽니다 — 컨테이너 내부 확인용이라 ports:에는 노출하지 않습니다.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3106/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env
     # REDIS_HOST/REDIS_PORT는 .env(env_file)에서 옵니다 — 여기서 하드코딩하면 실제 AWS
@@ -161,6 +181,13 @@ services:
       dockerfile: apps/hotel-service/Dockerfile
     ports:
       - "3002:3002"
+    # gRPC 전용 서비스라 헬스체크용 HTTP 포트(3102)를 따로 엽니다 — 컨테이너 내부 확인용이라 ports:에는 노출하지 않습니다.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3102/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env
     environment:
@@ -176,6 +203,13 @@ services:
       dockerfile: apps/booking-service/Dockerfile
     ports:
       - "3003:3003"
+    # gRPC 전용 서비스라 헬스체크용 HTTP 포트(3103)를 따로 엽니다 — 컨테이너 내부 확인용이라 ports:에는 노출하지 않습니다.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3103/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env
     environment:
@@ -194,6 +228,13 @@ services:
       dockerfile: apps/payment-service/Dockerfile
     ports:
       - "3004:3004"
+    # gRPC 전용 서비스라 헬스체크용 HTTP 포트(3104)를 따로 엽니다 — 컨테이너 내부 확인용이라 ports:에는 노출하지 않습니다.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3104/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env
     environment:
@@ -214,6 +255,12 @@ services:
       dockerfile: apps/pg-mock-service/Dockerfile
     ports:
       - "3007:3007"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3007/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     environment:
       - NODE_ENV=development
       - PAYMENT_SERVICE_WEBHOOK_URL=${PAYMENT_SERVICE_WEBHOOK_URL:-http://api-gateway:3000/api/payments/webhook}
@@ -229,6 +276,13 @@ services:
       dockerfile: apps/chat-bot-service/Dockerfile
     ports:
       - "3005:3005"
+    # gRPC 전용 서비스라 헬스체크용 HTTP 포트(3105)를 따로 엽니다 — 컨테이너 내부 확인용이라 ports:에는 노출하지 않습니다.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3105/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     # DYNAMODB_ENDPOINT/DYNAMODB_REGION은 .env(env_file)에서 옵니다 — 여기서 하드코딩하면
     # 실제 AWS DynamoDB 테스트 시 .env 값이 무시됩니다.
     # local-infra profile 없이 실행할 경우 이 depends_on 때문에 dynamodb-local이 함께
@@ -237,5 +291,9 @@ services:
       - .env
     environment:
       - NODE_ENV=development
+    # 리눅스 Docker에는 host.docker.internal이 기본으로 없어서, 호스트에서 도는 n8n 웹훅을
+    # 호출하려면 직접 매핑해야 합니다 (Docker Desktop(Mac/Windows)에서는 없어도 동작).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - dynamodb-local

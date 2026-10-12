@@ -3,7 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ClientsModule } from '@nestjs/microservices';
 import { JwtModule } from '@nestjs/jwt';
-import { getGrpcOptions, RedisModule } from '@app/common';
+import { getGrpcOptions, RedisModule, HealthModule } from '@app/common';
 import { AuthServiceController } from './auth-service.controller';
 import { AuthServiceService } from './auth-service.service';
 import { Credential } from './entities/credential.entity';
@@ -11,6 +11,8 @@ import { AdminCredential } from './entities/admin-credential.entity';
 
 @Module({
   imports: [
+    // GET /health 헬스체크 엔드포인트 (libs/common/src/health)
+    HealthModule,
     // 1. .env 환경변수 로드 설정
     ConfigModule.forRoot({
       isGlobal: true,

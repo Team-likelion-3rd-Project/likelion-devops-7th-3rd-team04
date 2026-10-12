@@ -3,7 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 import { ClientsModule } from '@nestjs/microservices';
-import { getGrpcOptions } from '@app/common';
+import { getGrpcOptions, HealthModule } from '@app/common';
 import { PaymentServiceController } from './payment-service.controller';
 import { PaymentServiceService } from './payment-service.service';
 import { Payment } from './entities/payment.entity';
@@ -11,6 +11,8 @@ import { PgMockClient } from './pg-mock/pg-mock.client';
 
 @Module({
   imports: [
+    // GET /health 헬스체크 엔드포인트 (libs/common/src/health)
+    HealthModule,
     // 1. .env 환경변수 로드 설정
     ConfigModule.forRoot({
       isGlobal: true,

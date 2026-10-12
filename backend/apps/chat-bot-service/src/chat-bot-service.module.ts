@@ -6,9 +6,10 @@ import { DynamoDbModule } from './dynamodb/dynamodb.module';
 import { SessionService } from './session/session.service';
 import { MessageService } from './message/message.service';
 import { N8nClient } from './n8n/n8n.client';
+import { HealthModule } from '@app/common';
 
 @Module({
-  imports: [DynamoDbModule, HttpModule],
+  imports: [DynamoDbModule, HttpModule, HealthModule],
   controllers: [ChatBotServiceController],
   providers: [ChatBotServiceService, SessionService, MessageService, N8nClient],
 })
