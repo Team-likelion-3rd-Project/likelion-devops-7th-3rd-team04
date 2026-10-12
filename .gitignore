@@ -40,6 +40,22 @@ __pycache__/
 venv/
 *.egg-info/
 
+# ── Terraform ─────────────────────────────────
+# .terraform.lock.hcl 은 커밋한다
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
 # ── IDE / OS ──────────────────────────────────
 .idea/
 .vscode/
