@@ -1,0 +1,9 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+langchain==0.3.7
+langchain-core==0.3.15
+langchain-ollama==0.2.0
+pydantic==2.9.2
+# RAG retrieval (app/retrieval.py, scripts/ingest.py): AWS S3 Vectors client
+# (boto3.client("s3vectors")). Verified present in 1.43.73 — keep >= that.
+boto3>=1.43.73

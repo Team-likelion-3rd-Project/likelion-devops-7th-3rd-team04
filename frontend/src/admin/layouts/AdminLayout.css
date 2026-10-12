@@ -1,0 +1,111 @@
+/* 관리자 콘솔 전용 디자인 토큰. 고객 프론트(index.css의 --accent 등)와 의도적으로 분리한다. */
+.admin-shell {
+  --admin-bg: #f4f5f7;
+  --admin-surface: #ffffff;
+  --admin-border: #e2e5ea;
+  --admin-text: #1f2430;
+  --admin-text-muted: #6b7280;
+  --admin-sidebar-bg: #161b26;
+  --admin-sidebar-text: #cbd2e0;
+  --admin-sidebar-active: #2b3444;
+  --admin-primary: #3b5bfd;
+
+  display: flex;
+  min-height: 100svh;
+  background: var(--admin-bg);
+  color: var(--admin-text);
+  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  letter-spacing: normal;
+}
+
+.admin-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--admin-sidebar-bg);
+  color: var(--admin-sidebar-text);
+  display: flex;
+  flex-direction: column;
+  padding: 24px 16px;
+}
+
+.admin-sidebar-title {
+  font-weight: 700;
+  font-size: 16px;
+  color: #fff;
+  padding: 0 8px 24px;
+}
+
+.admin-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-nav-item {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--admin-sidebar-text);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.admin-nav-item:hover {
+  background: var(--admin-sidebar-active);
+  color: #fff;
+}
+
+.admin-nav-item.is-active {
+  background: var(--admin-primary);
+  color: #fff;
+}
+
+.admin-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  padding: 16px 24px;
+  background: var(--admin-surface);
+  border-bottom: 1px solid var(--admin-border);
+}
+
+.admin-topbar-user {
+  font-weight: 600;
+}
+
+.admin-logout-button {
+  border: 1px solid var(--admin-border);
+  background: var(--admin-surface);
+  color: var(--admin-text);
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.admin-logout-button:hover {
+  background: var(--admin-bg);
+}
+
+.admin-content {
+  flex: 1;
+  padding: 24px;
+  text-align: left;
+}
+
+.admin-guard-checking {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100svh;
+  color: #6b7280;
+  font: 15px system-ui, sans-serif;
+}

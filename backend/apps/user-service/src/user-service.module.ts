@@ -1,0 +1,50 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { UserServiceController } from './user-service.controller';
+import { UserServiceService } from './user-service.service';
+import { UserModule } from './user/user.module';
+import { AdminModule } from './admin/admin.module';
+import { User } from './user/entities/user.entity';
+import { DeletedUser } from './user/entities/deleted-user.entity';
+import { Admin } from './admin/entities/admin.entity';
+
+// 루트 모듈은 DB 커넥션 설정과 도메인 모듈(UserModule/AdminModule) 조립만 담당합니다.
+// 실제 고객/관리자 도메인 로직은 각 모듈 안에 캡슐화되어 있습니다.
+@Module({
+  imports: [
+    // 1. .env 환경변수 로드 설정
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: '.env',
+    }),
+
+    // 2. TypeORM MariaDB 비동기 연결 설정
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        type: 'mariadb',
+        host: configService.get<string>('DB_HOST', 'localhost'),
+        port: configService.get<number>('DB_PORT', 3306),
+        username: configService.get<string>('DB_USERNAME', 'root'),
+        password: configService.get<string>('DB_PASSWORD'),
+        database: configService.get<string>('DB_DATABASE'),
+        // 🟢 nest-cli.json이 webpack: true로 번들링하므로, dist에는 개별 *.entity.js 파일이
+        //    존재하지 않아 글롭(glob) 경로로는 엔티티를 찾지 못합니다. 클래스를 직접 등록합니다.
+        // users/deleted_user는 고객 도메인, admins는 관리자 도메인 소유지만, 같은 서비스가
+        // 같은 DB 커넥션을 쓰므로 연결 설정 자체는 루트에서 한 번만 합니다.
+        entities: [User, DeletedUser, Admin],
+        synchronize: true, // ⚠️ 개발 환경(Dev)에서만 true 사용
+        logging: true, // SQL 실행 쿼리 로깅
+      }),
+    }),
+
+    // 3. 도메인 모듈 조립 (각 모듈이 자신의 entity로 forFeature 리포지토리를 등록합니다)
+    UserModule,
+    AdminModule,
+  ],
+  controllers: [UserServiceController],
+  providers: [UserServiceService],
+})
+export class UserServiceModule {}

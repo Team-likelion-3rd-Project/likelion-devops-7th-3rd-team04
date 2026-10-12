@@ -1,0 +1,21 @@
+/* ReservationHistoryPage.css의 .reservation-card-link와 같은 여백을 쓰되, 카드 전체가
+   링크가 아니라(결제하기/상세보기 버튼 두 개가 따로 있어야 해서) 별도 클래스로 둔다. */
+.payments-pending-card {
+  padding: 20px 24px;
+}
+
+/* .reservation-card-body(사진이 있는 행) 안에 함께 놓여, 사진과 같은 줄 오른쪽 끝에 붙는다. */
+.payments-pending-card-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 10px;
+
+  /* mypage-ghost-btn/mypage-submit는 다른 화면에서도 쓰는 공용 버튼 클래스라 여기서만
+     .reservation-card-thumb(72px)과 높이를 맞춘다. */
+  .mypage-ghost-btn,
+  .mypage-submit {
+    height: 72px;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}

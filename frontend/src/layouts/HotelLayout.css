@@ -1,0 +1,15 @@
+/* STAY/객실상세/WATERS 등 호텔 랜딩 하위 페이지에서 공통으로 쓰는 뒤로가기 링크 */
+.hotel-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text);
+  text-decoration: none;
+  margin-bottom: 24px;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--accent);
+  }
+}

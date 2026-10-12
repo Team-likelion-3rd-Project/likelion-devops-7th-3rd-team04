@@ -187,9 +187,15 @@ npm run dev
 **검증**
 
 ```bash
-cd backend && npm run build
-cd frontend && npm run build
-````
+# backend: NestJS monorepo라 앱 이름을 지정해서 빌드 (각 서비스 Dockerfile과 같은 순서)
+cd backend
+npm run build common
+for app in api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service; do npm run build $app; done
+
+# frontend
+cd ../frontend
+npm run build
+```
 
 ---
 

@@ -1,0 +1,122 @@
+# Local test harness for the Ollama node + LLM Service + n8n orchestrator.
+# Not related to backend/docker-compose.yml (the NestJS/gRPC mesh) — nothing
+# there points at this yet (backend/.env's N8N_WEBHOOK_URL would need to be
+# pointed at http://localhost:5678/webhook/chat to wire the two together).
+#
+# Usage:
+#   docker compose -f langchain_rag/docker-compose.yml up --build
+#   curl localhost:8001/chat -X POST -H 'Content-Type: application/json' \
+#       -d '{"message": "안녕하세요, 예약 가능한 방 있나요?", "history": []}'
+#   curl localhost:5678/webhook/chat -X POST -H 'Content-Type: application/json' \
+#       -d '{"message": "안녕하세요, 예약 가능한 방 있나요?", "history": []}'
+#
+# See langchain_rag/n8n/README.md for the full test suite, including the
+# one-time "restart n8n if the webhook 404s" fallback.
+
+services:
+  ollama:
+    build:
+      context: ./ollama
+      args:
+        OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+        OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+    environment:
+      # Ollama unloads a model from memory after 5m idle by default and
+      # reloads it (~25-30s on this CPU-only local setup) on the next
+      # request — easily enough on its own to blow past n8n's "Call
+      # llm-service" node timeout (see workflows/chat-orchestration.json)
+      # even before generation starts. -1 keeps the model resident for the
+      # life of the container instead. Local-dev-only concern: the real
+      # EKS node group is GPU (g4dn.xlarge, per infra/terraform/modules/eks),
+      # so this isn't something prod needs.
+      OLLAMA_KEEP_ALIVE: -1
+    ports:
+      - "11434:11434"
+
+  llm-service:
+    build:
+      context: ./llm-service
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      # RAG retrieval (app/retrieval.py) — S3 Vectors. Leave VECTOR_BUCKET_NAME
+      # unset (don't override the default below with an empty value) to run
+      # without RAG; chain.py falls back to ungrounded replies either way.
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      VECTOR_BUCKET_NAME: ${VECTOR_BUCKET_NAME:-team04-dev-vector-bucket}
+      VECTOR_INDEX_NAME: ${VECTOR_INDEX_NAME:-team04-chatbot-vector-index}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      # boto3 needs real AWS credentials to actually reach S3 Vectors — these
+      # pass through from the host shell if set (e.g. after running
+      # `source /mnt/d/Desktop/AWS/aws-mfa.sh <profile> <otp>`). Left empty,
+      # boto3 calls fail and retrieval.py just falls back to no context.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    ports:
+      # Host 8001 -> container 8000: backend/docker-compose.yml's
+      # dynamodb-local already claims host 8000, and these are two
+      # independent Compose projects that can run on the same machine at
+      # once, so this side has to move. Internal calls (n8n -> llm-service)
+      # are unaffected — they use the container port (llm-service:8000).
+      - "8001:8000"
+    depends_on:
+      - ollama
+
+  # n8n instance hosting the orchestration workflow (Webhook -> role mapping
+  # -> llm-service -> Respond to Webhook). RAG retrieval used to be mocked
+  # here (a "Mock RAG (placeholder)" node); it's now done for real inside
+  # llm-service (app/retrieval.py), so this workflow just passes
+  # message/history through. See langchain_rag/n8n/workflows/chat-orchestration.json.
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_SECURE_COOKIE: "false"
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  # One-shot workflow import + activation, mirrors backend/docker-compose.yml's
+  # dynamodb-init pattern: same image as the main service, no build, runs
+  # once and exits. Re-running on every `up` is safe/idempotent — `n8n
+  # import:workflow` upserts by workflow id, and activate-workflow.js skips
+  # activation if the workflow is already active.
+  #
+  # Two steps chained with && (see n8n/scripts/activate-workflow.js for why
+  # both are needed):
+  #   1. `n8n import:workflow` writes the workflow straight into n8n's SQLite
+  #      DB (the same n8n_data volume the `n8n` service reads) — but always
+  #      force-deactivates whatever it imports, regardless of the JSON's
+  #      `active` field. This is documented n8n CLI behavior, not a repo bug:
+  #      https://community.n8n.io/t/disable-deactivating-workflow-during-import/28217
+  #   2. activate-workflow.js then calls n8n's REST API (needs `n8n` up and
+  #      reachable, unlike step 1) to actually register the webhook — a
+  #      plain `active: true` PATCH doesn't do it on this n8n build, which
+  #      separates "active" from a draft/publish workflow lifecycle; only
+  #      the dedicated `POST /rest/workflows/:id/activate` endpoint (session
+  #      auth + current versionId) does. It creates a local owner account on
+  #      first run to get that session (override via N8N_INIT_OWNER_EMAIL/
+  #      N8N_INIT_OWNER_PASSWORD; defaults are fine for local-only use).
+  n8n-init:
+    image: n8nio/n8n:latest
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        n8n import:workflow --input=/workflows/chat-orchestration.json &&
+        node /scripts/activate-workflow.js /workflows/chat-orchestration.json
+    environment:
+      N8N_URL: http://n8n:5678
+      N8N_INIT_OWNER_EMAIL: ${N8N_INIT_OWNER_EMAIL:-admin@example.com}
+      N8N_INIT_OWNER_PASSWORD: ${N8N_INIT_OWNER_PASSWORD:-ChangeMe123!}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+      - ./n8n/scripts:/scripts:ro
+    depends_on:
+      - n8n
+    restart: "no"
+
+volumes:
+  n8n_data:

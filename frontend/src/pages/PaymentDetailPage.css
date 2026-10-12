@@ -1,0 +1,22 @@
+/* ReservationDetailPage.css의 .reservation-detail-row .reservation-status와 같은 시각 언어를
+   쓰지만, 결제 상태(paid/refunded)는 예약 상태와 값 자체가 달라 별도 클래스로 둔다. */
+.reservation-detail-row .payment-status {
+  align-self: flex-start;
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--bg);
+  background: var(--accent);
+}
+
+.reservation-detail-row .payment-status-refunded {
+  background: var(--text);
+  opacity: 0.6;
+}
+
+/* mypage-ghost-btn은 원래 <button>용 클래스라 <a>(Link)에 쓰면 밑줄이 남는다. */
+.mypage-actions a.mypage-ghost-btn {
+  text-decoration: none;
+}

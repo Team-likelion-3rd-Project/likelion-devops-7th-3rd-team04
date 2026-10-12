@@ -1,0 +1,151 @@
+.reservation-back-link {
+  display: inline-block;
+  margin-bottom: 24px;
+  font-size: 14px;
+  color: var(--text);
+  text-decoration: none;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--accent);
+  }
+}
+
+.reservation-detail {
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.reservation-detail-room {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.reservation-detail-room-thumb {
+  width: 140px;
+  height: 140px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  object-fit: cover;
+  background: var(--accent-bg);
+
+  &.is-placeholder {
+    background: linear-gradient(135deg, var(--accent-bg), var(--border));
+  }
+}
+
+.reservation-detail-room-info {
+  h2 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-h);
+  }
+
+  p {
+    margin: 8px 0 0;
+    font-size: 14px;
+    color: var(--text);
+  }
+}
+
+.reservation-detail-rows {
+  margin-top: 4px;
+}
+
+.reservation-detail-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+
+  &:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+}
+
+.reservation-detail-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.reservation-detail-value {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-h);
+  line-height: 1.5;
+}
+
+.reservation-detail-amount {
+  font-size: 18px;
+}
+
+/* 상세 페이지 안에서 쓰는 예약 상태 배지 — ReservationHistoryPage.css의 목록 카드용과 같은
+   시각 언어(색상)를 쓰지만, 별도 페이지라 스타일을 여기 따로 둔다. */
+.reservation-detail-row .reservation-status {
+  align-self: flex-start;
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--bg);
+  background: var(--accent);
+}
+
+.reservation-detail-row .reservation-status-cancelled {
+  background: var(--text);
+  opacity: 0.6;
+}
+
+.reservation-detail-row .reservation-status-completed {
+  background: var(--text-h);
+}
+
+/* 결제 대기는 확정(accent)과 시각적으로 구분되어야 해서 muted 톤을 쓴다. */
+.reservation-detail-row .reservation-status-pending_payment {
+  background: var(--text-h);
+  opacity: 0.8;
+}
+
+.reservation-detail-notice {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.reservation-detail-notice-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.reservation-detail-notice ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reservation-detail-notice li {
+  position: relative;
+  padding-left: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+
+  &::before {
+    content: '·';
+    position: absolute;
+    left: 0;
+  }
+}

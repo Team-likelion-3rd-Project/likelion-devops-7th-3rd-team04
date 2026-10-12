@@ -1,0 +1,82 @@
+.admin-login-page {
+  --admin-primary: #3b5bfd;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100svh;
+  background: #161b26;
+  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  letter-spacing: normal;
+}
+
+.admin-login-card {
+  width: 100%;
+  max-width: 360px;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 32px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+}
+
+.admin-login-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  color: #1f2430;
+}
+
+.admin-login-description {
+  margin: 0 0 24px;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.admin-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.admin-login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  color: #1f2430;
+}
+
+.admin-login-field input {
+  padding: 10px 12px;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.admin-login-field input:focus {
+  outline: 2px solid var(--admin-primary);
+  outline-offset: 1px;
+}
+
+.admin-login-error {
+  margin: 0;
+  color: #d92d20;
+  font-size: 13px;
+}
+
+.admin-login-submit {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--admin-primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.admin-login-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

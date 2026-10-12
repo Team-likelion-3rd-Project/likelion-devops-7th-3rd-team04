@@ -1,0 +1,32 @@
+import { Route, Routes } from 'react-router-dom'
+import AdminGuard from './AdminGuard'
+import AdminLayout from './layouts/AdminLayout'
+import AdminLoginPage from './pages/AdminLoginPage'
+import AdminDashboardPage from './pages/AdminDashboardPage'
+import AdminUsersPage from './pages/AdminUsersPage'
+import AdminUserDetailPage from './pages/AdminUserDetailPage'
+import AdminHotelsPage from './pages/AdminHotelsPage'
+import AdminHotelDetailPage from './pages/AdminHotelDetailPage'
+import AdminRoomDetailPage from './pages/AdminRoomDetailPage'
+
+// /admin/* 전용 서브 라우터. 고객 프론트의 라우트 트리와 분리되어 있고,
+// App.tsx에서 React.lazy로만 불러오므로 별도 청크로 코드 스플리팅된다.
+function AdminApp() {
+  return (
+    <Routes>
+      <Route path="login" element={<AdminLoginPage />} />
+      <Route element={<AdminGuard />}>
+        <Route element={<AdminLayout />}>
+          <Route index element={<AdminDashboardPage />} />
+          <Route path="users" element={<AdminUsersPage />} />
+          <Route path="users/:userId" element={<AdminUserDetailPage />} />
+          <Route path="hotels" element={<AdminHotelsPage />} />
+          <Route path="hotels/:hotelId" element={<AdminHotelDetailPage />} />
+          <Route path="hotels/:hotelId/rooms/:roomId" element={<AdminRoomDetailPage />} />
+        </Route>
+      </Route>
+    </Routes>
+  )
+}
+
+export default AdminApp

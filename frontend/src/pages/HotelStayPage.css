@@ -1,0 +1,32 @@
+.hotel-stay-page {
+  max-width: 1126px;
+  margin: 0 auto;
+  padding: 48px 32px 96px;
+
+  @media (max-width: 767px) {
+    padding: 32px 20px 88px;
+  }
+}
+
+.hotel-stay-intro {
+  font-size: 15px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.hotel-stay-status {
+  margin-top: 24px;
+  font-size: 14px;
+  color: var(--text);
+
+  &.error {
+    color: #e5484d;
+  }
+}
+
+.hotel-stay-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 24px;
+  margin-top: 24px;
+}

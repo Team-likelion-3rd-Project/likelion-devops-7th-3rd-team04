@@ -1,0 +1,550 @@
+/* 관리자 콘솔 내부 페이지(대시보드/유저/호텔)들이 공유하는 기본 스타일 */
+.admin-page-header {
+  margin: 0 0 20px;
+}
+
+.admin-page-header h1 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+
+.admin-page-header p {
+  margin: 0;
+  color: var(--admin-text-muted, #6b7280);
+  font-size: 14px;
+}
+
+.admin-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: stretch;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+/* .admin-card + .admin-card 규칙은 형제가 둘 다 .admin-card일 때만 매칭되는데, 호텔 상세 페이지처럼
+   .admin-card 사이에 .admin-stat-grid(호텔별 지표 섹션)가 끼어들면 그 규칙이 끊겨서 카드 간 16px
+   간격이 사라져 버린다 — 앞뒤 모두 명시적으로 같은 간격을 준다. */
+.admin-card + .admin-stat-grid {
+  margin-top: 16px;
+}
+
+.admin-stat-grid + .admin-card {
+  margin-top: 16px;
+}
+
+/* .admin-card + .admin-card 규칙(상세 페이지의 세로 카드 간격용)이 그리드 안의 형제 카드에도
+   적용되어 버리므로, 그보다 명시도가 높은 선택자로 다시 무효화한다. */
+.admin-stat-grid .admin-card + .admin-card {
+  margin-top: 0;
+}
+
+.admin-stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+}
+
+.admin-stat-label {
+  font-size: 13px;
+  color: var(--admin-text-muted, #6b7280);
+}
+
+.admin-stat-value {
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.admin-stat-note {
+  margin: 0 0 24px;
+  font-size: 12px;
+  color: var(--admin-text-muted, #6b7280);
+}
+
+.admin-state {
+  color: var(--admin-text-muted, #6b7280);
+  font-size: 14px;
+  padding: 16px 0;
+}
+
+.admin-state.is-error {
+  color: #d92d20;
+}
+
+.admin-card {
+  background: var(--admin-surface, #fff);
+  border: 1px solid var(--admin-border, #e2e5ea);
+  border-radius: 10px;
+  padding: 20px;
+}
+
+.admin-card + .admin-card {
+  margin-top: 16px;
+}
+
+.admin-table-wrap {
+  background: var(--admin-surface, #fff);
+  border: 1px solid var(--admin-border, #e2e5ea);
+  border-radius: 10px;
+  overflow: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.admin-table th,
+.admin-table td {
+  text-align: left;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--admin-border, #e2e5ea);
+  white-space: nowrap;
+}
+
+.admin-table thead th {
+  color: var(--admin-text-muted, #6b7280);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+/* 대시보드의 호텔별 요약 테이블 전용 — 값을 크게/굵게 강조. 다른 관리자 테이블(유저/호텔/객실
+   목록)은 .admin-table 기본 크기 그대로 유지하고 이 테이블에만 적용한다. */
+.admin-dashboard-stat-table th,
+.admin-dashboard-stat-table td {
+  padding: 16px 20px;
+}
+
+.admin-dashboard-stat-table thead th {
+  font-size: 15px;
+}
+
+/* 첫 번째 열(호텔명)은 라벨이라 원래 크기 그대로 두고, 나머지 지표 값 칸만 크게/굵게 강조한다. */
+.admin-dashboard-stat-table tbody td:not(:first-child) {
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.admin-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-table tbody tr {
+  cursor: pointer;
+}
+
+.admin-table tbody tr:hover {
+  background: var(--admin-bg, #f4f5f7);
+}
+
+.admin-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--admin-bg, #f4f5f7);
+  color: var(--admin-text, #1f2430);
+}
+
+.admin-badge.is-good {
+  background: rgba(21, 128, 61, 0.12);
+  color: #15803d;
+}
+
+.admin-badge.is-bad {
+  background: rgba(185, 28, 28, 0.12);
+  color: #b91c1c;
+}
+
+.admin-back-link {
+  display: inline-block;
+  margin-bottom: 16px;
+  color: var(--admin-primary, #3b5bfd);
+  font-size: 14px;
+  text-decoration: none;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.admin-back-link:hover {
+  text-decoration: underline;
+}
+
+.admin-detail-grid {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  row-gap: 12px;
+  font-size: 14px;
+}
+
+.admin-detail-grid dt {
+  color: var(--admin-text-muted, #6b7280);
+}
+
+.admin-detail-grid dd {
+  margin: 0;
+}
+
+.admin-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  align-items: stretch;
+  gap: 16px;
+}
+
+/* 대시보드의 호텔별 요약 테이블 바로 아래에 퀵링크 카드가 붙을 때 다른 섹션 간격(16px)과 맞춘다. */
+.admin-table-wrap + .admin-dashboard-grid {
+  margin-top: 16px;
+}
+
+/* .admin-card + .admin-card 규칙(상세 페이지의 세로 카드 간격용, 클래스 2개짜리라 명시도가 더 높다)이
+   그리드 안의 형제 카드에도 그대로 적용되어 버려서, 그보다 명시도가 높은 선택자로 다시 무효화한다. */
+.admin-dashboard-grid .admin-card + .admin-card {
+  margin-top: 0;
+}
+
+.admin-dashboard-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  box-sizing: border-box;
+  text-decoration: none;
+  color: inherit;
+}
+
+.admin-dashboard-card h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.admin-dashboard-card p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--admin-text-muted, #6b7280);
+}
+
+/* 호텔/객실 상세 페이지의 카드 제목 + "추가"/"수정" 버튼 한 줄 배치 */
+.admin-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.admin-card-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.admin-card-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.admin-btn {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--admin-border, #e2e5ea);
+  background: var(--admin-surface, #fff);
+  color: var(--admin-text, #1f2430);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.admin-btn:hover {
+  background: var(--admin-bg, #f4f5f7);
+}
+
+.admin-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.admin-btn.is-primary {
+  background: var(--admin-primary, #3b5bfd);
+  border-color: var(--admin-primary, #3b5bfd);
+  color: #fff;
+}
+
+.admin-btn.is-primary:hover {
+  opacity: 0.9;
+  background: var(--admin-primary, #3b5bfd);
+}
+
+.admin-btn.is-danger {
+  background: #e5484d;
+  border-color: #e5484d;
+  color: #fff;
+}
+
+.admin-btn.is-danger:hover {
+  opacity: 0.9;
+  background: #e5484d;
+}
+
+/* 객실 등록/수정 폼 (AdminHotelDetailPage, AdminRoomDetailPage 공용) */
+.admin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.admin-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--admin-text-muted, #6b7280);
+}
+
+.admin-form-row input,
+.admin-form-row textarea {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--admin-border, #e2e5ea);
+  border-radius: 8px;
+  color: var(--admin-text, #1f2430);
+  background: var(--admin-surface, #fff);
+}
+
+.admin-form-row input:focus,
+.admin-form-row textarea:focus {
+  outline: 2px solid var(--admin-primary, #3b5bfd);
+  outline-offset: 1px;
+}
+
+.admin-form-row textarea {
+  resize: vertical;
+  min-height: 64px;
+  font-family: inherit;
+}
+
+.admin-form-error {
+  margin: 0;
+  color: #d92d20;
+  font-size: 13px;
+}
+
+.admin-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 객실 등록/수정 폼과 상세 화면에서 공용으로 쓰는 이미지 미리보기 그리드 */
+.admin-image-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+
+.admin-image-preview {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--admin-border, #e2e5ea);
+  background: var(--admin-bg, #f4f5f7);
+}
+
+.admin-image-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.admin-image-preview-badge {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+
+.admin-image-preview-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 18px;
+  text-align: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.admin-image-preview-remove:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+/* 객실 목록 테이블의 작은 썸네일 */
+.admin-table-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
+}
+
+/* 객실 상세 페이지의 월간 예약 가능 여부 달력 */
+.admin-calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.admin-calendar-nav {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--admin-border, #e2e5ea);
+  border-radius: 6px;
+  background: var(--admin-surface, #fff);
+  color: var(--admin-text, #1f2430);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.admin-calendar-nav:hover {
+  background: var(--admin-bg, #f4f5f7);
+}
+
+.admin-calendar-nav:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: var(--admin-surface, #fff);
+}
+
+/* 달력 위 "2026년 8월" 문구. <select>라서 클릭하면 바로 이번 달 ~ 1년 후 중에서 고를 수 있다. */
+.admin-calendar-title-select {
+  margin: 0;
+  min-width: 110px;
+  text-align: center;
+  text-align-last: center;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--admin-text, #1f2430);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.admin-calendar-title-select:hover,
+.admin-calendar-title-select:focus {
+  border-color: var(--admin-border, #e2e5ea);
+  background: var(--admin-surface, #fff);
+}
+
+.admin-calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  font-size: 12px;
+  color: var(--admin-text-muted, #6b7280);
+  padding-bottom: 6px;
+}
+
+.admin-calendar-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.admin-calendar-day {
+  min-height: 56px;
+  border-radius: 8px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--admin-bg, #f4f5f7);
+}
+
+.admin-calendar-day.is-outside {
+  background: transparent;
+}
+
+.admin-calendar-day.is-loading {
+  opacity: 0.5;
+}
+
+.admin-calendar-day.is-available {
+  background: rgba(21, 128, 61, 0.14);
+}
+
+.admin-calendar-day.is-unavailable {
+  background: rgba(185, 28, 28, 0.14);
+}
+
+.admin-calendar-day.is-today {
+  outline: 2px solid var(--admin-primary, #3b5bfd);
+  outline-offset: -2px;
+}
+
+.admin-calendar-date {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-calendar-price {
+  font-size: 10px;
+  color: var(--admin-text-muted, #6b7280);
+}
+
+.admin-calendar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--admin-text-muted, #6b7280);
+}
+
+.admin-calendar-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-calendar-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.admin-calendar-dot.is-available {
+  background: #15803d;
+}
+
+.admin-calendar-dot.is-unavailable {
+  background: #b91c1c;
+}
+
+.admin-calendar-dot.is-unknown {
+  background: var(--admin-border, #e2e5ea);
+}

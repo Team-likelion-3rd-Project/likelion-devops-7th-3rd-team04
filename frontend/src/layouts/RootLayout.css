@@ -1,0 +1,10 @@
+.root-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100svh;
+}
+
+.root-layout-main {
+  flex: 1;
+  text-align: left;
+}

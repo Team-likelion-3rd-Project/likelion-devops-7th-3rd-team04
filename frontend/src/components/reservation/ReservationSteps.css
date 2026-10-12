@@ -1,0 +1,67 @@
+/* 예약 플로우 페이지 공통 헤더(제목 + 진행 표시) 레이아웃. 플로우에 속한 모든 페이지가
+   ReservationSteps를 렌더링하므로, 그 페이지들이 함께 쓰는 헤더 래퍼 스타일도 여기서 관리한다. */
+.reservation-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+
+  h1 {
+    margin: 0;
+  }
+}
+
+.reservation-steps {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reservation-step-item {
+  display: flex;
+  align-items: center;
+}
+
+.reservation-step-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text);
+
+  &.is-active {
+    background: var(--text-h);
+    border-color: var(--text-h);
+    color: var(--bg);
+  }
+}
+
+.reservation-step-text {
+  margin-left: 8px;
+  font-size: 14px;
+  color: var(--text-h);
+  white-space: nowrap;
+
+  @media (max-width: 600px) {
+    display: none;
+  }
+}
+
+.reservation-step-line {
+  width: 32px;
+  height: 1px;
+  margin: 0 8px;
+  background: var(--border);
+
+  @media (max-width: 600px) {
+    width: 16px;
+  }
+}
