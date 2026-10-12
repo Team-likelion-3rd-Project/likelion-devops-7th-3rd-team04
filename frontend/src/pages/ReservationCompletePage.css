@@ -1,0 +1,260 @@
+.reservation-complete-page {
+  /* 다른 예약 플로우 페이지들과 동일한 컨테이너 폭/여백을 그대로 맞춘다 */
+  max-width: 1720px;
+  margin: 0 auto;
+  padding: 48px 56px 96px;
+
+  @media (max-width: 767px) {
+    padding: 32px 20px 88px;
+  }
+}
+
+.reservation-complete-status {
+  margin-top: 80px;
+  font-size: 15px;
+  color: var(--text);
+
+  &.error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    text-align: center;
+
+    a {
+      color: var(--accent);
+    }
+  }
+}
+
+/* 완료 배너 — 체크 아이콘 뒤에 은은한 accent 글로우를 깔아 "완료" 임팩트를 준다 */
+.reservation-complete-banner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 64px;
+  text-align: center;
+}
+
+.reservation-complete-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 0 0 12px var(--accent-bg);
+}
+
+.reservation-complete-banner h2 {
+  margin: 12px 0 0;
+}
+
+.reservation-complete-number {
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* 옵션 선택 단계와 동일한 "메인 + 우측 sticky 카드" 2단 구성으로, 이전 단계들과 폭 감각을 맞춘다 */
+.reservation-complete-body {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  align-items: start;
+  gap: 40px;
+  margin-top: 48px;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.reservation-complete-main {
+  min-width: 0;
+}
+
+.reservation-complete-room {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.reservation-complete-room-thumb {
+  width: 140px;
+  height: 140px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  object-fit: cover;
+  background: var(--code-bg);
+
+  &.is-placeholder {
+    background: linear-gradient(135deg, var(--accent-bg), var(--code-bg));
+  }
+}
+
+.reservation-complete-room-info {
+  h3 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--text-h);
+  }
+
+  p {
+    margin-top: 8px;
+    font-size: 14px;
+    color: var(--text);
+  }
+}
+
+.reservation-complete-details {
+  margin-top: 4px;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.reservation-complete-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 4px;
+
+  & + & {
+    border-top: 1px solid var(--border);
+  }
+}
+
+.reservation-complete-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.reservation-complete-value {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-h);
+  line-height: 1.5;
+}
+
+.reservation-complete-notice {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.reservation-complete-notice-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.reservation-complete-notice ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reservation-complete-notice li {
+  position: relative;
+  padding-left: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+
+  &::before {
+    content: '·';
+    position: absolute;
+    left: 0;
+  }
+}
+
+/* 우측 요약 사이드바 — 옵션 선택 단계 서머리와 동일한 톤(accent 테두리 + 흰 카드)으로 맞춘다 */
+.reservation-complete-summary {
+  position: sticky;
+  top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+  background: var(--accent-bg);
+}
+
+.reservation-complete-total {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-radius: 10px;
+  background: var(--bg);
+
+  strong {
+    font-size: 22px;
+    color: var(--text-h);
+  }
+}
+
+.reservation-complete-total-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+.reservation-complete-total-note {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.reservation-complete-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reservation-complete-primary,
+.reservation-complete-secondary {
+  appearance: none;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 15px;
+  padding: 12px;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.reservation-complete-primary {
+  border: none;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+  transition: opacity 0.2s;
+
+  &:hover,
+  &:focus-visible {
+    opacity: 0.85;
+  }
+}
+
+.reservation-complete-secondary {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent-border);
+    color: var(--accent);
+  }
+}

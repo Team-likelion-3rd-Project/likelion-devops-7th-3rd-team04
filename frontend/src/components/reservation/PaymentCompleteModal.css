@@ -1,0 +1,98 @@
+.payment-complete-modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 110;
+}
+
+.payment-complete-modal {
+  width: 100%;
+  max-width: 360px;
+  padding: 32px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+
+  h2 {
+    margin: 4px 0 0;
+  }
+}
+
+.payment-complete-modal-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 0 0 10px var(--accent-bg);
+}
+
+.payment-complete-modal-rows {
+  width: 100%;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--code-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.payment-complete-modal-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text);
+
+  span:last-child {
+    color: var(--text-h);
+    font-weight: 500;
+  }
+}
+
+.payment-complete-modal-amount {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+
+  strong {
+    font-size: 18px;
+    color: var(--text-h);
+  }
+}
+
+.payment-complete-modal-confirm {
+  appearance: none;
+  width: 100%;
+  margin-top: 20px;
+  border: none;
+  border-radius: 8px;
+  padding: 13px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  transition: opacity 0.2s;
+
+  &:hover,
+  &:focus-visible {
+    opacity: 0.85;
+  }
+}

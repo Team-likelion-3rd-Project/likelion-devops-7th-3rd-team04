@@ -1,0 +1,123 @@
+.hotel-detail-hero {
+  aspect-ratio: 16 / 7;
+  width: 100%;
+  /* 부모(HotelLayout)가 더 이상 폭을 제약하지 않으므로 MainPage의 .hero처럼 화면 가로축을
+     그대로 채운다. 가장자리까지 맞닿으므로 카드형 모서리 둥글림은 쓰지 않는다. */
+  /* 3개 레이어를 겹친다: (1) 실사진(--hotel-photo, 있을 때만) → (2) 은은한 대각선 패턴 →
+     (3) 호텔별 accent 그라디언트(--hotel-accent). 사진이 없으면 --hotel-photo가 비어
+     var(..., none)의 none으로 폴백되어 (2)+(3) 패턴/그라디언트 조합이 그대로 보인다. */
+  background-image: var(--hotel-photo, none),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.07) 0 2px, transparent 2px 14px),
+    var(--hotel-accent);
+  background-size: cover, auto, auto;
+  background-position: center, 0 0, 0 0;
+
+  @media (max-width: 767px) {
+    aspect-ratio: 4 / 3;
+  }
+}
+
+.hotel-detail-body {
+  max-width: 1126px;
+  margin: 0 auto;
+  padding: 32px 32px 96px;
+
+  @media (max-width: 767px) {
+    padding: 32px 20px 88px;
+  }
+}
+
+.hotel-detail-location {
+  margin: 0 0 4px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.hotel-detail-name {
+  margin: 0 0 8px;
+}
+
+.hotel-detail-summary {
+  font-size: 16px;
+  line-height: 150%;
+  color: var(--text);
+  max-width: 640px;
+}
+
+.hotel-detail-features {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  margin-top: 40px;
+
+  @media (max-width: 767px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.hotel-detail-feature {
+  position: relative;
+  display: block;
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  overflow: hidden;
+  text-decoration: none;
+  color: #fff;
+
+  &:hover .hotel-detail-feature-image,
+  &:focus-visible .hotel-detail-feature-image {
+    transform: scale(1.04);
+  }
+  &:hover,
+  &:focus-visible {
+    box-shadow: var(--shadow);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+.hotel-detail-feature-image {
+  position: absolute;
+  inset: 0;
+  transition: transform 0.4s ease-out;
+  /* .hotel-detail-hero와 동일한 3레이어 합성: 실사진(--tile-photo) → 패턴 → 고정 accent 그라디언트.
+     사진이 없는 슬롯은 자동으로 패턴+그라디언트 플레이스홀더로 폴백된다. */
+  background-image: var(--tile-photo, none),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.08) 0 2px, transparent 2px 14px),
+    var(--tile-accent);
+  background-size: cover, auto, auto;
+  background-position: center, 0 0, 0 0;
+
+  &.stay {
+    --tile-accent: linear-gradient(135deg, #4a3f2e, #8a7350);
+  }
+
+  &.waters {
+    --tile-accent: linear-gradient(135deg, #1c4b52, #4f9aa6);
+  }
+}
+
+.hotel-detail-feature-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 20px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent 60%);
+}
+
+.hotel-detail-feature-label {
+  font-family: var(--heading);
+  font-size: 22px;
+  letter-spacing: 0.08em;
+}
+
+.hotel-detail-feature-caption {
+  font-size: 13px;
+  opacity: 0.85;
+}

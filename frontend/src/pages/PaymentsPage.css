@@ -1,0 +1,80 @@
+/* ReservationHistoryPage.css의 .reservation-list/.reservation-card와 같은 시각 언어를 쓰지만,
+   결제 내역은 예약과 다른 필드(결제수단/승인번호 등)를 보여줘야 해서 별도 클래스로 둔다. */
+.payment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.payment-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.payment-card-link {
+  display: block;
+  padding: 20px 24px;
+  color: inherit;
+  text-decoration: none;
+  transition: background 0.3s;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--border);
+  }
+}
+
+.payment-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.payment-card-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.payment-card-method {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+.payment-card-meta {
+  margin: 6px 0 0;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.payment-card-amount {
+  flex: 0 0 auto;
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+.payment-status {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--bg);
+  background: var(--accent);
+}
+
+/* 환불된 결제는 결제완료(accent)와 시각적으로 구분되어야 해서 muted 톤을 쓴다. */
+.payment-status-refunded {
+  background: var(--text);
+  opacity: 0.6;
+}

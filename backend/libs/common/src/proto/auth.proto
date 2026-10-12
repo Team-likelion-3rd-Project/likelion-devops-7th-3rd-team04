@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package auth;
+
+service AuthService {
+  // 회원가입: user-service에 프로필을 생성하고 자격증명(비밀번호 해시)을 저장한 뒤 토큰을 발급합니다.
+  rpc Register (RegisterRequest) returns (AuthResponse);
+
+  // 로그인: user-service에서 이메일로 프로필을 조회하고 비밀번호 해시를 검증한 뒤 토큰을 발급합니다.
+  rpc Login (LoginRequest) returns (AuthResponse);
+
+  // 관리자 로그인: user-service의 AdminService에서 이메일로 관리자 계정을 조회하고 비밀번호 해시를
+  // 검증한 뒤 토큰을 발급합니다. 고객(users)과 완전히 다른 테이블을 조회한다는 점만 다르고,
+  // 이후 토큰 발급/검증(RolesGuard 등) 로직은 Login과 동일하게 재사용됩니다.
+  rpc AdminLogin (LoginRequest) returns (AuthResponse);
+
+  // 토큰 재발급: 리프레시 토큰을 검증하고 Redis에 저장된 값과 대조한 뒤 액세스/리프레시 토큰을 새로 발급합니다.
+  rpc Refresh (RefreshRequest) returns (AuthResponse);
+
+  // 로그아웃: Redis에 저장된 리프레시 토큰을 삭제해 재발급(Refresh)을 더 이상 할 수 없게 합니다.
+  rpc Logout (LogoutRequest) returns (LogoutResponse);
+
+  // 비밀번호 변경: 현재 비밀번호를 검증한 뒤 새 비밀번호로 해시를 교체합니다. 이후 재발급(Refresh)을 막기 위해
+  // Redis에 저장된 리프레시 토큰도 함께 삭제합니다(다른 기기/세션은 강제 재로그인).
+  rpc ChangePassword (ChangePasswordRequest) returns (ChangePasswordResponse);
+
+  // 회원 탈퇴: user-service에 프로필 삭제(백업 테이블 이관 포함)를 요청한 뒤, 자격증명(비밀번호 해시)을
+  // 삭제하고 Redis에 저장된 리프레시 토큰도 삭제합니다.
+  rpc Withdraw (WithdrawRequest) returns (WithdrawResponse);
+}
+
+message RegisterRequest {
+  string email = 1;
+  string password = 2;
+  string name = 3;
+  string phoneNumber = 4;
+}
+
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message RefreshRequest {
+  string refreshToken = 1;
+}
+
+message LogoutRequest {
+  int32 userId = 1;
+  // "USER" | "ADMIN". Redis 리프레시 토큰 키가 principal 타입별로 네임스페이싱되어 있어
+  // 어느 쪽 토큰을 지울지 구분하는 데 필요합니다.
+  string type = 2;
+}
+
+message LogoutResponse {
+  bool success = 1;
+}
+
+message ChangePasswordRequest {
+  int32 userId = 1;
+  string currentPassword = 2;
+  string newPassword = 3;
+}
+
+message ChangePasswordResponse {
+  bool success = 1;
+}
+
+message WithdrawRequest {
+  int32 userId = 1;
+}
+
+message WithdrawResponse {
+  bool success = 1;
+}
+
+message AuthResponse {
+  string accessToken = 1;
+  string refreshToken = 2;
+  int32 userId = 3;
+  string email = 4;
+  string name = 5;
+  string role = 6;
+}

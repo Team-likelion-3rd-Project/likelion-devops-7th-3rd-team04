@@ -1,0 +1,228 @@
+syntax = "proto3";
+
+package hotel;
+
+service HotelService {
+  rpc GetHello (Empty) returns (HelloResponse);
+  rpc GetHotels (Empty) returns (HotelListResponse);
+  rpc GetHotel (GetHotelRequest) returns (Hotel);
+
+  // 관리자 전용: 특정 호텔의 기존 정보를 수정합니다. (hotelId가 존재하지 않으면 에러)
+  rpc UpdateHotel (UpdateHotelRequest) returns (Hotel);
+
+  // 특정 호텔에 등록된 전체 객실 목록을 조회합니다. (hotelId가 존재하지 않으면 에러)
+  rpc GetRooms (GetRoomsRequest) returns (RoomListResponse);
+  // 특정 호텔의 단건 객실 상세 정보를 조회합니다. (hotelId/roomId 조합이 존재하지 않으면 에러)
+  rpc GetRoom (GetRoomRequest) returns (Room);
+
+  // 체크인/체크아웃 날짜와 인원수를 바탕으로 특정 호텔에서 예약 가능한 객실을 검색합니다.
+  // (hotelId가 존재하지 않으면 에러) capacity가 guests 이상이고, checkIn~(checkOut 전날)까지
+  // 모든 날짜의 room_availabilities가 하루도 빠짐없이 존재하며 isAvailable=true인 객실만 반환합니다.
+  // 검색 과정에서 이미 조회한 room_availabilities.price로 minPrice(구간 중 최저 1박 요금)도 함께 계산해 돌려줍니다.
+  rpc SearchRooms (SearchRoomsRequest) returns (RoomSearchResponse);
+
+  // 관리자 전용: 특정 호텔에 신규 객실을 등록합니다. (hotelId가 존재하지 않으면 에러)
+  rpc CreateRoom (CreateRoomRequest) returns (Room);
+
+  // 관리자 전용: 특정 호텔의 기존 객실 정보를 수정합니다. (hotelId/roomId 조합이 존재하지 않으면 에러)
+  rpc UpdateRoom (UpdateRoomRequest) returns (Room);
+
+  // 관리자 전용: 특정 호텔의 객실을 삭제합니다(연관된 이미지/예약 가능일도 함께 삭제).
+  // (hotelId/roomId 조합이 존재하지 않으면 에러)
+  rpc DeleteRoom (DeleteRoomRequest) returns (DeleteRoomResponse);
+
+  // 특정 객실의 지정 기간 예약 가능 여부를 조회합니다. (hotelId/roomId 조합이 존재하지 않으면 에러)
+  rpc GetRoomAvailability (GetRoomAvailabilityRequest) returns (RoomAvailabilityResponse);
+
+  // booking-service가 예약 생성/취소 시 예약 가능일을 갱신하기 위해 호출합니다.
+  // (startDate~endDate 구간, 둘 다 포함) roomId에 해당하는 행이 없는 날짜는 조용히 건너뜁니다.
+  rpc SetRoomAvailability (SetRoomAvailabilityRequest) returns (SetRoomAvailabilityResponse);
+  
+  // booking-service 전용: 예약 생성 시 호출됩니다. roomId의 지정 기간(startDate~endDate, 둘 다 포함)에
+  // room_availabilities row가 하루도 빠짐없이 존재하고 전부 isAvailable=true인지 검증한 뒤, 원자적으로
+  // (같은 트랜잭션 내에서) 전부 isAvailable=false로 전환하고 가격 합계를 반환합니다.
+  // 하루라도 row가 없거나 이미 isAvailable=false면 예약을 막기 위해 RpcException을 던집니다.
+  rpc ReserveRoomAvailability (ReserveRoomAvailabilityRequest) returns (ReserveRoomAvailabilityResponse);
+
+  // 관리자 전용: 특정 호텔에 신규 편의시설을 등록합니다. (hotelId가 존재하지 않으면 에러)
+  rpc CreateFacility (CreateFacilityRequest) returns (Facility);
+
+  // 특정 호텔에 등록된 전체 편의시설 목록을 조회합니다. booking-service가 예약 생성 시 편의시설
+  // 요금(가격)을 조회하기 위해 호출합니다. (hotelId가 존재하지 않으면 에러)
+  rpc GetFacilities (GetFacilitiesRequest) returns (FacilityListResponse);
+}
+
+message Empty {}
+
+message HelloResponse {
+  string message = 1;
+}
+
+message GetHotelRequest {
+  int32 hotelId = 1;
+}
+
+message Hotel {
+  int32 hotelId = 1;
+  string name = 2;
+  string address = 3;
+  string phoneNumber = 4;
+  string description = 5;
+}
+
+message HotelListResponse {
+  repeated Hotel hotels = 1;
+}
+
+message UpdateHotelRequest {
+  int32 hotelId = 1;
+  string name = 2;
+  string address = 3;
+  string phoneNumber = 4;
+  string description = 5;
+}
+
+message GetRoomsRequest {
+  int32 hotelId = 1;
+}
+
+message RoomListResponse {
+  repeated Room rooms = 1;
+}
+
+message GetRoomRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+}
+
+message SearchRoomsRequest {
+  int32 hotelId = 1;
+  string checkIn = 2; // 포함
+  string checkOut = 3; // 제외 (묵는 마지막 날은 checkOut 전날)
+  int32 guests = 4;
+}
+
+message RoomSearchResult {
+  Room room = 1;
+  int32 minPrice = 2; // 조회 구간(checkIn~checkOut 전날) 중 가장 저렴한 1박 요금
+}
+
+message RoomSearchResponse {
+  repeated RoomSearchResult results = 1;
+}
+
+message CreateRoomRequest {
+  int32 hotelId = 1;
+  string name = 2;
+  int32 capacity = 3;
+  string description = 4;
+  // 객실 이미지 목록 (배열 순서대로 sortOrder가 매겨짐, 0번째가 대표 이미지)
+  repeated RoomImageInput images = 5;
+}
+
+// 객실 이미지. Base64로 인코딩된 이미지 데이터를 DB 컬럼에 직접 저장한다.
+message RoomImage {
+  int32 imageId = 1;
+  string mimeType = 2;
+  string imageBase64 = 3;
+  int32 sortOrder = 4;
+}
+
+// 객실 이미지 등록/수정 입력용 (imageId/sortOrder는 서버가 채운다)
+message RoomImageInput {
+  string mimeType = 1;
+  string imageBase64 = 2;
+}
+
+message Room {
+  int32 roomId = 1;
+  int32 hotelId = 2;
+  string name = 3;
+  int32 capacity = 4;
+  string description = 5;
+  repeated RoomImage images = 6;
+}
+
+message UpdateRoomRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+  string name = 3;
+  int32 capacity = 4;
+  string description = 5;
+  // PUT은 이미지 전체를 교체한다 — 기존 이미지를 유지하려면 그대로 포함해서 다시 보내야 한다.
+  repeated RoomImageInput images = 6;
+}
+
+message DeleteRoomRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+}
+
+message DeleteRoomResponse {
+  bool success = 1;
+}
+
+message GetRoomAvailabilityRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+  string startDate = 3;
+  string endDate = 4;
+}
+
+message RoomAvailabilityDay {
+  string date = 1;
+  bool isAvailable = 2;
+  int32 price = 3;
+}
+
+message RoomAvailabilityResponse {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+  string startDate = 3;
+  string endDate = 4;
+  bool isAvailable = 5;
+  repeated RoomAvailabilityDay availabilities = 6;
+}
+
+message SetRoomAvailabilityRequest {
+  int32 roomId = 1;
+  string startDate = 2; // 포함
+  string endDate = 3; // 포함
+  bool isAvailable = 4;
+}
+
+message SetRoomAvailabilityResponse {
+  bool success = 1;
+}
+
+message ReserveRoomAvailabilityRequest {
+  int32 roomId = 1;
+  string startDate = 2;
+  string endDate = 3;
+}
+
+message ReserveRoomAvailabilityResponse {
+  // 예약 불가로 전환된 기간(startDate~endDate, 둘 다 포함)의 일별 price 합계
+  int32 totalAmount = 1;
+}
+
+message Facility {
+  int32 facilityId = 1;
+  int32 hotelId = 2;
+  string name = 3;
+  int32 price = 4; // 1인 1회 기준 요금
+}
+
+message CreateFacilityRequest {
+  int32 hotelId = 1;
+  string name = 2;
+  int32 price = 3;
+}
+
+message GetFacilitiesRequest {
+  int32 hotelId = 1;
+}
+
+message FacilityListResponse {
+  repeated Facility facilities = 1;
+}

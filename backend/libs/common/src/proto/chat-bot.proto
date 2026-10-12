@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package chatBot;
+
+service ChatBotService {
+  rpc GetHello (Empty) returns (HelloResponse);
+  rpc SendMessage (SendMessageRequest) returns (SendMessageResponse);
+  rpc GetHistory (GetHistoryRequest) returns (GetHistoryResponse);
+}
+
+message Empty {}
+
+message HelloResponse {
+  string message = 1;
+}
+
+// userId가 0이면 비로그인 사용자로 간주하고 세션/이력을 남기지 않습니다.
+message SendMessageRequest {
+  int32 userId = 1;
+  string message = 2;
+}
+
+message SendMessageResponse {
+  string sessionId = 1; // 비로그인 응답에서는 빈 문자열
+  string reply = 2;
+  string createdAt = 3;
+}
+
+message GetHistoryRequest {
+  int32 userId = 1;
+}
+
+message ChatMessage {
+  string role = 1; // "USER" | "ASSISTANT"
+  string content = 2;
+  string createdAt = 3;
+}
+
+message GetHistoryResponse {
+  repeated ChatMessage messages = 1;
+}

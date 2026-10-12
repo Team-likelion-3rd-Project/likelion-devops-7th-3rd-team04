@@ -1,0 +1,89 @@
+.room-detail-modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 100;
+}
+
+.room-detail-modal {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 32px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+
+.room-detail-modal-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  appearance: none;
+  border: none;
+  background: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.2s;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--code-bg);
+  }
+}
+
+.room-detail-modal-title {
+  margin: 0 32px 20px 0;
+}
+
+.room-detail-modal-image {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  border-radius: 12px;
+  background: var(--accent-bg);
+}
+
+.room-detail-modal-gallery {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding-bottom: 4px;
+}
+
+.room-detail-modal-gallery-item {
+  flex: 0 0 min(360px, 80%);
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  object-fit: cover;
+  scroll-snap-align: start;
+  background: var(--accent-bg);
+}
+
+.room-detail-modal-capacity {
+  margin: 20px 0 0;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.room-detail-modal-description {
+  margin: 12px 0 0;
+  font-size: 15px;
+  line-height: 160%;
+  color: var(--text);
+  white-space: pre-line;
+}

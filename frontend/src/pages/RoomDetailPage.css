@@ -1,0 +1,74 @@
+.room-detail-page {
+  max-width: 1126px;
+  margin: 0 auto;
+  padding: 48px 32px 96px;
+
+  @media (max-width: 767px) {
+    padding: 32px 20px 88px;
+  }
+}
+
+.room-detail-status {
+  margin-top: 24px;
+  font-size: 14px;
+  color: var(--text);
+
+  &.error {
+    color: #e5484d;
+  }
+}
+
+.room-detail {
+  display: flex;
+  flex-direction: column;
+}
+
+.room-detail-title {
+  margin: 0 0 20px;
+}
+
+.room-detail-image {
+  aspect-ratio: 16 / 9;
+  width: min(360px, 100%);
+  display: block;
+  border-radius: 12px;
+  object-fit: cover;
+  background: var(--accent-bg);
+}
+
+.room-detail-gallery {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  /* 스크롤바가 레이아웃을 밀지 않도록 + 끝 이미지도 여유 있게 스냅되도록 */
+  padding-bottom: 4px;
+}
+
+.room-detail-gallery-item {
+  flex: 0 0 min(360px, 70%);
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  object-fit: cover;
+  scroll-snap-align: start;
+  background: var(--accent-bg);
+}
+
+.room-detail-body {
+  padding-top: 24px;
+  max-width: 720px;
+}
+
+.room-detail-capacity {
+  margin: 0 0 16px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.room-detail-description {
+  font-size: 16px;
+  line-height: 160%;
+  color: var(--text);
+  white-space: pre-line;
+}

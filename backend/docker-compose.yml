@@ -1,0 +1,241 @@
+version: '3.8'
+
+# 실행 모드 2가지:
+#   1) docker compose --profile local-infra up
+#      기존과 동일한 풀 로컬 스택 (mariadb/redis/dynamodb-local 등 로컬 인프라 컨테이너 전부 포함)
+#   2) docker compose up (profile 없이)
+#      app 7개 서비스만 실행됩니다. 이 경우 .env의 DB_HOST/REDIS_HOST 등을 실제 AWS
+#      리소스(EC2 MariaDB/ElastiCache) 값으로 채워야 정상 동작합니다.
+
+services:
+
+  # 1. MariaDB 서비스 (로컬 개발용. 운영에서는 EC2 MariaDB를 사용하며, 그때는 DB_HOST만
+  #    바꾸면 되고 코드 변경은 필요 없습니다.)
+  mariadb:
+    image: mariadb:11.2
+    container_name: mariadb
+    restart: always
+    profiles: ["local-infra"]
+    env_file:
+      - .env
+    # mariadb 공식 이미지 엔트리포인트는 최초 초기화 시 MARIADB_ROOT_PASSWORD(또는
+    # MARIADB_ALLOW_EMPTY_ROOT_PASSWORD 등) 중 하나가 없으면 즉시 종료됩니다. env_file로
+    # 주입되는 DB_*는 TypeORM(앱)이 접속할 때 쓰는 이름이라 이 이미지가 찾는 이름이
+    # 아니므로, 아래에서 명시적으로 매핑해줍니다. 볼륨을 안 쓰기 때문에(아래 "볼륨 사용하지
+    # 않았습니다" 주석 참고) 매 기동마다 이 초기화가 처음부터 다시 성공해야 합니다.
+    environment:
+      - MARIADB_ROOT_PASSWORD=${DB_PASSWORD}
+      - MARIADB_DATABASE=${DB_DATABASE}
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    # 현재 DB 구축을 하지 않았기 때문에 볼륨 사용하지 않았습니다. 사용하려면 아래의 주석 해제
+    # volumes:
+    #   - mariadb_data:/var/lib/mysql
+
+  # 1-1. DB 시딩 (관리자 계정 + 호텔/객실 3개 + 객실 재고). mariadb가 healthy해지면 1회 실행 후 종료됩니다.
+  #      매번 재실행해도 이미 존재하는 데이터는 건너뛰므로(멱등) docker compose up을 반복해도 안전합니다.
+  db-seed:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.seed
+    profiles: ["local-infra"]
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    restart: "no"
+
+  # 2. Redis (로컬 개발용. 운영에서는 AWS ElastiCache를 사용하며, 그때는 auth-service의
+  #    REDIS_HOST/REDIS_PORT/REDIS_PASSWORD/REDIS_TLS 값만 바꾸면 되고 코드 변경은 필요 없습니다.)
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: always
+    profiles: ["local-infra"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 2-1. DynamoDB Local (chat-bot-service의 세션/대화 이력 저장용 로컬 개발 대체재.
+  #      운영에서는 실제 AWS DynamoDB를 사용하며, 그때는 chat-bot-service의
+  #      DYNAMODB_ENDPOINT를 비우면 되고 코드 변경은 필요 없습니다.)
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    restart: always
+    profiles: ["local-infra"]
+    ports:
+      - "8000:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+
+  # 2-2. DynamoDB 테이블 부트스트랩 (ChatSessions/ChatMessages). dynamodb-local은 완전히 빈
+  #      상태로 뜨기 때문에 1회 실행 후 종료됩니다. db-seed와 동일한 이미지(scripts/Dockerfile.seed)를
+  #      재사용하고 command만 다른 스크립트로 덮어씁니다. dynamodb-local에 healthcheck가 없어서
+  #      depends_on은 컨테이너 시작만 기다리고, 실제 연결 재시도는 스크립트 안에서 처리합니다.
+  #      매번 재실행해도 이미 존재하는 테이블은 건너뛰므로(멱등) docker compose up을 반복해도 안전합니다.
+  dynamodb-init:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.seed
+    profiles: ["local-infra"]
+    command: ["npx", "ts-node", "--transpile-only", "-r", "tsconfig-paths/register", "scripts/dynamodb-init.ts"]
+    environment:
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - DYNAMODB_REGION=ap-northeast-2
+    depends_on:
+      - dynamodb-local
+    restart: "no"
+
+  # 3. API Gateway
+  api-gateway:
+    build:
+      context: .
+      dockerfile: apps/api-gateway/Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+      - USER_SERVICE_HOST=user-service:3001
+      - HOTEL_SERVICE_HOST=hotel-service:3002
+      - BOOKING_SERVICE_HOST=booking-service:3003
+      - PAYMENT_SERVICE_HOST=payment-service:3004
+      - CHAT_BOT_SERVICE_HOST=chat-bot-service:3005
+      - AUTH_SERVICE_HOST=auth-service:3006
+      # pg-mock-service가 보내는 결제 웹훅의 HMAC 서명을 검증하는 데 씁니다. pg-mock-service의
+      # MOCK_PG_SECRET과 반드시 같은 값이어야 합니다.
+      - MOCK_PG_SECRET=${MOCK_PG_SECRET:-mock-pg-secret}
+
+    depends_on:
+      - user-service
+      - hotel-service
+      - booking-service
+      - payment-service
+      - chat-bot-service
+      - auth-service
+
+  user-service:
+    build:
+      context: .
+      dockerfile: apps/user-service/Dockerfile
+    ports:
+      - "3001:3001"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: apps/auth-service/Dockerfile
+    ports:
+      - "3006:3006"
+    env_file:
+      - .env
+    # REDIS_HOST/REDIS_PORT는 .env(env_file)에서 옵니다 — 여기서 하드코딩하면 실제 AWS
+    # ElastiCache 테스트 시 .env 값이 무시되므로, env_file이 그대로 반영되게 둡니다.
+    environment:
+      - NODE_ENV=development
+      - USER_SERVICE_HOST=user-service:3001
+    depends_on:
+      - user-service
+      - redis
+
+  hotel-service:
+    build:
+      context: .
+      dockerfile: apps/hotel-service/Dockerfile
+    ports:
+      - "3002:3002"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+
+
+# DB 볼륨 사용 시 아래 주속 해제
+# volumes:
+#   mariadb_data:
+  booking-service:
+    build:
+      context: .
+      dockerfile: apps/booking-service/Dockerfile
+    ports:
+      - "3003:3003"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+      - HOTEL_SERVICE_HOST=hotel-service:3002
+      # 예약 취소 시 환불 요청(RefundPayment)에 사용. payment-service도 이 서비스를 호출하는
+      # 반대 방향 의존(getBookingById/ConfirmBooking)이 있어 순환 의존이 되므로, 여기서는
+      # depends_on을 걸지 않는다 — gRPC 클라이언트는 연결을 지연 생성/재시도한다.
+      - PAYMENT_SERVICE_HOST=payment-service:3004
+    depends_on:
+      - hotel-service
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: apps/payment-service/Dockerfile
+    ports:
+      - "3004:3004"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+      - BOOKING_SERVICE_HOST=booking-service:3003
+      - PG_MOCK_SERVICE_URL=http://pg-mock-service:3007
+    depends_on:
+      - booking-service
+      - pg-mock-service
+
+  # 4-1. PG 목업 서버 — 실제 PG사(토스페이먼츠 등) 서버를 대신하는 목업. payment-service가
+  #      HTTP로 결제 생성/승인을 요청하고, 이 서버는 결과를 웹훅으로 통보합니다. 웹훅 수신
+  #      엔드포인트는 payment-service가 아니라 api-gateway(POST /api/payments/webhook)에
+  #      있습니다 — payment-service는 gRPC 전용이라 HTTP를 직접 받을 수 없기 때문입니다.
+  pg-mock-service:
+    build:
+      context: .
+      dockerfile: apps/pg-mock-service/Dockerfile
+    ports:
+      - "3007:3007"
+    environment:
+      - NODE_ENV=development
+      - PAYMENT_SERVICE_WEBHOOK_URL=${PAYMENT_SERVICE_WEBHOOK_URL:-http://api-gateway:3000/api/payments/webhook}
+      # api-gateway와 반드시 같은 값이어야 서명 검증이 통과합니다.
+      # ⚠️ api-gateway를 depends_on에 추가하지 않습니다 — api-gateway→payment-service→
+      # pg-mock-service로 이미 의존 관계가 있어서 여기 추가하면 순환 의존이 됩니다. 웹훅은
+      # 결제 처리 시점에만 호출되므로 시작 순서를 강제하지 않아도 실질적인 문제가 없습니다.
+      - MOCK_PG_SECRET=${MOCK_PG_SECRET:-mock-pg-secret}
+
+  chat-bot-service:
+    build:
+      context: .
+      dockerfile: apps/chat-bot-service/Dockerfile
+    ports:
+      - "3005:3005"
+    # DYNAMODB_ENDPOINT/DYNAMODB_REGION은 .env(env_file)에서 옵니다 — 여기서 하드코딩하면
+    # 실제 AWS DynamoDB 테스트 시 .env 값이 무시됩니다.
+    # local-infra profile 없이 실행할 경우 이 depends_on 때문에 dynamodb-local이 함께
+    # 켜질 수 있습니다 (docker compose 버전에 따라 다름) — 필요하면 수동으로 무시하세요.
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - dynamodb-local

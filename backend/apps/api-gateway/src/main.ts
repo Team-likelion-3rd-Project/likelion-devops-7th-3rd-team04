@@ -1,0 +1,60 @@
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
+import cookieParser from 'cookie-parser';
+import { json, urlencoded } from 'express';
+import { ApiGatewayModule } from './api-gateway.module';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+
+async function bootstrap() {
+  const app = await NestFactory.create(ApiGatewayModule);
+
+  // K8s가 pod를 종료할 때(스케일다운/재배포) 보내는 SIGTERM을 Nest가 받아서 처리하게
+  // 한다. 이게 없으면 Node 프로세스가 SIGTERM에 기본 동작(즉시 종료)으로 반응해서,
+  // 그 순간 처리 중이던 요청이 커넥션 리셋으로 그대로 끊긴다 — 부하테스트 중 HPA
+  // 스케일다운 때마다 pod가 Terminating -> Error로 죽은 것과 이 요청 실패가 겹쳐서
+  // 관찰됐다. enableShutdownHooks()로 onModuleDestroy 라이프사이클을 활성화하면
+  // 최소한 진행 중인 연결을 정리할 기회가 생긴다(deployment.yaml의
+  // terminationGracePeriodSeconds/preStop과 세트로 동작).
+  app.enableShutdownHooks();
+
+  // Express 기본 body 파서 용량 제한(100kb)을 상향합니다.
+  // Base64로 인코딩한 객실 이미지처럼 큰 JSON 바디를 받을 때 413(Payload Too Large)이 나는 것을 방지합니다.
+  app.use(json({ limit: '20mb' }));
+  app.use(urlencoded({ extended: true, limit: '20mb' }));
+
+  // 로그인 시 발급되는 httpOnly 쿠키(refreshToken)를 req.cookies로 파싱합니다.
+  app.use(cookieParser());
+
+  app.enableCors({
+    // DEV-171: 로컬 개발은 기존처럼 5173, 배포 환경은 CORS_ORIGIN env var(예: prod는
+    // https://www.team04-hotel-prod.kro.kr)로 오버라이드. gitops/backend/overlays/{dev,prod}/
+    // api-gateway-cors-patch.yaml에서 환경별로 설정.
+    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+    // 프론트가 fetch(..., { credentials: 'include' })로 보내는 httpOnly 쿠키를 주고받으려면 필수
+    credentials: true,
+  });
+
+  // DTO(class-validator)로 정의한 유효성 검사 규칙을 전역 적용 (회원가입 등)
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true, // DTO에 없는 필드는 제거
+      forbidNonWhitelisted: true, // DTO에 없는 필드가 오면 400 에러
+      transform: true, // payload를 DTO 클래스 인스턴스로 변환
+    }),
+  );
+
+  const config = new DocumentBuilder()
+    .setTitle('RAG 기반 챗봇 호텔 예약 웹서비스 API')
+    .setDescription('API Gateway Swagger 문서입니다.')
+    .setVersion('1.0')
+    .addBearerAuth() // JWT 토큰 인증 (로그아웃 등 @ApiBearerAuth() 라우트에서 Swagger의 Authorize 버튼 사용)
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  // http://localhost:3000/api-docs 로 접속하도록 설정
+  SwaggerModule.setup('api-docs', app, document);
+
+  const port = process.env.PORT ?? 3000;
+  await app.listen(port, '0.0.0.0');
+}
+bootstrap();

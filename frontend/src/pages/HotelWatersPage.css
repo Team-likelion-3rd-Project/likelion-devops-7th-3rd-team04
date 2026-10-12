@@ -1,0 +1,126 @@
+.hotel-waters-image {
+  aspect-ratio: 16 / 7;
+  width: 100%;
+  /* 부모(HotelLayout)가 폭을 제약하지 않으므로 화면 가로축을 그대로 채운다.
+     가장자리까지 맞닿으므로 카드형 모서리 둥글림은 쓰지 않는다. */
+  /* HotelDetailPage.css의 .hotel-detail-hero와 동일한 3레이어 합성: 실사진(--waters-photo) →
+     은은한 대각선 패턴 → 틸 그라디언트. 사진이 없으면 패턴+그라디언트로 자동 폴백된다. */
+  background-image: var(--waters-photo, none),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.07) 0 2px, transparent 2px 14px),
+    linear-gradient(135deg, #1c4b52, #4f9aa6);
+  background-size: cover, auto, auto;
+  background-position: center, 0 0, 0 0;
+
+  @media (max-width: 767px) {
+    aspect-ratio: 4 / 3;
+  }
+}
+
+.hotel-waters-body {
+  max-width: 1126px;
+  margin: 0 auto;
+  padding: 32px 32px 96px;
+
+  @media (max-width: 767px) {
+    padding: 32px 20px 88px;
+  }
+}
+
+.hotel-waters-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 720px;
+}
+
+.hotel-waters-copy p {
+  font-size: 16px;
+  line-height: 160%;
+  color: var(--text);
+}
+
+.hotel-waters-info {
+  margin: 40px 0 0;
+  max-width: 840px;
+  border-top: 1px solid var(--border);
+}
+
+.hotel-waters-info-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 24px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+
+  @media (max-width: 767px) {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
+.hotel-waters-info-row dt {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.hotel-waters-info-row dd {
+  margin: 0;
+  font-size: 15px;
+  line-height: 160%;
+  color: var(--text);
+}
+
+.hotel-waters-info-row dd p {
+  margin: 0 0 4px;
+
+  &:last-of-type {
+    margin-bottom: 0;
+  }
+}
+
+.hotel-waters-notes {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text);
+  opacity: 0.85;
+}
+
+.hotel-waters-notes li::before {
+  content: '· ';
+}
+
+.hotel-waters-rule-group + .hotel-waters-rule-group {
+  margin-top: 20px;
+}
+
+.hotel-waters-rule-group h3 {
+  margin: 0 0 8px;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.hotel-waters-rule-group ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hotel-waters-rule-group li {
+  font-size: 14px;
+  line-height: 155%;
+}
+
+.hotel-waters-rule-group li::before {
+  content: '- ';
+}

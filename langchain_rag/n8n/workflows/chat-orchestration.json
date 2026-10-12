@@ -1,0 +1,99 @@
+{
+  "name": "chat-orchestration",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## chat-orchestration\n\nImplements the `N8N_WEBHOOK_URL` contract `backend/apps/chat-bot-service/src/n8n/n8n.client.ts` calls.\n\nRAG retrieval is no longer done here — llm-service does its own S3 Vectors lookup (`langchain_rag/llm-service/app/retrieval.py`) whenever it's called without a `context` field, which is exactly what this workflow now sends. There used to be a \"Mock RAG (placeholder)\" node here standing in for that; it's gone now that the real thing exists on the llm-service side.\n\nSee `langchain_rag/n8n/README.md` for how to run and test this locally.",
+        "height": 300,
+        "width": 380,
+        "color": 5
+      },
+      "id": "93e8eedb-a319-476a-840e-aecad900221b",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-200, -180]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e5eb284c-1ed5-4e35-8f1e-e1c4a6b436d3",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-200, 120],
+      "webhookId": "3a8fe01a-8a5e-4e19-a2fd-86dcb6f9fcee"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Map chat-bot-service's contract (uppercase USER/ASSISTANT roles, per\n// apps/chat-bot-service/src/message/message.service.ts's ChatRole) onto\n// llm-service's contract (lowercase user/assistant, app/schemas.py).\n// sessionId/userId aren't needed for generation, so they're dropped here.\nconst body = $input.first().json.body ?? $input.first().json;\n\nconst history = (body.history || []).map((turn) => ({\n  role: turn.role === 'ASSISTANT' ? 'assistant' : 'user',\n  content: turn.content,\n}));\n\nreturn [\n  {\n    json: {\n      message: body.message,\n      history,\n    },\n  },\n];"
+      },
+      "id": "daa441e7-69c7-4067-bee9-c4f7a669cf85",
+      "name": "Map to llm-service contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [40, 120]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llm-service:8000/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { message: $json.message, history: $json.history } }}",
+        "options": {
+          "timeout": 25000
+        }
+      },
+      "id": "073d3cb7-efb4-4f34-999d-b9a4df03e984",
+      "name": "Call llm-service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [280, 120]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { reply: $json.reply } }}",
+        "options": {}
+      },
+      "id": "09834828-4a52-4696-8488-89d3311881cc",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 120]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "Map to llm-service contract", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Map to llm-service contract": {
+      "main": [
+        [
+          { "node": "Call llm-service", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Call llm-service": {
+      "main": [
+        [
+          { "node": "Respond to Webhook", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "44c978a5-5152-42e6-ba03-d76a4dbffb22"
+}

@@ -1,0 +1,128 @@
+syntax = "proto3";
+
+package booking;
+
+service BookingService {
+  rpc GetHello (Empty) returns (HelloResponse);
+
+  // 관리자 전용: 전체 예약 목록 조회 (권한 검증은 api-gateway에서 수행)
+  rpc GetBookings (Empty) returns (BookingListResponse);
+
+  // 특정 유저의 예약 목록 조회. /me(본인 조회)와 /:userId(관리자 조회) 양쪽에서 재사용된다.
+  rpc GetBookingsByUserId (GetBookingsByUserIdRequest) returns (BookingListResponse);
+
+  // 본인 예약 취소: status를 CANCELLED로 변경하고, hotel-service에 예약 가능일 복구를 요청한다.
+  // (reservationId가 없거나 userId가 예약자 본인이 아니면 에러)
+  // PENDING_PAYMENT(결제 전) / RESERVED(결제 완료) 상태 모두 취소 가능하며, payment-service의
+  // RefundPayment는 상태와 무관하게 항상 호출한다 — 결제 존재 여부 판단은 payment-service가
+  // 스스로 한다 (PENDING_PAYMENT로 남아있어도 실제로는 결제가 됐을 수 있어서, reservation.status만
+  // 믿고 환불 호출 여부를 정하면 환불 누락이 생길 수 있다. payment-service.service.ts의
+  // requestPayment/refundPayment 주석 참고).
+  rpc CancelBooking (CancelBookingRequest) returns (Booking);
+
+  // 신규 예약 생성. hotel-service의 ReserveRoomAvailability를 호출해 checkInDate~checkOutDate 전날까지
+  // 예약 가능 여부를 검증하고 가격 합계(totalAmount)를 받아온 뒤 예약을 PENDING_PAYMENT 상태로 저장한다.
+  rpc CreateBooking (CreateBookingRequest) returns (Booking);
+
+  // 단건 예약 조회. payment-service가 결제 요청을 처리할 때 예약의 금액(totalAmount)/소유자
+  // (userId)/상태(status)를 검증하기 위해 호출한다. 소유자 검증은 호출 측(payment-service)의
+  // 책임이며, 여기서는 reservationId로 조회만 한다 (없으면 에러).
+  rpc GetBookingById (GetBookingByIdRequest) returns (Booking);
+
+  // 결제 승인 완료 후 payment-service가 호출: 예약을 PENDING_PAYMENT -> RESERVED로 전환한다.
+  // PENDING_PAYMENT 상태가 아니면(이미 확정됐거나 취소된 예약) 에러.
+  rpc ConfirmBooking (ConfirmBookingRequest) returns (Booking);
+
+  // 특정 예약에 연결된 편의시설 이용 내역 목록 조회. reservationId가 존재하지 않으면 에러.
+  rpc GetReservationFacilitiesByReservationId (GetReservationFacilitiesByReservationIdRequest) returns (ReservationFacilityListResponse);
+
+  // 관리자 호텔 상세 페이지의 "호텔별 지표" 섹션용 집계. hotelId 스냅샷 컬럼 덕분에
+  // hotel-service 호출 없이 이 서비스의 reservations 테이블만으로 계산된다.
+  rpc GetHotelBookingStats (GetHotelBookingStatsRequest) returns (HotelBookingStats);
+}
+
+message Empty {}
+
+message HelloResponse {
+  string message = 1;
+}
+
+message GetBookingsByUserIdRequest {
+  int32 userId = 1;
+}
+
+message GetBookingByIdRequest {
+  int32 reservationId = 1;
+}
+
+message ConfirmBookingRequest {
+  int32 reservationId = 1;
+}
+
+message CancelBookingRequest {
+  int32 reservationId = 1;
+  int32 userId = 2; // 본인 확인용 (api-gateway가 JWT에서 추출해 넘긴다)
+}
+
+message CreateBookingRequest {
+  int32 userId = 1;
+  int32 roomId = 2;
+  string checkInDate = 3;
+  string checkOutDate = 4;
+  int32 guestCount = 7;
+  // 편의시설 요금(hotel-service의 facilities) 조회에 사용되고, Reservation에도 스냅샷 컬럼으로
+  // 저장된다 (호텔별 집계를 hotel-service 호출 없이 하기 위함 — totalAmount/facilityName과 동일한
+  // 스냅샷 원칙).
+  int32 hotelId = 8;
+  int32 poolGuestCount = 9; // 인도어풀 이용 인원수. 0 또는 미지정이면 미이용.
+  int32 loungeGuestCount = 10; // 라운지 이용 인원수. 0 또는 미지정이면 미이용.
+}
+
+// 편의시설(수영장/라운지 등) 이용 여부/인원수는 여기 담지 않는다 — reservation_facilities가
+// 유일한 소스이며, GetReservationFacilitiesByReservationId로 별도 조회한다.
+message Booking {
+  int32 reservationId = 1;
+  int32 userId = 2;
+  int32 roomId = 3;
+  string checkInDate = 4;
+  string checkOutDate = 5;
+  int32 totalAmount = 8;
+  string status = 9;
+  int32 guestCount = 10;
+  int32 hotelId = 11; // 스냅샷 컬럼. 이 컬럼 추가 이전에 생성된 예약은 0으로 내려온다.
+}
+
+message BookingListResponse {
+  repeated Booking bookings = 1;
+}
+
+message GetReservationFacilitiesByReservationIdRequest {
+  int32 reservationId = 1;
+}
+
+message ReservationFacilityItem {
+  int32 reservationFacilityId = 1;
+  int32 reservationId = 2;
+  int32 facilityId = 3;
+  int32 guestCount = 4;
+  int32 totalAmount = 5;
+  string facilityName = 6; // 예약 생성 시점의 시설명 스냅샷
+}
+
+message ReservationFacilityListResponse {
+  repeated ReservationFacilityItem reservationFacilities = 1;
+}
+
+message GetHotelBookingStatsRequest {
+  int32 hotelId = 1;
+  string date = 2; // 'YYYY-MM-DD'. 빈 문자열이면 서버 기준 오늘로 계산.
+}
+
+message HotelBookingStats {
+  int32 checkInsToday = 1;
+  int32 checkOutsToday = 2;
+  int32 occupiedRoomsToday = 3; // 점유율 분자. 분모(총 객실 수)는 hotel-service의 GetRooms 결과 재사용.
+  int32 newReservationsToday = 4; // 오늘 생성 + 결제 확정(RESERVED)된 예약 건수. PENDING_PAYMENT는 제외.
+  int32 cancellationsToday = 5; // 오늘 취소(CANCELLED)된 예약 건수.
+  int32 revenueToday = 6;
+}

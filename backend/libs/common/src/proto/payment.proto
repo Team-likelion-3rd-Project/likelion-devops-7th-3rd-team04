@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package payment;
+
+service PaymentService {
+  rpc GetHello (Empty) returns (HelloResponse);
+
+  // 유저 측 결제 요청. booking-service에서 예약을 조회해 금액/소유자/상태를 검증한 뒤,
+  // PG(pg-mock-service)에 결제 생성+승인을 동기로 요청한다. 실제 PG의 confirm API 호출 방식
+  // (서버-투-서버, 동기)을 그대로 따른다 — 승인 응답을 그 자리에서 받아 결제내역을 즉시
+  // paid 상태로 저장한다. 실패 시(예약 없음/본인 아님/이미 결제됨/PG 승인 실패) gRPC 에러.
+  rpc RequestPayment (RequestPaymentRequest) returns (Payment);
+
+  // PG(pg-mock-service)가 승인/취소 결과를 비동기로 통보하는 웹훅을 처리한다. RequestPayment가
+  // 이미 동기로 승인까지 끝내므로 이 RPC는 보조 역할만 한다: (1) 동기 흐름이 응답 수신 단계에서
+  // 실패했지만 PG는 실제 승인했던 경우의 구제(결제내역 뒤늦게 생성), (2) PG 측에서 발생한 취소를
+  // 반영(결제내역을 refunded로 변경). 서명 검증은 원본 요청 바디에 직접 접근 가능한 api-gateway가
+  // 수행하고, 여기 도달하는 시점엔 이미 검증이 끝난 상태다.
+  rpc HandlePaymentWebhook (PaymentWebhookRequest) returns (Empty);
+
+  // 단건 결제 상세 조회 (관리자 전용, 권한 검증은 api-gateway에서 수행)
+  rpc GetPaymentById (GetPaymentByIdRequest) returns (Payment);
+
+  // 특정 유저의 결제 목록 조회. /me(본인 조회)와 /{userId}(관리자 조회) 양쪽에서 재사용된다.
+  rpc GetPaymentsByUserId (GetPaymentsByUserIdRequest) returns (PaymentListResponse);
+
+  // 예약 취소 시 booking-service가 호출하는 내부용 환불 RPC. REST로는 노출되지 않는다 — 환불은
+  // 별도 API가 아니라 예약취소의 부수효과로만 일어난다. reservationId에 PAID 상태 결제가 있으면
+  // PG에 취소를 요청하고 결제내역을 refunded로 변경하며(refunded=true), 없으면(결제 전 취소 등)
+  // 아무 일도 하지 않는다(refunded=false). booking-service는 reservation.status와 무관하게 예약
+  // 취소마다 이 RPC를 항상 호출한다 — 존재 여부 판단을 여기서 하게 함으로써, 결제 확정
+  // (ConfirmBooking) 호출이 실패해 예약이 PENDING_PAYMENT로 남아있는 경우에도 환불이 누락되지
+  // 않는다.
+  rpc RefundPayment (RefundPaymentRequest) returns (RefundPaymentResponse);
+}
+
+message PaymentWebhookRequest {
+  string eventType = 1; // 'PAYMENT.APPROVED' | 'PAYMENT.CANCELED'
+  string paymentKey = 2;
+  string orderId = 3; // reservationId를 문자열로 인코딩한 값
+  int32 amount = 4;
+  string paymentMethod = 5;
+  string approvalNumber = 6;
+  string status = 7; // PG 자체 상태값 ('DONE' | 'CANCELED')
+  string occurredAt = 8;
+}
+
+message Empty {}
+
+message HelloResponse {
+  string message = 1;
+}
+
+message RequestPaymentRequest {
+  int32 reservationId = 1;
+  int32 userId = 2; // 본인 확인용 (api-gateway가 JWT에서 추출해 넘긴다)
+  string paymentMethod = 3;
+}
+
+message GetPaymentByIdRequest {
+  int32 paymentId = 1;
+}
+
+message GetPaymentsByUserIdRequest {
+  int32 userId = 1;
+}
+
+message RefundPaymentRequest {
+  int32 reservationId = 1;
+}
+
+message RefundPaymentResponse {
+  bool refunded = 1; // PAID 결제가 있어 실제로 환불을 실행했으면 true, 결제 이력이 없어 no-op이면 false
+}
+
+// 결제내역 테이블과 1:1 대응
+message Payment {
+  int32 paymentId = 1;
+  int32 reservationId = 2;
+  string approvalNumber = 3; // PG승인번호
+  int32 amount = 4;
+  string paymentMethod = 5;
+  string status = 6; // 'paid' | 'refunded'
+  string paidAt = 7;
+  int32 userId = 8;
+}
+
+message PaymentListResponse {
+  repeated Payment payments = 1;
+}

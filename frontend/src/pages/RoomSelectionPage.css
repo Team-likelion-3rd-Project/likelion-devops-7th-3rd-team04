@@ -1,0 +1,280 @@
+.room-selection-page {
+  /* 1단계(호텔/날짜/투숙인원 선택) 페이지와 동일한 컨테이너 폭/여백을 그대로 맞춘다 */
+  max-width: 1720px;
+  margin: 0 auto;
+  padding: 48px 56px 96px;
+
+  @media (max-width: 767px) {
+    padding: 32px 20px 88px;
+  }
+}
+
+.room-selection-body {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  align-items: start;
+  gap: 40px;
+  /* 1단계(reservation-search)와 같은 간격(80px)으로, 제목/스텝 헤더와 충분히 떨어뜨린다 */
+  margin-top: 150px;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.room-selection-main {
+  min-width: 0;
+}
+
+.room-selection-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.room-selection-count {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-h);
+}
+
+.room-selection-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+
+  select {
+    appearance: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--text-h);
+    background: var(--bg);
+    cursor: pointer;
+  }
+}
+
+.room-selection-status {
+  margin: 40px 0;
+  font-size: 15px;
+  color: var(--text);
+  text-align: center;
+
+  &.error {
+    color: #e5484d;
+  }
+}
+
+.room-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.room-select-card {
+  display: flex;
+  align-items: stretch;
+  gap: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--bg);
+  transition: box-shadow 0.2s;
+
+  &:hover {
+    box-shadow: var(--shadow);
+  }
+
+  @media (max-width: 640px) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.room-select-thumb {
+  flex: 0 0 220px;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--accent-bg);
+
+  @media (max-width: 640px) {
+    flex-basis: auto;
+    width: 100%;
+  }
+}
+
+.room-select-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.room-select-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.room-select-name {
+  margin: 0;
+  font-size: 19px;
+  color: var(--text-h);
+}
+
+.room-select-detail-link {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    text-decoration: underline;
+  }
+}
+
+.room-select-capacity {
+  margin: 0;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+/* 본문 안에서 아래로 밀어 넣는 가격 — body가 flex-column이라 margin-top: auto로 카드 밑쪽에 붙는다 */
+.room-select-inline-price {
+  margin-top: auto;
+  padding-top: 10px;
+
+  p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text);
+
+    &.error {
+      color: #e5484d;
+    }
+  }
+
+  strong {
+    font-size: 18px;
+    color: var(--text-h);
+  }
+}
+
+.room-select-price-unit {
+  margin-left: 6px;
+  color: var(--text);
+}
+
+.room-select-button {
+  /* 가격 줄(.room-select-inline-price)과 카드 바닥에 나란히 놓인다. 버튼 자체 크기는 유지 */
+  align-self: flex-end;
+  appearance: none;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 40px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.2s;
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    opacity: 0.85;
+  }
+  &:disabled {
+    background: var(--border);
+    color: var(--text);
+    cursor: default;
+  }
+
+  @media (max-width: 640px) {
+    align-self: stretch;
+  }
+}
+
+/* 우측 요약 사이드바 — 영수증처럼 정보만 보여준다. "재검색"만 눌러서 조건을 들고 1단계로 돌아갈 수 있다 */
+.room-selection-summary {
+  position: sticky;
+  top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+  background: var(--accent-bg);
+}
+
+.room-selection-summary-header {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px;
+}
+
+.room-selection-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  text-decoration: none;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--text-h);
+  }
+}
+
+/* 재검색 영역과 구분되는 안쪽 정보 카드 — 흰 배경으로 한 겹 더 감싼다 */
+.room-selection-summary-info {
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.room-selection-summary-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 20px;
+}
+
+.room-selection-summary-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.room-selection-summary-value {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-h);
+  line-height: 1.5;
+}

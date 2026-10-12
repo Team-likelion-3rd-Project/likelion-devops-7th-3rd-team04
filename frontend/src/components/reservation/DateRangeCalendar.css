@@ -1,0 +1,226 @@
+.date-range-calendar {
+  padding: 32px 24px 24px;
+}
+
+.date-range-calendar-months {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+
+  @media (max-width: 900px) {
+    flex-wrap: wrap;
+  }
+}
+
+.date-range-nav {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-top: 40px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-h);
+  cursor: pointer;
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    background: var(--accent-bg);
+  }
+  &:disabled {
+    color: var(--border);
+    cursor: default;
+  }
+}
+
+.date-range-month {
+  flex: 1;
+  min-width: 280px;
+}
+
+.date-range-month-title {
+  margin: 0 0 20px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-h);
+  text-align: center;
+}
+
+.date-range-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-bottom: 8px;
+
+  span {
+    text-align: center;
+    font-size: 13px;
+    color: var(--text);
+
+    &.is-sunday {
+      color: #a5453a;
+    }
+  }
+}
+
+.date-range-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  row-gap: 6px;
+}
+
+.date-range-day {
+  appearance: none;
+  border: none;
+  background: none;
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  height: 52px;
+  padding-top: 4px;
+  color: var(--text-h);
+  cursor: pointer;
+  position: relative;
+
+  &.is-empty {
+    cursor: default;
+  }
+
+  &.is-sunday {
+    color: #a5453a;
+  }
+
+  &.is-disabled {
+    color: var(--border);
+    cursor: default;
+  }
+
+  &.is-in-range::before {
+    content: '';
+    position: absolute;
+    top: 4px;
+    left: 0;
+    right: 0;
+    height: 28px;
+    background: var(--accent-bg);
+    z-index: 0;
+  }
+
+  /* 체크인/체크아웃 원 사이를 이어주는 바 (인접한 두 날짜를 고르면 서로의 안쪽 절반씩 채워 이어붙는다) */
+  &.is-range-start::before {
+    content: '';
+    position: absolute;
+    top: 4px;
+    left: 50%;
+    right: 0;
+    height: 28px;
+    background: var(--accent-bg);
+    z-index: 0;
+  }
+  &.is-range-end::before {
+    content: '';
+    position: absolute;
+    top: 4px;
+    left: 0;
+    right: 50%;
+    height: 28px;
+    background: var(--accent-bg);
+    z-index: 0;
+  }
+
+  &:not(.is-disabled):not(.is-empty):hover .date-range-day-number,
+  &:not(.is-disabled):not(.is-empty):focus-visible .date-range-day-number {
+    background: var(--accent-bg);
+  }
+}
+
+.date-range-day-number {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 15px;
+}
+
+.date-range-day.is-selected .date-range-day-number {
+  background: var(--text-h);
+  color: var(--bg);
+}
+
+.date-range-day-caption {
+  position: relative;
+  z-index: 1;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.date-range-calendar-footer {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.date-range-calendar-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.date-range-calendar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.date-range-back {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-h);
+  font: inherit;
+  font-size: 15px;
+  padding: 12px 32px;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent-border);
+    color: var(--accent);
+  }
+}
+
+.date-range-confirm {
+  flex-shrink: 0;
+  appearance: none;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 32px;
+  font: inherit;
+  font-size: 15px;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  transition: opacity 0.2s;
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    opacity: 0.85;
+  }
+  &:disabled {
+    background: var(--border);
+    color: var(--text);
+    cursor: default;
+  }
+}

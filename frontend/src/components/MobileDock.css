@@ -1,0 +1,35 @@
+.mobile-dock {
+  display: none;
+
+  @media (max-width: 767px) {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    padding: 8px 0 calc(8px + env(safe-area-inset-bottom));
+  }
+}
+
+.mobile-dock-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-decoration: none;
+  color: var(--text);
+  font-size: 11px;
+
+  &.active {
+    color: var(--accent);
+  }
+}
+
+.mobile-dock-icon {
+  font-size: 20px;
+  line-height: 1;
+}
