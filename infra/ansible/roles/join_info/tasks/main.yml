@@ -1,0 +1,63 @@
+---
+# 실행할 때마다 새 bootstrap token 을 발급합니다. (만료 시 --tags join_info 로 재실행)
+- name: Tailscale IP 조회 (--tags join_info 단독 실행 대비)
+  ansible.builtin.command: tailscale ip -4
+  register: cp_ts_ip
+  changed_when: false
+  when: ts_ip is not defined
+
+- name: ts_ip fact 등록
+  ansible.builtin.set_fact:
+    ts_ip: "{{ cp_ts_ip.stdout_lines | first }}"
+  when: ts_ip is not defined
+
+- name: bootstrap token 발급
+  ansible.builtin.command: "kubeadm token create --ttl {{ kubeadm_token_ttl }}"
+  register: join_token
+  changed_when: true
+  no_log: true
+
+- name: CA 인증서 해시 계산
+  ansible.builtin.shell: >-
+    set -o pipefail &&
+    openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt
+    | openssl rsa -pubin -outform der 2>/dev/null
+    | openssl dgst -sha256 -hex | sed 's/^.* //'
+  args:
+    executable: /bin/bash
+  register: ca_hash
+  changed_when: false
+
+- name: 로컬 .secrets 디렉토리
+  ansible.builtin.file:
+    path: "{{ local_secrets_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: worker 용 join.env 생성 (로컬)
+  ansible.builtin.copy:
+    dest: "{{ local_secrets_dir }}/join.env"
+    content: |
+      # control-plane.yml 이 생성 — 커밋 금지, 팀 비밀 채널로만 공유
+      # token 만료: {{ kubeadm_token_ttl }} 후
+      K8S_API_ENDPOINT={{ ts_ip }}:6443
+      K8S_JOIN_TOKEN={{ join_token.stdout | trim }}
+      K8S_CA_CERT_HASH=sha256:{{ ca_hash.stdout | trim }}
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: admin kubeconfig 로컬로 가져오기
+  ansible.builtin.fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ local_secrets_dir }}/admin.conf"
+    flat: true
+
+- name: 안내
+  ansible.builtin.debug:
+    msg:
+      - "join 정보: {{ local_secrets_dir }}/join.env"
+      - "kubeconfig: {{ local_secrets_dir }}/admin.conf (Tailnet 내에서 kubectl --kubeconfig 로 사용)"

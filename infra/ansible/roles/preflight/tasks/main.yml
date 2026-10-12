@@ -1,0 +1,31 @@
+---
+- name: 필수 환경변수 확인
+  ansible.builtin.assert:
+    that: item.value | length > 0
+    fail_msg: "환경변수 {{ item.key }} 가 비어 있습니다. README 의 '.env 설정' 절차를 확인하세요."
+    quiet: true
+  loop: "{{ required_env | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  no_log: true
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: OS 확인 (Ubuntu 22.04)
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == "Ubuntu"
+      - ansible_distribution_version == "22.04"
+    fail_msg: "Ubuntu 22.04 만 지원합니다. (현재: {{ ansible_distribution }} {{ ansible_distribution_version }})"
+    quiet: true
+
+- name: hostname 설정
+  ansible.builtin.hostname:
+    name: "{{ node_name }}"
+
+- name: /etc/hosts 에 hostname 등록
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s'
+    line: "127.0.1.1 {{ node_name }}"

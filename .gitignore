@@ -51,3 +51,7 @@ Thumbs.db
 *.sqlite3
 /uploads/
 /tmp/
+
+# Ansible (infra/ansible) - local inventory / generated join token & kubeconfig
+infra/ansible/inventory/hosts.ini
+infra/ansible/.secrets/

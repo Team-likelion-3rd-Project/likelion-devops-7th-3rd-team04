@@ -1,0 +1,36 @@
+---
+- name: kubeadm 설정 파일 생성
+  ansible.builtin.template:
+    src: kubeadm-init.yaml.j2
+    dest: /etc/kubernetes/kubeadm-init.yaml
+    mode: "0600"
+
+- name: kubeadm init
+  ansible.builtin.command: kubeadm init --config /etc/kubernetes/kubeadm-init.yaml
+  args:
+    creates: /etc/kubernetes/admin.conf
+
+- name: 접속 사용자 kubeconfig 디렉토리
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0700"
+
+- name: 접속 사용자 kubeconfig 복사
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+
+- name: API 서버 Ready 대기
+  ansible.builtin.command: kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz
+  register: readyz
+  until: readyz.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
