@@ -1,0 +1,69 @@
+---
+# v3.30 부터 CRD 는 tigera-operator.yaml 에서 분리되어 operator-crds.yaml 로 제공됨.
+# CRD / operator 를 각각 존재 여부로 판단해야 부분 설치 상태에서 재실행해도 이어서 진행됨.
+- name: Calico operator CRD 설치 여부 확인
+  ansible.builtin.command: kubectl get crd installations.operator.tigera.io
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: crd_check
+  changed_when: false
+  failed_when: false
+
+- name: Calico operator CRD 설치
+  # CRD 는 크기가 커서 apply 시 annotation 크기 제한에 걸리므로 create 사용
+  ansible.builtin.command: >-
+    kubectl create -f
+    https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/operator-crds.yaml
+  environment: *kubeconfig
+  when: crd_check.rc != 0
+  changed_when: true
+
+- name: Operator CRD 등록 대기
+  ansible.builtin.command: >-
+    kubectl wait --for condition=established --timeout=120s
+    crd/installations.operator.tigera.io crd/apiservers.operator.tigera.io crd/tigerastatuses.operator.tigera.io
+  environment: *kubeconfig
+  changed_when: false
+
+- name: tigera-operator 설치 여부 확인
+  ansible.builtin.command: kubectl get deployment tigera-operator -n tigera-operator
+  environment: *kubeconfig
+  register: operator_check
+  changed_when: false
+  failed_when: false
+
+- name: tigera-operator 설치
+  ansible.builtin.command: >-
+    kubectl create -f
+    https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml
+  environment: *kubeconfig
+  when: operator_check.rc != 0
+  changed_when: true
+
+- name: tigera-operator Ready 대기
+  ansible.builtin.command: kubectl rollout status deployment/tigera-operator -n tigera-operator --timeout=180s
+  environment: *kubeconfig
+  changed_when: false
+
+- name: Calico Installation 매니페스트 생성
+  ansible.builtin.template:
+    src: calico-installation.yaml.j2
+    dest: /etc/kubernetes/calico-installation.yaml
+    mode: "0644"
+
+- name: Calico Installation 적용
+  ansible.builtin.command: kubectl apply -f /etc/kubernetes/calico-installation.yaml
+  environment: *kubeconfig
+  register: calico_apply
+  changed_when: "'configured' in calico_apply.stdout or 'created' in calico_apply.stdout"
+
+- name: Calico Available 대기
+  ansible.builtin.command: >-
+    kubectl get tigerastatus calico
+    -o 'jsonpath={.status.conditions[?(@.type=="Available")].status}'
+  environment: *kubeconfig
+  register: calico_status
+  until: calico_status.stdout == "True"
+  retries: 60
+  delay: 10
+  changed_when: false

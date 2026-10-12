@@ -1,0 +1,39 @@
+---
+- name: containerd 설치
+  ansible.builtin.apt:
+    name: containerd
+    state: present
+
+- name: containerd 설정 디렉토리
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: containerd 기본 설정 생성
+  ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+
+- name: SystemdCgroup 활성화
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: Restart containerd
+
+- name: sandbox(pause) 이미지를 kubeadm 버전에 맞춤
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'sandbox_image = ".*"'
+    replace: 'sandbox_image = "{{ pause_image }}"'
+  notify: Restart containerd
+
+- name: containerd 활성화
+  ansible.builtin.systemd_service:
+    name: containerd
+    enabled: true
+    state: started
+
+- name: 설정 변경 즉시 반영
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,17 @@
+---
+- name: Kubernetes control plane 구성 (kubeadm init + Calico)
+  hosts: control_plane
+  become: true
+  vars:
+    required_env:
+      TS_OAUTH_CLIENT_SECRET: "{{ ts_oauth_secret }}"
+  roles:
+    - preflight
+    - common
+    - containerd
+    - tailscale
+    - kubernetes
+    - control_plane
+    - calico
+    - role: join_info
+      tags: [join_info]
