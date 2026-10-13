@@ -4,6 +4,15 @@ AWS 운영 환경(`us-east-1`)을 구성하는 Terraform 코드입니다.
 스택을 왜 이렇게 나눴는지, 스택 사이의 의존 관계는 위키 [**AWS 인프라 Terraform 스택 설계**](https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04/wiki/AWS-%EC%9D%B8%ED%94%84%EB%9D%BC-Terraform-%EC%8A%A4%ED%83%9D-%EC%84%A4%EA%B3%84) 를 보세요.
 
 - 자격 증명: [`aws-login.sh`](aws-login.sh) 로 `team04` 프로필에 로그인한 뒤 실행합니다.
+- **모든 terraform 명령 앞에 `AWS_PROFILE=team04` 를 붙입니다.** 붙이지 않으면 기본 프로필(다른 계정)로 실행됩니다.
+  ```bash
+  AWS_PROFILE=team04 terraform init -backend-config=../backend.hcl
+  AWS_PROFILE=team04 terraform plan
+  AWS_PROFILE=team04 terraform apply
+
+  # 또는 터미널 세션 단위로 지정
+  export AWS_PROFILE=team04
+  ```
 - 버전: Terraform `>= 1.11`, AWS provider `~> 6.0`. `.terraform.lock.hcl` 은 커밋합니다.
 
 ---
@@ -72,7 +81,7 @@ terraform {
 
 ```bash
 cd infra/terraform/live/prod/20-network
-terraform init -backend-config=../backend.hcl
+AWS_PROFILE=team04 terraform init -backend-config=../backend.hcl
 ```
 
 ---
@@ -95,8 +104,9 @@ bootstrap                                  🔒 최초 1회
 
 - **apply:** `20` → `90` (번호 오름차순)
 - **destroy:** `90` → `20` (번호 내림차순)
+- `10-global` 은 도메인 없이 apply 할 수 있습니다. 도메인 구매 후 절차는 구매 계정(운영 계정 / 다른 계정)에 따라 다르며 [`dns.tf`](live/prod/10-global/dns.tf) 상단 주석을 따릅니다.
 - `bootstrap`, `10-global`, `11-registry` 는 **destroy 하지 않습니다.**
-  Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 삭제할 수 없고, ECR 을 지우면 이미지가 사라집니다.
+  Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라집니다.
 
 ---
 

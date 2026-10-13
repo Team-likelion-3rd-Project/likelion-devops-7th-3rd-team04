@@ -1,0 +1,6 @@
+# 도메인 구매 후 사용 (구매 전에는 tfvars 없이 apply)
+# cp terraform.tfvars.example terraform.tfvars 후 등록한 도메인으로 수정
+domain_name = "example.click"
+
+# 이 계정에서 구매했으면 import 와 함께 바로 true, 다른 계정이면 NS 위임 확인 후 true (dns.tf 상단 주석 참고)
+enable_certificate = false
