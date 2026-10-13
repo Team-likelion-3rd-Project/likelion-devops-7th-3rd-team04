@@ -36,8 +36,17 @@
   when: >-
     ts_status.rc != 0 or
     (ts_status.stdout | from_json).BackendState != "Running"
+  register: ts_up
   changed_when: true
+  failed_when: false
   no_log: true
+
+- name: Tailnet 등록 실패 원인 출력 (secret 마스킹)
+  ansible.builtin.fail:
+    msg: >-
+      tailscale up 실패 (rc={{ ts_up.rc }}, tags={{ ts_tags }}, hostname={{ node_name }}):
+      {{ (ts_up.stderr ~ ' ' ~ ts_up.stdout) | regex_replace('tskey-[A-Za-z0-9_-]+', 'tskey-***') | trim }}
+  when: ts_up is not skipped and ts_up.rc != 0
 
 - name: Tailscale IPv4 조회
   ansible.builtin.command: tailscale ip -4
@@ -47,10 +56,17 @@
   retries: 10
   delay: 3
 
-- name: ts_ip fact 등록
+- name: Tailscale DNS 이름 조회
+  ansible.builtin.command: tailscale status --self --peers=false --json
+  register: ts_self_out
+  changed_when: false
+
+- name: ts_ip / ts_fqdn fact 등록
+  # ts_fqdn: MagicDNS 이름 (<hostname>.<tailnet>.ts.net). 호스트명이 겹치면 -1 등이 붙으므로 추정하지 않고 조회
   ansible.builtin.set_fact:
     ts_ip: "{{ ts_ip_out.stdout_lines | first }}"
+    ts_fqdn: "{{ (ts_self_out.stdout | from_json).Self.DNSName | regex_replace('\\.$', '') }}"
 
 - name: Tailscale IP 출력
   ansible.builtin.debug:
-    msg: "{{ node_name }} Tailscale IP = {{ ts_ip }}"
+    msg: "{{ node_name }} Tailscale IP = {{ ts_ip }} ({{ ts_fqdn }})"

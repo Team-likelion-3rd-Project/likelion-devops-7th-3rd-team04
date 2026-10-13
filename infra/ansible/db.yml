@@ -54,5 +54,5 @@
     - preflight
     - tailscale
     - docker
-    - db_firewall
+    - firewall
     - db_stack

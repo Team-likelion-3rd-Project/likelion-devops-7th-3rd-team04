@@ -1,0 +1,48 @@
+---
+- name: GitLab 노드 구성 (GitLab CE, Docker Compose + tailscale serve HTTPS)
+  hosts: gitlab
+  become: true
+  vars:
+    # gitlab.env 에 따옴표 없이 들어가므로 특수문자 제한 (db.yml 과 동일 규칙)
+    secret_charset_regex: '^[^\s''"\$#`]+$'
+    required_env:
+      TS_GITLAB_OAUTH_CLIENT_SECRET: "{{ ts_oauth_secret }}"
+      GITLAB_ROOT_PASSWORD: "{{ gitlab_root_password }}"
+  pre_tasks:
+    - name: root 비밀번호 정책 확인
+      ansible.builtin.assert:
+        that:
+          - gitlab_root_password | length >= 8
+          - gitlab_root_password is regex(secret_charset_regex)
+        fail_msg: >-
+          GITLAB_ROOT_PASSWORD 는 8자 이상이어야 하고 공백, 따옴표, 역슬래시, $, #, ` 를 쓸 수 없습니다.
+        quiet: true
+      no_log: true
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: VM 메모리 확인 (GitLab 최소 4GB)
+      # 2GB 급에서는 swap 으로 버티다 puma 가 뜨지 못해 502 가 계속됨
+      ansible.builtin.assert:
+        that: ansible_memtotal_mb >= gitlab_min_memory_mb
+        fail_msg: >-
+          GitLab VM 메모리가 {{ ansible_memtotal_mb }}MB 입니다. 최소 4GB(권장 8GB)로 늘린 뒤 다시 실행하세요. (README 8-1)
+        quiet: true
+
+    - name: 선행 패키지 설치
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, python3-debian, ufw]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+  roles:
+    - preflight
+    - tailscale
+    - docker
+    - firewall
+    - gitlab_stack
+    - tailscale_serve
+    - role: gitlab_runner_token
+      tags: [runner_token]

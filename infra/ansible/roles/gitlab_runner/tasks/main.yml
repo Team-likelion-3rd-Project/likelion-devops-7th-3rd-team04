@@ -1,0 +1,59 @@
+---
+- name: GitLab Runner apt 저장소 등록
+  ansible.builtin.deb822_repository:
+    name: gitlab-runner
+    types: deb
+    uris: https://packages.gitlab.com/runner/gitlab-runner/ubuntu
+    suites: "{{ ansible_distribution_release }}"
+    components: main
+    signed_by: https://packages.gitlab.com/gpgkey/gpg.key
+
+- name: GitLab Runner 설치 (버전 고정, helper images 는 같은 버전 필수)
+  ansible.builtin.apt:
+    name:
+      - "gitlab-runner={{ gitlab_runner_version }}"
+      - "gitlab-runner-helper-images={{ gitlab_runner_version }}"
+    state: present
+    update_cache: true
+    allow_downgrade: true
+
+- name: Runner 설정 (config.toml, 토큰 포함)
+  # gitlab-runner 는 config.toml 변경을 감지해 자동 reload
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: /etc/gitlab-runner/config.toml
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: gitlab-runner 활성화
+  ansible.builtin.systemd_service:
+    name: gitlab-runner
+    enabled: true
+    state: started
+
+- name: GitLab 등록 확인
+  ansible.builtin.command: gitlab-runner verify
+  register: runner_verify
+  changed_when: false
+  failed_when: "runner_verify.rc != 0 or 'is valid' not in (runner_verify.stdout ~ runner_verify.stderr)"
+  until: runner_verify is not failed
+  retries: 3
+  delay: 5
+
+- name: 빌드 캐시 / 오래된 이미지 주간 정리
+  # docker.sock 을 공유하므로 job 의 빌드 결과물이 호스트 docker 에 계속 쌓임
+  ansible.builtin.cron:
+    name: gitlab-runner docker prune
+    special_time: weekly
+    job: >-
+      docker builder prune -af --filter until=168h >/dev/null 2>&1;
+      docker image prune -af --filter until=168h >/dev/null 2>&1
+    user: root
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "Runner {{ node_name }} → {{ gitlab_url }} (executor=docker, docker.sock 바인드)"
+      - "GitLab Admin → CI/CD → Runners 에서 online 상태 확인"

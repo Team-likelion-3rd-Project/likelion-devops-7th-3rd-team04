@@ -1,0 +1,24 @@
+---
+- name: GitLab Runner 노드 구성 (docker executor + docker.sock 바인드)
+  hosts: gitlab_runner
+  become: true
+  vars:
+    required_env:
+      TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET: "{{ ts_oauth_secret }}"
+      GITLAB_URL: "{{ gitlab_url }}"
+      GITLAB_TS_IP: "{{ gitlab_ts_ip }}"
+      GITLAB_RUNNER_TOKEN: "{{ gitlab_runner_token }}"
+  pre_tasks:
+    - name: 선행 패키지 설치
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, python3-debian, ufw]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+  roles:
+    - preflight
+    - tailscale
+    - docker
+    - firewall
+    - gitlab_runner

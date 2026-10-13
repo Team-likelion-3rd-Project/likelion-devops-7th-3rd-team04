@@ -1,0 +1,78 @@
+---
+- name: external_url 용 MagicDNS 이름 확인
+  # tailscale serve 의 인증서는 <hostname>.<tailnet>.ts.net 으로만 발급됨
+  ansible.builtin.assert:
+    that: ts_fqdn is search('\.ts\.net$')
+    fail_msg: >-
+      Tailscale DNS 이름({{ ts_fqdn }})을 확인할 수 없습니다. Admin console → DNS 에서
+      MagicDNS 와 HTTPS Certificates 를 활성화했는지 확인하세요 (README 1-3).
+    quiet: true
+
+- name: gitlab_fqdn / gitlab_url fact 등록
+  ansible.builtin.set_fact:
+    gitlab_fqdn: "{{ ts_fqdn }}"
+    gitlab_url: "https://{{ ts_fqdn }}"
+
+- name: 설정 디렉토리 (비밀값 포함 → root 전용)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ gitlab_base_dir }}"
+    - "{{ gitlab_base_dir }}/scripts"
+
+- name: 데이터 디렉토리
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ gitlab_data_dir }}/config"
+    - "{{ gitlab_data_dir }}/logs"
+    - "{{ gitlab_data_dir }}/data"
+
+- name: GitLab 설정 (gitlab.rb)
+  ansible.builtin.template:
+    src: gitlab.rb.j2
+    dest: "{{ gitlab_base_dir }}/gitlab.rb"
+    mode: "0644"
+  register: gitlab_rb
+
+- name: 컨테이너 환경변수 파일 (최초 root 비밀번호)
+  ansible.builtin.template:
+    src: gitlab.env.j2
+    dest: "{{ gitlab_base_dir }}/gitlab.env"
+    mode: "0600"
+  no_log: true
+
+- name: compose 파일
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ gitlab_base_dir }}/compose.yml"
+    mode: "0600"
+
+- name: 컨테이너 기동 (healthy 까지 대기, 첫 기동은 5~10분)
+  # gitlab.rb checksum 을 label 로 넣어 두었으므로 설정이 바뀌면 컨테이너가 재생성됨
+  ansible.builtin.command: docker compose up -d --wait --wait-timeout 900
+  args:
+    chdir: "{{ gitlab_base_dir }}"
+  register: compose_up
+  changed_when: >-
+    'Started' in compose_up.stderr or
+    'Recreated' in compose_up.stderr or
+    'Created' in compose_up.stderr
+
+- name: GitLab 내부 응답 확인 (loopback)
+  # 컨테이너 healthy 이후에도 puma 부팅까지 시간이 걸려 한동안 502 가 날 수 있음 (최대 10분 대기)
+  # /-/readiness 등 health 엔드포인트는 monitoring_whitelist(컨테이너 내부 127.0.0.1) 밖에서는 404 →
+  # 비로그인으로 열리는 로그인 페이지로 Rails 응답을 확인
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitlab_http_port }}/users/sign_in"
+    status_code: 200
+  register: gitlab_ready
+  until: gitlab_ready.status == 200
+  retries: 60
+  delay: 10
