@@ -1,9 +1,14 @@
+import { randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
 import { Repository } from 'typeorm';
-import { Payment, PaymentStatus } from './entities/payment.entity';
+import {
+  Payment,
+  PaymentProvider,
+  PaymentStatus,
+} from './entities/payment.entity';
 import { PgMockClient } from './pg-mock/pg-mock.client';
 
 // libs/common/src/proto/booking.proto의 BookingService / GetBookingById, ConfirmBooking과 1:1 대응
@@ -57,7 +62,7 @@ export class PaymentServiceService implements OnModuleInit {
   // 1) booking-service에서 예약을 조회해 금액/소유자/상태를 검증
   // 2) 이미 결제된 예약인지 확인 (중복 결제 방지)
   // 3) PG(pg-mock-service)에 결제 생성+승인을 동기로 요청
-  // 4) 승인 응답을 그대로 결제내역(paid)으로 저장
+  // 4) 승인 응답을 그대로 결제내역(APPROVED)으로 저장
   // 실제 PG의 confirm API도 서버-투-서버 동기 호출로 그 자리에서 승인 결과를 받는 방식이라
   // (웹훅은 가상계좌 등 비동기 결제수단이나 사후 상태 통보용 보조 수단), 여기서도 동일하게
   // 승인 응답을 기다렸다가 즉시 결제내역을 확정 상태로 저장한다.
@@ -82,7 +87,10 @@ export class PaymentServiceService implements OnModuleInit {
     }
 
     const alreadyPaid = await this.paymentRepository.findOne({
-      where: { reservationId: data.reservationId, status: PaymentStatus.PAID },
+      where: {
+        reservationId: data.reservationId,
+        status: PaymentStatus.APPROVED,
+      },
     });
     if (alreadyPaid) {
       throw new RpcException('이미 결제된 예약입니다.');
@@ -107,11 +115,16 @@ export class PaymentServiceService implements OnModuleInit {
     const payment = this.paymentRepository.create({
       reservationId: data.reservationId,
       userId: data.userId,
+      // 멱등 키/주문번호는 LDP-25(토스 승인 연동)에서 booking-service가 발급한 값으로 바뀝니다.
+      // 그 전까지는 pg-mock에 보내던 값(orderId = 예약 ID)과 새 UUID로 채웁니다.
+      idempotencyKey: randomUUID(),
+      pgOrderId: String(data.reservationId),
+      provider: PaymentProvider.MOCK,
       approvalNumber: result.approvalNumber,
       paymentKey: result.paymentKey,
       amount: booking.totalAmount,
       paymentMethod: data.paymentMethod,
-      status: PaymentStatus.PAID,
+      status: PaymentStatus.APPROVED,
       paidAt: result.approvedAt ? new Date(result.approvedAt) : new Date(),
     });
     const saved = await this.paymentRepository.save(payment);
@@ -154,7 +167,7 @@ export class PaymentServiceService implements OnModuleInit {
     }
 
     const existing = await this.paymentRepository.findOne({
-      where: { reservationId, status: PaymentStatus.PAID },
+      where: { reservationId, status: PaymentStatus.APPROVED },
     });
 
     if (data.eventType === 'PAYMENT.APPROVED') {
@@ -179,11 +192,14 @@ export class PaymentServiceService implements OnModuleInit {
       const payment = this.paymentRepository.create({
         reservationId,
         userId: booking.userId,
+        idempotencyKey: randomUUID(),
+        pgOrderId: data.orderId,
+        provider: PaymentProvider.MOCK,
         approvalNumber: data.approvalNumber,
         paymentKey: data.paymentKey,
         amount: data.amount,
         paymentMethod: data.paymentMethod,
-        status: PaymentStatus.PAID,
+        status: PaymentStatus.APPROVED,
         paidAt: new Date(),
       });
       await this.paymentRepository.save(payment);
@@ -214,6 +230,7 @@ export class PaymentServiceService implements OnModuleInit {
         return;
       }
       existing.status = PaymentStatus.REFUNDED;
+      existing.refundedAt = new Date();
       await this.paymentRepository.save(existing);
       return;
     }
@@ -242,24 +259,32 @@ export class PaymentServiceService implements OnModuleInit {
   }
 
   // 예약 취소 시 booking-service가 항상 호출하는 내부용 환불 RPC (payment.proto의 RefundPayment
-  // 주석 참고). PAID 결제가 없으면(결제 전 취소 등) no-op으로 조용히 반환한다 — booking-service가
+  // 주석 참고). APPROVED 결제가 없으면(결제 전 취소 등) no-op으로 조용히 반환한다 — booking-service가
   // reservation.status와 무관하게 매 취소마다 호출하므로, 이게 정상 흐름의 일부다.
   async refundPayment(reservationId: number): Promise<{ refunded: boolean }> {
     const payment = await this.paymentRepository.findOne({
-      where: { reservationId, status: PaymentStatus.PAID },
+      where: { reservationId, status: PaymentStatus.APPROVED },
     });
     if (!payment) {
       return { refunded: false };
     }
+    // 승인된 결제는 항상 paymentKey가 있어야 하지만(승인 전에만 NULL), 데이터가 깨진 경우를 대비한 방어 코드.
+    if (!payment.paymentKey) {
+      throw new RpcException(
+        `환불할 결제(#${payment.paymentId})에 PG 결제 키가 없습니다.`,
+      );
+    }
 
-    // PG 취소 호출이 실패하면 결제내역은 PAID로 남겨둔 채 에러를 그대로 던진다 — 호출자
+    // PG 취소 호출이 실패하면 결제내역은 APPROVED로 남겨둔 채 에러를 그대로 던진다 — 호출자
     // (booking-service.cancelBooking)가 로그만 남기고 예약취소 자체는 막지 않는 정책이다.
     // 여기서 임의로 REFUNDED로 바꾸면 실제로는 환불되지 않은 결제를 환불된 것처럼 기록하게 된다.
     await this.pgMockClient.cancel(payment.paymentKey, {
       cancelReason: '예약 취소',
     });
 
+    // REFUND_REQUESTED/REFUND_FAILED를 거치는 환불 상태 전이는 LDP-28(토스 취소 연동)에서 붙입니다.
     payment.status = PaymentStatus.REFUNDED;
+    payment.refundedAt = new Date();
     await this.paymentRepository.save(payment);
     return { refunded: true };
   }
@@ -268,11 +293,13 @@ export class PaymentServiceService implements OnModuleInit {
     return {
       paymentId: payment.paymentId,
       reservationId: payment.reservationId,
-      approvalNumber: payment.approvalNumber,
+      // 승인 전(PROCESSING 등) 결제는 승인번호/승인 시각이 아직 없어서 빈 문자열로 내려줍니다
+      // (proto3 string 필드는 null을 담을 수 없음).
+      approvalNumber: payment.approvalNumber ?? '',
       amount: payment.amount,
       paymentMethod: payment.paymentMethod,
       status: payment.status,
-      paidAt: payment.paidAt.toISOString(),
+      paidAt: payment.paidAt ? payment.paidAt.toISOString() : '',
       userId: payment.userId,
     };
   }

@@ -3,7 +3,11 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { of, throwError } from 'rxjs';
 import { RpcException } from '@nestjs/microservices';
 import { PaymentServiceService } from './payment-service.service';
-import { Payment, PaymentStatus } from './entities/payment.entity';
+import {
+  Payment,
+  PaymentProvider,
+  PaymentStatus,
+} from './entities/payment.entity';
 import { PgMockClient } from './pg-mock/pg-mock.client';
 
 describe('PaymentServiceService', () => {
@@ -73,7 +77,7 @@ describe('PaymentServiceService', () => {
       approvalNumber: '12345678',
       amount: 50000,
       paymentMethod: 'CARD',
-      status: PaymentStatus.PAID,
+      status: PaymentStatus.APPROVED,
       paidAt: new Date('2026-08-18T02:00:05.000Z'),
     });
 
@@ -89,7 +93,15 @@ describe('PaymentServiceService', () => {
       orderName: '예약 #1 결제',
       paymentMethod: 'CARD',
     });
-    expect(result.status).toBe(PaymentStatus.PAID);
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: expect.any(String) as string,
+        pgOrderId: '1',
+        provider: PaymentProvider.MOCK,
+        status: PaymentStatus.APPROVED,
+      }),
+    );
+    expect(result.status).toBe(PaymentStatus.APPROVED);
     expect(result.approvalNumber).toBe('12345678');
     expect(confirmBookingMock).toHaveBeenCalledWith({ reservationId: 1 });
   });
@@ -178,7 +190,7 @@ describe('PaymentServiceService', () => {
       approvalNumber: '12345678',
       amount: 50000,
       paymentMethod: 'CARD',
-      status: PaymentStatus.PAID,
+      status: PaymentStatus.APPROVED,
       paidAt: new Date('2026-08-18T02:00:05.000Z'),
     });
     confirmBookingMock.mockReturnValue(
@@ -191,12 +203,12 @@ describe('PaymentServiceService', () => {
       paymentMethod: 'CARD',
     });
 
-    expect(result.status).toBe(PaymentStatus.PAID);
+    expect(result.status).toBe(PaymentStatus.APPROVED);
   });
 
   describe('refundPayment', () => {
-    it('PAID 결제가 있으면 PG 취소를 요청하고 결제내역을 refunded로 바꾼다', async () => {
-      const paid = { paymentId: 1, paymentKey: 'pgmock_1', status: PaymentStatus.PAID };
+    it('APPROVED 결제가 있으면 PG 취소를 요청하고 결제내역을 REFUNDED로 바꾼다', async () => {
+      const paid = { paymentId: 1, paymentKey: 'pgmock_1', status: PaymentStatus.APPROVED };
       findOneMock.mockResolvedValue(paid);
       cancelMock.mockResolvedValue({});
       saveMock.mockResolvedValue({ ...paid, status: PaymentStatus.REFUNDED });
@@ -210,7 +222,7 @@ describe('PaymentServiceService', () => {
       expect(result).toEqual({ refunded: true });
     });
 
-    it('PAID 결제가 없으면 아무것도 하지 않는다(no-op)', async () => {
+    it('APPROVED 결제가 없으면 아무것도 하지 않는다(no-op)', async () => {
       findOneMock.mockResolvedValue(null);
 
       const result = await service.refundPayment(1);
@@ -252,14 +264,14 @@ describe('PaymentServiceService', () => {
           approvalNumber: '12345678',
           amount: 50000,
           paymentMethod: 'CARD',
-          status: PaymentStatus.PAID,
+          status: PaymentStatus.APPROVED,
         }),
       );
       expect(saveMock).toHaveBeenCalled();
     });
 
-    it('CANCELED 웹훅이고 결제내역이 있으면 refunded로 바꾼다', async () => {
-      const existing = { paymentId: 1, status: PaymentStatus.PAID };
+    it('CANCELED 웹훅이고 결제내역이 있으면 REFUNDED로 바꾼다', async () => {
+      const existing = { paymentId: 1, status: PaymentStatus.APPROVED };
       findOneMock.mockResolvedValue(existing);
       saveMock.mockResolvedValue({
         ...existing,

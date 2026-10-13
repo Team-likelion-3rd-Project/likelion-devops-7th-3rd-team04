@@ -8,9 +8,14 @@ export const PAYMENT_METHOD_LABEL: Record<string, string> = {
   TOSSPAY: '토스페이',
 }
 
-// payment-service의 PaymentStatus(paid/refunded, 소문자)와 1:1 대응.
+// payment-service의 PaymentStatus(대문자 7종)와 1:1 대응. 화면에서 status.toLowerCase()로 찾으므로 키는 소문자.
 export const PAYMENT_STATUS_LABEL: Record<string, string> = {
-  paid: '결제완료',
+  processing: '결제 처리중',
+  approved: '결제완료',
+  failed: '결제실패',
+  unknown: '결제 확인중',
+  refund_requested: '환불 처리중',
+  refund_failed: '환불실패',
   refunded: '환불됨',
 }
 

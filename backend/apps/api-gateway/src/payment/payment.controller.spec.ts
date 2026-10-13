@@ -62,7 +62,7 @@ describe('PaymentController', () => {
         approvalNumber: '12345678',
         amount: 50000,
         paymentMethod: 'CARD',
-        status: 'paid',
+        status: 'APPROVED',
         paidAt: '2026-08-18T02:00:05.000Z',
       };
       requestPaymentMock.mockReturnValue(of(payment));
