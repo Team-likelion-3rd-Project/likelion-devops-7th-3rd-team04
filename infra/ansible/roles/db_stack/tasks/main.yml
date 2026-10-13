@@ -1,0 +1,127 @@
+---
+- name: 커널 파라미터 (Valkey 권장값 / 동시 접속 대비)
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-hotel-db.conf
+    content: |
+      vm.overcommit_memory = 1
+      net.core.somaxconn = 4096
+    mode: "0644"
+  register: db_sysctl
+
+- name: sysctl 적용
+  ansible.builtin.command: sysctl --system
+  when: db_sysctl.changed
+  changed_when: true
+
+- name: 설정 디렉토리 (비밀값 포함 → root 전용)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ db_base_dir }}"
+    - "{{ db_base_dir }}/conf"
+    - "{{ db_base_dir }}/mysql"
+
+- name: 데이터 디렉토리
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ db_data_dir }}/mariadb"
+    - "{{ db_data_dir }}/valkey"
+
+- name: MariaDB 튜닝 설정
+  ansible.builtin.template:
+    src: mariadb-tuning.cnf.j2
+    dest: "{{ db_base_dir }}/conf/mariadb-tuning.cnf"
+    mode: "0644"
+  register: mariadb_conf
+
+- name: Valkey 설정 (requirepass 포함)
+  ansible.builtin.template:
+    src: valkey.conf.j2
+    dest: "{{ db_base_dir }}/conf/valkey.conf"
+    mode: "0644"
+  register: valkey_conf
+  no_log: true
+
+- name: 컨테이너 환경변수 파일
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ db_base_dir }}/{{ item }}"
+    mode: "0600"
+  loop: [mariadb.env, valkey.env]
+  no_log: true
+
+- name: reconcile 용 client 자격증명 (명령행에 비밀번호 노출 방지)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ db_base_dir }}/mysql/{{ item }}"
+    mode: "0600"
+  loop: [root.cnf, app.cnf]
+  no_log: true
+
+- name: compose 파일
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ db_base_dir }}/compose.yml"
+    mode: "0600"
+
+- name: 컨테이너 기동 (healthy 까지 대기)
+  # 설정 파일 checksum 을 label 로 넣어 두었으므로 설정이 바뀐 서비스만 재생성됨
+  ansible.builtin.command: docker compose up -d --wait --wait-timeout 300
+  args:
+    chdir: "{{ db_base_dir }}"
+  register: compose_up
+  changed_when: >-
+    'Started' in compose_up.stderr or
+    'Recreated' in compose_up.stderr or
+    'Created' in compose_up.stderr
+
+# ── backend/.env 값과 DB 계정 상태 맞추기 ─────────────────────
+# 공식 이미지는 MARIADB_* 를 최초 초기화 시 1회만 반영하므로,
+# 매 실행마다 앱 계정으로 접속을 검사하고 실패할 때만 재설정합니다.
+- name: 앱 계정 접속 검사
+  ansible.builtin.command: >-
+    docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/app.cnf -e "SELECT 1"
+  register: app_login
+  changed_when: false
+  failed_when: false
+
+- name: DB / 앱 계정 재설정
+  ansible.builtin.command:
+    cmd: docker exec -i mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf
+    stdin: |
+      CREATE DATABASE IF NOT EXISTS `{{ db_database }}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+      CREATE USER IF NOT EXISTS '{{ db_username }}'@'%' IDENTIFIED BY '{{ db_password }}';
+      ALTER USER '{{ db_username }}'@'%' IDENTIFIED BY '{{ db_password }}';
+      GRANT ALL PRIVILEGES ON `{{ db_database }}`.* TO '{{ db_username }}'@'%';
+  when: app_login.rc != 0
+  register: db_reconcile
+  failed_when: false
+  changed_when: db_reconcile.rc == 0
+  no_log: true
+
+- name: 재설정 실패 안내
+  ansible.builtin.fail:
+    msg: >-
+      root 계정으로 DB 에 접속하지 못했습니다. backend/.env 의 DB_ROOT_PASSWORD 가
+      최초 초기화 때 값과 다른 경우입니다 (root 비밀번호 변경은 자동화하지 않음 — README 참고).
+  when: db_reconcile is not skipped and db_reconcile.rc != 0
+
+- name: 앱 계정 접속 재검사
+  ansible.builtin.command: >-
+    docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/app.cnf -e "SELECT 1"
+  changed_when: false
+  when: app_login.rc != 0
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "MariaDB : {{ ts_ip }}:{{ db_port }}  (DB={{ db_database }}, USER={{ db_username }})"
+      - "Valkey  : {{ ts_ip }}:{{ valkey_port }}"
+      - "backend 연결 시 DB_HOST={{ ts_ip }}"

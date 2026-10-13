@@ -1,0 +1,43 @@
+# Ansible(db_stack role)이 생성 — 직접 수정하지 마세요.
+# network_mode: host + ufw 로 tailscale0 에서만 접근 허용 (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
+name: hotel-db
+
+services:
+  mariadb:
+    image: {{ mariadb_image }}
+    container_name: mariadb
+    network_mode: host
+    restart: unless-stopped
+    env_file: [mariadb.env]
+    labels:
+      hotel-db.config-checksum: "{{ mariadb_conf.checksum }}"
+    volumes:
+      - {{ db_data_dir }}/mariadb:/var/lib/mysql
+      - ./conf/mariadb-tuning.cnf:/etc/mysql/conf.d/zz-tuning.cnf:ro
+      - ./mysql:/etc/mysql/ansible:ro
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  valkey:
+    image: {{ valkey_image }}
+    container_name: valkey
+    network_mode: host
+    restart: unless-stopped
+    command: ["valkey-server", "/usr/local/etc/valkey/valkey.conf"]
+    env_file: [valkey.env]
+    labels:
+      hotel-db.config-checksum: "{{ valkey_conf.checksum }}"
+    volumes:
+      - {{ db_data_dir }}/valkey:/data
+      - ./conf/valkey.conf:/usr/local/etc/valkey/valkey.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -p {{ valkey_port }} -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

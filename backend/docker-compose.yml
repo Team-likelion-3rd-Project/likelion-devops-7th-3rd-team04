@@ -23,9 +23,14 @@ services:
     # 주입되는 DB_*는 TypeORM(앱)이 접속할 때 쓰는 이름이라 이 이미지가 찾는 이름이
     # 아니므로, 아래에서 명시적으로 매핑해줍니다. 볼륨을 안 쓰기 때문에(아래 "볼륨 사용하지
     # 않았습니다" 주석 참고) 매 기동마다 이 초기화가 처음부터 다시 성공해야 합니다.
+    # 앱은 root 가 아닌 앱 전용 계정(DB_USERNAME)으로 접속합니다 — 이미지가 DB_DATABASE 에 대한
+    # 전체 권한으로 생성해 줍니다. MARIADB_USER=root 는 이미지가 거부하므로 기존 .env 에
+    # DB_USERNAME=root 가 남아 있다면 .env.example 을 참고해 DB_USERNAME / DB_ROOT_PASSWORD 를 갱신하세요.
     environment:
-      - MARIADB_ROOT_PASSWORD=${DB_PASSWORD}
+      - MARIADB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
       - MARIADB_DATABASE=${DB_DATABASE}
+      - MARIADB_USER=${DB_USERNAME}
+      - MARIADB_PASSWORD=${DB_PASSWORD}
     ports:
       - "3306:3306"
     healthcheck:
