@@ -1,4 +1,5 @@
-const BASE_URL = import.meta.env.VITE_API_URL
+// 비워 두면 같은 출처의 /api/...로 호출한다 — 컨테이너에서는 Nginx가 /api를 api-gateway로 프록시한다.
+const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
 // proto의 RoomImage 메시지 / gateway RoomDto.images와 1:1 대응
 export interface RoomImage {

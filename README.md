@@ -167,6 +167,18 @@ npm install
 npm run dev
 ```
 
+**Frontend (Docker 이미지)** — Nginx가 화면을 서빙하고 `/api/*` 요청은 api-gateway로 프록시합니다. API 주소가 이미지에 고정되지 않으므로 이미지 하나로 모든 환경에서 사용합니다.
+
+```bash
+cd frontend
+docker build -t hotel-frontend .
+# API_UPSTREAM: api-gateway 주소 (기본값 http://api-gateway:3000)
+# (Linux/WSL Docker Engine은 --add-host 필요, Docker Desktop은 생략 가능)
+docker run --rm -p 8080:80 --add-host=host.docker.internal:host-gateway \
+  -e API_UPSTREAM=http://host.docker.internal:3000 hotel-frontend
+# → http://localhost:8080 , 상태 확인: http://localhost:8080/healthz
+```
+
 - backend: 
   - api-gateway : `http://localhost:3000`
   - user-service : `http://localhost:3001`

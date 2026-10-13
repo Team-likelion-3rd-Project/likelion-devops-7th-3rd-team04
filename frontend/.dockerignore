@@ -1,0 +1,10 @@
+node_modules
+dist
+# 로컬 .env(VITE_API_URL=http://localhost:3000 등)가 이미지에 구워지지 않도록 제외
+.env
+.env.*
+!.env.example
+*.log
+.vscode
+Dockerfile
+.dockerignore

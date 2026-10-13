@@ -1,0 +1,46 @@
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 관리자 객실 이미지는 base64 JSON으로 올라가므로 기본값(1m)보다 크게 잡는다.
+    client_max_body_size ${CLIENT_MAX_BODY_SIZE};
+
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    # 쿠버네티스 liveness/readiness probe 용
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # API 요청은 경로(/api/...)를 그대로 유지한 채 api-gateway로 전달한다.
+    # 같은 출처로 호출되므로 CORS 설정이 필요 없고, refreshToken 쿠키도 그대로 오간다.
+    location /api/ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # 빌드 산출물(해시 파일명)은 오래 캐시한다.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # SPA 라우팅: /hotels/1, /admin/... 등에서 새로고침해도 index.html을 돌려준다.
+    location / {
+        add_header Cache-Control "no-cache";
+        try_files $uri $uri/ /index.html;
+    }
+}
