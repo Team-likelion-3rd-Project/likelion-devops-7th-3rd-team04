@@ -1,0 +1,22 @@
+---
+- name: Ingress Controller 구성 (Traefik, NodePort) + api-gateway Ingress
+  hosts: control_plane
+  become: true
+  pre_tasks:
+    - name: control plane 구성 여부 확인
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - name: admin.conf 확인
+      ansible.builtin.assert:
+        that: admin_conf.stat.exists
+        fail_msg: "/etc/kubernetes/admin.conf 가 없습니다. control-plane.yml 을 먼저 실행하세요. (README 3절)"
+        quiet: true
+
+  roles:
+    - helm
+    - traefik
+    # 향후 ArgoCD 가 앱 매니페스트를 관리하게 되면 이 role 은 제거 (README 11-4)
+    - role: api_gateway_ingress
+      tags: [api_gateway_ingress]

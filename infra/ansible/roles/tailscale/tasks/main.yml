@@ -48,6 +48,18 @@
       {{ (ts_up.stderr ~ ' ' ~ ts_up.stdout) | regex_replace('tskey-[A-Za-z0-9_-]+', 'tskey-***') | trim }}
   when: ts_up is not skipped and ts_up.rc != 0
 
+- name: Tailscale 설정 조회
+  ansible.builtin.command: tailscale debug prefs
+  register: ts_prefs
+  changed_when: false
+
+- name: 포워딩 트래픽 SNAT 끄기
+  # 기본값이면 tailscale0 로 들어와 Pod 로 포워딩되는 패킷을 tailscaled 가 MASQUERADE 해서
+  # Pod 가 보는 출발지가 노드 IP 로 바뀜 (클라이언트 IP 보존 불가). 서브넷 라우터가 아니므로 꺼도 영향 없음
+  ansible.builtin.command: tailscale set --snat-subnet-routes=false
+  when: not (ts_prefs.stdout | from_json).NoSNAT
+  changed_when: true
+
 - name: Tailscale IPv4 조회
   ansible.builtin.command: tailscale ip -4
   register: ts_ip_out
