@@ -1,0 +1,113 @@
+# Terraform
+
+AWS 운영 환경(`us-east-1`)을 구성하는 Terraform 코드입니다.
+스택을 왜 이렇게 나눴는지, 스택 사이의 의존 관계는 위키 [**AWS 인프라 Terraform 스택 설계**](https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04/wiki/AWS-%EC%9D%B8%ED%94%84%EB%9D%BC-Terraform-%EC%8A%A4%ED%83%9D-%EC%84%A4%EA%B3%84) 를 보세요.
+
+- 자격 증명: [`aws-login.sh`](aws-login.sh) 로 `team04` 프로필에 로그인한 뒤 실행합니다.
+- 버전: Terraform `>= 1.11`, AWS provider `~> 6.0`. `.terraform.lock.hcl` 은 커밋합니다.
+
+---
+
+## 1. 디렉터리 구조
+
+```
+infra/terraform/
+├── aws-login.sh
+├── modules/                         # 재사용 모듈
+└── live/
+    ├── bootstrap/                   🔒 state 버킷
+    └── prod/
+        ├── backend.hcl              # 공통 backend 설정
+        ├── 10-global/               🔒
+        ├── 11-registry/             🔒
+        ├── 20-network/              🔁
+        ├── 21-observability-base/   🔁
+        ├── 30-security/             🔁
+        ├── 40-cicd/                 🔁
+        ├── 41-main-data/            🔁
+        ├── 42-payment-data/         🔁
+        ├── 43-messaging/            🔁
+        ├── 50-payment-webhook/      🔁
+        ├── 60-payment-app/          🔁
+        ├── 70-main-cluster-kubeadm/ 🔁
+        ├── 80-main-edge/            🔁
+        ├── 81-frontend/             🔁
+        ├── 82-gcp-llm/              🔁
+        └── 90-observability-alarms/ 🔁
+```
+
+🔒 상시 유지 (destroy 하지 않음) / 🔁 매일 재생성
+
+---
+
+## 2. 번호 규칙
+
+- **십의 자리 = 단계, 일의 자리 = 같은 단계 안의 순번** 입니다. 디렉터리 정렬 순서가 곧 apply 순서입니다.
+- **앞자리가 같은 스택은 서로 참조하지 않습니다.** 병렬로 apply 할 수 있습니다.
+- **스택은 앞자리가 더 작은 스택만 참조할 수 있습니다.** 역방향 참조는 리뷰에서 반려합니다.
+- 같은 단계에 스택을 추가하면 일의 자리만 늘립니다 (예: `44-...`).
+
+---
+
+## 3. state 와 backend
+
+state 는 `team04-hotel-tfstate` 버킷에 저장하고, 락은 S3 네이티브 락(`use_lockfile`)을 씁니다.
+state key 에는 **디렉터리 번호를 넣지 않습니다.** 번호가 바뀌어도 state 를 옮기지 않기 위해서입니다.
+
+| 스택 | state key |
+|---|---|
+| `live/bootstrap` | `bootstrap/terraform.tfstate` |
+| `live/prod/<번호>-<스택>` | `prod/<스택>/terraform.tfstate` (예: `prod/network/terraform.tfstate`) |
+
+새 스택은 `backend.tf` 에 key 만 적고, 나머지는 공통 `backend.hcl` 로 넘깁니다.
+
+```hcl
+# live/prod/20-network/backend.tf
+terraform {
+  backend "s3" {
+    key = "prod/network/terraform.tfstate"
+  }
+}
+```
+
+```bash
+cd infra/terraform/live/prod/20-network
+terraform init -backend-config=../backend.hcl
+```
+
+---
+
+## 4. apply / destroy 순서
+
+```
+bootstrap                                  🔒 최초 1회
+10-global   11-registry                    🔒 최초 1회, 이후 변경 시에만
+─────────────────────── 매일 재생성 ───────────────────────
+20-network   21-observability-base
+30-security
+40-cicd   41-main-data   42-payment-data   43-messaging
+50-payment-webhook
+60-payment-app
+70-main-cluster-kubeadm
+80-main-edge   81-frontend   82-gcp-llm
+90-observability-alarms
+```
+
+- **apply:** `20` → `90` (번호 오름차순)
+- **destroy:** `90` → `20` (번호 내림차순)
+- `bootstrap`, `10-global`, `11-registry` 는 **destroy 하지 않습니다.**
+  Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 삭제할 수 없고, ECR 을 지우면 이미지가 사라집니다.
+
+---
+
+## 5. 매일 재생성 스택 작성 규칙
+
+🔁 스택은 매일 destroy 되므로 아래 설정을 지켜야 destroy / 재생성이 실패하지 않습니다.
+
+| 대상 | 설정 |
+|---|---|
+| Secrets Manager | `recovery_window_in_days = 0` |
+| RDS | `skip_final_snapshot = true`, `deletion_protection = false` |
+| S3 | `force_destroy = true` |
+
+🔒 스택의 리소스에는 `prevent_destroy = true` 를 겁니다.
