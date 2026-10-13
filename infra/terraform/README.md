@@ -106,7 +106,7 @@ bootstrap                                  🔒 최초 1회
 - **destroy:** `90` → `20` (번호 내림차순)
 - `10-global` 은 도메인 없이 apply 할 수 있습니다. 도메인 구매 후 절차는 구매 계정(운영 계정 / 다른 계정)에 따라 다르며 [`dns.tf`](live/prod/10-global/dns.tf) 상단 주석을 따릅니다.
 - `bootstrap`, `10-global`, `11-registry` 는 **destroy 하지 않습니다.**
-  Hosted Zone 을 다시 만들면 NS 가 바뀌고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라집니다.
+  Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라집니다.
 
 ---
 

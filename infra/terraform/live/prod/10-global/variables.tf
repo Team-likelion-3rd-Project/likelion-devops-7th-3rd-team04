@@ -33,6 +33,29 @@ variable "enable_certificate" {
   }
 }
 
+variable "log_bucket_name" {
+  description = "장기 로그 버킷 이름 (전역 고유, 공개 저장소이므로 계정 ID 는 넣지 않는다)"
+  type        = string
+  default     = "team04-hotel-logs"
+}
+
+variable "log_object_lock_days" {
+  description = "로그 객체 Object Lock 보관 기간(일). 이 기간 동안 삭제/덮어쓰기 불가"
+  type        = number
+  default     = 7
+}
+
+variable "log_retention_days" {
+  description = "로그 객체 보관 기간(일). 지나면 lifecycle 로 삭제 (Object Lock 기간보다 길어야 한다)"
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.log_retention_days > var.log_object_lock_days
+    error_message = "log_retention_days 는 log_object_lock_days 보다 커야 합니다."
+  }
+}
+
 variable "oidc_bucket_name" {
   description = "자체 IRSA OIDC 발급자 문서를 둘 공개 버킷 이름 (전역 고유, 공개 저장소이므로 계정 ID 는 넣지 않는다)"
   type        = string

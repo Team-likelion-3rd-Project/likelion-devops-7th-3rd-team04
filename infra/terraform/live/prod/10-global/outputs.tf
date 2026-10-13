@@ -19,6 +19,16 @@ output "certificate_arn" {
   value       = one(aws_acm_certificate_validation.main[*].certificate_arn)
 }
 
+output "log_bucket_name" {
+  description = "장기 로그 버킷 이름 (Flow Logs · ALB 로그 · Fluent Bit 대상)"
+  value       = aws_s3_bucket.logs.id
+}
+
+output "log_bucket_arn" {
+  description = "장기 로그 버킷 ARN (Flow Logs 대상, Fluent Bit IAM 정책에서 사용)"
+  value       = aws_s3_bucket.logs.arn
+}
+
 output "oidc_issuer_url" {
   description = "kube-apiserver --service-account-issuer 값"
   value       = local.oidc_issuer_url
