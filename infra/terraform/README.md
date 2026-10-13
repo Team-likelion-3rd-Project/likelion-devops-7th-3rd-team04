@@ -23,6 +23,7 @@ AWS 운영 환경(`us-east-1`)을 구성하는 Terraform 코드입니다.
 infra/terraform/
 ├── aws-login.sh
 ├── modules/                         # 재사용 모듈
+│   └── vpc/                         # VPC, 계층별 서브넷, IGW, NAT, 라우트 테이블, 게이트웨이 엔드포인트, Flow Logs
 └── live/
     ├── bootstrap/                   🔒 state 버킷
     └── prod/
@@ -36,6 +37,7 @@ infra/terraform/
         ├── 41-main-data/            🔁
         ├── 42-payment-data/         🔁
         ├── 43-messaging/            🔁
+        ├── 44-payment-endpoints/    🔁
         ├── 50-payment-webhook/      🔁
         ├── 60-payment-app/          🔁
         ├── 70-main-cluster-kubeadm/ 🔁
@@ -94,7 +96,7 @@ bootstrap                                  🔒 최초 1회
 ─────────────────────── 매일 재생성 ───────────────────────
 20-network   21-observability-base
 30-security
-40-cicd   41-main-data   42-payment-data   43-messaging
+40-cicd   41-main-data   42-payment-data   43-messaging   44-payment-endpoints
 50-payment-webhook
 60-payment-app
 70-main-cluster-kubeadm
@@ -107,6 +109,15 @@ bootstrap                                  🔒 최초 1회
 - `10-global` 은 도메인 없이 apply 할 수 있습니다. 도메인 구매 후 절차는 구매 계정(운영 계정 / 다른 계정)에 따라 다르며 [`dns.tf`](live/prod/10-global/dns.tf) 상단 주석을 따릅니다.
 - `bootstrap`, `10-global`, `11-registry` 는 **destroy 하지 않습니다.**
   Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라집니다.
+
+### 스택별 소요 시간
+
+빈 상태에서 apply, 전체 destroy 기준 실측값입니다.
+
+| 스택 | 조건 | apply | destroy |
+|---|---|---|---|
+| `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 | 1분 52초 |
+| `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
 
 ---
 
