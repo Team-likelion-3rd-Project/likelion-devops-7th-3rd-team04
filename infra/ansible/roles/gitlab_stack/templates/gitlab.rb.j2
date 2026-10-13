@@ -1,0 +1,33 @@
+# Ansible(gitlab_stack role)이 생성 — 직접 수정하지 마세요.
+# 컨테이너에 /omnibus_config.rb 로 마운트되어 GITLAB_OMNIBUS_CONFIG 로 로드됩니다.
+
+# ── URL / TLS ────────────────────────────────────────────
+# TLS 는 호스트의 tailscale serve(443) 가 종료하고 127.0.0.1:{{ gitlab_http_port }} → 컨테이너 80 으로 프록시
+external_url '{{ gitlab_url }}'
+letsencrypt['enable'] = false
+nginx['listen_port'] = 80
+nginx['listen_https'] = false
+nginx['proxy_set_headers'] = {
+  "X-Forwarded-Proto" => "https",
+  "X-Forwarded-Ssl" => "on"
+}
+# 프록시(docker-proxy) 가 docker bridge 게이트웨이 주소로 접속하므로 해당 대역을 신뢰
+nginx['real_ip_trusted_addresses'] = ['172.16.0.0/12', '127.0.0.1']
+nginx['real_ip_header'] = 'X-Forwarded-For'
+nginx['real_ip_recursive'] = 'on'
+gitlab_rails['trusted_proxies'] = ['172.16.0.0/12', '127.0.0.1']
+
+# ── git over SSH: tailscale serve tcp:{{ gitlab_ssh_port }} → 127.0.0.1:{{ gitlab_ssh_port }} → 컨테이너 22 ──
+gitlab_rails['gitlab_shell_ssh_port'] = {{ gitlab_ssh_port }}
+
+# ── 사용하지 않는 기능 ────────────────────────────────────
+registry['enable'] = false                 # 이미지 저장소는 GHCR 사용
+gitlab_rails['registry_enabled'] = false
+gitlab_kas['enable'] = false               # 배포는 추후 ArgoCD 예정
+gitlab_pages['enable'] = false
+prometheus_monitoring['enable'] = false
+gitlab_rails['usage_ping_enabled'] = false
+
+# ── 리소스 튜닝 ───────────────────────────────────────────
+puma['worker_processes'] = {{ gitlab_puma_workers }}
+sidekiq['concurrency'] = {{ gitlab_sidekiq_concurrency }}

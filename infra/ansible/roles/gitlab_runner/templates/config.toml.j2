@@ -1,0 +1,23 @@
+# Ansible(gitlab_runner role)이 생성 — 직접 수정하지 마세요.
+concurrent = {{ gitlab_runner_concurrent }}
+check_interval = 0
+shutdown_timeout = 0
+
+[[runners]]
+  name = "{{ node_name }}"
+  url = "{{ gitlab_url }}"
+  token = "{{ gitlab_runner_token }}"
+  token_obtained_at = 0001-01-01T00:00:00Z
+  token_expires_at = 0001-01-01T00:00:00Z
+  executor = "docker"
+  # long polling 중에도 다음 job 을 받을 수 있게 (기본 1 이면 job 지연 경고)
+  request_concurrency = {{ [gitlab_runner_concurrent, 4] | min }}
+  [runners.docker]
+    image = "{{ gitlab_runner_default_image }}"
+    # docker.sock 바인드: job 이 호스트 Docker 로 직접 빌드 (DinD/privileged 불필요, 레이어 캐시 공유)
+    privileged = false
+    volumes = ["/var/run/docker.sock:/var/run/docker.sock", "/cache"]
+    # job / helper 컨테이너에서 MagicDNS(*.ts.net) 해석이 보장되지 않으므로 GitLab 주소를 고정
+    extra_hosts = ["{{ gitlab_fqdn }}:{{ gitlab_ts_ip }}"]
+    pull_policy = ["if-not-present"]
+    shm_size = 0

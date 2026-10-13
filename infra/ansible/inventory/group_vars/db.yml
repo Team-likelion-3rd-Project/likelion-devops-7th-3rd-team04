@@ -27,6 +27,11 @@ valkey_port: 6379
 valkey_password: "{{ lookup('env', 'VALKEY_PASSWORD') }}"
 valkey_maxmemory: "1gb"
 
+# ── 방화벽: tailscale0 에서만 허용할 포트 (firewall role) ─────
+firewall_tailnet_tcp_ports:
+  - "{{ db_port }}"     # MariaDB
+  - "{{ valkey_port }}" # Valkey
+
 # ── 튜닝 (k6 부하 테스트 대비) ─────────────────────────────
 # 커넥션: DB 사용 서비스 5개 × replica × TypeORM(mysql2) 기본 풀 10 → replica 3 기준 150, 여유 포함
 mariadb_max_connections: 500

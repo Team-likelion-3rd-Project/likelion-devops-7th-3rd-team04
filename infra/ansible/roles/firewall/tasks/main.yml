@@ -1,0 +1,32 @@
+---
+# 서비스는 host 네트워크 / loopback 에만 바인딩 → ufw 로 tailscale0 에서 들어오는 포트만 허용.
+# (Docker 포트 publish 는 ufw 를 우회하므로 외부 노출용 publish 는 사용하지 않음)
+# 허용 포트는 group_vars 의 firewall_tailnet_tcp_ports 로 지정
+- name: ufw 현재 상태 조회
+  ansible.builtin.command: ufw status verbose
+  register: ufw_status
+  changed_when: false
+
+- name: ufw 기본 규칙 추가
+  ansible.builtin.command: "ufw {{ item }}"
+  loop:
+    - "allow {{ ansible_port | default(22) }}/tcp" # SSH (Ansible: 사설 IP 경유)
+    - "allow 41641/udp"                            # Tailscale direct 연결 (DERP 경유 방지)
+  register: ufw_base_rules
+  changed_when: "'Rule added' in ufw_base_rules.stdout or 'Rule updated' in ufw_base_rules.stdout"
+
+- name: tailscale0 전용 서비스 포트 허용
+  ansible.builtin.command: "ufw allow in on {{ tailscale_interface }} to any port {{ item }} proto tcp"
+  loop: "{{ firewall_tailnet_tcp_ports }}"
+  register: ufw_tailnet_rules
+  changed_when: "'Rule added' in ufw_tailnet_rules.stdout or 'Rule updated' in ufw_tailnet_rules.stdout"
+
+- name: 기본 정책 (incoming deny)
+  ansible.builtin.command: ufw default deny incoming
+  when: "'deny (incoming)' not in ufw_status.stdout"
+  changed_when: true
+
+- name: ufw 활성화
+  ansible.builtin.command: ufw --force enable
+  when: "'Status: active' not in ufw_status.stdout"
+  changed_when: true

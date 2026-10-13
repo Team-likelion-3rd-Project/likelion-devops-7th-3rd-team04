@@ -1,0 +1,35 @@
+---
+# tailscale serve 가 Tailnet 쪽 443(HTTPS) / 2222(TCP) 를 받아 loopback 의 GitLab 으로 넘깁니다.
+# 인증서(<hostname>.<tailnet>.ts.net, Let's Encrypt) 발급·갱신은 tailscaled 가 자동 처리 — 설정은 재부팅 후에도 유지됨
+- name: 현재 serve 설정 조회
+  ansible.builtin.command: tailscale serve status --json
+  register: ts_serve_out
+  changed_when: false
+
+- name: HTTPS 443 → GitLab http 프록시
+  # HTTPS Certificates 가 꺼져 있으면 활성화 URL 을 띄우고 대기하므로 timeout 으로 끊음
+  ansible.builtin.command: >-
+    timeout 120 tailscale serve --bg --https=443 http://127.0.0.1:{{ gitlab_http_port }}
+  when: ts_serve_out.stdout is not search('"Proxy":\s*"http://127\.0\.0\.1:' ~ gitlab_http_port ~ '"')
+  changed_when: true
+
+- name: TCP 2222 → GitLab SSH 포워딩
+  ansible.builtin.command: >-
+    timeout 60 tailscale serve --bg --tcp={{ gitlab_ssh_port }} tcp://127.0.0.1:{{ gitlab_ssh_port }}
+  when: ts_serve_out.stdout is not search('"TCPForward":\s*"127\.0\.0\.1:' ~ gitlab_ssh_port ~ '"')
+  changed_when: true
+
+- name: HTTPS 응답 확인 (첫 인증서 발급 대기 포함)
+  ansible.builtin.uri:
+    url: "{{ gitlab_url }}/users/sign_in"
+    status_code: 200
+  register: gitlab_https
+  until: gitlab_https.status == 200
+  retries: 12
+  delay: 10
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "GitLab : {{ gitlab_url }}  (root / GITLAB_ROOT_PASSWORD)"
+      - "git SSH: ssh://git@{{ gitlab_fqdn }}:{{ gitlab_ssh_port }}/<group>/<project>.git"

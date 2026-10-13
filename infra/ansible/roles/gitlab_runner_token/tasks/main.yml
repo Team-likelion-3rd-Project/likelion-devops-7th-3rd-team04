@@ -1,0 +1,79 @@
+---
+# instance runner 를 만들고(이미 있으면 재사용) Runner 노드용 접속 정보를 로컬 .secrets 에 저장합니다.
+# (--tags runner_token 단독 실행 가능)
+- name: Tailscale 정보 조회 (--tags runner_token 단독 실행 대비)
+  ansible.builtin.command: tailscale status --self --peers=false --json
+  register: gl_ts_self
+  changed_when: false
+  when: ts_ip is not defined or ts_fqdn is not defined
+
+- name: ts_ip / ts_fqdn fact 등록
+  ansible.builtin.set_fact:
+    ts_ip: "{{ (gl_ts_self.stdout | from_json).Self.TailscaleIPs | select('match', '^[0-9.]+$') | first }}"
+    ts_fqdn: "{{ (gl_ts_self.stdout | from_json).Self.DNSName | regex_replace('\\.$', '') }}"
+  when: gl_ts_self is not skipped
+
+- name: runner 생성 스크립트
+  ansible.builtin.template:
+    src: runner_token.rb.j2
+    dest: "{{ gitlab_base_dir }}/scripts/runner_token.rb"
+    mode: "0644"
+
+- name: instance runner 생성 / 토큰 조회
+  # gitlab-rails 부팅 때문에 30초~1분 정도 걸림
+  # gitlab-rails 는 git 사용자로 실행되어 root 전용(0700) 디렉토리의 파일을 못 읽으므로,
+  # 컨테이너 root 셸에서 스크립트 내용을 읽어 코드 문자열로 넘김
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - gitlab
+      - sh
+      - -c
+      - 'gitlab-rails runner "$(cat /opt/ansible-scripts/runner_token.rb)"'
+  register: runner_token_out
+  changed_when: "'RUNNER_CREATED=true' in runner_token_out.stdout"
+  failed_when: false
+  no_log: true
+
+- name: runner 생성 실패 원인 출력 (토큰 마스킹)
+  ansible.builtin.fail:
+    msg: >-
+      gitlab-rails runner 실패 (rc={{ runner_token_out.rc }}):
+      {{ (runner_token_out.stderr ~ ' ' ~ runner_token_out.stdout)
+         | regex_replace('glrt-[A-Za-z0-9_.-]+', 'glrt-***')
+         | regex_replace('\s+', ' ') | trim | truncate(2000) }}
+  when: runner_token_out.rc != 0 or runner_token_out.stdout is not search('RUNNER_TOKEN=glrt-')
+
+- name: 토큰 추출
+  ansible.builtin.set_fact:
+    gitlab_runner_token: >-
+      {{ runner_token_out.stdout_lines | select('match', '^RUNNER_TOKEN=glrt-') | first | regex_replace('^RUNNER_TOKEN=', '') }}
+  no_log: true
+
+- name: 로컬 .secrets 디렉토리
+  ansible.builtin.file:
+    path: "{{ local_secrets_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Runner 노드용 gitlab-runner.env 생성 (로컬)
+  ansible.builtin.copy:
+    dest: "{{ local_secrets_dir }}/gitlab-runner.env"
+    content: |
+      # gitlab.yml 이 생성 — 커밋 금지, 팀 비밀 채널로만 공유
+      GITLAB_URL=https://{{ ts_fqdn }}
+      GITLAB_TS_IP={{ ts_ip }}
+      GITLAB_RUNNER_TOKEN={{ gitlab_runner_token }}
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: 안내
+  ansible.builtin.debug:
+    msg:
+      - "Runner 접속 정보: {{ local_secrets_dir }}/gitlab-runner.env"
+      - "다음: set -a; source .env; source .secrets/gitlab-runner.env; set +a && ansible-playbook gitlab-runner.yml -K"

@@ -1,18 +1,20 @@
-# infra/ansible — Tailscale 기반 kubeadm 클러스터 / DB 노드 구성
+# infra/ansible — Tailscale 기반 kubeadm 클러스터 / DB 노드 / GitLab 구성
 
-팀원들이 **각자의 로컬 PC에서 띄운 VM**을 Tailscale Tailnet으로 묶어 하나의 kubeadm 클러스터와 DB 노드를 만듭니다.
+팀원들이 **각자의 로컬 PC에서 띄운 VM**을 Tailscale Tailnet으로 묶어 하나의 kubeadm 클러스터와 DB 노드, GitLab / GitLab Runner 노드를 만듭니다.
 
 | Playbook | 대상 | 하는 일 |
 |---|---|---|
 | `control-plane.yml` | `[control_plane]` (1대) | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm init` → Calico(VXLAN) 설치 → worker용 `join.env` 생성 |
 | `worker-join.yml` | `[workers]` | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm join` |
 | `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → MariaDB + Valkey (Docker Compose) — [7절](#7-db-노드-구성-mariadb--valkey) |
+| `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
+| `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
 
 - OS: Ubuntu 22.04 / Kubernetes v1.33 / containerd / Calico v3.30 (tigera-operator)
 - Pod CIDR `10.0.0.0/16`, Service CIDR `10.96.0.0/12`
 - 모든 노드는 **Tailscale IP(100.x)** 를 node IP로 사용하며, Tailscale 태그는 `tag:k8s-node` 하나로 통일합니다.
 
-> **비밀값은 절대 커밋하지 않습니다.** OAuth secret, join token, CA hash, API endpoint는 모두 `.env`/`.secrets/`(gitignore 대상)에서 환경변수로만 주입됩니다.
+> **비밀값은 절대 커밋하지 않습니다.** OAuth secret, join token, CA hash, API endpoint, GitLab root 비밀번호 / Runner 토큰은 모두 `.env`/`.secrets/`(gitignore 대상)에서 환경변수로만 주입됩니다.
 
 ```
 infra/ansible/
@@ -21,16 +23,21 @@ infra/ansible/
 ├── control-plane.yml
 ├── worker-join.yml
 ├── db.yml
+├── gitlab.yml
+├── gitlab-runner.yml
 ├── inventory/
 │   ├── hosts.example.ini      # → hosts.ini 로 복사 (gitignore)
 │   └── group_vars/
 │       ├── all.yml            # 버전·CIDR 고정값, 환경변수 매핑
-│       └── db.yml             # DB 노드: 이미지 버전, 튜닝값, backend/.env 매핑
+│       ├── db.yml             # DB 노드: 이미지 버전, 튜닝값, backend/.env 매핑
+│       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
+│       └── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,
-│                              # docker, db_firewall, db_stack
-└── .secrets/                  # (자동 생성, gitignore) join.env, admin.conf
+│                              # docker, firewall, db_stack,
+│                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner
+└── .secrets/                  # (자동 생성, gitignore) join.env, admin.conf, gitlab-runner.env
 ```
 
 ---
@@ -45,13 +52,19 @@ infra/ansible/
 |---|---|---|
 | `tag:k8s-node` | control plane, worker | `control-plane.yml`, `worker-join.yml` |
 | `tag:db` | DB 노드 (MariaDB + Valkey) | `db.yml` |
+| `tag:gitlab` | GitLab 노드 | `gitlab.yml` |
+| `tag:gitlab-runner` | GitLab Runner 노드 | `gitlab-runner.yml` |
+| `tag:ci` | GitHub Actions runner (ephemeral, 추후 미러링 workflow) | — |
 
 ```jsonc
 {
   "tagOwners": {
     // OAuth client 가 이 태그로 디바이스를 등록할 수 있게 함
     "tag:k8s-node": ["autogroup:admin"],
-    "tag:db":       ["autogroup:admin"]
+    "tag:db":       ["autogroup:admin"],
+    "tag:gitlab":        ["autogroup:admin"],
+    "tag:gitlab-runner": ["autogroup:admin"],
+    "tag:ci":            ["autogroup:admin"]
   },
   "grants": [
     // ── k8s ──────────────────────────────────────────────
@@ -66,30 +79,50 @@ infra/ansible/
     // k8s Pod → DB. Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
     { "src": ["tag:k8s-node"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379"] },
     // 팀원 PC → DB : SSH, DBeaver 등 DB 클라이언트, valkey-cli 디버깅
-    { "src": ["autogroup:member"], "dst": ["tag:db"], "ip": ["tcp:22", "tcp:3306", "tcp:6379"] }
+    { "src": ["autogroup:member"], "dst": ["tag:db"], "ip": ["tcp:22", "tcp:3306", "tcp:6379"] },
+
+    // ── GitLab ───────────────────────────────────────────
+    // Runner → GitLab : job 수신, git clone (HTTPS), git SSH
+    { "src": ["tag:gitlab-runner"], "dst": ["tag:gitlab"], "ip": ["tcp:443", "tcp:2222"] },
+    // GitHub Actions runner → GitLab : 코드 미러링 push (HTTPS) — 추후 workflow 에서 사용
+    { "src": ["tag:ci"], "dst": ["tag:gitlab"], "ip": ["tcp:443"] },
+    // 팀원 PC → GitLab : SSH(VM 관리), 웹 UI / git (HTTPS, SSH 2222)
+    { "src": ["autogroup:member"], "dst": ["tag:gitlab"], "ip": ["tcp:22", "tcp:443", "tcp:2222"] },
+    // 팀원 PC → Runner : SSH(VM 관리)
+    { "src": ["autogroup:member"], "dst": ["tag:gitlab-runner"], "ip": ["tcp:22"] }
 
     // (추후, 필요할 때만) GitLab CI 에서 마이그레이션·통합테스트를 돌릴 경우
-    // { "src": ["tag:gitlab"], "dst": ["tag:db"], "ip": ["tcp:3306"] }
+    // { "src": ["tag:gitlab-runner"], "dst": ["tag:db"], "ip": ["tcp:3306"] }
   ]
 }
 ```
 
-### 1-2. OAuth client 생성 (용도별 2개)
+### 1-2. OAuth client 생성 (용도별)
 
 | Client | Tags | `infra/ansible/.env` 변수 | 공유 대상 |
 |---|---|---|---|
 | k8s 용 | `tag:k8s-node` | `TS_OAUTH_CLIENT_SECRET` | 팀원 전체 (각자 worker-join 실행) |
 | DB 용 | `tag:db` | `TS_DB_OAUTH_CLIENT_SECRET` | DB 담당자 |
+| GitLab 용 | `tag:gitlab` | `TS_GITLAB_OAUTH_CLIENT_SECRET` | GitLab 담당자 |
+| GitLab Runner 용 | `tag:gitlab-runner` | `TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET` | Runner 담당자 |
+| GitHub Actions 용 | `tag:ci` | (추후) GitHub Repository Secret | 지금은 생성만 — 미러링 workflow 구현 시 등록 |
 
 1. [Admin console → Settings → Trust credentials (OAuth clients)](https://login.tailscale.com/admin/settings/trust-credentials) → **새 credential (OAuth)** 생성
 2. Scope: **Keys → Auth Keys : Write** (Write 를 체크해야 아래에 태그 선택칸이 나타남)
-3. Tags: 위 표의 태그 하나
+3. Tags: 위 표의 태그 **하나만** 선택 (한 client 에 태그를 여러 개 지정하면 `tailscale up` 이 `requested tags [...] are invalid or not permitted` 로 실패합니다)
 4. 생성 직후 표시되는 **Client secret (`tskey-client-...`)** 을 복사 — 다시 볼 수 없습니다.
 5. 팀 비밀 채널(1Password, 개인 DM 등)로만 공유합니다. 커밋/이슈/Slack 공개 채널 금지.
 
 > **용도별로 나누는 이유**: secret 을 가진 사람은 그 태그(= ACL 상의 신원)로 기기를 Tailnet 에 추가할 수 있습니다. 팀원 전체가 가진 k8s 용 secret 으로 `tag:db` 까지 만들 수 없게 분리해 두면, 한쪽이 유출돼도 다른 쪽 신원은 안전하고 교체도 독립적으로 할 수 있습니다.
 
 > Playbook은 이 secret을 `tailscale up --auth-key=<secret>?ephemeral=false&preauthorized=true --advertise-tags=<태그>` 형태로 직접 사용합니다. 태그가 붙은 디바이스는 사용자 소유가 아니며 key expiry도 기본 비활성입니다.
+
+### 1-3. MagicDNS / HTTPS Certificates 활성화 (GitLab HTTPS 용)
+
+[Admin console → DNS](https://login.tailscale.com/admin/dns) 에서 **MagicDNS** 와 **HTTPS Certificates** 를 켭니다.
+GitLab 노드의 `tailscale serve` 가 `<node_name>.<tailnet>.ts.net` 용 Let's Encrypt 인증서를 자동 발급·갱신하는 데 필요합니다.
+
+> 인증서는 Certificate Transparency 로그에 공개되므로 Tailnet 이름(`<tailnet>.ts.net`)과 노드명이 외부에 노출된다는 점만 알아 두세요. (접근은 여전히 Tailnet 내부로 제한)
 
 ---
 
@@ -303,3 +336,157 @@ kubectl run vktest --rm -it --image=valkey/valkey:9.1 --restart=Never --   valke
 - DB VM 의 사설 IP 로 3306 에 접속하면 **차단**되어야 정상입니다.
 - 다시 실행하면 거의 모든 task 가 `ok` (changed=0 에 가까움) 로 끝나야 합니다.
 
+---
+
+## 8. GitLab 노드 구성
+
+GitHub Actions 가 미러링한 코드로 CI(이미지 빌드/테스트 → GHCR push)를 돌릴 온프레미스 GitLab 을 GitLab 전용 VM 1대에 Docker Compose 로 띄웁니다.
+이번 범위는 **GitLab / Runner VM 과 Tailscale(HTTPS) 기반까지**이며, GitHub Actions 미러링 workflow · `.gitlab-ci.yml` · GHCR 자격증명은 추후 작업입니다.
+
+```
+GitHub Actions ──(Tailscale OAuth, tag:ci)──▶ https://gitlab.<tailnet>.ts.net ◀──(tag:gitlab-runner)── GitLab Runner ──▶ GHCR
+                                                  │ tailscale serve :443 (TLS 종료, 인증서 자동 갱신)
+                                                  ▼
+                                          127.0.0.1:8080 → GitLab CE 컨테이너 (http)
+```
+
+| 항목 | 값 |
+|---|---|
+| 이미지 | `gitlab/gitlab-ce:19.4.2-ce.0` (`inventory/group_vars/gitlab.yml` 의 `gitlab_image`) |
+| URL | `https://<node_name>.<tailnet>.ts.net` — `tailscale serve` 가 443 에서 TLS 종료 |
+| git SSH | `ssh://git@<fqdn>:2222/...` — `tailscale serve` TCP 2222 포워딩 |
+| 포트 publish | `127.0.0.1:8080`, `127.0.0.1:2222` (loopback 전용, 사설 IP 로는 접근 불가) |
+| ufw | SSH, 41641/udp, `tailscale0` 의 443 / 2222 만 허용 |
+| 경로 | 설정 `/opt/gitlab` (0700), 데이터 `/var/lib/gitlab/{config,logs,data}` |
+| 비활성 기능 | Container Registry(GHCR 사용), KAS, Pages, 내장 Prometheus, usage ping, 외부 회원가입 |
+
+### 8-1. VM 사양
+
+| 구분 | vCPU | RAM | Disk |
+|---|---|---|---|
+| **권장** | 4 | 8 GB | 50 GB 이상 SSD |
+| 최소 | 2 | 4 GB (+ swap 2 GB) | 30 GB — `gitlab_puma_workers: 0`, `gitlab_sidekiq_concurrency: 5` 로 낮춤 |
+
+> 4 GB 미만이면 `gitlab.yml` 이 시작 단계에서 중단합니다 (`gitlab_min_memory_mb`). 2 GB 에서는 swap 으로 버티다 puma 가 뜨지 못해 `502 Bad Gateway` 가 계속됩니다.
+
+### 8-2. 값 설정
+
+| 값 | 위치 | 비고 |
+|---|---|---|
+| `TS_GITLAB_OAUTH_CLIENT_SECRET` | `infra/ansible/.env` | 1-2 의 GitLab 용 OAuth client (`tag:gitlab`) |
+| `GITLAB_ROOT_PASSWORD` | `infra/ansible/.env` | 8자 이상, 공백·따옴표·역슬래시·`$`·`#`·`` ` `` 불가 |
+
+- `hosts.ini` 의 `[gitlab]` 그룹에 VM 을 추가합니다. `node_name` 이 Tailscale 호스트명 = URL 앞부분이 됩니다. (예시: `inventory/hosts.example.ini`)
+- 1-3 의 **HTTPS Certificates 활성화가 선행**되어야 합니다.
+
+### 8-3. 실행
+
+```bash
+cd infra/ansible
+set -a; source .env; set +a
+ansible-playbook gitlab.yml -K
+```
+
+- 첫 기동은 GitLab 초기화 때문에 **5~10분** 걸립니다. (`docker compose up --wait` 가 healthy 까지 대기)
+- 마지막에 GitLab URL 이 출력되고, Runner 노드용 접속 정보가 로컬 **`.secrets/gitlab-runner.env`** 로 생성됩니다.
+
+| 파일 | 내용 | 용도 |
+|---|---|---|
+| `.secrets/gitlab-runner.env` | `GITLAB_URL`, `GITLAB_TS_IP`, `GITLAB_RUNNER_TOKEN` | Runner 담당자에게 **비밀 채널로** 전달 |
+
+- Runner 는 `gitlab_runner_description`(기본 `gitlab-runner`) 이름의 **instance runner** 로 생성되며, 재실행 시 같은 runner 를 재사용합니다. 토큰만 다시 뽑으려면:
+  ```bash
+  ansible-playbook gitlab.yml -K --tags runner_token
+  ```
+- 토큰을 교체(유출 등)하려면 GitLab Admin → CI/CD → Runners 에서 해당 runner 를 삭제한 뒤 위 명령을 다시 실행하고, Runner 노드에서 9-2 를 재실행합니다.
+- **`GITLAB_ROOT_PASSWORD` 는 최초 초기화 때만 반영**됩니다. 이후 변경은 UI(Admin → Users → root) 에서 합니다.
+  - GitLab 은 **흔한 단어·패턴이 들어간 비밀번호를 거부**합니다(`Password must not contain commonly used combinations of words and letters`). 이 경우 root 계정이 만들어지지 않은 채 초기화가 끝나므로, `openssl rand -base64 18 | tr -d '/+='` 같은 무작위 값을 쓰세요.
+  - 거부됐다면 VM 에서 `sudo docker compose -f /opt/gitlab/compose.yml down && sudo rm -rf /var/lib/gitlab` 로 초기화한 뒤 비밀번호를 바꿔 다시 실행합니다. (최초 구성 단계에서만 — 데이터가 모두 지워짐)
+
+### 8-4. 검증
+
+```bash
+# 팀원 PC (Tailnet 접속 상태)
+curl -fsS -o /dev/null -w '%{http_code}\n' https://<gitlab fqdn>/users/sign_in   # 유효한 인증서로 200
+# (/-/readiness 등 health 엔드포인트는 컨테이너 내부에서만 허용 → 외부에서는 404 가 정상)
+# 내부 상태: sudo docker exec gitlab curl -fsS http://localhost/-/readiness
+# 브라우저로 https://<gitlab fqdn> 접속 → root / GITLAB_ROOT_PASSWORD 로그인
+
+# GitLab 노드
+sudo docker compose -f /opt/gitlab/compose.yml ps    # gitlab healthy
+sudo tailscale serve status                          # https:443 → 127.0.0.1:8080, tcp:2222
+sudo ufw status
+```
+
+- 같은 LAN 에서 GitLab VM **사설 IP** 의 80/443/8080 으로 접속하면 **차단**되어야 정상입니다.
+- 다시 실행하면 runner 생성 없이 거의 모든 task 가 `ok` 로 끝나야 합니다.
+
+---
+
+## 9. GitLab Runner 노드 구성
+
+Runner 전용 VM 1대에 GitLab Runner(apt 패키지)를 설치하고 8절에서 발급된 토큰으로 등록합니다.
+
+| 항목 | 값 |
+|---|---|
+| 버전 | `gitlab-runner 19.4.1` (GitLab 과 major.minor 맞춤, `inventory/group_vars/gitlab_runner.yml`) |
+| executor | `docker` + **`/var/run/docker.sock` 바인드** (job 안에서 `docker build/push` 가 호스트 Docker 로 실행) |
+| 동시 job | `gitlab_runner_concurrent: 2` |
+| GitLab 주소 | job / helper 컨테이너에 `extra_hosts` 로 `<gitlab fqdn>:<GitLab Tailscale IP>` 고정 (컨테이너 안의 MagicDNS 해석에 의존하지 않음) |
+| 정리 | 주간 cron 으로 7일 지난 빌드 캐시 / 이미지 prune |
+| ufw | SSH, 41641/udp 만 허용 (인바운드 서비스 없음) |
+
+> **docker.sock 바인드의 트레이드오프**: DinD(privileged) 없이 빠르고 레이어 캐시를 공유하지만, job 이 **호스트 Docker 전체 권한**(= 사실상 Runner VM root)을 가집니다.
+> 이 GitLab 에는 우리 레포 미러만 올리고, runner 는 신뢰된 프로젝트에서만 쓰는 것을 전제로 합니다. 외부 기여자 코드를 돌리게 되면 executor 를 재검토합니다.
+
+### 9-1. VM 사양
+
+| 구분 | vCPU | RAM | Disk |
+|---|---|---|---|
+| **권장** | 4 | 8 GB | 50 GB 이상 SSD (이미지 빌드 캐시) |
+| 최소 | 2 | 4 GB | 30 GB — `gitlab_runner_concurrent: 1` |
+
+### 9-2. 실행
+
+8절에서 받은 `gitlab-runner.env` 를 `infra/ansible/.secrets/gitlab-runner.env` 에 두고, `hosts.ini` 의 `[gitlab_runner]` 에 VM 을 추가합니다.
+`infra/ansible/.env` 에는 1-2 의 Runner 용 OAuth client secret(`TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET`, `tag:gitlab-runner`)을 채웁니다.
+
+```bash
+cd infra/ansible
+set -a; source .env; source .secrets/gitlab-runner.env; set +a
+ansible-playbook gitlab-runner.yml -K
+```
+
+### 9-3. 검증
+
+```bash
+# Runner 노드
+sudo gitlab-runner verify                 # ... is valid
+sudo gitlab-runner list
+```
+
+- GitLab Admin → CI/CD → Runners 에서 runner 가 **Online** 이면 성공입니다.
+- (선택) 임시 프로젝트에 아래 `.gitlab-ci.yml` 로 clone · docker.sock 동작을 확인한 뒤 프로젝트를 삭제합니다.
+  ```yaml
+  smoke:
+    image: docker:28-cli
+    script:
+      - docker info --format '{{.ServerVersion}}'
+      - git -C "$CI_PROJECT_DIR" log -1 --oneline || true
+  ```
+
+### 9-4. 추후 작업 (이번 범위 밖)
+
+- GitHub Actions: `tailscale/github-action` 으로 `tag:ci` OAuth client 를 사용해 Tailnet 접속 → GitLab 으로 미러 push
+- GitLab 프로젝트 CI/CD 변수에 GHCR push 용 토큰(`write:packages`) 등록 → `.gitlab-ci.yml` 에서 `docker login ghcr.io`
+- ArgoCD 도입 후 배포 단계 연동
+
+---
+
+## 10. GitLab / Runner 트러블슈팅
+
+- **`tailscale serve` 단계에서 timeout**: HTTPS Certificates 가 꺼져 있으면 serve 가 활성화 URL 을 띄우고 멈춥니다. 1-3 을 확인한 뒤 다시 실행합니다.
+- **HTTPS 응답 확인 단계 실패**: 첫 인증서 발급(Let's Encrypt)은 수십 초 걸릴 수 있습니다. VM 에서 `sudo tailscale cert <fqdn>` 로 발급 에러를 직접 확인할 수 있습니다.
+- **URL 이 `gitlab-1.<tailnet>.ts.net` 처럼 바뀜**: 같은 호스트명의 기기가 이미 Tailnet 에 있으면 `-1` 이 붙습니다. Admin console 에서 이전 기기를 지우고 VM 에서 `sudo tailscale set --hostname=<node_name>` 후 `gitlab.yml` 을 재실행합니다. (external_url 이 바뀌므로 Runner 도 9-2 재실행)
+- **job 의 git clone / docker push 가 중간에 멈춤**: 컨테이너 MTU(1500) 와 `tailscale0`(1280) 차이로 큰 패킷이 막히는 경우입니다. Runner 노드 `/etc/docker/daemon.json` 에 `"mtu": 1280` 을 추가하는 방향으로 대응합니다.
+- **Runner 가 Offline**: Runner 노드에서 `tailscale ping <gitlab fqdn>` 과 ACL(`tag:gitlab-runner → tag:gitlab tcp:443`) 을 확인합니다.
