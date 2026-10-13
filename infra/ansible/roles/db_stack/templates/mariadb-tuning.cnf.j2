@@ -1,0 +1,25 @@
+# Ansible(db_stack role)이 생성 — 값은 inventory/group_vars/db.yml 에서 조정
+[mysqld]
+port                    = {{ db_port }}
+character-set-server    = utf8mb4
+collation-server        = utf8mb4_unicode_ci
+skip-name-resolve
+
+# ── 커넥션 (k6 부하 테스트 대비) ──
+max_connections         = {{ mariadb_max_connections }}
+max_connect_errors      = 100000
+thread_cache_size       = 128
+table_open_cache        = 4000
+
+# ── InnoDB ──
+innodb_buffer_pool_size = {{ mariadb_buffer_pool_mb }}M
+innodb_log_file_size    = 512M
+innodb_flush_method     = O_DIRECT
+
+# ── 느린 쿼리 분석 ──
+slow_query_log          = ON
+slow_query_log_file     = /var/lib/mysql/slow.log
+long_query_time         = 1
+
+[client]
+default-character-set   = utf8mb4
