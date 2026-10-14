@@ -4,12 +4,14 @@ import { HOTELS } from '../data/hotels'
 import { fetchRoom, fetchRoomAvailability } from '../api/hotels'
 import type { Room, RoomAvailabilityDay } from '../api/hotels'
 import { createBooking } from '../api/bookings'
+import { refreshAccessToken } from '../api/gateway'
 import { customerAuth } from '../api/tokenStore'
 import ReservationSteps from '../components/reservation/ReservationSteps'
 import { sumGuests } from '../components/reservation/guestTypes'
 import { CalendarIcon, PersonIcon, PinIcon, RefreshIcon } from '../components/reservation/icons'
 import { addDays, diffDays, formatDate, formatDateISO, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { parseReservationSearchParams, toReservationSearchParams } from '../utils/reservationQuery'
+import { currentLoginState } from '../utils/loginRedirect'
 import './ReservationOptionsPage.css'
 
 type LoadStatus = 'loading' | 'success' | 'error'
@@ -126,9 +128,14 @@ function ReservationOptionsPage() {
   // 실제 단가를 조회해 인원수만큼 곱해 요금에 반영한다(hasIndoorPool/hasLounge boolean 방식은 폐지됨).
   const handleReserve = async () => {
     if (!customerAuth.getAccessToken()) {
-      setBookingStatus('error')
-      setBookingError('로그인이 필요합니다.')
-      return
+      // 새로고침 직후에는 액세스 토큰이 아직 복구되지 않았을 수 있으니 쿠키로 한 번 복구해 본다.
+      // 그래도 안 되면 로그인 화면으로 보내고, 로그인 후 지금 고른 조건(쿼리 포함) 그대로 이 화면으로 돌아온다.
+      try {
+        await refreshAccessToken()
+      } catch {
+        navigate('/login', { state: currentLoginState('예약하려면 로그인이 필요합니다.') })
+        return
+      }
     }
 
     setBookingStatus('submitting')

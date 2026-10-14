@@ -3,13 +3,13 @@
   hosts: control_plane
   become: true
   vars:
-    required_env:
-      TS_OAUTH_CLIENT_SECRET: "{{ ts_oauth_secret }}"
+    required_env: "{{ {'TS_OAUTH_CLIENT_SECRET': ts_oauth_secret} if use_tailscale else {} }}"
   roles:
     - preflight
     - common
     - containerd
-    - tailscale
+    - role: tailscale
+      when: use_tailscale
     - kubernetes
     - control_plane
     - calico

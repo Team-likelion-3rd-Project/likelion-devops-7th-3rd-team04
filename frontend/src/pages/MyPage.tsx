@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { fetchMe, isUnauthorized, refreshAccessToken, updateMe, type UserProfile } from '../api/gateway'
+import { currentLoginState } from '../utils/loginRedirect'
 import './MyPage.css'
 
 // 비밀번호 변경(/mypage/password)·회원 탈퇴(/mypage/withdraw)는 각각 별도 페이지로 분리돼 있다.
@@ -49,7 +50,7 @@ function MyPage() {
         } catch (err2) {
           if (cancelled) return
           if (isUnauthorized(err2)) {
-            navigate('/login')
+            navigate('/login', { state: currentLoginState() })
           } else {
             setLoadError('일시적으로 내 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.')
           }

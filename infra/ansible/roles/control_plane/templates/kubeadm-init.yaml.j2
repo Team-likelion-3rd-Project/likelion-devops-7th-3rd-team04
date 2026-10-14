@@ -1,22 +1,31 @@
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
+{% if kubeadm_bootstrap_token is defined %}
+bootstrapTokens:
+  - token: "{{ kubeadm_bootstrap_token }}"
+    ttl: "{{ kubeadm_token_ttl }}"
+{% endif %}
+{% if kubeadm_certificate_key is defined %}
+certificateKey: "{{ kubeadm_certificate_key }}"
+{% endif %}
 localAPIEndpoint:
-  advertiseAddress: "{{ ts_ip }}"
+  advertiseAddress: "{{ node_ip }}"
   bindPort: 6443
 nodeRegistration:
   name: "{{ node_name }}"
   criSocket: unix:///run/containerd/containerd.sock
   kubeletExtraArgs:
     - name: node-ip
-      value: "{{ ts_ip }}"
+      value: "{{ node_ip }}"
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
-controlPlaneEndpoint: "{{ ts_ip }}:6443"
+controlPlaneEndpoint: "{{ k8s_control_plane_endpoint }}:6443"
 apiServer:
   certSANs:
-    - "{{ ts_ip }}"
-    - "{{ node_name }}"
+{% for san in [node_ip, node_name, k8s_control_plane_endpoint] | unique %}
+    - "{{ san }}"
+{% endfor %}
 networking:
   podSubnet: "{{ pod_subnet }}"
   serviceSubnet: "{{ service_subnet }}"

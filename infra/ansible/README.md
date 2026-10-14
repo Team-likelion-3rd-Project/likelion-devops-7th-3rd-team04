@@ -33,12 +33,14 @@ infra/ansible/
 ├── registry-trust.yml
 ├── inventory/
 │   ├── hosts.example.ini      # → hosts.ini 로 복사 (gitignore)
+│   ├── aws.ini                # AWS 노드가 자기 자신에게 실행할 때 쓰는 inventory (12절)
 │   └── group_vars/
 │       ├── all.yml            # 버전·CIDR 고정값, 환경변수 매핑
 │       ├── control_plane.yml  # Ingress: helm/Traefik 버전, NodePort / CI/CD: agent 버전, backend-secrets key
 │       ├── db.yml             # DB 노드: 이미지 버전, 튜닝값, backend/.env 매핑
 │       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
-│       └── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
+│       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
+│       └── aws_control_plane.yml  # AWS CP: Tailscale 끔, Calico MTU / 노드 IP 감지
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,

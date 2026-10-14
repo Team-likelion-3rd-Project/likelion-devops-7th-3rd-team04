@@ -9,6 +9,8 @@ import {
 export enum ReservationStatus {
   PENDING_PAYMENT = 'PENDING_PAYMENT', // 결제 대기 (예약 생성 시 기본값, 아직 결제 전)
   RESERVED = 'RESERVED', // 결제 완료, 예약 확정
+  PAYMENT_FAILED = 'PAYMENT_FAILED', // 결제 재시도 불가(금액 위변조, 최대 시도 초과 등)로 확정 실패
+  EXPIRED = 'EXPIRED', // payment_due_at까지 결제 안 돼서 배치가 만료 처리
   CANCELLED = 'CANCELLED', // 예약 취소
   COMPLETED = 'COMPLETED', // 체크아웃 완료
 }
@@ -51,6 +53,12 @@ export class Reservation {
     default: ReservationStatus.PENDING_PAYMENT,
   })
   status!: ReservationStatus;
+
+  // 결제 대기 마감 시각(생성 + 30분). 만료 배치(LDP-26 이후)가 이 시각 지난 PENDING_PAYMENT
+  // 예약을 EXPIRED로 돌린다. 생성 시 값 채우는 로직은 LDP-25(토스 승인 연동)에서 구현 — 지금은
+  // 컬럼만 추가하는 단계라 nullable.
+  @Column({ name: 'payment_due_at', type: 'datetime', nullable: true })
+  paymentDueAt?: Date;
 
   @CreateDateColumn()
   createdAt!: Date;

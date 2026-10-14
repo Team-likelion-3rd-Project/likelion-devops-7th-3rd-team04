@@ -1,4 +1,5 @@
-const BASE_URL = import.meta.env.VITE_API_URL
+// 비워 두면 같은 출처의 /api/...로 호출한다 — 로컬 개발에서는 Vite 개발 서버가 /api를 클러스터로 프록시한다.
+const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
 // proto의 RoomImage 메시지 / gateway RoomDto.images와 1:1 대응
 export interface RoomImage {

@@ -301,7 +301,12 @@ const HOTEL_SEEDS: HotelSeed[] = [
 ];
 
 // mariadb 컨테이너가 healthy해도, 접속 직후 잠깐 연결이 튈 수 있어 짧게 재시도합니다.
+// entities/synchronize를 인자로 받는 이유: admins/admin_credentials(user-service/auth-service 소유,
+// 아직 synchronize: true로 관리됨)와 hotels/rooms/room_availabilities/facilities(Flyway로 넘어간
+// 테이블)를 같은 DataSource의 synchronize 한 값으로 묶을 수 없기 때문입니다 — 연결을 둘로 나눕니다.
 async function createDataSourceWithRetry(
+  entities: Function[],
+  synchronize: boolean,
   maxAttempts = 5,
   delayMs = 2000,
 ): Promise<DataSource> {
@@ -312,8 +317,8 @@ async function createDataSourceWithRetry(
     username: DB_USERNAME,
     password: DB_PASSWORD,
     database: DB_DATABASE,
-    entities: [Admin, AdminCredential, Hotel, Room, RoomAvailability, Facility],
-    synchronize: true, // ⚠️ 개발 환경(Dev)에서만 사용 — 기존 서비스 모듈들과 동일한 패턴
+    entities,
+    synchronize,
   });
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -481,15 +486,28 @@ async function seedFacilities(dataSource: DataSource): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const dataSource = await createDataSourceWithRetry();
+  // admins/admin_credentials: user-service/auth-service가 아직 synchronize: true로 관리하는
+  // 테이블이라, 이 스크립트도 synchronize: true로 열어야 db-seed만 단독으로 띄워도
+  // (user-service를 먼저 띄우지 않아도) 테이블이 없다는 에러 없이 동작합니다.
+  const adminDataSource = await createDataSourceWithRetry(
+    [Admin, AdminCredential],
+    true,
+  );
+  // hotels/rooms/room_availabilities/facilities: main-db-migration(Flyway)이 만들고 FK까지 건
+  // 테이블이라, synchronize: true로 열면 이 스크립트가 돌 때마다 그 FK를 지워버립니다.
+  const hotelDataSource = await createDataSourceWithRetry(
+    [Hotel, Room, RoomAvailability, Facility],
+    false,
+  );
   try {
-    await seedAdmin(dataSource);
-    await seedHotelsAndRooms(dataSource);
-    await seedFacilities(dataSource);
-    await seedRoomAvailabilities(dataSource);
+    await seedAdmin(adminDataSource);
+    await seedHotelsAndRooms(hotelDataSource);
+    await seedFacilities(hotelDataSource);
+    await seedRoomAvailabilities(hotelDataSource);
     console.log('[seed] 시딩 완료');
   } finally {
-    await dataSource.destroy();
+    await adminDataSource.destroy();
+    await hotelDataSource.destroy();
   }
 }
 
