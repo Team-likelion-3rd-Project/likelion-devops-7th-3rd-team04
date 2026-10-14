@@ -13,8 +13,6 @@ import { toImageDataUrl, type Room } from '../api/hotels'
 import type { Hotel } from '../data/hotels'
 import { CalendarIcon, PersonIcon, PinIcon } from '../components/reservation/icons'
 import PaymentModal from '../components/reservation/PaymentModal'
-import PaymentCompleteModal from '../components/reservation/PaymentCompleteModal'
-import type { Payment } from '../api/payments'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { STATUS_LABEL, fetchRoomLookup } from './reservationHistoryUtils'
 import './MyPage.css'
@@ -45,7 +43,6 @@ function ReservationDetailPage() {
   const [cancelError, setCancelError] = useState('')
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false)
   const [showPaymentModal, setShowPaymentModal] = useState(false)
-  const [completedPayment, setCompletedPayment] = useState<Payment | null>(null)
 
   const [roomInfo, setRoomInfo] = useState<{ hotel: Hotel; room: Room } | null>(null)
   const [isRoomLoading, setIsRoomLoading] = useState(false)
@@ -164,14 +161,6 @@ function ReservationDetailPage() {
       cancelled = true
     }
   }, [booking])
-
-  // PaymentModal이 결제 API 호출까지 마치고 알려주면, 결제창은 닫고 결제완료 모달을 띄운다.
-  // 응답은 Payment이며 갱신된 Booking을 함께 내려주지 않으므로, 화면 상태도 함께 RESERVED로 반영한다.
-  const handlePaid = (payment: Payment) => {
-    setShowPaymentModal(false)
-    setBooking((prev) => (prev ? { ...prev, status: 'RESERVED' } : prev))
-    setCompletedPayment(payment)
-  }
 
   const handleCancel = async () => {
     if (!booking) return
@@ -381,12 +370,7 @@ function ReservationDetailPage() {
             amount: booking.totalAmount,
           }}
           onClose={() => setShowPaymentModal(false)}
-          onPaid={handlePaid}
         />
-      )}
-
-      {completedPayment && (
-        <PaymentCompleteModal payment={completedPayment} onClose={() => setCompletedPayment(null)} />
       )}
     </section>
   )

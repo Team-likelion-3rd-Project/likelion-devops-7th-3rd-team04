@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { createPayment } from '../../api/payments'
-import type { Payment } from '../../api/payments'
+import { useNavigate } from 'react-router-dom'
+import { IS_PAYMENT_FAKE, PAYMENT_MODE, paymentSuccessUrl, preparePayment } from '../../api/payments'
 import './PaymentModal.css'
 
 export interface PaymentModalSummary {
@@ -17,45 +17,14 @@ interface PaymentModalProps {
   reservationId: number
   summary: PaymentModalSummary
   onClose: () => void
-  /** 결제 API가 성공 응답을 준 뒤 호출된다. 호출부가 결제완료 화면 전환/예약 상태 갱신을 책임진다. */
-  onPaid: (payment: Payment) => void
 }
 
-// 실시간 계좌이체는 별도 후속 작업이 필요해 이번 목업에서는 제외한다.
-const PAYMENT_METHODS = [
-  { key: 'card', label: '신용·체크카드' },
-  { key: 'simple', label: '간편결제' },
-] as const
-
-type PaymentMethodKey = (typeof PAYMENT_METHODS)[number]['key']
-
-const SIMPLE_PAY_PROVIDERS = [
-  { key: 'kakaopay', label: '카카오페이', paymentMethod: 'KAKAOPAY' },
-  { key: 'naverpay', label: '네이버페이', paymentMethod: 'NAVERPAY' },
-  { key: 'tosspay', label: '토스페이', paymentMethod: 'TOSSPAY' },
-] as const
-
-// 카드번호 입력값을 "0000 0000 0000 0000" 형태로 맞춰 보여준다.
-function formatCardNumber(raw: string) {
-  const digits = raw.replace(/\D/g, '').slice(0, 16)
-  return digits.replace(/(\d{4})(?=\d)/g, '$1 ')
-}
-
-// 유효기간 입력값을 "MM/YY" 형태로 맞춰 보여준다.
-function formatExpiry(raw: string) {
-  const digits = raw.replace(/\D/g, '').slice(0, 4)
-  return digits.length > 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits
-}
-
-/** PG사 연동 없이 프론트에서 직접 구성한 모의 결제창. 카드번호/CVC 등은 화면상 입력만 받을 뿐
- * PG에 실제로 전달되지 않으며, 결제 자체는 payment-service(mock PG)가 내부에서 처리한다.
- * "결제하기"를 누르면 POST /api/payments를 호출하고, 성공하면 onPaid로 결과를 알린다. */
-function PaymentModal({ reservationId, summary, onClose, onPaid }: PaymentModalProps) {
-  const [method, setMethod] = useState<PaymentMethodKey>('card')
-  const [cardNumber, setCardNumber] = useState('')
-  const [expiry, setExpiry] = useState('')
-  const [cvc, setCvc] = useState('')
-  const [simpleProvider, setSimpleProvider] = useState<(typeof SIMPLE_PAY_PROVIDERS)[number]['key'] | null>(null)
+/** 결제창. "결제하기"를 누르면 결제 준비(payment-attempts)로 주문번호와 금액을 받은 뒤 결제를 진행한다.
+ * - MOCK: 토스 결제창 없이 바로 결과 화면(/reservation/payment/success)으로 이동해 승인을 요청한다.
+ * - TOSS: 이 자리에 토스 결제위젯이 들어간다 (테스트 키 발급 후 연결 예정).
+ * 결제 결과(승인·실패·확인 중)는 결과 화면이 보여주므로, 이 창은 결과를 따로 받지 않는다. */
+function PaymentModal({ reservationId, summary, onClose }: PaymentModalProps) {
+  const navigate = useNavigate()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
 
@@ -67,29 +36,29 @@ function PaymentModal({ reservationId, summary, onClose, onPaid }: PaymentModalP
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
 
-  const paymentMethod =
-    method === 'card' ? 'CARD' : SIMPLE_PAY_PROVIDERS.find((p) => p.key === simpleProvider)?.paymentMethod
+  const isToss = PAYMENT_MODE === 'TOSS'
+  const orderName = summary.hotelName ? `${summary.hotelName} ${summary.roomName}` : summary.roomName
 
   const handleConfirm = async () => {
-    if (!paymentMethod) {
-      setErrorMessage('결제수단을 선택해주세요.')
-      return
-    }
-
     setErrorMessage('')
     setIsSubmitting(true)
     try {
-      const payment = await createPayment({ reservationId, paymentMethod })
-      onPaid(payment)
+      const attempt = await preparePayment(reservationId, { amount: summary.amount, orderName })
+      // MOCK은 토스 결제창이 없으므로, 토스가 성공 URL로 돌려보낼 때와 같은 값을 직접 붙여 결과 화면으로 간다.
+      // paymentKey는 토스가 발급하는 값이라 MOCK에서는 임의 값을 쓴다 (명세 확정 시 형식 맞춤).
+      const successUrl = new URL(paymentSuccessUrl(reservationId))
+      successUrl.searchParams.set('paymentKey', `mock_${attempt.orderId}`)
+      successUrl.searchParams.set('orderId', attempt.orderId)
+      successUrl.searchParams.set('amount', String(attempt.amount))
+      navigate(`${successUrl.pathname}${successUrl.search}`)
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : '결제에 실패했습니다.')
-    } finally {
+      setErrorMessage(err instanceof Error ? err.message : '결제를 시작하지 못했습니다.')
       setIsSubmitting(false)
     }
   }
 
   return (
-    // 결제 정보 입력 중 바깥을 잘못 눌러 닫히는 걸 막기 위해, 오버레이 클릭으로는 닫지 않는다
+    // 결제 정보 확인 중 바깥을 잘못 눌러 닫히는 걸 막기 위해, 오버레이 클릭으로는 닫지 않는다
     // (닫기는 우측 상단 × 버튼 또는 취소 버튼으로만 가능).
     <div className="payment-modal-overlay">
       <div
@@ -103,14 +72,17 @@ function PaymentModal({ reservationId, summary, onClose, onPaid }: PaymentModalP
         </button>
 
         <div className="payment-modal-header">
-          <span className="payment-modal-test-badge">TEST</span>
+          {!isToss && <span className="payment-modal-test-badge">TEST</span>}
           <h2 id="payment-modal-title" className="payment-modal-title">
             결제하기
           </h2>
         </div>
-        <p className="payment-modal-notice">
-          실제 PG사와 연동되지 않은 모의 결제창입니다. 결제가 실제로 발생하지 않습니다.
-        </p>
+        {!isToss && (
+          <p className="payment-modal-notice">
+            모의 결제(MOCK)입니다. 토스 결제창 없이 테스트용 PG로 승인되며, 실제 결제는 발생하지 않습니다.
+            {IS_PAYMENT_FAKE && ' (가짜 응답 모드: 서버를 호출하지 않습니다)'}
+          </p>
+        )}
 
         <div className="payment-modal-summary">
           <div className="payment-modal-summary-row">
@@ -132,74 +104,11 @@ function PaymentModal({ reservationId, summary, onClose, onPaid }: PaymentModalP
           </div>
         </div>
 
-        <div className="payment-modal-section">
-          <p className="payment-modal-section-title">결제 수단</p>
-          <div className="payment-modal-method-list" role="radiogroup" aria-label="결제 수단 선택">
-            {PAYMENT_METHODS.map((m) => (
-              <button
-                key={m.key}
-                type="button"
-                role="radio"
-                aria-checked={method === m.key}
-                className={`payment-modal-method${method === m.key ? ' is-selected' : ''}`}
-                onClick={() => setMethod(m.key)}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {method === 'card' && (
-          <div className="payment-modal-fields">
-            <label className="payment-modal-field">
-              카드 번호
-              <input
-                type="text"
-                inputMode="numeric"
-                placeholder="0000 0000 0000 0000"
-                value={cardNumber}
-                onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
-              />
-            </label>
-            <div className="payment-modal-fields-row">
-              <label className="payment-modal-field">
-                유효기간
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="MM/YY"
-                  value={expiry}
-                  onChange={(e) => setExpiry(formatExpiry(e.target.value))}
-                />
-              </label>
-              <label className="payment-modal-field">
-                CVC
-                <input
-                  type="password"
-                  inputMode="numeric"
-                  placeholder="•••"
-                  maxLength={3}
-                  value={cvc}
-                  onChange={(e) => setCvc(e.target.value.replace(/\D/g, '').slice(0, 3))}
-                />
-              </label>
-            </div>
-          </div>
-        )}
-
-        {method === 'simple' && (
-          <div className="payment-modal-simple-list">
-            {SIMPLE_PAY_PROVIDERS.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                className={`payment-modal-simple-item${simpleProvider === p.key ? ' is-selected' : ''}`}
-                onClick={() => setSimpleProvider(p.key)}
-              >
-                {p.label}
-              </button>
-            ))}
+        {isToss && (
+          <div className="payment-modal-widget-placeholder">
+            토스 결제위젯이 표시될 자리입니다.
+            <br />
+            테스트 키를 받은 뒤 연결할 예정입니다.
           </div>
         )}
 
@@ -209,8 +118,13 @@ function PaymentModal({ reservationId, summary, onClose, onPaid }: PaymentModalP
           <button type="button" className="payment-modal-cancel" onClick={onClose} disabled={isSubmitting}>
             취소
           </button>
-          <button type="button" className="payment-modal-confirm" onClick={handleConfirm} disabled={isSubmitting}>
-            {isSubmitting ? '결제 처리 중…' : `${summary.amount.toLocaleString()}원 결제하기`}
+          <button
+            type="button"
+            className="payment-modal-confirm"
+            onClick={handleConfirm}
+            disabled={isSubmitting || isToss}
+          >
+            {isSubmitting ? '결제 준비 중…' : `${summary.amount.toLocaleString()}원 결제하기`}
           </button>
         </div>
       </div>

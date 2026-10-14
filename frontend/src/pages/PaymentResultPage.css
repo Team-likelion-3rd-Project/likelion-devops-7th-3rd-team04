@@ -1,0 +1,125 @@
+/* 결제 결과 화면(PaymentSuccessPage, PaymentFailPage) 공용 */
+
+.payment-result-page {
+  display: flex;
+  justify-content: center;
+  padding: 80px 16px;
+}
+
+.payment-result-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 40px 32px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+
+  h1 {
+    margin: 12px 0 4px;
+    font-size: 22px;
+  }
+
+  p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+}
+
+.payment-result-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--bg);
+
+  &.is-success {
+    background: var(--accent);
+    box-shadow: 0 0 0 10px var(--accent-bg);
+  }
+
+  &.is-fail {
+    background: #e5484d;
+    box-shadow: 0 0 0 10px rgba(229, 72, 77, 0.15);
+  }
+
+  &.is-pending {
+    background: var(--text);
+    box-shadow: 0 0 0 10px var(--code-bg);
+  }
+}
+
+.payment-result-spinner {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 4px solid var(--accent-bg);
+  border-top-color: var(--accent);
+  animation: payment-result-spin 0.9s linear infinite;
+}
+
+@keyframes payment-result-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.payment-result-amount {
+  margin-top: 4px;
+  font-size: 20px;
+  color: var(--text-h);
+}
+
+.payment-result-actions {
+  width: 100%;
+  margin-top: 20px;
+  display: flex;
+  gap: 8px;
+}
+
+.payment-result-primary,
+.payment-result-secondary {
+  flex: 1;
+  padding: 13px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+  transition:
+    opacity 0.2s,
+    border-color 0.2s,
+    color 0.2s;
+}
+
+.payment-result-primary {
+  background: var(--accent);
+  color: var(--bg);
+
+  &:hover,
+  &:focus-visible {
+    opacity: 0.85;
+  }
+}
+
+.payment-result-secondary {
+  border: 1px solid var(--border);
+  color: var(--text-h);
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent-border);
+    color: var(--accent);
+  }
+}
