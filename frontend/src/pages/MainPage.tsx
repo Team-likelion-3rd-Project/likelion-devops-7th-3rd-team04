@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { HOTELS } from '../data/hotels'
 import HotelCard from '../components/HotelCard'
@@ -5,13 +6,16 @@ import { customerAuth } from '../api/tokenStore'
 import { loginStateFrom } from '../utils/loginRedirect'
 import './MainPage.css'
 
+// 메인 배경 사진은 서울점 대표 사진을 쓴다. 사진이 없으면 CSS의 그라디언트만 보인다.
+const heroPhoto = HOTELS[0]?.images.hero
+const heroStyle = heroPhoto ? ({ '--main-hero-photo': `url(${heroPhoto})` } as CSSProperties) : undefined
+
 function MainPage() {
   const accessToken = customerAuth.useAccessToken()
 
   return (
     <>
-      {/* TODO: 배경 그라디언트를 실제 대표 이미지로 교체 */}
-      <section className="hero">
+      <section className="hero" style={heroStyle}>
         <div className="hero-content">
           <p className="hero-eyebrow">A Brand for value of time</p>
           <h1 className="hero-title">머무는 순간, 온전히 나를 위한 시간</h1>

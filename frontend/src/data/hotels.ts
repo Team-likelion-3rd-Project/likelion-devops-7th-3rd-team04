@@ -4,6 +4,9 @@ import seoulWaters from '../assets/images/hotels/seoul/waters.jpg'
 import busanHero from '../assets/images/hotels/busan/hero.jpg'
 import busanStay from '../assets/images/hotels/busan/stay.jpg'
 import busanWaters from '../assets/images/hotels/busan/waters.jpg'
+import jejuHero from '../assets/images/hotels/jeju/hero.jpg'
+import jejuStay from '../assets/images/hotels/jeju/stay.jpg'
+import jejuWaters from '../assets/images/hotels/jeju/waters.jpg'
 
 // TODO: 실제 데이터가 준비되면 api-gateway(/api/hotels)에서 가져오도록 교체
 export interface Hotel {
@@ -50,7 +53,6 @@ export const HOTELS: Hotel[] = [
     location: '제주 서귀포시',
     summary: '자연 속 프라이빗한 힐링 스테이',
     accent: 'linear-gradient(135deg, #2f3a26, #5a6b3d)',
-    // 사진 미제공 — accent 그라디언트로 대체 표시됨
-    images: {},
+    images: { hero: jejuHero, stay: jejuStay, waters: jejuWaters },
   },
 ]

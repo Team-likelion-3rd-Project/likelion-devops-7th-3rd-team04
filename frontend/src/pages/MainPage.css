@@ -6,7 +6,13 @@
   padding: 48px 24px;
   text-align: center;
   color: #fbf9f5;
-  background: linear-gradient(160deg, #2a2620, #4a3f2c 60%, #6b5a3d);
+  /* 위에서부터: 글자가 잘 보이도록 어두운 막 → 대표 사진(--main-hero-photo, 있을 때만) → 사진이 없을 때 보일 그라디언트 */
+  background-image:
+    linear-gradient(rgba(20, 17, 12, 0.45), rgba(20, 17, 12, 0.55)),
+    var(--main-hero-photo, none),
+    linear-gradient(160deg, #2a2620, #4a3f2c 60%, #6b5a3d);
+  background-size: cover;
+  background-position: center;
 
   @media (max-width: 767px) {
     min-height: 60svh;
