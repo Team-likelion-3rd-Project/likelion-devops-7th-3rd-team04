@@ -118,6 +118,7 @@ bootstrap                                  🔒 최초 1회
 |---|---|---|---|
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 | 1분 52초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
+| `30-security` | `enable_control_plane = true` (SG 6개, 규칙 23개) | 14초 | 15초 |
 
 ---
 
