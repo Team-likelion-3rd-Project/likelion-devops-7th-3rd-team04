@@ -10,6 +10,7 @@
 | `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) → api-gateway Ingress(`/api`) — [11절](#11-ingress-controller-traefik) |
+| `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행 — [12절](#12-aws-main-클러스터-control-plane-user-data-전용) |
 
 - OS: Ubuntu 22.04 / Kubernetes v1.33 / containerd / Calico v3.30 (tigera-operator)
 - Pod CIDR `10.0.0.0/16`, Service CIDR `10.96.0.0/12`
@@ -27,20 +28,23 @@ infra/ansible/
 ├── gitlab.yml
 ├── gitlab-runner.yml
 ├── ingress.yml
+├── aws-control-plane.yml      # AWS CP user-data 전용 (12절)
 ├── inventory/
 │   ├── hosts.example.ini      # → hosts.ini 로 복사 (gitignore)
+│   ├── aws.ini                # AWS 노드가 자기 자신에게 실행할 때 쓰는 inventory (12절)
 │   └── group_vars/
 │       ├── all.yml            # 버전·CIDR 고정값, 환경변수 매핑
 │       ├── control_plane.yml  # Ingress: helm/Traefik 버전, NodePort, api-gateway Ingress 대상
 │       ├── db.yml             # DB 노드: 이미지 버전, 튜닝값, backend/.env 매핑
 │       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
-│       └── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
+│       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
+│       └── aws_control_plane.yml  # AWS CP: Tailscale 끔, Calico MTU / 노드 IP 감지
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,
 │                              # docker, firewall, db_stack,
 │                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
-│                              # helm, traefik, api_gateway_ingress
+│                              # helm, traefik, api_gateway_ingress, aws_control_plane
 └── .secrets/                  # (자동 생성, gitignore) join.env, admin.conf, gitlab-runner.env
 ```
 
@@ -572,3 +576,36 @@ api-gateway 배포 후에는 `curl .../api/users/hello` → 200, 브라우저로
 - **`/api/...` 가 404**: Ingress 와 Service 의 namespace / 이름 / 포트가 `control_plane.yml` 값과 같은지 확인합니다 (`kubectl -n traefik logs deploy/traefik` 에 원인이 찍힘). Service 는 있는데 Pod 가 없으면 503 입니다.
 - **ArgoCD 도입 후**: api-gateway Ingress 를 앱 매니페스트로 옮기고 `ingress.yml` 에서 `api_gateway_ingress` role 을 뺀 뒤 `kubectl -n team04-dev delete ingress api-gateway` (label `app.kubernetes.io/managed-by=ansible` 로 식별). Traefik 자체는 계속 이 playbook 으로 관리하거나 함께 이관합니다.
 - **HTTPS 가 필요해지면**: control plane 에서 `tailscale serve --https=443 http://<control plane Tailscale IP>:30080` (127.0.0.1 은 NodePort 동작이 kube-proxy 설정에 좌우되므로 노드 IP 사용). 이 경우 Traefik 이 보는 출발지가 노드 IP 하나가 되므로 Traefik `trustedIPs` 와 api-gateway `trust proxy` 에 노드 IP 를 추가해야 사용자별 rate limit 이 유지됩니다.
+
+---
+
+## 12. AWS Main 클러스터 control plane (user-data 전용)
+
+`aws-control-plane.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
+
+- **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-control-plane.yml`, `inventory/aws.ini`, `group_vars/aws_control_plane.yml`, `roles/aws_control_plane` 에만 둡니다.
+- S3 에는 커밋 대상 파일만 올라갑니다. `.env`, `.secrets/`, `inventory/hosts.ini` 는 올라가지 않습니다.
+
+| 항목 | 온프레미스 (`control-plane.yml`) | AWS (`aws-control-plane.yml`) |
+|---|---|---|
+| `use_tailscale` | `true` (기본값) | `false` — tailscale role, `TS_OAUTH_CLIENT_SECRET` 확인 생략 |
+| 노드 IP (`node_ip`) | Tailscale IP (100.x) | VPC private IP |
+| 노드 이름 | `hosts.ini` 의 `node_name` | EC2 private DNS (`ip-10-10-4-10.ec2.internal`) |
+| `controlPlaneEndpoint` | 노드 IP | 내부 NLB DNS (`certSANs` 에 포함) |
+| CP 대수 | 1대 (`kubeadm init`) | 3대 — CP-a `kubeadm init --upload-certs`, CP-b · c `kubeadm join --control-plane` |
+| join 정보 | `.secrets/join.env` (로컬) | Parameter Store `/team04-hotel/prod/kubeadm/*` |
+| Calico 노드 IP 감지 / MTU | `tailscale0` / 1230 | `NodeInternalIP` / 8951 (VPC 점보 프레임 9001 − VXLAN 50) |
+| Felix mark 대역 변경 | 함 (Tailscale fwmark 충돌) | 안 함 |
+
+**Parameter Store** (`/team04-hotel/prod/kubeadm/`)
+
+| 이름 | 만드는 쪽 | 쓰는 쪽 |
+|---|---|---|
+| `join-token` (SecureString) | Terraform (랜덤) | CP-a init 의 bootstrap token, CP-b · c join |
+| `certificate-key` (SecureString) | Terraform (랜덤) | CP-a 가 인증서를 `kubeadm-certs` Secret 으로 올릴 때 암호화 키, CP-b · c 가 내려받을 때 |
+| `ca-cert-hash` (String) | Terraform 이 `pending` 으로 생성 → CP-a 가 init 후 기록 | CP-b · c 가 이 값이 바뀔 때까지 기다린 뒤 join |
+
+- `ca-cert-hash` 가 이미 기록돼 있으면 CP-a 도 init 대신 join 합니다. CP-a 만 교체됐을 때 클러스터를 새로 만들지 않게 하려는 것입니다.
+- **CP 교체 제약:** `kubeadm-certs` Secret 은 init 후 2시간이 지나면 삭제되므로, 그 뒤에 교체된 CP 는 join 에 실패합니다. 남은 CP 에서 `sudo kubeadm init phase upload-certs --upload-certs --certificate-key <파라미터 값>` 으로 다시 올린 뒤 교체합니다. 교체 전 `etcdctl member remove` 로 기존 멤버도 지웁니다. 클러스터는 매일 재생성하므로 자동화하지 않았습니다.
+- 클러스터 확인 (SSM 접속 후): `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide`
+

@@ -1,4 +1,4 @@
-# Tailscale(WireGuard L3) 위에서는 IP-in-IP 가 통과되지 않으므로 VXLAN 사용, BGP 미사용
+# Tailscale(WireGuard L3) 위에서는 IP-in-IP 가 통과되지 않으므로 VXLAN 사용, BGP 미사용 (AWS 도 같은 설정)
 apiVersion: operator.tigera.io/v1
 kind: Installation
 metadata:
@@ -7,8 +7,7 @@ spec:
   calicoNetwork:
     bgp: Disabled
     mtu: {{ calico_mtu }}
-    nodeAddressAutodetectionV4:
-      interface: "{{ tailscale_interface }}"
+    nodeAddressAutodetectionV4: {{ calico_node_address_autodetection | to_json }}
     ipPools:
       - name: default-ipv4-ippool
         blockSize: 26

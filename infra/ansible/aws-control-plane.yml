@@ -1,0 +1,15 @@
+---
+# 70-main-cluster-kubeadm 의 CP user-data 가 노드 안에서 자기 자신에게 실행한다. 사람이 실행하지 않는다 (README 12절)
+- name: AWS Main 클러스터 control plane 구성 (kubeadm init / join --control-plane + Calico)
+  hosts: aws_control_plane
+  become: true
+  vars:
+    required_env: {}
+  roles:
+    - preflight
+    - common
+    - containerd
+    - kubernetes
+    - aws_control_plane
+    - role: calico
+      when: kubeadm_mode == 'init'
