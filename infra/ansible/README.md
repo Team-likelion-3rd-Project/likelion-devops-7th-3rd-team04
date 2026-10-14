@@ -571,7 +571,6 @@ api-gateway 배포(12절 `deploy-dev`) 후에는 `curl .../api/users/hello` → 
 - **curl 이 timeout (TCP 연결이 안 맺어짐)**: control plane 에서 `sudo tcpdump -ni any 'tcp port 30080 or tcp port 8000'` → SYN-ACK 가 `tailscale0` 이 아닌 `ens33` 으로 나가면 6절의 fwmark 충돌입니다. `control-plane.yml` / `worker-join.yml` 을 재실행해 Felix mark 대역과 Tailscale SNAT 설정을 반영합니다.
 - **curl 이 timeout (그 외)**: 개발자 PC 에서 `tailscale ping <control-plane>` 확인 → ACL(1-1) 의 NodePort 범위 grant 확인. `externalTrafficPolicy: Local` 이라 **control plane 이 아닌 노드 주소로는 응답하지 않습니다.**
 - **`/api/...` 가 404**: Ingress 와 Service 의 namespace / 이름 / 포트가 `control_plane.yml` 값과 같은지 확인합니다 (`kubectl -n traefik logs deploy/traefik` 에 원인이 찍힘). Service 는 있는데 Pod 가 없으면 503 입니다.
-- **이전 `team04-dev` Ingress**: 예전 `ingress.yml` 이 만든 `team04-dev/api-gateway` Ingress 는 `k8s-cicd.yml` 이 지우고, 네임스페이스에 다른 리소스가 없으면 네임스페이스도 지웁니다.
 - **ArgoCD 도입 후**: Traefik 자체는 계속 이 playbook 으로 관리하거나 ArgoCD 로 함께 이관합니다.
 - **HTTPS 가 필요해지면**: control plane 에서 `tailscale serve --https=443 http://<control plane Tailscale IP>:30080` (127.0.0.1 은 NodePort 동작이 kube-proxy 설정에 좌우되므로 노드 IP 사용). 이 경우 Traefik 이 보는 출발지가 노드 IP 하나가 되므로 Traefik `trustedIPs` 와 api-gateway `trust proxy` 에 노드 IP 를 추가해야 사용자별 rate limit 이 유지됩니다.
 
@@ -652,7 +651,6 @@ ansible-playbook k8s-cicd.yml -K --tags backend_secrets   # backend/.env 를 바
 - Secret `gitlab-registry`(Deploy Token)와 `backend-secrets`(`backend/.env` 에서 차트가 쓰는 key 만, `DB_HOST`·`REDIS_HOST` 는 `DB_TS_IP` 로 덮어씀)를 만듭니다.
 - **결제 DB**: 클러스터·메인 DB 노드와 분리된 별도 서버에 둘 예정이라 아직 없습니다. `PAYMENT_DB_*` 가 비어 있으면 Secret 에서 빠지고, gitops `envs/dev/values.yaml` 에서 `services.payment-service.enabled` 와 `migrations.payment.enabled` 를 `false` 로 둡니다(초기 seed 에 반영됨). 결제 DB 가 생기면 `backend/.env` 에 `PAYMENT_DB_*` 5개를 모두 채우고 `--tags backend_secrets` 로 Secret 을 갱신한 뒤 두 값을 `true` 로 바꿔 `deploy-dev` 를 실행합니다.
   - 이미지 smoke test(`test:image`)는 결제 DB 와 무관하게 파이프라인 전용 DB 로 payment-service 를 계속 검증합니다.
-- 이전 `ingress.yml` 이 만든 `team04-dev` Ingress/네임스페이스를 정리합니다(다른 리소스가 있으면 네임스페이스는 남김).
 
 확인: GitLab `team04/infra/k8s-agents` → Operate → Kubernetes clusters 에서 `dev-agent` 가 **Connected**.
 
