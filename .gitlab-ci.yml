@@ -1,0 +1,403 @@
+# 온프레미스 GitLab(team04/hotel) 파이프라인 — GitHub 에서 관리하고 미러(.github/workflows/mirror-gitlab.yml)로 전달됩니다.
+# GitLab 쪽에서 직접 고치면 다음 미러링 때 덮어써집니다.
+#
+#   test        : lint · jest (현재 기존 실패가 있어 non-blocking) · nest build · helm lint
+#   build       : kaniko 로 이미지 9개 빌드 → 후보 태그 ci-<sha> 로 push (develop 만, 그 외는 빌드만)
+#   image-test  : 파이프라인 전용 DB(ci_<pipeline id>) 준비 → 후보 이미지를 띄워 /health smoke test
+#   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
+#   deploy      : (수동) gitops 레포에 태그 커밋 → helm upgrade --atomic → rollout status
+#                 deploy-dev: develop → 온프레미스(dev-agent) / deploy-prod: main → EKS(prod-agent, 준비 중)
+#
+# 클러스터 접근은 GitLab Agent ci_access (kubeconfig 변수 없음). 자세한 구성은 infra/ansible/README.md 12절.
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE != "push" && $CI_PIPELINE_SOURCE != "web"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - changes:
+        - backend/**/*
+        - backend-deploy/**/*
+        - .gitlab-ci.yml
+  auto_cancel:
+    on_new_commit: interruptible
+
+stages:
+  - test
+  - build
+  - image-test
+  - push
+  - deploy
+
+variables:
+  # ── 이미지 버전 고정 ──
+  NODE_IMAGE: node:20-alpine
+  # kaniko 업스트림은 2025년 archive — 마지막 릴리스로 고정. 문제가 생기면 buildah 로 교체
+  KANIKO_IMAGE: gcr.io/kaniko-project/executor:v1.23.2-debug
+  CRANE_IMAGE: gcr.io/go-containerregistry/crane/debug:v0.20.2
+  # kubectl · helm · yq · git 포함. kubectl 은 클러스터(v1.33)와 맞춤
+  DEPLOY_IMAGE: alpine/k8s:1.33.4
+  # DB 노드(infra/ansible group_vars/db.yml)와 같은 버전
+  MARIADB_IMAGE: mariadb:11.4.13
+  SMOKE_CLIENT_IMAGE: alpine:3.22
+
+  # ── 이미지 태그: 커밋 SHA (latest 미사용) ──
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+  CANDIDATE_TAG: ci-$CI_COMMIT_SHORT_SHA
+  # build 와 push 가 같은 목록을 써야 함 (8 서비스 + 결제 DB 마이그레이션)
+  IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service payment-migrations"
+
+  # ── 배포 ──
+  CHART_PATH: backend-deploy/charts/backend
+  HELM_RELEASE: backend
+  K8S_NAMESPACE: backend
+  AGENT_PROJECT: team04/infra/k8s-agents
+  GITOPS_REPO: team04/infra/backend-gitops
+
+  # ── smoke test: dev DB 서버를 쓰되 database 는 파이프라인 전용 ──
+  # (hotel/user/auth/booking 이 synchronize: true 라 dev DB 에 붙으면 스키마가 바뀜)
+  SMOKE_DB: ci_$CI_PIPELINE_ID
+  SMOKE_REDIS_DB: "15"
+
+  GIT_DEPTH: "20"
+
+default:
+  interruptible: true
+
+# ── 공통 rules ─────────────────────────────────────────────
+.rules-develop:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+.backend-npm:
+  image: $NODE_IMAGE
+  variables:
+    npm_config_cache: $CI_PROJECT_DIR/.npm
+  cache:
+    key:
+      files: [backend/package-lock.json]
+    paths: [.npm/]
+    policy: pull-push
+  before_script:
+    - cd backend
+    - npm ci --prefer-offline --no-audit --no-fund
+
+# ── test ──────────────────────────────────────────────────
+# lint / jest 는 기존 코드의 실패가 남아 있어 우선 non-blocking. 정리되면 allow_failure 를 지웁니다.
+lint:
+  extends: .backend-npm
+  stage: test
+  needs: []
+  script:
+    - npx eslint "{src,apps,libs,test}/**/*.ts"
+  allow_failure: true
+
+test:unit:
+  extends: .backend-npm
+  stage: test
+  needs: []
+  script:
+    - npm test -- --runInBand --passWithNoTests
+  allow_failure: true
+
+compile:
+  extends: .backend-npm
+  stage: test
+  needs: []
+  script:
+    - npx nest build common
+    - for app in api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service; do npx nest build "$app"; done
+
+helm-lint:
+  stage: test
+  image: $DEPLOY_IMAGE
+  needs: []
+  script:
+    - helm lint "$CHART_PATH" --set global.imageTag=lint
+    - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set ingress.enabled=true > /dev/null
+
+# ── build: kaniko (Docker 데몬 / DinD 불필요) ────────────────────
+build:
+  stage: build
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  needs: [compile, helm-lint]
+  parallel:
+    matrix:
+      - SERVICE:
+          - api-gateway
+          - auth-service
+          - booking-service
+          - chat-bot-service
+          - hotel-service
+          - payment-service
+          - pg-mock-service
+          - user-service
+          - payment-migrations
+  script:
+    - |
+      if [ "$SERVICE" = "payment-migrations" ]; then
+        CONTEXT="$CI_PROJECT_DIR/backend/apps/payment-service/migrations"
+        DOCKERFILE="$CONTEXT/Dockerfile"
+      else
+        CONTEXT="$CI_PROJECT_DIR/backend"
+        DOCKERFILE="$CONTEXT/apps/$SERVICE/Dockerfile"
+      fi
+    # 사설 CA 를 쓰는 경우 Runner 가 넘겨주는 CA 를 신뢰 (기본 구성에서는 비어 있음)
+    - if [ -n "${CI_SERVER_TLS_CA_FILE:-}" ]; then cat "$CI_SERVER_TLS_CA_FILE" >> /kaniko/ssl/certs/ca-certificates.crt; fi
+    - mkdir -p /kaniko/.docker
+    - >-
+      printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY"
+      "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
+      > /kaniko/.docker/config.json
+    # develop 만 후보 태그로 push. main 은 prod(ECR) 준비 전까지 빌드 검증만
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "develop" ]; then
+        set -- --destination "$CI_REGISTRY_IMAGE/$SERVICE:$CANDIDATE_TAG"
+      else
+        set -- --no-push
+      fi
+      /kaniko/executor \
+        --context "$CONTEXT" \
+        --dockerfile "$DOCKERFILE" \
+        --cache=true --cache-repo "$CI_REGISTRY_IMAGE/cache/$SERVICE" --cache-ttl=168h \
+        --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
+        --label "org.opencontainers.image.source=$CI_PROJECT_URL" \
+        "$@"
+
+# ── image-test: 후보 이미지 smoke test ─────────────────────────
+smoke:db-create:
+  extends: .rules-develop
+  stage: image-test
+  image: $MARIADB_IMAGE
+  needs: []
+  script:
+    - export MYSQL_PWD="$SMOKE_DB_PASSWORD"
+    - >-
+      mariadb -h "$SMOKE_DB_HOST" -P "$SMOKE_DB_PORT" -u "$SMOKE_DB_USER"
+      -e "CREATE DATABASE IF NOT EXISTS \`$SMOKE_DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+
+# 결제 DB 마이그레이션 이미지를 전용 DB 에 먼저 적용 (마이그레이션 자체 검증 겸 payment-service 기동 준비)
+smoke:migrate:
+  extends: .rules-develop
+  stage: image-test
+  image:
+    name: $CI_REGISTRY_IMAGE/payment-migrations:$CANDIDATE_TAG
+    entrypoint: [""]
+  needs:
+    - smoke:db-create
+    - job: build
+      parallel:
+        matrix:
+          - SERVICE: payment-migrations
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - >-
+      flyway migrate
+      -url="jdbc:mariadb://$SMOKE_DB_HOST:$SMOKE_DB_PORT/$SMOKE_DB"
+      -user="$SMOKE_DB_USER" -password="$SMOKE_DB_PASSWORD"
+      -connectRetries=5
+
+test:image:
+  extends: .rules-develop
+  stage: image-test
+  image: $SMOKE_CLIENT_IMAGE
+  needs: [build, smoke:migrate]
+  parallel:
+    matrix:
+      - SERVICE:
+          - api-gateway
+          - auth-service
+          - booking-service
+          - chat-bot-service
+          - hotel-service
+          - payment-service
+          - pg-mock-service
+          - user-service
+  # job 변수는 service 컨테이너(app)에도 전달됨 → 앱 환경변수
+  services:
+    - name: $CI_REGISTRY_IMAGE/$SERVICE:$CANDIDATE_TAG
+      alias: app
+  variables:
+    GIT_STRATEGY: none
+    # 실패 시 앱 로그를 job 로그에 출력
+    CI_DEBUG_SERVICES: "true"
+    NODE_ENV: production
+    DB_HOST: $SMOKE_DB_HOST
+    DB_PORT: $SMOKE_DB_PORT
+    DB_USERNAME: $SMOKE_DB_USER
+    DB_PASSWORD: $SMOKE_DB_PASSWORD
+    DB_DATABASE: $SMOKE_DB
+    PAYMENT_DB_HOST: $SMOKE_DB_HOST
+    PAYMENT_DB_PORT: $SMOKE_DB_PORT
+    PAYMENT_DB_USERNAME: $SMOKE_DB_USER
+    PAYMENT_DB_PASSWORD: $SMOKE_DB_PASSWORD
+    PAYMENT_DB_DATABASE: $SMOKE_DB
+    REDIS_HOST: $SMOKE_DB_HOST
+    REDIS_PORT: $SMOKE_REDIS_PORT
+    REDIS_PASSWORD: $SMOKE_REDIS_PASSWORD
+    REDIS_DB: $SMOKE_REDIS_DB
+    REDIS_TLS: "false"
+    # 기동 시 필수값(getRequiredEnv) — smoke test 전용 더미
+    JWT_ACCESS_SECRET: ci-smoke-access-secret
+    JWT_REFRESH_SECRET: ci-smoke-refresh-secret
+    JWT_ACCESS_EXPIRES_IN: 15m
+    JWT_REFRESH_EXPIRES_IN: 7d
+    JWT_REFRESH_ABSOLUTE_MAX_DAYS: "30"
+    MOCK_PG_SECRET: ci-smoke-mock-pg-secret
+    N8N_WEBHOOK_URL: http://n8n.invalid/webhook/chat
+    DYNAMODB_REGION: ap-northeast-2
+    # 서비스 간 호출 대상 (smoke test 에서는 연결하지 않음 — 기동만 확인)
+    USER_SERVICE_HOST: user-service:3001
+    HOTEL_SERVICE_HOST: hotel-service:3002
+    BOOKING_SERVICE_HOST: booking-service:3003
+    PAYMENT_SERVICE_HOST: payment-service:3004
+    CHAT_BOT_SERVICE_HOST: chat-bot-service:3005
+    AUTH_SERVICE_HOST: auth-service:3006
+    PG_MOCK_SERVICE_URL: http://pg-mock-service:3007
+  script:
+    # 헬스체크 포트: HTTP 서비스는 서비스 포트, gRPC 서비스는 gRPC 포트 + 100 (차트 values.yaml 의 healthPort 와 같음)
+    - |
+      case "$SERVICE" in
+        api-gateway)      HEALTH_PORT=3000 ;;
+        user-service)     HEALTH_PORT=3101 ;;
+        hotel-service)    HEALTH_PORT=3102 ;;
+        booking-service)  HEALTH_PORT=3103 ;;
+        payment-service)  HEALTH_PORT=3104 ;;
+        chat-bot-service) HEALTH_PORT=3105 ;;
+        auth-service)     HEALTH_PORT=3106 ;;
+        pg-mock-service)  HEALTH_PORT=3007 ;;
+        *) echo "알 수 없는 서비스: $SERVICE"; exit 1 ;;
+      esac
+    - |
+      for i in $(seq 1 45); do
+        if wget -q -T 3 -O - "http://app:$HEALTH_PORT/health"; then
+          echo; echo "$SERVICE:$CANDIDATE_TAG /health OK (${i}회차)"; exit 0
+        fi
+        sleep 2
+      done
+      echo "$SERVICE 이 90초 안에 /health 에 응답하지 않음 — 위의 service 로그(app)를 확인하세요"; exit 1
+
+# 파이프라인 결과와 관계없이 전용 DB 삭제 (남은 ci_% 는 README 12-5 의 정리 쿼리)
+smoke:db-drop:
+  stage: .post
+  image: $MARIADB_IMAGE
+  # needs 를 지정하면 .post 라도 바로 시작되므로 지정하지 않음 (모든 stage 가 끝난 뒤 실행)
+  interruptible: false
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+      when: always
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - export MYSQL_PWD="$SMOKE_DB_PASSWORD"
+    - mariadb -h "$SMOKE_DB_HOST" -P "$SMOKE_DB_PORT" -u "$SMOKE_DB_USER" -e "DROP DATABASE IF EXISTS \`$SMOKE_DB\`"
+
+# ── push: 후보 → 최종 태그 승격 ───────────────────────────────
+# 모든 smoke test 가 통과해야 실행 (같은 커밋의 이미지 9개를 한 번에 배포하므로 전부 함께 승격)
+push:
+  extends: .rules-develop
+  stage: push
+  image:
+    name: $CRANE_IMAGE
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - crane auth login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    - |
+      for svc in $IMAGES; do
+        crane tag "$CI_REGISTRY_IMAGE/$svc:$CANDIDATE_TAG" "$IMAGE_TAG"
+        echo "$CI_REGISTRY_IMAGE/$svc:$IMAGE_TAG  ($(crane digest "$CI_REGISTRY_IMAGE/$svc:$IMAGE_TAG"))"
+      done
+
+# ── deploy (수동) ─────────────────────────────────────────────
+# 1) gitops 레포 envs/<env>/values.yaml 의 global.imageTag 커밋  2) helm upgrade --atomic  3) rollout status
+# 배포가 실패하면 1) 의 커밋을 revert 해서 gitops 레포 = 실제 배포 상태를 유지
+.deploy:
+  stage: deploy
+  image: $DEPLOY_IMAGE
+  interruptible: false
+  variables:
+    GIT_DEPTH: "1"
+  script:
+    - |
+      set -eu
+      git config --global user.name "GitLab CI ($CI_PROJECT_PATH)"
+      git config --global user.email "ci@$CI_SERVER_HOST"
+      git clone --depth 20 \
+        "$CI_SERVER_PROTOCOL://ci-gitops:${GITOPS_PUSH_TOKEN}@$CI_SERVER_HOST/$GITOPS_REPO.git" gitops
+      VALUES="gitops/envs/$GITOPS_ENV/values.yaml"
+
+      push_gitops() {
+        for i in 1 2 3; do
+          git -C gitops push origin HEAD && return 0
+          git -C gitops pull --rebase origin "$(git -C gitops rev-parse --abbrev-ref HEAD)"
+        done
+        return 1
+      }
+
+      yq -i ".global.imageTag = \"$IMAGE_TAG\"" "$VALUES"
+      COMMITTED=false
+      if git -C gitops diff --quiet; then
+        echo "gitops 가 이미 $IMAGE_TAG — 커밋 없이 재배포"
+      else
+        git -C gitops commit -qam "chore(gitops): $GITOPS_ENV backend → $IMAGE_TAG" \
+          -m "pipeline: $CI_PIPELINE_URL" -m "commit: $CI_PROJECT_URL/-/commit/$CI_COMMIT_SHA"
+        push_gitops
+        COMMITTED=true
+      fi
+
+      rollback_gitops() {
+        if [ "$COMMITTED" = true ]; then
+          echo "배포 실패 — gitops 커밋을 revert 합니다"
+          git -C gitops revert --no-edit HEAD
+          push_gitops || echo "⚠️ revert push 실패: $GITOPS_REPO 의 envs/$GITOPS_ENV 태그를 직접 되돌리세요"
+        fi
+      }
+
+      kubectl config use-context "$KUBE_CONTEXT"
+      if ! helm upgrade --install "$HELM_RELEASE" "$CHART_PATH" \
+          -n "$K8S_NAMESPACE" -f "$VALUES" \
+          --atomic --wait --timeout 10m --history-max 10; then
+        rollback_gitops; exit 1
+      fi
+
+      for d in $(kubectl -n "$K8S_NAMESPACE" get deployment -l "app.kubernetes.io/instance=$HELM_RELEASE" -o name); do
+        if ! kubectl -n "$K8S_NAMESPACE" rollout status "$d" --timeout=180s; then
+          kubectl -n "$K8S_NAMESPACE" get pods -o wide
+          helm rollback "$HELM_RELEASE" -n "$K8S_NAMESPACE" --wait || true
+          rollback_gitops; exit 1
+        fi
+      done
+      helm history "$HELM_RELEASE" -n "$K8S_NAMESPACE" --max 3
+
+deploy-dev:
+  extends: .deploy
+  needs: [push]
+  variables:
+    GITOPS_ENV: dev
+    KUBE_CONTEXT: $AGENT_PROJECT:dev-agent
+  # 같은 환경에 배포가 겹치지 않게 직렬화
+  resource_group: dev
+  environment:
+    name: dev
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+      when: manual
+
+# prod(EKS) — ECR push 인증과 EKS 의 prod-agent 가 준비되면 PROD_DEPLOY_ENABLED=true (CI 변수) 로 활성화
+deploy-prod:
+  extends: .deploy
+  needs: [compile]
+  variables:
+    GITOPS_ENV: prod
+    KUBE_CONTEXT: $AGENT_PROJECT:prod-agent
+  resource_group: prod
+  environment:
+    name: prod
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" && $PROD_DEPLOY_ENABLED == "true"
+      when: manual
