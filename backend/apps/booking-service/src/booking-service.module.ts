@@ -33,7 +33,9 @@ import { ReservationFacility } from './entities/reservation-facility.entity';
         // 🟢 nest-cli.json이 webpack: true로 번들링하므로, dist에는 개별 *.entity.js 파일이
         //    존재하지 않아 글롭(glob) 경로로는 엔티티를 찾지 못합니다. 클래스를 직접 등록합니다.
         entities: [Reservation, ReservationFacility],
-        synchronize: true, // ⚠️ 개발 환경(Dev)에서만 true 사용
+        // 테이블 구조는 Flyway(backend/migrations)만 바꿉니다. true로 두면 TypeORM이
+        // 재기동 때마다 엔티티에 맞춰 테이블을 고치면서 Flyway가 만든 FK를 지워버립니다.
+        synchronize: false,
         logging: true, // SQL 실행 쿼리 로깅
       }),
     }),
