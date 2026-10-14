@@ -161,11 +161,18 @@ docker compose up --build
 **Frontend**
 
 ```bash
-cp frontend/.env.example frontend/.env
+cp frontend/.env.example frontend/.env.development.local   # git 미추적
 cd frontend
 npm install
 npm run dev
 ```
+
+API 연결 방식은 `.env.development.local`에서 하나만 선택합니다.
+
+| 방식 | 설정 | 동작 |
+|---|---|---|
+| 온프레미스 클러스터 API (Tailscale 연결 필요) | `VITE_DEV_API_PROXY=http://control-plane.<tailnet>.ts.net:30080` | 브라우저는 `localhost:5173/api`로 호출하고, Vite 개발 서버가 클러스터(Traefik → api-gateway)로 전달 — 같은 출처라 refreshToken 쿠키가 동작하고 CORS 설정 불필요 |
+| 내 PC backend (docker compose) | `VITE_API_URL=http://localhost:3000` | 브라우저가 로컬 api-gateway를 직접 호출 |
 
 - backend: 
   - api-gateway : `http://localhost:3000`

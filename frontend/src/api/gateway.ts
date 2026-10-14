@@ -1,7 +1,8 @@
 import { customerAuth, adminAuth } from './tokenStore'
 import type { AuthStore } from './tokenStore'
 
-const BASE_URL = import.meta.env.VITE_API_URL
+// 비워 두면 같은 출처의 /api/...로 호출한다 — 로컬 개발에서는 Vite 개발 서버가 /api를 클러스터로 프록시한다.
+const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
 // 호출부가 "진짜 인증 실패(401)"와 그 외 실패(429/5xx/네트워크 오류 등)를 구분할 수 있도록 HTTP
 // status를 함께 담아 던진다. 401만 로그아웃/재로그인 유도(navigate('/login'))로 이어져야 하고,
