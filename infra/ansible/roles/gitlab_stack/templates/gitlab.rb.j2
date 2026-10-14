@@ -20,10 +20,24 @@ gitlab_rails['trusted_proxies'] = ['172.16.0.0/12', '127.0.0.1']
 # ── git over SSH: tailscale serve tcp:{{ gitlab_ssh_port }} → 127.0.0.1:{{ gitlab_ssh_port }} → 컨테이너 22 ──
 gitlab_rails['gitlab_shell_ssh_port'] = {{ gitlab_ssh_port }}
 
+# ── Container Registry: tailscale serve https:{{ gitlab_registry_port }} → 127.0.0.1:{{ gitlab_registry_port }} → 컨테이너 registry nginx(http) ──
+# dev 이미지 저장소 (prod 는 ECR). 인증서는 tailscale serve 가 처리하므로 컨테이너 안은 http
+registry_external_url '{{ gitlab_url }}:{{ gitlab_registry_port }}'
+gitlab_rails['registry_enabled'] = true
+registry_nginx['listen_port'] = {{ gitlab_registry_port }}
+registry_nginx['listen_https'] = false
+registry_nginx['proxy_set_headers'] = {
+  "X-Forwarded-Proto" => "https",
+  "X-Forwarded-Ssl" => "on"
+}
+
+# ── KAS (GitLab Agent for Kubernetes): agentk 접속 + CI job 의 ci_access(k8s-proxy) ──
+# 내장 nginx 가 /-/kubernetes-agent/ 를 WebSocket 업그레이드 포함해 KAS 로 프록시
+gitlab_kas['enable'] = true
+gitlab_kas_external_url 'wss://{{ gitlab_fqdn }}/-/kubernetes-agent/'
+gitlab_rails['gitlab_kas_external_k8s_proxy_url'] = '{{ gitlab_url }}/-/kubernetes-agent/k8s-proxy/'
+
 # ── 사용하지 않는 기능 ────────────────────────────────────
-registry['enable'] = false                 # 이미지 저장소는 GHCR 사용
-gitlab_rails['registry_enabled'] = false
-gitlab_kas['enable'] = false               # 배포는 추후 ArgoCD 예정
 gitlab_pages['enable'] = false
 prometheus_monitoring['enable'] = false
 gitlab_rails['usage_ping_enabled'] = false

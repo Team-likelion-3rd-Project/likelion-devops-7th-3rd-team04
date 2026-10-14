@@ -1,0 +1,98 @@
+---
+- name: CI/CD 클러스터 측 구성 (GitLab Agent + backend 네임스페이스 / RBAC / Secret)
+  hosts: control_plane
+  become: true
+  vars:
+    # gitlab.yml --tags bootstrap 이 만든 .secrets/gitlab-k8s.env 를 source 해야 채워짐
+    required_env:
+      GITLAB_URL: "{{ gitlab_url }}"
+      GITLAB_TS_IP: "{{ gitlab_ts_ip }}"
+      GITLAB_REGISTRY: "{{ gitlab_registry }}"
+      DEV_AGENT_TOKEN: "{{ gitlab_agent_token }}"
+      REGISTRY_DEPLOY_USER: "{{ registry_deploy_user }}"
+      REGISTRY_DEPLOY_TOKEN: "{{ registry_deploy_token }}"
+  pre_tasks:
+    - name: 필수 환경변수 확인
+      ansible.builtin.assert:
+        that: item.value | length > 0
+        fail_msg: >-
+          {{ item.key }} 가 비어 있습니다.
+          set -a; source .env; source .secrets/gitlab-k8s.env; set +a 후 다시 실행하세요. (README 12-3)
+        quiet: true
+      loop: "{{ required_env | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: backend env 파일 확인
+      ansible.builtin.stat:
+        path: "{{ backend_env_file }}"
+      register: backend_env_stat
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: backend env 파일 없음 안내
+      ansible.builtin.fail:
+        msg: >-
+          {{ backend_env_file }} 가 없습니다. backend/.env.example 을 backend/.env 로 복사해 값을 채우거나,
+          BACKEND_ENV_FILE 로 다른 경로를 지정하세요.
+      when: not backend_env_stat.stat.exists
+      run_once: true
+
+    - name: control plane 구성 여부 확인
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - name: admin.conf 확인
+      ansible.builtin.assert:
+        that: admin_conf.stat.exists
+        fail_msg: "/etc/kubernetes/admin.conf 가 없습니다. control-plane.yml 을 먼저 실행하세요. (README 3절)"
+        quiet: true
+
+  roles:
+    - helm
+    - gitlab_agent
+    - role: backend_namespace
+      tags: [backend_secrets]
+
+  post_tasks:
+    # 예전 ingress.yml(api_gateway_ingress role)이 만든 리소스 정리 — Ingress 는 이제 차트가 backend 네임스페이스에 만듦
+    - name: 이전 api-gateway Ingress 정리 (team04-dev, Ansible 관리분만)
+      ansible.builtin.command: >-
+        kubectl delete ingress -n team04-dev -l app.kubernetes.io/managed-by=ansible --ignore-not-found
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: legacy_ingress
+      changed_when: "'deleted' in legacy_ingress.stdout"
+      failed_when: false
+      tags: [legacy_cleanup]
+
+    - name: team04-dev 네임스페이스에 남은 리소스 조회
+      ansible.builtin.command: >-
+        kubectl get deployments,services,ingresses,configmaps,secrets -n team04-dev
+        --field-selector metadata.name!=kube-root-ca.crt -o name
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: legacy_ns_resources
+      changed_when: false
+      failed_when: false
+      tags: [legacy_cleanup]
+
+    - name: team04-dev 네임스페이스 삭제 (비어 있을 때만)
+      ansible.builtin.command: kubectl delete namespace team04-dev --wait=false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: legacy_ns_resources.rc == 0 and legacy_ns_resources.stdout | trim | length == 0
+      changed_when: true
+      tags: [legacy_cleanup]
+
+    - name: team04-dev 에 다른 리소스가 남아 있음
+      ansible.builtin.debug:
+        msg: "team04-dev 에 직접 만든 리소스가 남아 있어 네임스페이스는 지우지 않았습니다: {{ legacy_ns_resources.stdout_lines | join(', ') }}"
+      when: legacy_ns_resources.rc == 0 and legacy_ns_resources.stdout | trim | length > 0
+      tags: [legacy_cleanup]

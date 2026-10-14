@@ -17,6 +17,7 @@ services:
     ports:
       - "127.0.0.1:{{ gitlab_http_port }}:80"
       - "127.0.0.1:{{ gitlab_ssh_port }}:22"
+      - "127.0.0.1:{{ gitlab_registry_port }}:{{ gitlab_registry_port }}"
     volumes:
       - ./gitlab.rb:/omnibus_config.rb:ro
       - ./scripts:/opt/ansible-scripts:ro

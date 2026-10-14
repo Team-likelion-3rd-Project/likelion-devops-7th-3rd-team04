@@ -1,0 +1,102 @@
+---
+# GitLab Agent for Kubernetes(agentk) 설치 + CI 배포 권한(RBAC).
+# CI job 은 kubeconfig 없이 ci_access 로 이 agent 를 통해 클러스터에 접근합니다 (README 12-3).
+- name: 작업 디렉토리 (agent 토큰 포함 → root 전용)
+  ansible.builtin.file:
+    path: "{{ cicd_manifest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: namespace / RBAC 매니페스트
+  ansible.builtin.template:
+    src: cicd-rbac.yaml.j2
+    dest: "{{ cicd_manifest_dir }}/cicd-rbac.yaml"
+    mode: "0644"
+
+- name: namespace / RBAC 적용
+  ansible.builtin.command: kubectl apply -f {{ cicd_manifest_dir }}/cicd-rbac.yaml
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: rbac_apply
+  changed_when: "'configured' in rbac_apply.stdout or 'created' in rbac_apply.stdout"
+
+# helm upgrade 는 값이 같아도 revision 을 새로 만들기 때문에 (traefik role 과 같은 방식)
+# 설치된 chart 버전과 values 가 원하는 상태와 같으면 건너뜁니다.
+- name: agentk values 파일
+  ansible.builtin.template:
+    src: agentk-values.yaml.j2
+    dest: "{{ cicd_manifest_dir }}/agentk-values.yaml"
+    mode: "0600"
+  no_log: true
+
+- name: 설치된 agentk release 조회
+  ansible.builtin.command: >-
+    helm list -n {{ gitlab_agent_namespace }} --filter '^{{ gitlab_agent_name }}$' -o json
+  environment: *kubeconfig
+  register: agent_release
+  changed_when: false
+
+- name: 적용된 values 조회
+  ansible.builtin.command: helm get values {{ gitlab_agent_name }} -n {{ gitlab_agent_namespace }} -o json
+  environment: *kubeconfig
+  register: agent_values_applied
+  changed_when: false
+  when: agent_release.stdout | from_json | length > 0
+  no_log: true
+
+- name: agentk 설치 / 업그레이드
+  ansible.builtin.command: >-
+    helm upgrade --install {{ gitlab_agent_name }} gitlab-agent
+    --repo {{ gitlab_agent_chart_repo }}
+    --version {{ gitlab_agent_chart_version }}
+    -n {{ gitlab_agent_namespace }}
+    -f {{ cicd_manifest_dir }}/agentk-values.yaml
+    --wait --timeout 5m
+  environment: *kubeconfig
+  when: >-
+    (agent_release.stdout | from_json | length == 0)
+    or ((agent_release.stdout | from_json | first).chart != 'gitlab-agent-' ~ gitlab_agent_chart_version)
+    or ((agent_values_applied.stdout | from_json) != (lookup('ansible.builtin.template', 'agentk-values.yaml.j2') | from_yaml))
+  changed_when: true
+  no_log: true
+
+- name: agentk Ready 대기
+  ansible.builtin.command: >-
+    kubectl rollout status deployment -n {{ gitlab_agent_namespace }}
+    -l app.kubernetes.io/instance={{ gitlab_agent_name }} --timeout=180s
+  environment: *kubeconfig
+  changed_when: false
+
+- name: KAS 연결 확인 (agentk 로그)
+  # 토큰/주소가 틀리면 "unauthenticated" / "dial" 오류가 반복됨
+  ansible.builtin.shell: >-
+    kubectl logs -n {{ gitlab_agent_namespace }} -l app.kubernetes.io/instance={{ gitlab_agent_name }}
+    --since=3m --tail=200 | grep -Ei 'unauthenticated|permission denied|forbidden|dial|x509' | tail -5 || true
+  environment: *kubeconfig
+  register: agent_errors
+  changed_when: false
+
+- name: CI 권한 범위 확인 (backend 는 허용, 그 외는 거부여야 정상)
+  ansible.builtin.command: >-
+    kubectl auth can-i {{ item.verb }} {{ item.resource }} -n {{ item.ns }}
+    --as=system:serviceaccount:{{ gitlab_agent_namespace }}:{{ gitlab_agent_sa }}
+  loop:
+    - {verb: create, resource: deployments.apps, ns: "{{ backend_namespace }}", expect: "yes"}
+    - {verb: create, resource: deployments.apps, ns: kube-system, expect: "no"}
+    - {verb: create, resource: namespaces, ns: default, expect: "no"}
+  loop_control:
+    label: "{{ item.verb }} {{ item.resource }} -n {{ item.ns }} → {{ item.expect }}"
+  environment: *kubeconfig
+  register: can_i
+  changed_when: false
+  failed_when: can_i.stdout != item.expect
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "agent {{ gitlab_agent_name }} → wss://{{ gitlab_fqdn }}/-/kubernetes-agent/ (ns {{ gitlab_agent_namespace }})"
+      - "CI kube context: {{ gitlab_agents_project_path }}:{{ gitlab_agent_name }}"
+      - "GitLab → {{ gitlab_agents_project_path }} → Operate → Kubernetes clusters 에서 Connected 확인"
+      - "{{ 'agentk 로그 경고: ' ~ agent_errors.stdout if agent_errors.stdout | length > 0 else 'agentk 로그에 연결 오류 없음' }}"
