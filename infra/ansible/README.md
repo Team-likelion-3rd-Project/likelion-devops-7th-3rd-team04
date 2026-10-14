@@ -9,6 +9,7 @@
 | `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → MariaDB + Valkey (Docker Compose) — [7절](#7-db-노드-구성-mariadb--valkey) |
 | `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
+| `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) → api-gateway Ingress(`/api`) — [11절](#11-ingress-controller-traefik) |
 
 - OS: Ubuntu 22.04 / Kubernetes v1.33 / containerd / Calico v3.30 (tigera-operator)
 - Pod CIDR `10.0.0.0/16`, Service CIDR `10.96.0.0/12`
@@ -25,10 +26,12 @@ infra/ansible/
 ├── db.yml
 ├── gitlab.yml
 ├── gitlab-runner.yml
+├── ingress.yml
 ├── inventory/
 │   ├── hosts.example.ini      # → hosts.ini 로 복사 (gitignore)
 │   └── group_vars/
 │       ├── all.yml            # 버전·CIDR 고정값, 환경변수 매핑
+│       ├── control_plane.yml  # Ingress: helm/Traefik 버전, NodePort, api-gateway Ingress 대상
 │       ├── db.yml             # DB 노드: 이미지 버전, 튜닝값, backend/.env 매핑
 │       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
 │       └── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
@@ -36,7 +39,8 @@ infra/ansible/
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,
 │                              # docker, firewall, db_stack,
-│                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner
+│                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
+│                              # helm, traefik, api_gateway_ingress
 └── .secrets/                  # (자동 생성, gitignore) join.env, admin.conf, gitlab-runner.env
 ```
 
@@ -234,7 +238,7 @@ ansible-playbook worker-join.yml -K
 ```bash
 # control plane (또는 admin.conf 를 가진 PC)
 kubectl get nodes -o wide                 # STATUS Ready, INTERNAL-IP 가 100.x
-kubectl get tigerastatus                  # calico, apiserver AVAILABLE=True
+kubectl get tigerastatus                  # calico, apiserver AVAILABLE=True (꺼진 워커가 있으면 calico 는 False — 정상)
 kubectl get ippool -o custom-columns=NAME:.metadata.name,CIDR:.spec.cidr,IPIP:.spec.ipipMode,VXLAN:.spec.vxlanMode
                                           # CIDR 10.0.0.0/16, IPIP Never, VXLAN Always
 
@@ -253,6 +257,8 @@ kubectl delete pod p1 p2
 - **왜 VXLAN인가**: Tailscale(WireGuard)은 L3 터널이라 IP-in-IP(프로토콜 4) 패킷을 전달하지 않고, Pod CIDR 대역도 라우팅하지 않습니다. 그래서 Pod 트래픽을 노드 IP 사이의 UDP(4789)로 감싸는 VXLAN을 사용하고 BGP는 끕니다.
 - **MTU 1230**: `tailscale0` MTU 1280 − VXLAN 헤더 50. 값이 크면 큰 패킷(이미지 pull, HTTPS 응답 등)만 멈추는 증상이 납니다.
 - **Calico 노드 IP 자동탐지**: `nodeAddressAutodetectionV4.interface: tailscale0` — 사설 NIC IP가 잡히면 노드 간 VXLAN이 실패합니다.
+- **Calico ↔ Tailscale fwmark 충돌**: Tailscale 은 `fwmark 0x80000/0xff0000` 이 붙은 패킷을 `main` 테이블로 보내는 ip rule 을 쓰는데, Felix 기본 mark 대역(`0xffff0000`)이 같은 비트를 씁니다. 그러면 Pod 가 Tailnet 클라이언트(100.x)에 보내는 응답이 `tailscale0` 대신 사설 NIC 의 기본 게이트웨이로 나가 버립니다 (증상: NodePort 로 SYN 은 Pod 까지 가는데 SYN-ACK 가 `ens33` 으로 나감). `calico_iptables_mark_mask: 0xff000000` 으로 Felix 를 다른 비트로 옮깁니다 (kube-proxy 는 `0x4000`/`0x8000` 이라 겹치지 않음).
+- **Tailscale SNAT 끔(`--snat-subnet-routes=false`)**: 켜져 있으면 `tailscale0` 으로 들어와 Pod 로 포워딩되는 패킷을 tailscaled 가 MASQUERADE 해서 Pod 가 보는 출발지가 노드 IP 가 됩니다. 노드가 서브넷 라우터가 아니므로 꺼도 영향이 없고, Ingress(11절)의 클라이언트 IP 보존에 필요합니다.
 - **join 단계에서 "연결할 수 없습니다"**: VM에서 `tailscale status` 로 control plane이 보이는지, ACL grants에서 `tag:k8s-node` 간 통신이 허용됐는지 확인합니다.
 - **`tailscale up` 실패 (requested tags are invalid or not permitted)**: tagOwners 에 `tag:k8s-node` 가 없거나 OAuth client 에 해당 태그가 지정되지 않은 경우입니다.
 - **join 실패 (token 관련)**: token이 만료됐을 가능성이 큽니다. CP 담당자가 `--tags join_info` 로 재발급합니다.
@@ -490,3 +496,79 @@ sudo gitlab-runner list
 - **URL 이 `gitlab-1.<tailnet>.ts.net` 처럼 바뀜**: 같은 호스트명의 기기가 이미 Tailnet 에 있으면 `-1` 이 붙습니다. Admin console 에서 이전 기기를 지우고 VM 에서 `sudo tailscale set --hostname=<node_name>` 후 `gitlab.yml` 을 재실행합니다. (external_url 이 바뀌므로 Runner 도 9-2 재실행)
 - **job 의 git clone / docker push 가 중간에 멈춤**: 컨테이너 MTU(1500) 와 `tailscale0`(1280) 차이로 큰 패킷이 막히는 경우입니다. Runner 노드 `/etc/docker/daemon.json` 에 `"mtu": 1280` 을 추가하는 방향으로 대응합니다.
 - **Runner 가 Offline**: Runner 노드에서 `tailscale ping <gitlab fqdn>` 과 ACL(`tag:gitlab-runner → tag:gitlab tcp:443`) 을 확인합니다.
+
+---
+
+## 11. Ingress Controller (Traefik)
+
+개발자는 각자 PC 에서 `npm run dev` 로 프론트를 띄우고, Vite proxy 로 `/api` 요청을 클러스터의 api-gateway 로 넘깁니다. 이 진입점을 control plane 의 Traefik(NodePort `30080`)이 받습니다.
+
+```
+개발자 PC 브라우저 → localhost:5173 (Vite)
+                      └─ /api/* proxy ──Tailnet──▶ <control-plane>.<tailnet>.ts.net:30080
+                                                    └▶ Traefik → Ingress(/api, /api-docs) → api-gateway:3000
+```
+
+| 항목 | 값 | 이유 |
+|---|---|---|
+| 배치 | control plane 1대 고정 (`nodeSelector` + taint `toleration`) | 워커는 팀원 PC 라 꺼질 수 있음 |
+| Service | `NodePort 30080`, `externalTrafficPolicy: Local` | kube-proxy SNAT 없이 개발자 PC 의 Tailscale IP 를 보존 → api-gateway rate limit 이 사용자별로 동작 |
+| `forwardedHeaders.trustedIPs` | 미설정 | Vite proxy 가 붙이는 `X-Forwarded-For`(127.0.0.1)를 버리고 실제 접속 IP 로 다시 씀 |
+| websecure(443) | 노출 안 함 | Tailnet 구간은 WireGuard 로 암호화. HTTPS 가 필요하면 앞단에 `tailscale serve` |
+| CORS / body 제한 | 설정 안 함 | CORS 는 api-gateway(Nest) 가 전담 (중복 시 헤더 2번 → 브라우저 거부). 객실 이미지(Base64, 최대 20MB) 업로드 허용 |
+
+- ACL 은 1-1 의 `autogroup:member → tag:k8s-node tcp:30000-32767` 로 충분하고, control plane 에는 ufw 가 없어 방화벽 작업이 필요 없습니다.
+- 온프레미스에는 아직 GitOps/ArgoCD 가 없어서 api-gateway Ingress 와 그 namespace(`team04-dev`)도 이 playbook 이 만듭니다. api-gateway 는 같은 namespace 에 Service `api-gateway:3000` 으로 배포하면 자동으로 연결됩니다.
+
+### 11-1. 값 설정
+
+`inventory/group_vars/control_plane.yml` — 버전(`helm_version`, `traefik_chart_version`), NodePort, api-gateway namespace / Service / 포트, Swagger(`/api-docs`) 노출 여부.
+
+### 11-2. 실행
+
+```bash
+cd infra/ansible
+set -a; source .env; set +a      # 비밀값은 안 쓰지만 ANSIBLE_CONFIG(2-1) 때문에 필요
+ansible-playbook ingress.yml -K
+```
+
+- control plane 이 구성돼 있어야 합니다 (3절).
+- 여러 번 실행해도 안전합니다. 설치된 chart 버전과 values 가 같으면 `helm upgrade` 를 건너뜁니다.
+- Ingress 만 다시 적용: `ansible-playbook ingress.yml -K --tags api_gateway_ingress`
+- 마지막 출력의 **Vite proxy target**(`http://<control-plane>.<tailnet>.ts.net:30080`)을 프론트엔드 개발자에게 전달합니다.
+
+### 11-3. 검증
+
+```bash
+# control plane
+kubectl -n traefik get pods -o wide            # NODE 가 control plane
+kubectl -n traefik get svc traefik             # 80:30080/TCP, NodePort
+kubectl get ingressclass traefik
+kubectl -n team04-dev get ingress api-gateway  # CLASS traefik
+
+# 개발자 PC (Tailnet)
+curl -i http://<control-plane>.<tailnet>.ts.net:30080/   # Traefik "404 page not found" → 컨트롤러 도달 OK
+```
+
+api-gateway 배포 전이라면 같은 이름의 임시 whoami 로 Ingress 경로와 클라이언트 IP 보존을 확인할 수 있습니다.
+
+```bash
+kubectl -n team04-dev create deployment api-gateway --image=traefik/whoami
+kubectl -n team04-dev expose deployment api-gateway --port=3000 --target-port=80
+
+# 개발자 PC — X-Forwarded-For 가 자기 PC 의 Tailscale IP(100.x)면 정상
+curl http://<control-plane>.<tailnet>.ts.net:30080/api/test
+
+kubectl -n traefik logs deploy/traefik --tail=5   # access log 의 client IP 도 100.x
+kubectl -n team04-dev delete deployment,service api-gateway
+```
+
+api-gateway 배포 후에는 `curl .../api/users/hello` → 200, 브라우저로 `.../api-docs` → Swagger.
+
+### 11-4. 트러블슈팅 / 추후 작업
+
+- **curl 이 timeout (TCP 연결이 안 맺어짐)**: control plane 에서 `sudo tcpdump -ni any 'tcp port 30080 or tcp port 8000'` → SYN-ACK 가 `tailscale0` 이 아닌 `ens33` 으로 나가면 6절의 fwmark 충돌입니다. `control-plane.yml` / `worker-join.yml` 을 재실행해 Felix mark 대역과 Tailscale SNAT 설정을 반영합니다.
+- **curl 이 timeout (그 외)**: 개발자 PC 에서 `tailscale ping <control-plane>` 확인 → ACL(1-1) 의 NodePort 범위 grant 확인. `externalTrafficPolicy: Local` 이라 **control plane 이 아닌 노드 주소로는 응답하지 않습니다.**
+- **`/api/...` 가 404**: Ingress 와 Service 의 namespace / 이름 / 포트가 `control_plane.yml` 값과 같은지 확인합니다 (`kubectl -n traefik logs deploy/traefik` 에 원인이 찍힘). Service 는 있는데 Pod 가 없으면 503 입니다.
+- **ArgoCD 도입 후**: api-gateway Ingress 를 앱 매니페스트로 옮기고 `ingress.yml` 에서 `api_gateway_ingress` role 을 뺀 뒤 `kubectl -n team04-dev delete ingress api-gateway` (label `app.kubernetes.io/managed-by=ansible` 로 식별). Traefik 자체는 계속 이 playbook 으로 관리하거나 함께 이관합니다.
+- **HTTPS 가 필요해지면**: control plane 에서 `tailscale serve --https=443 http://<control plane Tailscale IP>:30080` (127.0.0.1 은 NodePort 동작이 kube-proxy 설정에 좌우되므로 노드 IP 사용). 이 경우 Traefik 이 보는 출발지가 노드 IP 하나가 되므로 Traefik `trustedIPs` 와 api-gateway `trust proxy` 에 노드 IP 를 추가해야 사용자별 rate limit 이 유지됩니다.

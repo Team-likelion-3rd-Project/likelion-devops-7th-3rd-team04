@@ -1,0 +1,20 @@
+---
+# ── Ingress Controller (ingress.yml) ──────────────────────
+# 버전 고정 — 올릴 때는 Traefik chart Changelog 의 breaking change 확인
+helm_version: "v3.22.0"
+traefik_chart_version: "41.6.1"   # Traefik v3.7.13
+traefik_chart_repo: "https://traefik.github.io/charts"
+traefik_namespace: traefik
+
+# 개발자 PC(Vite proxy) → http://<control-plane>.<tailnet>.ts.net:30080
+# ACL 의 autogroup:member → tag:k8s-node tcp:30000-32767 범위 안이어야 함
+traefik_http_nodeport: 30080
+
+# ── api-gateway Ingress (api_gateway_ingress role) ────────
+# 온프레미스에는 아직 앱 배포 체계(GitOps/ArgoCD)가 없어 namespace 도 Ansible 이 만듦.
+# 이후 api-gateway 를 배포할 때 같은 namespace / Service 이름 / 포트를 사용
+api_gateway_namespace: team04-dev
+api_gateway_service: api-gateway
+api_gateway_port: 3000
+# dev 전용: /api-docs (Swagger) 도 Ingress 로 노출
+api_gateway_expose_swagger: true

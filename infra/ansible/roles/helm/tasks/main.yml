@@ -1,0 +1,47 @@
+---
+- name: 설치된 helm 버전 확인
+  ansible.builtin.command: /usr/local/bin/helm version --template '{{ "{{" }} .Version {{ "}}" }}'
+  register: helm_installed
+  changed_when: false
+  failed_when: false
+
+- name: helm 설치
+  when: helm_installed.rc != 0 or helm_installed.stdout != helm_version
+  vars:
+    helm_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] }}"
+    helm_tarball: "helm-{{ helm_version }}-linux-{{ helm_arch }}.tar.gz"
+  block:
+    - name: 작업 디렉토리
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: helm
+      register: helm_tmp
+
+    - name: helm 다운로드 (sha256 검증)
+      ansible.builtin.get_url:
+        url: "https://get.helm.sh/{{ helm_tarball }}"
+        dest: "{{ helm_tmp.path }}/{{ helm_tarball }}"
+        checksum: "sha256:https://get.helm.sh/{{ helm_tarball }}.sha256sum"
+        mode: "0644"
+
+    - name: 압축 해제
+      ansible.builtin.unarchive:
+        src: "{{ helm_tmp.path }}/{{ helm_tarball }}"
+        dest: "{{ helm_tmp.path }}"
+        remote_src: true
+
+    - name: /usr/local/bin/helm 설치
+      ansible.builtin.copy:
+        src: "{{ helm_tmp.path }}/linux-{{ helm_arch }}/helm"
+        dest: /usr/local/bin/helm
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+
+  always:
+    - name: 작업 디렉토리 정리
+      ansible.builtin.file:
+        path: "{{ helm_tmp.path }}"
+        state: absent
+      when: helm_tmp.path is defined
