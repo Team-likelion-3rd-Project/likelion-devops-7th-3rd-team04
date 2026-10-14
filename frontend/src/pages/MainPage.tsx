@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { HOTELS } from '../data/hotels'
 import HotelCard from '../components/HotelCard'
 import { customerAuth } from '../api/tokenStore'
+import { loginStateFrom } from '../utils/loginRedirect'
 import './MainPage.css'
 
 function MainPage() {
@@ -17,7 +18,11 @@ function MainPage() {
           <p className="hero-description">
             도심과 자연 속 세 곳의 호텔에서, 조용하고 세심하게 준비된 휴식을 경험하세요.
           </p>
-          <Link to={accessToken ? '/reservation' : '/login'} className="hero-cta">
+          <Link
+            to={accessToken ? '/reservation' : '/login'}
+            state={accessToken ? undefined : loginStateFrom('/reservation')}
+            className="hero-cta"
+          >
             예약하기
           </Link>
         </div>
