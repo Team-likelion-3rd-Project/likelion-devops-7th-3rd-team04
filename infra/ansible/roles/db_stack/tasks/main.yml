@@ -119,6 +119,39 @@
   changed_when: false
   when: app_login.rc != 0
 
+# ── GitLab CI smoke test 전용 계정 (ci_smoke_db_password 가 있을 때만) ──
+# CI 는 파이프라인마다 ci_<id> database 를 만들고 지움 → synchronize: true 서비스가 dev 스키마를 건드리지 않게 분리
+- name: CI smoke 계정 client 자격증명
+  ansible.builtin.template:
+    src: ci_smoke.cnf.j2
+    dest: "{{ db_base_dir }}/mysql/ci_smoke.cnf"
+    mode: "0600"
+  when: ci_smoke_db_password | length > 0
+  no_log: true
+
+- name: CI smoke 계정 권한 검사
+  # 접속이 되고 ci\_% 권한이 있으면 통과 (매 실행 재설정하지 않음)
+  ansible.builtin.command: >-
+    docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/ci_smoke.cnf
+    -N -e "SHOW GRANTS FOR CURRENT_USER()"
+  register: ci_smoke_grants
+  changed_when: false
+  failed_when: false
+  when: ci_smoke_db_password | length > 0
+
+- name: CI smoke 계정 재설정
+  ansible.builtin.command:
+    cmd: docker exec -i mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf
+    stdin: |
+      CREATE USER IF NOT EXISTS '{{ ci_smoke_db_user }}'@'%' IDENTIFIED BY '{{ ci_smoke_db_password }}';
+      ALTER USER '{{ ci_smoke_db_user }}'@'%' IDENTIFIED BY '{{ ci_smoke_db_password }}';
+      GRANT ALL PRIVILEGES ON `ci\_%`.* TO '{{ ci_smoke_db_user }}'@'%';
+  when: >-
+    ci_smoke_db_password | length > 0 and
+    (ci_smoke_grants.rc != 0 or 'ci\_%' not in ci_smoke_grants.stdout)
+  changed_when: true
+  no_log: true
+
 - name: 접속 정보
   ansible.builtin.debug:
     msg:
