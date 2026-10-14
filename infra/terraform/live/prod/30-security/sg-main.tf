@@ -57,6 +57,8 @@ locals {
 
       # M7 kube-apiserver → kubelet (logs, exec, port-forward)
       m7_worker_kubelet_from_cp = { sg = "main_worker", source = "main_cp", port = 10250, description = "M7 kubelet from control plane" }
+      # CP 파드 대상. 요청이 NLB 를 거쳐 다른 CP 의 apiserver 로 가면 CP → CP 로 붙는다
+      m7_cp_kubelet_from_cp = { sg = "main_cp", source = "main_cp", port = 10250, description = "M7 kubelet from control plane" }
 
       # M9 · M10 Calico VXLAN, Typha (워커 ↔ CP, CP ↔ CP)
       m9_worker_vxlan_from_cp  = { sg = "main_worker", source = "main_cp", protocol = "udp", port = 4789, description = "M9 Calico VXLAN from control plane" }

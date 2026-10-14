@@ -118,8 +118,10 @@ bootstrap                                  🔒 최초 1회
 |---|---|---|---|
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 | 1분 52초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
-| `30-security` | `enable_control_plane = true` (SG 6개, 규칙 23개) | 14초 | 15초 |
-| `70-main-cluster-kubeadm` | CP 3대, 워커 2대, user-data 없음 | 2분 55초 | 1분 26초 |
+| `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 | 15초 |
+| `70-main-cluster-kubeadm` | CP 3대 (부트스트랩 포함), 워커 2대 (user-data 없음) | 3분 17초 | 2분 55초 |
+
+`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 CP 부트스트랩이 이어집니다 (6절). **apply 시작부터 CP 3대 Ready 까지 6분 14초** (apply 3분 15초 – 3분 17초 중 내부 NLB 생성이 2분 46초, CP 부팅 후 부트스트랩 약 3분).
 
 ---
 
