@@ -7,6 +7,7 @@ import PaymentModal from '../components/reservation/PaymentModal'
 import PaymentCompleteModal from '../components/reservation/PaymentCompleteModal'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { formatDate, fetchRoomLookup, type RoomWithHotel } from './reservationHistoryUtils'
+import { currentLoginState } from '../utils/loginRedirect'
 import './MyPage.css'
 import './ReservationHistoryPage.css'
 import './PaymentsPendingPage.css'
@@ -62,7 +63,7 @@ function PaymentsPendingPage() {
         } catch (err2) {
           if (cancelled) return
           if (isUnauthorized(err2)) {
-            navigate('/login')
+            navigate('/login', { state: currentLoginState() })
           } else {
             setLoadError('일시적으로 결제 대기 내역을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.')
           }

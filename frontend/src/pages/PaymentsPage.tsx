@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { isUnauthorized, refreshAccessToken } from '../api/gateway'
 import { fetchMyPayments, type Payment } from '../api/payments'
 import { PAYMENT_METHOD_LABEL, PAYMENT_STATUS_LABEL, formatPaidAt } from '../utils/payment'
+import { currentLoginState } from '../utils/loginRedirect'
 import './MyPage.css'
 import './PaymentsPage.css'
 
@@ -43,7 +44,7 @@ function PaymentsPage() {
         } catch (err2) {
           if (cancelled) return
           if (isUnauthorized(err2)) {
-            navigate('/login')
+            navigate('/login', { state: currentLoginState() })
           } else {
             setLoadError('일시적으로 결제 내역을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.')
           }
