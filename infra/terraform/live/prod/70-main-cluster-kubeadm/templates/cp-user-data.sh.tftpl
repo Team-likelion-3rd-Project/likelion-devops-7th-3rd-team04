@@ -1,0 +1,41 @@
+#!/bin/bash
+# CP 부트스트랩. S3 의 infra/ansible 묶음을 받아 aws-control-plane.yml 을 자기 자신에게 실행한다.
+# 진행 · 실패 로그는 /var/log/cloud-init-output.log (README 6절)
+set -euo pipefail
+
+VENV=/opt/team04/venv
+ANSIBLE_DIR=/opt/team04/ansible
+
+# Kubernetes 노드 이름 = private DNS(FQDN). 재부팅 때 cloud-init 이 hostname 을 짧은 이름으로 되돌리지 않게 한다
+echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-team04-hostname.cfg
+
+echo "[bootstrap] ansible-core ${ansible_core_version} 설치"
+apt-get update -q
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q -o DPkg::Lock::Timeout=300 python3-venv
+python3 -m venv "$VENV"
+"$VENV/bin/pip" install -q "ansible-core==${ansible_core_version}.*" awscli
+ln -sf "$VENV/bin/aws" /usr/local/bin/aws
+
+echo "[bootstrap] Ansible 묶음 다운로드"
+aws s3 sync --only-show-errors --region "${region}" "s3://${bucket}/${prefix}/" "$ANSIBLE_DIR"
+
+IMDS=http://169.254.169.254/latest
+IMDS_TOKEN=$(curl -sf -X PUT "$IMDS/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+NODE_NAME=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "$IMDS/meta-data/local-hostname")
+
+cat > "$ANSIBLE_DIR/aws-bootstrap.json" <<EOF
+{
+  "node_name": "$NODE_NAME",
+  "k8s_cp_role": "${role}",
+  "k8s_control_plane_endpoint": "${apiserver_endpoint}",
+  "kubeadm_param_prefix": "${param_prefix}",
+  "aws_region": "${region}"
+}
+EOF
+
+echo "[bootstrap] aws-control-plane.yml 실행 ($NODE_NAME, ${role})"
+cd "$ANSIBLE_DIR"
+ANSIBLE_CONFIG=./ansible.cfg ANSIBLE_NOCOLOR=1 \
+  "$VENV/bin/ansible-playbook" -i inventory/aws.ini aws-control-plane.yml -e @aws-bootstrap.json
+
+echo "[bootstrap] 완료"

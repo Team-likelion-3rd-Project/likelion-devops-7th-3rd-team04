@@ -69,6 +69,7 @@ services:
 
   # 1-1. DB 시딩 (관리자 계정 + 호텔/객실 3개 + 객실 재고). mariadb가 healthy해지면 1회 실행 후 종료됩니다.
   #      매번 재실행해도 이미 존재하는 데이터는 건너뛰므로(멱등) docker compose up을 반복해도 안전합니다.
+  #      hotels/rooms 등은 이제 main-db-migration이 만들기 때문에, 그게 끝난 뒤에 실행되어야 합니다.
   db-seed:
     build:
       context: .
@@ -81,6 +82,30 @@ services:
     depends_on:
       mariadb:
         condition: service_healthy
+      main-db-migration:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # 1-1b. 메인 DB 마이그레이션 (Flyway). migrations/의 SQL을 버전 순서대로 적용하고 종료합니다.
+  #       hotel-service/booking-service는 이게 성공해야 시작합니다(synchronize: false라 테이블을
+  #       직접 안 만듦). 이미 적용된 버전은 건너뛰므로 docker compose up을 반복해도 안전합니다.
+  main-db-migration:
+    image: flyway/flyway:11.3.4-alpine
+    command: migrate
+    environment:
+      - FLYWAY_URL=jdbc:mariadb://${DB_HOST}:${DB_PORT:-3306}/${DB_DATABASE}
+      - FLYWAY_USER=${DB_USERNAME}
+      - FLYWAY_PASSWORD=${DB_PASSWORD}
+      - FLYWAY_LOCATIONS=filesystem:/flyway/sql
+      # DB가 막 켜지는 중이면 바로 실패하지 않고 재시도합니다.
+      - FLYWAY_CONNECT_RETRIES=10
+    volumes:
+      - ./migrations:/flyway/sql:ro
+    depends_on:
+      # local-infra profile 없이(실제 AWS DB 사용) 실행할 때는 mariadb 서비스가 없으므로 required: false
+      mariadb:
+        condition: service_healthy
+        required: false
     restart: "no"
 
   # 2. Redis (로컬 개발용. 운영에서는 AWS ElastiCache를 사용하며, 그때는 auth-service의
@@ -222,6 +247,11 @@ services:
       - .env
     environment:
       - NODE_ENV=development
+    # hotels/rooms/facilities/room_images/room_availabilities는 main-db-migration이 만듭니다
+    # (synchronize: false라 hotel-service 자신은 테이블을 안 만듦).
+    depends_on:
+      main-db-migration:
+        condition: service_completed_successfully
 
 
 # DB 볼륨 사용 시 아래 주속 해제
@@ -249,8 +279,13 @@ services:
       # 반대 방향 의존(getBookingById/ConfirmBooking)이 있어 순환 의존이 되므로, 여기서는
       # depends_on을 걸지 않는다 — gRPC 클라이언트는 연결을 지연 생성/재시도한다.
       - PAYMENT_SERVICE_HOST=payment-service:3004
+    # reservations/reservation_facilities도 main-db-migration이 만듭니다
+    # (synchronize: false라 booking-service 자신은 테이블을 안 만듦).
     depends_on:
-      - hotel-service
+      hotel-service:
+        condition: service_started
+      main-db-migration:
+        condition: service_completed_successfully
 
   payment-service:
     build:

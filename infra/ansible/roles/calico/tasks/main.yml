@@ -89,6 +89,7 @@
   retries: 12
   delay: 5
   changed_when: false
+  when: use_tailscale
 
 - name: Felix iptables mark 대역을 Tailscale 과 분리
   # Tailscale 의 ip rule(fwmark 0x80000/0xff0000 → main 테이블)에 Calico 의 mark 가 걸리지 않게 함.
@@ -97,5 +98,5 @@
     kubectl patch felixconfiguration default --type merge
     -p '{{ {"spec": {"iptablesMarkMask": calico_iptables_mark_mask}} | to_json }}'
   environment: *kubeconfig
-  when: felix_mark_mask.stdout != calico_iptables_mark_mask | string
+  when: use_tailscale and felix_mark_mask.stdout != calico_iptables_mark_mask | string
   changed_when: true

@@ -10,12 +10,21 @@ service_subnet: "10.96.0.0/12"
 # tailscale0 MTU(1280) - VXLAN 오버헤드(50)
 calico_mtu: 1230
 tailscale_interface: tailscale0
+# Calico 노드 IP 감지 방법 (Installation spec.calicoNetwork.nodeAddressAutodetectionV4)
+calico_node_address_autodetection:
+  interface: "{{ tailscale_interface }}"
 # Felix 가 쓰는 fwmark 비트. 기본값(0xffff0000)은 Tailscale(0xff0000)과 겹쳐서
 # Pod 가 Tailnet 클라이언트에 보내는 응답이 ens33 으로 새어 나감 → 0xff000000 으로 분리 (README 6절)
 calico_iptables_mark_mask: 4278190080  # 0xff000000
 
 # ── 노드 ─────────────────────────────────────────────────
 node_name: "{{ inventory_hostname }}"
+# false 면 tailscale role 과 TS_OAUTH_CLIENT_SECRET 확인을 건너뛰고 기본 NIC IP 를 노드 IP 로 쓴다 (AWS)
+use_tailscale: true
+# kubelet node-ip / kube-apiserver advertiseAddress
+node_ip: "{{ ts_ip if use_tailscale else ansible_default_ipv4.address }}"
+# kubeadm controlPlaneEndpoint 호스트 (포트 6443). AWS 는 내부 NLB DNS
+k8s_control_plane_endpoint: "{{ node_ip }}"
 
 # ── 비밀값: 환경변수에서만 읽음 (코드에 값 금지) ──────────────
 ts_oauth_secret: "{{ lookup('env', 'TS_OAUTH_CLIENT_SECRET') }}"
