@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { HOTELS } from '../data/hotels'
+import { useHotels } from '../data/hotelStore'
 import DateRangeCalendar from '../components/reservation/DateRangeCalendar'
 import GuestSelector from '../components/reservation/GuestSelector'
 import ReservationSteps from '../components/reservation/ReservationSteps'
@@ -14,6 +14,8 @@ import './ReservationPage.css'
 type PanelKey = 'hotel' | 'dates' | 'guests' | null
 
 function ReservationPage() {
+  // 호텔 이름·소개는 API(GET /api/hotels) 응답으로 갱신된다 (data/hotelStore.ts)
+  const hotels = useHotels()
   const navigate = useNavigate()
   const today = startOfDay(new Date())
 
@@ -30,7 +32,7 @@ function ReservationPage() {
 
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const selectedHotel = HOTELS.find((h) => h.id === selectedHotelId) ?? null
+  const selectedHotel = hotels.find((h) => h.id === selectedHotelId) ?? null
 
   // 검색 바/패널 바깥을 클릭하면 열려있는 패널을 닫는다.
   useEffect(() => {
@@ -142,7 +144,7 @@ function ReservationPage() {
           <div className="reservation-panel reservation-hotel-panel">
             {hotelFieldError && <p className="reservation-field-error">호텔을 먼저 선택해주세요.</p>}
             <ul className="reservation-hotel-list">
-              {HOTELS.map((hotel) => (
+              {hotels.map((hotel) => (
                 <li key={hotel.id}>
                   <button
                     type="button"

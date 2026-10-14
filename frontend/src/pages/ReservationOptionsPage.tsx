@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { HOTELS } from '../data/hotels'
+import { useHotels } from '../data/hotelStore'
 import { fetchRoom, fetchRoomAvailability } from '../api/hotels'
 import type { Room, RoomAvailabilityDay } from '../api/hotels'
 import { createBooking } from '../api/bookings'
@@ -32,12 +32,14 @@ const OPTIONS: OptionItem[] = [
 ]
 
 function ReservationOptionsPage() {
+  // 호텔 이름·소개는 API(GET /api/hotels) 응답으로 갱신된다 (data/hotelStore.ts)
+  const hotels = useHotels()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
 
   // 1단계 검색 조건 + 2단계(객실 선택)에서 실어 보낸 room 쿼리스트링을 함께 읽는다.
   const search = useMemo(() => parseReservationSearchParams(searchParams), [searchParams])
-  const hotel = search ? HOTELS.find((h) => h.id === search.hotelSlug) ?? null : null
+  const hotel = search ? hotels.find((h) => h.id === search.hotelSlug) ?? null : null
   const roomIdRaw = searchParams.get('room')
   const roomId = roomIdRaw ? Number(roomIdRaw) : null
 

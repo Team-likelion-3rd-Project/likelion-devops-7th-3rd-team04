@@ -45,6 +45,13 @@
   max-width: 640px;
 }
 
+.hotel-detail-contact {
+  margin-top: 4px;
+  font-size: 14px;
+  color: var(--text);
+  opacity: 0.8;
+}
+
 .hotel-detail-features {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

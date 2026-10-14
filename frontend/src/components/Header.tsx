@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { HOTELS } from '../data/hotels'
+import { useHotels } from '../data/hotelStore'
 import { logout } from '../api/gateway'
 import { customerAuth } from '../api/tokenStore'
 import { loginStateFrom } from '../utils/loginRedirect'
@@ -16,6 +16,8 @@ const PHILOSOPHY_ITEMS = [
 type MenuKey = 'philosophy' | 'hotels' | 'profile' | null
 
 function Header() {
+  // 호텔 이름·소개는 API(GET /api/hotels) 응답으로 갱신된다 (data/hotelStore.ts)
+  const hotels = useHotels()
   const [openMenu, setOpenMenu] = useState<MenuKey>(null)
   const accessToken = customerAuth.useAccessToken()
   const location = useLocation()
@@ -81,7 +83,7 @@ function Header() {
           </button>
           {openMenu === 'hotels' && (
             <ul className="nav-dropdown">
-              {HOTELS.map((hotel) => (
+              {hotels.map((hotel) => (
                 <li key={hotel.id}>
                   <NavLink to={`/hotels/${hotel.id}`} onClick={closeMenu}>
                     {hotel.name}

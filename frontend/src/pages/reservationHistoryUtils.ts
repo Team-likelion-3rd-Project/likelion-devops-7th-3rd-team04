@@ -1,7 +1,7 @@
 import type { Booking } from '../api/gateway'
 import { fetchRooms } from '../api/hotels'
 import type { Room } from '../api/hotels'
-import { HOTELS } from '../data/hotels'
+import { getHotels } from '../data/hotelStore'
 import type { Hotel } from '../data/hotels'
 import { formatDate as formatDateObj, parseDateISO } from '../utils/date'
 
@@ -31,7 +31,7 @@ export interface RoomWithHotel {
 // TODO: 호텔이 많아지면 백엔드에 roomId만으로 바로 조회하는 API를 추가하는 게 낫다.
 export async function fetchRoomLookup(): Promise<Map<number, RoomWithHotel>> {
   const results = await Promise.all(
-    HOTELS.map(async (hotel) => {
+    getHotels().map(async (hotel) => {
       const rooms = await fetchRooms(hotel.hotelId)
       return rooms.map((room) => [room.roomId, { hotel, room }] as const)
     }),
