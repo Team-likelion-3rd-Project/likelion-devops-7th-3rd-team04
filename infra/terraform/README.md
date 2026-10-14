@@ -119,9 +119,9 @@ bootstrap                                  🔒 최초 1회
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 | 1분 52초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
 | `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 | 15초 |
-| `70-main-cluster-kubeadm` | CP 3대 (부트스트랩 포함), 워커 2대 (user-data 없음) | 3분 17초 | 2분 55초 |
+| `70-main-cluster-kubeadm` | CP 3대, 워커 2대 (부트스트랩 포함) | 3분 16초 – 3분 36초 | 1분 40초 – 2분 3초 |
 
-`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 CP 부트스트랩이 이어집니다 (6절). **apply 시작부터 CP 3대 Ready 까지 6분 14초** (apply 3분 15초 – 3분 17초 중 내부 NLB 생성이 2분 46초, CP 부팅 후 부트스트랩 약 3분).
+`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, CP-a 의 Traefik · whoami 설치 완료까지 약 7분 – 7분 30초** (apply 중 내부 NLB 생성이 약 2분 45초, 노드 부팅 후 부트스트랩 약 3분 – 4분). 워커 1대 종료 후 교체 워커 Ready 까지 약 3분.
 
 ---
 
@@ -141,12 +141,14 @@ bootstrap                                  🔒 최초 1회
 
 ## 6. `70-main-cluster-kubeadm` 부트스트랩 확인
 
-CP 3대는 apply 가 끝난 뒤 user-data 가 [`infra/ansible/aws-control-plane.yml`](../ansible/aws-control-plane.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 12절).
+CP 3대와 워커는 apply 가 끝난 뒤 user-data 가 각각 [`aws-control-plane.yml`](../ansible/aws-control-plane.yml), [`aws-worker.yml`](../ansible/aws-worker.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 12절). CP-a 는 워커가 Ready 가 되면 Traefik · whoami 까지 설치합니다.
 **terraform apply 가 성공해도 부트스트랩은 그 뒤 몇 분 더 걸리고, 실패해도 apply 결과에 나타나지 않습니다.**
 
 ```bash
 # 인스턴스 ID 확인 → SSM 접속 (SSM 은 키 페어 · 22 포트 없이 접속)
 AWS_PROFILE=team04 terraform output control_plane_instance_ids
+AWS_PROFILE=team04 aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$(AWS_PROFILE=team04 terraform output -raw worker_asg_name)" \
+  --query 'AutoScalingGroups[0].Instances[].InstanceId'   # 워커
 AWS_PROFILE=team04 aws ssm start-session --target <인스턴스 ID>
 
 # 노드 안에서
@@ -155,5 +157,6 @@ cloud-init status --long                           # status: done / error
 sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide
 ```
 
-- CP-b · c 로그가 `CA cert hash 기록 대기` 에서 멈춰 있으면 CP-a 의 로그를 먼저 봅니다.
-- Ansible 묶음을 고친 뒤 apply 하면 S3 객체만 바뀌고, 이미 떠 있는 CP 에는 반영되지 않습니다 (user-data 는 첫 부팅에만 실행). 다시 확인하려면 스택을 destroy → apply 합니다.
+- CP-b · c · 워커 로그가 `CA cert hash 기록 대기` 에서 멈춰 있으면 CP-a 의 로그를 먼저 봅니다.
+- CP-a 로그가 `워커 Ready 대기` 에서 멈춰 있으면 워커 로그를 봅니다.
+- Ansible 묶음을 고친 뒤 apply 하면 S3 객체만 바뀌고, 이미 떠 있는 CP 에는 반영되지 않습니다 (user-data 는 첫 부팅에만 실행). 다시 확인하려면 스택을 destroy → apply 합니다. 워커만 확인하려면 워커 인스턴스를 종료해 ASG 가 새로 띄우게 합니다 (시작 템플릿은 최신 버전을 씀).

@@ -1,5 +1,5 @@
 #!/bin/bash
-# CP 부트스트랩. S3 의 infra/ansible 묶음을 받아 aws-control-plane.yml 을 자기 자신에게 실행한다.
+# 노드(CP · 워커) 부트스트랩. S3 의 infra/ansible 묶음을 받아 ${playbook} 을 자기 자신에게 실행한다.
 # 진행 · 실패 로그는 /var/log/cloud-init-output.log (README 6절)
 set -euo pipefail
 
@@ -23,19 +23,13 @@ IMDS=http://169.254.169.254/latest
 IMDS_TOKEN=$(curl -sf -X PUT "$IMDS/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
 NODE_NAME=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "$IMDS/meta-data/local-hostname")
 
-cat > "$ANSIBLE_DIR/aws-bootstrap.json" <<EOF
-{
-  "node_name": "$NODE_NAME",
-  "k8s_cp_role": "${role}",
-  "k8s_control_plane_endpoint": "${apiserver_endpoint}",
-  "kubeadm_param_prefix": "${param_prefix}",
-  "aws_region": "${region}"
-}
+cat > "$ANSIBLE_DIR/aws-bootstrap.json" <<'EOF'
+${extra_vars}
 EOF
 
-echo "[bootstrap] aws-control-plane.yml 실행 ($NODE_NAME, ${role})"
+echo "[bootstrap] ${playbook} 실행 ($NODE_NAME)"
 cd "$ANSIBLE_DIR"
 ANSIBLE_CONFIG=./ansible.cfg ANSIBLE_NOCOLOR=1 \
-  "$VENV/bin/ansible-playbook" -i inventory/aws.ini aws-control-plane.yml -e @aws-bootstrap.json
+  "$VENV/bin/ansible-playbook" -i inventory/aws.ini ${playbook} -e @aws-bootstrap.json -e "node_name=$NODE_NAME"
 
 echo "[bootstrap] 완료"
