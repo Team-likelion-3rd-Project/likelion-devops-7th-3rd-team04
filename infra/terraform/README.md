@@ -134,3 +134,24 @@ bootstrap                                  🔒 최초 1회
 | S3 | `force_destroy = true` |
 
 🔒 스택의 리소스에는 `prevent_destroy = true` 를 겁니다.
+
+---
+
+## 6. `70-main-cluster-kubeadm` 부트스트랩 확인
+
+CP 3대는 apply 가 끝난 뒤 user-data 가 [`infra/ansible/aws-control-plane.yml`](../ansible/aws-control-plane.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 12절).
+**terraform apply 가 성공해도 부트스트랩은 그 뒤 몇 분 더 걸리고, 실패해도 apply 결과에 나타나지 않습니다.**
+
+```bash
+# 인스턴스 ID 확인 → SSM 접속 (SSM 은 키 페어 · 22 포트 없이 접속)
+AWS_PROFILE=team04 terraform output control_plane_instance_ids
+AWS_PROFILE=team04 aws ssm start-session --target <인스턴스 ID>
+
+# 노드 안에서
+sudo tail -f /var/log/cloud-init-output.log        # user-data · Ansible 출력. 마지막 줄 "[bootstrap] 완료" 면 성공
+cloud-init status --long                           # status: done / error
+sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide
+```
+
+- CP-b · c 로그가 `CA cert hash 기록 대기` 에서 멈춰 있으면 CP-a 의 로그를 먼저 봅니다.
+- Ansible 묶음을 고친 뒤 apply 하면 S3 객체만 바뀌고, 이미 떠 있는 CP 에는 반영되지 않습니다 (user-data 는 첫 부팅에만 실행). 다시 확인하려면 스택을 destroy → apply 합니다.
