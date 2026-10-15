@@ -34,7 +34,7 @@ variables:
   NODE_IMAGE: node:20-alpine
   # kaniko 업스트림은 2025년 archive — 마지막 릴리스로 고정. 문제가 생기면 buildah 로 교체
   KANIKO_IMAGE: gcr.io/kaniko-project/executor:v1.23.2-debug
-  CRANE_IMAGE: gcr.io/go-containerregistry/crane/debug:v0.20.2
+  CRANE_IMAGE: gcr.io/go-containerregistry/crane/debug:v0.20.3
   # kubectl · helm · yq · git 포함. kubectl 은 클러스터(v1.33)와 맞춤
   DEPLOY_IMAGE: alpine/k8s:1.33.4
   # DB 노드(infra/ansible group_vars/db.yml)와 같은 버전
@@ -115,6 +115,8 @@ helm-lint:
   script:
     - helm lint "$CHART_PATH" --set global.imageTag=lint
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set ingress.enabled=true > /dev/null
+    # dev 의 결제 노드 연동(booking-service / pg-mock-service NodePort) 렌더링
+    - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set services.booking-service.nodePort=30303 > /dev/null
 
 # ── build: kaniko (Docker 데몬 / DinD 불필요) ────────────────────
 build:

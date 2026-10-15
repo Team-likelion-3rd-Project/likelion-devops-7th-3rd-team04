@@ -1,0 +1,49 @@
+# Ansible(payment_stack role)이 생성 — 값은 inventory/group_vars/payment.yml 에서 조정
+# prod 의 SQS FIFO(Terraform 43-messaging)를 dev 에서 흉내내는 설정
+include classpath("application.conf")
+
+# 큐 URL 에 들어가는 주소 — 클러스터의 booking-service 가 그대로 접속할 수 있게 Tailscale IP 로 고정
+node-address {
+  protocol = http
+  host = "{{ ts_ip }}"
+  port = {{ elasticmq_port }}
+  context-path = ""
+}
+generate-node-address = false
+
+rest-sqs {
+  enabled = true
+  bind-port = {{ elasticmq_port }}
+  bind-hostname = "0.0.0.0"
+  sqs-limits = strict
+}
+
+aws {
+  region = {{ elasticmq_region }}
+  accountId = {{ elasticmq_account_id }}
+}
+
+queues {
+  "{{ payment_result_dlq }}" {
+    fifo = true
+    contentBasedDeduplication = false
+  }
+  # MessageGroupId = reservation_id (같은 예약 이벤트는 순서대로), MessageDeduplicationId = outbox event_id
+  "{{ payment_result_queue }}" {
+    fifo = true
+    contentBasedDeduplication = false
+    defaultVisibilityTimeout = {{ payment_result_visibility_timeout }} seconds
+    deadLettersQueue {
+      name = "{{ payment_result_dlq }}"
+      maxReceiveCount = {{ payment_result_max_receive }}
+    }
+  }
+}
+
+# 재기동해도 아직 소비되지 않은 결과 이벤트가 남도록 큐·메시지를 디스크(H2)에 저장
+# (outbox 는 발행 성공 시 published_at 을 기록하므로, 브로커가 메시지를 잃으면 다시 보내지 않음)
+# ⚠️ 저장된 큐 설정이 위 queues 보다 우선 — 큐 설정을 바꾸려면 README 14-6 참고
+messages-storage {
+  enabled = true
+  uri = "jdbc:h2:/data/elasticmq"
+}

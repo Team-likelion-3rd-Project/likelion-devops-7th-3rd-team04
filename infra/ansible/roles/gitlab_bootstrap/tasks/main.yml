@@ -1,8 +1,8 @@
 ---
 # CI/CD 에 필요한 GitLab 리소스를 REST API 로 멱등하게 맞춥니다. (--tags bootstrap 단독 실행 가능)
-#   그룹/프로젝트 → agent 설정 커밋 → agent 등록·토큰 → gitops 초기 values → 레지스트리 Deploy Token
+#   그룹/프로젝트 → agent 설정 커밋 → agent 등록·토큰 → gitops 초기 values → 레지스트리 Deploy Token(k8s / 결제 노드)
 #   → gitops push 토큰(CI 변수) → 미러 push 토큰 → 보호 브랜치 → smoke test CI 변수 → 레지스트리 cleanup policy
-# 발급된 토큰은 로컬 .secrets/gitlab-k8s.env, .secrets/github-mirror.env 에 저장 (이미 있으면 재사용)
+# 발급된 토큰은 로컬 .secrets/gitlab-k8s.env, .secrets/github-mirror.env, .secrets/payment-node.env 에 저장 (이미 있으면 재사용)
 - name: Tailscale 정보 조회 (--tags bootstrap 단독 실행 대비)
   ansible.builtin.command: tailscale status --self --peers=false --json
   register: gl_ts_self
@@ -33,7 +33,7 @@
 - name: 기존 토큰 파일 확인
   ansible.builtin.stat:
     path: "{{ local_secrets_dir }}/{{ item }}"
-  loop: [gitlab-k8s.env, github-mirror.env]
+  loop: [gitlab-k8s.env, github-mirror.env, payment-node.env]
   register: gl_secret_files
   delegate_to: localhost
   become: false
@@ -46,6 +46,9 @@
     gl_mirror_env: >-
       {{ (lookup('ansible.builtin.file', local_secrets_dir ~ '/github-mirror.env') | parse_dotenv)
          if gl_secret_files.results[1].stat.exists else {} }}
+    gl_payment_env: >-
+      {{ (lookup('ansible.builtin.file', local_secrets_dir ~ '/payment-node.env') | parse_dotenv)
+         if gl_secret_files.results[2].stat.exists else {} }}
   no_log: true
 
 # ── 단기 관리자 토큰 ───────────────────────────────────────
@@ -213,6 +216,46 @@
                                        'REGISTRY_DEPLOY_TOKEN': gl_deploy_token_new.json.token}) }}
           no_log: true
 
+    # ── 결제 노드용 그룹 Deploy Token (이미지 pull + gitops 태그 조회) ──
+    # 결제 노드는 클러스터 밖에서 docker pull / git clone 을 하므로 k8s 용 토큰과 분리 (따로 폐기 가능)
+    - name: 결제 노드 Deploy Token 재발급
+      when: gl_payment_env.PAYMENT_DEPLOY_TOKEN | default('') | length == 0
+      block:
+        - name: 기존 결제 노드 Deploy Token 조회
+          ansible.builtin.uri:
+            url: "{{ gl_api }}/groups/{{ gl_ids[gitlab_group] }}/deploy_tokens?active=true"
+          register: gl_payment_deploy_tokens
+
+        - name: 기존 결제 노드 Deploy Token 폐기
+          ansible.builtin.uri:
+            url: "{{ gl_api }}/groups/{{ gl_ids[gitlab_group] }}/deploy_tokens/{{ item.id }}"
+            method: DELETE
+            status_code: 204
+          loop: "{{ gl_payment_deploy_tokens.json | selectattr('name', 'equalto', gitlab_payment_deploy_token_name) | list }}"
+          loop_control:
+            label: "{{ item.id }}"
+          changed_when: true
+
+        - name: 결제 노드 Deploy Token 발급 (read_registry, read_repository)
+          ansible.builtin.uri:
+            url: "{{ gl_api }}/groups/{{ gl_ids[gitlab_group] }}/deploy_tokens"
+            method: POST
+            body:
+              name: "{{ gitlab_payment_deploy_token_name }}"
+              username: "{{ gitlab_payment_deploy_token_name }}"
+              scopes: [read_registry, read_repository]
+            status_code: 201
+          register: gl_payment_deploy_token_new
+          changed_when: true
+          no_log: true
+
+        - name: 결제 노드 Deploy Token 기록
+          ansible.builtin.set_fact:
+            gl_payment_env: >-
+              {{ gl_payment_env | combine({'PAYMENT_DEPLOY_USER': gl_payment_deploy_token_new.json.username,
+                                           'PAYMENT_DEPLOY_TOKEN': gl_payment_deploy_token_new.json.token}) }}
+          no_log: true
+
     # ── gitops push 토큰 → team04/hotel CI 변수 ───────────────
     - name: GITOPS_PUSH_TOKEN 존재 확인
       ansible.builtin.uri:
@@ -351,6 +394,22 @@
       become: false
       no_log: true
 
+    - name: payment.yml 용 payment-node.env 생성 (로컬)
+      ansible.builtin.copy:
+        dest: "{{ local_secrets_dir }}/payment-node.env"
+        content: |
+          # gitlab.yml --tags bootstrap 이 생성 — 커밋 금지, 결제 노드 담당자에게 비밀 채널로만 공유
+          # PAYMENT_DEPLOY_TOKEN 을 지우고 다시 실행하면 재발급 (기존 토큰은 폐기됨)
+          GITLAB_URL={{ gitlab_url }}
+          GITLAB_TS_IP={{ ts_ip }}
+          GITLAB_REGISTRY={{ gitlab_fqdn }}:{{ gitlab_registry_port }}
+          PAYMENT_DEPLOY_USER={{ gl_payment_env.PAYMENT_DEPLOY_USER | default('') }}
+          PAYMENT_DEPLOY_TOKEN={{ gl_payment_env.PAYMENT_DEPLOY_TOKEN | default('') }}
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
     - name: GitHub Secrets 용 github-mirror.env 생성 (로컬)
       ansible.builtin.copy:
         dest: "{{ local_secrets_dir }}/github-mirror.env"
@@ -371,3 +430,4 @@
       - "GitLab 프로젝트: {{ gitlab_url }}/{{ gitlab_app_project_path }} (미러), {{ gitlab_agents_project_path }}, {{ gitlab_gitops_project_path }}"
       - "k8s 용 토큰: {{ local_secrets_dir }}/gitlab-k8s.env → k8s-cicd.yml 실행 시 source"
       - "GitHub 용 토큰: {{ local_secrets_dir }}/github-mirror.env → GitHub Actions Secrets 등록"
+      - "결제 노드 용 토큰: {{ local_secrets_dir }}/payment-node.env → payment.yml 실행 시 source"

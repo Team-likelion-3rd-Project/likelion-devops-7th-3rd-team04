@@ -51,15 +51,11 @@ backend_secret_keys:
   - REDIS_PASSWORD
   - MOCK_PG_SECRET
 backend_secret_required_keys: "{{ backend_secret_keys | reject('equalto', 'REDIS_PASSWORD') | list }}"
-# 결제 DB 는 클러스터·메인 DB 노드와 분리된 별도 서버에 둘 예정 → 준비 전에는 비워 둬도 됨.
-# 값이 비어 있으면 Secret 에서 빠지고, gitops envs/dev/values.yaml 에서 payment-service / 결제 마이그레이션을 꺼 둠 (README 12-3)
-backend_secret_optional_keys:
-  - PAYMENT_DB_HOST
-  - PAYMENT_DB_PORT
-  - PAYMENT_DB_USERNAME
-  - PAYMENT_DB_PASSWORD
-  - PAYMENT_DB_DATABASE
-# 온프레미스 dev 는 메인 MariaDB 와 Valkey 가 DB 노드 한 대에 있음 (결제 DB 는 backend/.env 의 PAYMENT_DB_HOST 를 그대로 사용)
+# 값이 있을 때만 Secret 에 넣는 key (전부 채우거나 전부 비워야 함).
+# 온프레미스 dev 는 payment-service · 결제 DB 를 클러스터 밖 결제 노드(payment.yml)에서 운영하므로 결제 DB 자격증명(PAYMENT_DB_*)을
+# 클러스터에 넣지 않음 — backend/.env 에 PAYMENT_DB_* 가 채워져 있어도(결제 노드용) backend-secrets 에는 들어가지 않음 (README 12-3, 14절)
+backend_secret_optional_keys: []
+# 온프레미스 dev 는 메인 MariaDB 와 Valkey 가 DB 노드 한 대에 있음
 backend_secret_host_overrides:
   DB_HOST: "{{ db_ts_ip }}"
   REDIS_HOST: "{{ db_ts_ip }}"

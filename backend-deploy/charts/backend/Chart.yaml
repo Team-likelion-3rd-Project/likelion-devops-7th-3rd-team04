@@ -3,5 +3,5 @@ name: backend
 description: 호텔 예약 backend(NestJS 마이크로서비스 8개) 배포 차트 — 환경별 값은 GitLab team04/infra/backend-gitops 의 envs/<env>/values.yaml
 type: application
 # 차트 구조가 바뀔 때만 올립니다. 이미지 버전은 values 의 global.imageTag(커밋 SHA)로 관리
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.1.0"

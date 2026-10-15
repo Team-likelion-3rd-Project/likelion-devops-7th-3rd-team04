@@ -39,7 +39,7 @@
       {%- for key in backend_secret_keys -%}
         {%- set _ = data.update({key: backend_env[key] | default('')}) -%}
       {%- endfor -%}
-      {#- 선택 key(결제 DB)는 값이 있을 때만 넣음 -#}
+      {#- 선택 key 는 값이 있을 때만 넣음 -#}
       {%- for key in backend_secret_optional_keys if backend_env[key] | default('') | length > 0 -%}
         {%- set _ = data.update({key: backend_env[key]}) -%}
       {%- endfor -%}
@@ -55,22 +55,23 @@
     quiet: true
   loop: "{{ backend_secret_required_keys }}"
 
-- name: 결제 DB 값 확인 (전부 채우거나 전부 비우기)
+- name: 선택 key 확인 (전부 채우거나 전부 비우기)
   vars:
-    payment_filled: "{{ backend_secret_optional_keys | select('in', backend_secret_data) | list }}"
+    optional_filled: "{{ backend_secret_optional_keys | select('in', backend_secret_data) | list }}"
   ansible.builtin.assert:
-    that: payment_filled | length in [0, backend_secret_optional_keys | length]
+    that: optional_filled | length in [0, backend_secret_optional_keys | length]
     fail_msg: >-
-      결제 DB 값이 일부만 채워져 있습니다 ({{ payment_filled | join(', ') }}).
+      선택 key 가 일부만 채워져 있습니다 ({{ optional_filled | join(', ') }}).
       {{ backend_secret_optional_keys | join(', ') }} 를 모두 채우거나 모두 비우세요.
     quiet: true
 
-- name: 결제 DB 미설정 안내
+- name: 선택 key 미설정 안내
   ansible.builtin.debug:
     msg: >-
-      PAYMENT_DB_* 가 비어 있어 backend-secrets 에서 제외했습니다. 결제 DB 준비 전까지
-      gitops envs/dev/values.yaml 에서 services.payment-service.enabled / migrations.payment.enabled 를 false 로 두세요 (README 12-3).
-  when: backend_secret_optional_keys | select('in', backend_secret_data) | list | length == 0
+      {{ backend_secret_optional_keys | join(', ') }} 가 비어 있어 backend-secrets 에서 제외했습니다.
+  when:
+    - backend_secret_optional_keys | length > 0
+    - backend_secret_optional_keys | select('in', backend_secret_data) | list | length == 0
 
 - name: backend-secrets ({{ backend_namespace }}/{{ backend_secret_name }})
   vars:
