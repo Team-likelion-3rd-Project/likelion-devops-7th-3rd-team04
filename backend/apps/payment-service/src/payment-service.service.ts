@@ -6,6 +6,7 @@ import { Observable, firstValueFrom } from 'rxjs';
 import {
   DataSource,
   EntityManager,
+  In,
   QueryFailedError,
   Repository,
 } from 'typeorm';
@@ -22,6 +23,7 @@ import {
 import { PgMockClient } from './pg-mock/pg-mock.client';
 import { TossPaymentsClient } from './pg/toss-payments.client';
 import { PgConfirmResult } from './pg/pg-confirm-result';
+import { PgCancelResult } from './pg/pg-cancel-result';
 
 // 결제 승인 결과 (proto ApprovePaymentResponse.result, 위키 API 명세 5.9의 result와 같은 값)
 export type ApproveResultType =
@@ -514,10 +516,16 @@ export class PaymentServiceService implements OnModuleInit {
       return;
     }
     if (payment.provider === PaymentProvider.TOSS) {
-      // 토스 취소 API 연동은 LDP-28 범위 — 그 전까지는 수동 취소가 필요하다는 알람만 남긴다
-      this.logger.error(
-        `[알람] 토스 중복 승인 수동 취소 필요 (paymentKey=${pgResult.paymentKey})`,
-      );
+      const cancel = await this.tossPaymentsClient.cancel({
+        paymentKey: pgResult.paymentKey,
+        cancelReason: '중복 승인 자동 취소',
+        idempotencyKey: randomUUID(),
+      });
+      if (cancel.outcome !== 'CANCELED') {
+        this.logger.error(
+          `[알람] 토스 중복 승인 자동 취소 실패 — 수동 취소 필요 (paymentKey=${pgResult.paymentKey})`,
+        );
+      }
       return;
     }
     await this.pgMockClient
@@ -615,41 +623,118 @@ export class PaymentServiceService implements OnModuleInit {
     return payments.map((payment) => this.toGrpcResponse(payment));
   }
 
-  // 예약 취소 시 booking-service가 항상 호출하는 내부용 환불 RPC (payment.proto의 RefundPayment
-  // 주석 참고). APPROVED 결제가 없으면(결제 전 취소 등) no-op으로 조용히 반환한다 — booking-service가
-  // reservation.status와 무관하게 매 취소마다 호출하므로, 이게 정상 흐름의 일부다.
-  async refundPayment(reservationId: number): Promise<{ refunded: boolean }> {
+  // 환불 (LDP-28, ERD "환불: 요청은 PrivateLink, 결과는 SQS"). 예약 취소 시 booking-service가 항상 호출한다.
+  //   1) 이 예약의 승인된 결제(approved_reservation_id = 예약 ID)를 찾는다. 없으면 NO_PAYMENT(결제 전 취소 등).
+  //   2) APPROVED(또는 이전에 실패한 REFUND_FAILED) -> REFUND_REQUESTED 조건부 UPDATE + 환불 멱등 키 기록.
+  //      조건부라서 같은 환불이 동시에 두 번 와도 한쪽만 PG 취소로 넘어간다.
+  //   3) PG(MOCK: pg-mock / TOSS: 토스 취소 API)에 같은 멱등 키로 취소를 요청한다.
+  //   4) 한 트랜잭션에서 REFUNDED(또는 REFUND_FAILED) 전환 + payment_outbox(PAYMENT_REFUNDED / PAYMENT_REFUND_FAILED).
+  //      결과는 큐를 통해 booking-service의 payment_result_inbox에 기록된다 (LDP-26 경로).
+  // PG 취소에 실패해도 에러를 던지지 않고 REFUND_FAILED로 남긴다 — 같은 키로 다시 시도하면 되고(대사 배치·재요청),
+  // 실제로 환불되지 않은 결제를 환불된 것처럼 기록하지 않는다.
+  async refundPayment(data: {
+    reservationId: number;
+    refundIdempotencyKey?: string;
+  }): Promise<{ refunded: boolean; status: string }> {
     const payment = await this.paymentRepository.findOne({
-      where: { reservationId, status: PaymentStatus.APPROVED },
+      where: { approvedReservationId: data.reservationId },
     });
     if (!payment) {
-      return { refunded: false };
+      return { refunded: false, status: 'NO_PAYMENT' };
     }
-    // 토스 결제 취소(환불) API 연동은 LDP-28 범위 — 그 전까지 TOSS 결제를 pg-mock으로 취소하면 안 된다
-    if (payment.provider === PaymentProvider.TOSS) {
-      throw new RpcException(
-        `토스 결제(#${payment.paymentId}) 환불은 아직 지원하지 않습니다 (LDP-28).`,
-      );
+    if (payment.status === PaymentStatus.REFUNDED) {
+      // 이미 환불 완료 — 같은 취소의 재시도
+      return { refunded: true, status: PaymentStatus.REFUNDED };
     }
-    // 승인된 결제는 항상 paymentKey가 있어야 하지만(승인 전에만 NULL), 데이터가 깨진 경우를 대비한 방어 코드.
-    if (!payment.paymentKey) {
-      throw new RpcException(
-        `환불할 결제(#${payment.paymentId})에 PG 결제 키가 없습니다.`,
-      );
+    if (payment.status === PaymentStatus.REFUND_REQUESTED) {
+      // 다른 요청이 지금 PG 취소 중 — 결과는 그쪽이 기록하고 이벤트로 알린다
+      return { refunded: false, status: PaymentStatus.REFUND_REQUESTED };
     }
 
-    // PG 취소 호출이 실패하면 결제내역은 APPROVED로 남겨둔 채 에러를 그대로 던진다 — 호출자
-    // (booking-service.cancelBooking)가 로그만 남기고 예약취소 자체는 막지 않는 정책이다.
-    // 여기서 임의로 REFUNDED로 바꾸면 실제로는 환불되지 않은 결제를 환불된 것처럼 기록하게 된다.
-    await this.pgMockClient.cancel(payment.paymentKey, {
-      cancelReason: '예약 취소',
+    // 한 번 정한 환불 멱등 키는 바꾸지 않는다 (REFUND_FAILED 재시도도 같은 키 → PG가 한 번만 취소)
+    const refundKey =
+      payment.refundIdempotencyKey || data.refundIdempotencyKey || randomUUID();
+    const { affected } = await this.paymentRepository.update(
+      {
+        paymentId: payment.paymentId,
+        status: In([PaymentStatus.APPROVED, PaymentStatus.REFUND_FAILED]),
+      },
+      {
+        status: PaymentStatus.REFUND_REQUESTED,
+        refundIdempotencyKey: refundKey,
+      },
+    );
+    if (!affected) {
+      // 그 사이 다른 요청이 상태를 바꿈 → 지금 상태를 그대로 알려준다
+      const current = await this.paymentRepository.findOne({
+        where: { paymentId: payment.paymentId },
+      });
+      return {
+        refunded: current?.status === PaymentStatus.REFUNDED,
+        status: current?.status ?? 'UNKNOWN',
+      };
+    }
+
+    const cancelResult: PgCancelResult = !payment.paymentKey
+      ? {
+          outcome: 'FAILED',
+          pgCode: 'PAYMENT_KEY_MISSING',
+          pgMessage: `환불할 결제(#${payment.paymentId})에 PG 결제 키가 없습니다.`,
+        }
+      : payment.provider === PaymentProvider.TOSS
+        ? await this.tossPaymentsClient.cancel({
+            paymentKey: payment.paymentKey,
+            cancelReason: '예약 취소',
+            idempotencyKey: refundKey,
+          })
+        : await this.pgMockClient.refund(payment.paymentKey, '예약 취소');
+
+    const refunded = cancelResult.outcome === 'CANCELED';
+    await this.dataSource.transaction(async (manager) => {
+      const { affected: done } = await manager.update(
+        Payment,
+        {
+          paymentId: payment.paymentId,
+          status: PaymentStatus.REFUND_REQUESTED,
+        },
+        {
+          status: refunded
+            ? PaymentStatus.REFUNDED
+            : PaymentStatus.REFUND_FAILED,
+          refundedAt: refunded ? (cancelResult.canceledAt ?? new Date()) : null,
+          // 승인 응답 원본은 그대로 두고 취소 응답을 cancel 아래에 덧붙인다
+          rawResponse: toJsonColumn({
+            ...(payment.rawResponse ?? {}),
+            cancel: {
+              ...(cancelResult.raw ?? {}),
+              pgCode: cancelResult.pgCode,
+              pgMessage: cancelResult.pgMessage,
+            },
+          }),
+        },
+      );
+      if (!done) {
+        return;
+      }
+      await this.insertOutbox(
+        manager,
+        payment,
+        refunded
+          ? PaymentOutboxEventType.PAYMENT_REFUNDED
+          : PaymentOutboxEventType.PAYMENT_REFUND_FAILED,
+        { retryable: false },
+      );
     });
 
-    // REFUND_REQUESTED/REFUND_FAILED를 거치는 환불 상태 전이는 LDP-28(토스 취소 연동)에서 붙입니다.
-    payment.status = PaymentStatus.REFUNDED;
-    payment.refundedAt = new Date();
-    await this.paymentRepository.save(payment);
-    return { refunded: true };
+    if (!refunded) {
+      this.logger.error(
+        `[알람] 환불 실패 — REFUND_FAILED로 두고 재시도 대상 (paymentId=${payment.paymentId}, reservationId=${data.reservationId}, code=${cancelResult.pgCode}): ${cancelResult.pgMessage}`,
+      );
+    }
+    return {
+      refunded,
+      status: refunded ? PaymentStatus.REFUNDED : PaymentStatus.REFUND_FAILED,
+    };
   }
 
   private toGrpcResponse(payment: Payment): PaymentGrpcResponse {

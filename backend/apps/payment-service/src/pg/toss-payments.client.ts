@@ -3,6 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { AxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import { PgConfirmResult } from './pg-confirm-result';
+import { PgCancelResult } from './pg-cancel-result';
 
 const DEFAULT_BASE_URL = 'https://api.tosspayments.com';
 // 토스 승인 API가 이 시간 안에 응답하지 않으면 UNKNOWN으로 두고 대사 배치가 조회로 확정합니다.
@@ -121,6 +122,75 @@ export class TossPaymentsClient {
       );
       return {
         outcome: 'UNKNOWN',
+        pgCode: body?.code,
+        pgMessage: body?.message ?? err.message,
+        raw: (body ?? {}) as Record<string, unknown>,
+      };
+    }
+  }
+
+  // 토스 결제 취소(환불) API (LDP-28, ERD "환불").
+  //   POST {TOSS_API_BASE_URL}/v1/payments/{paymentKey}/cancel   본문: { cancelReason } (전액 취소)
+  //   - Idempotency-Key 헤더에 환불 멱등 키(payments.refund_idempotency_key)를 실어, 같은 환불이
+  //     재시도돼도 토스가 한 번만 취소합니다.
+  //   - 이미 취소된 결제(ALREADY_CANCELED_PAYMENT)는 같은 환불의 재시도로 보고 성공으로 처리합니다.
+  async cancel(params: {
+    paymentKey: string;
+    cancelReason: string;
+    idempotencyKey: string;
+  }): Promise<PgCancelResult> {
+    const secretKey = process.env.TOSS_SECRET_KEY;
+    if (!secretKey) {
+      this.logger.error(
+        'TOSS_SECRET_KEY가 설정되지 않아 토스 결제 취소를 요청할 수 없습니다.',
+      );
+      return {
+        outcome: 'FAILED',
+        pgCode: 'TOSS_SECRET_KEY_MISSING',
+        pgMessage: '결제 설정 오류로 환불하지 못했습니다.',
+      };
+    }
+    const baseUrl = process.env.TOSS_API_BASE_URL || DEFAULT_BASE_URL;
+    const authorization = `Basic ${Buffer.from(`${secretKey}:`).toString('base64')}`;
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post<TossPaymentResponse & { canceledAt?: string }>(
+          `${baseUrl}/v1/payments/${encodeURIComponent(params.paymentKey)}/cancel`,
+          { cancelReason: params.cancelReason },
+          {
+            timeout: CONFIRM_TIMEOUT_MS,
+            headers: {
+              Authorization: authorization,
+              'Content-Type': 'application/json',
+              'Idempotency-Key': params.idempotencyKey,
+            },
+          },
+        ),
+      );
+      return {
+        outcome: 'CANCELED',
+        canceledAt: new Date(),
+        raw: data as unknown as Record<string, unknown>,
+      };
+    } catch (error: unknown) {
+      const err = error as AxiosError<TossErrorResponse>;
+      const body = err.response?.data;
+      if (body?.code === 'ALREADY_CANCELED_PAYMENT') {
+        this.logger.warn(
+          `이미 취소된 토스 결제입니다 — 환불 완료로 처리합니다 (paymentKey=${params.paymentKey})`,
+        );
+        return {
+          outcome: 'CANCELED',
+          canceledAt: new Date(),
+          raw: body as Record<string, unknown>,
+        };
+      }
+      this.logger.error(
+        `토스 결제 취소 실패 (paymentKey=${params.paymentKey}, status=${err.response?.status ?? '응답 없음'}, code=${body?.code}): ${body?.message ?? err.message}`,
+      );
+      return {
+        outcome: 'FAILED',
         pgCode: body?.code,
         pgMessage: body?.message ?? err.message,
         raw: (body ?? {}) as Record<string, unknown>,

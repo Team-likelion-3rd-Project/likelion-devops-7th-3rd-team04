@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
@@ -20,6 +20,16 @@ import { ReservationFacilityService } from './reservation-facility.service';
 const PAYMENT_DUE_MINUTES = 30;
 // 예약 1건당 결제 시도(결제 준비 호출) 최대 횟수 (10/13 프론트 합의, 위키 API 명세 5.8)
 const MAX_PAYMENT_ATTEMPTS = 5;
+
+// 예약 취소 시 결제 서비스에 보내는 환불 멱등 키. 예약 ID로 항상 같은 값을 만들어서, 취소가 재시도되거나
+// 두 번 들어와도 같은 키로 요청한다 → payments.refund_idempotency_key UNIQUE·토스 Idempotency-Key로 환불 1번.
+// (UUID 형식 36자: payments.refund_idempotency_key CHAR(36))
+function refundIdempotencyKey(reservationId: number): string {
+  const hex = createHash('sha256')
+    .update(`refund:reservation:${reservationId}`)
+    .digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
 
 // 결제 승인 결과 (위키 API 명세 5.9 result)
 type ConfirmResultType = 'APPROVED' | 'FAILED' | 'UNKNOWN' | 'PROCESSING';
@@ -81,7 +91,8 @@ interface HotelGrpcService {
 interface PaymentGrpcService {
   refundPayment(data: {
     reservationId: number;
-  }): Observable<{ refunded: boolean }>;
+    refundIdempotencyKey: string;
+  }): Observable<{ refunded: boolean; status: string }>;
   approvePayment(data: {
     idempotencyKey: string;
     reservationId: number;
@@ -343,15 +354,39 @@ export class BookingServiceService implements OnModuleInit {
       throw new RpcException('이미 취소되었거나 완료된 예약입니다.');
     }
 
+    // 조건부 UPDATE: 확인한 뒤 그 사이 상태가 바뀌었으면(결제 실패·만료 처리, 동시 취소 등) 취소하지 않는다
+    const { affected } = await this.reservationRepository.update(
+      {
+        reservationId,
+        status: In([
+          ReservationStatus.PENDING_PAYMENT,
+          ReservationStatus.RESERVED,
+        ]),
+      },
+      { status: ReservationStatus.CANCELLED },
+    );
+    if (!affected) {
+      throw new RpcException('이미 취소되었거나 완료된 예약입니다.');
+    }
     reservation.status = ReservationStatus.CANCELLED;
-    const saved = await this.reservationRepository.save(reservation);
+    const saved = reservation;
 
     await this.releaseRoomAvailability(reservation, '취소');
 
+    // 환불 요청 (LDP-28). 결과(REFUNDED / REFUND_FAILED)는 결제 결과 이벤트로도 들어와 inbox에 기록된다.
+    // 결제가 없으면 결제 서비스가 NO_PAYMENT로 아무것도 하지 않는다.
     try {
-      await firstValueFrom(
-        this.paymentService.refundPayment({ reservationId }),
+      const refund = await firstValueFrom(
+        this.paymentService.refundPayment({
+          reservationId,
+          refundIdempotencyKey: refundIdempotencyKey(reservationId),
+        }),
       );
+      if (refund.status === 'REFUND_FAILED') {
+        this.logger.error(
+          `[알람] 예약(#${reservationId}) 취소 후 환불 실패 — 결제 쪽에서 재시도 필요`,
+        );
+      }
     } catch (error) {
       this.logger.error(
         `예약(#${reservationId}) 취소 후 결제 환불 요청 실패`,
