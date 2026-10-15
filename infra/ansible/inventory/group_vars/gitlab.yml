@@ -65,6 +65,7 @@ gitlab_gitops_seed_files:
 gitlab_bootstrap_pat_name: ansible-bootstrap   # role 이 끝나면 폐기되는 1일짜리 root 토큰
 gitlab_access_token_days: 364                  # Project Access Token 유효기간 (만료 전 CI 변수/파일 삭제 후 재실행)
 gitlab_registry_deploy_token_name: k8s-registry-pull
+gitlab_payment_deploy_token_name: payment-node   # 결제 노드: 이미지 pull + gitops 태그 조회 (read_registry, read_repository)
 gitlab_protected_branches: [main, develop]
 
 # 레지스트리 cleanup: smoke test 전 후보 태그(ci-<sha>)와 kaniko 레이어 캐시(cache/*, sha256 태그)만 7일 뒤 삭제

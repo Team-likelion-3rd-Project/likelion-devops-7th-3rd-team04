@@ -3,6 +3,7 @@
 {{- $ctx := dict "root" $ "name" $name }}
 ---
 # 서비스 간 gRPC/HTTP 호출은 <이름>:<포트> (예: user-service:3001) 로 연결
+# nodePort 를 지정한 서비스만 NodePort — 클러스터 밖(결제 노드)에서 <노드 IP>:<nodePort> 로도 호출 가능 (ClusterIP 도 그대로 유지)
 apiVersion: v1
 kind: Service
 metadata:
@@ -10,12 +11,15 @@ metadata:
   labels:
     {{- include "backend.labels" $ctx | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: {{ if $svc.nodePort }}NodePort{{ else }}ClusterIP{{ end }}
   selector:
     {{- include "backend.selectorLabels" $ctx | nindent 4 }}
   ports:
     - name: app
       port: {{ $svc.port }}
       targetPort: app
+      {{- with $svc.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}
 {{- end }}
 {{- end }}

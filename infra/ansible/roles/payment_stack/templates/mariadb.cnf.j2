@@ -1,0 +1,19 @@
+# Ansible(payment_stack role)이 생성 — 값은 inventory/group_vars/payment.yml 에서 조정
+[mysqld]
+# 결제 DB 는 노드 안의 payment-service / Flyway 만 사용 → 외부(tailnet 포함) 접속 차단
+bind-address            = 127.0.0.1
+port                    = {{ payment_db_port }}
+character-set-server    = utf8mb4
+collation-server        = utf8mb4_general_ci
+skip-name-resolve
+
+max_connections         = {{ payment_mariadb_max_connections }}
+innodb_buffer_pool_size = {{ payment_mariadb_buffer_pool_mb }}M
+innodb_flush_method     = O_DIRECT
+
+slow_query_log          = ON
+slow_query_log_file     = /var/lib/mysql/slow.log
+long_query_time         = 1
+
+[client]
+default-character-set   = utf8mb4

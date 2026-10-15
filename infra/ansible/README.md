@@ -1,6 +1,6 @@
-# infra/ansible — Tailscale 기반 kubeadm 클러스터 / DB 노드 / GitLab 구성
+# infra/ansible — Tailscale 기반 kubeadm 클러스터 / DB 노드 / GitLab / 결제 노드 구성
 
-팀원들이 **각자의 로컬 PC에서 띄운 VM**을 Tailscale Tailnet으로 묶어 하나의 kubeadm 클러스터와 DB 노드, GitLab / GitLab Runner 노드를 만듭니다.
+팀원들이 **각자의 로컬 PC에서 띄운 VM**을 Tailscale Tailnet으로 묶어 하나의 kubeadm 클러스터와 DB 노드, GitLab / GitLab Runner 노드, 결제 서버 노드를 만듭니다.
 
 | Playbook | 대상 | 하는 일 |
 |---|---|---|
@@ -9,6 +9,7 @@
 | `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → MariaDB + Valkey (Docker Compose) — [7절](#7-db-노드-구성-mariadb--valkey) |
 | `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
+| `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) — [11절](#11-ingress-controller-traefik) |
 | `k8s-cicd.yml` | `[control_plane]` (1대) | GitLab Agent(agentk) 설치 → `backend` 네임스페이스 / CI 배포 RBAC → 레지스트리 pull Secret · `backend-secrets` — [12절](#12-cicd-kas--registry--agent--파이프라인) |
 | `registry-trust.yml` | `[control_plane]`, `[workers]` | containerd `certs.d` 설정 (사설 CA 를 쓸 때 레지스트리 CA 신뢰) — [12-7](#12-7-사설-ca-를-쓸-때-선택) |
@@ -31,6 +32,7 @@ infra/ansible/
 ├── db.yml
 ├── gitlab.yml
 ├── gitlab-runner.yml
+├── payment.yml                # 결제 서버 노드 (14절)
 ├── ingress.yml
 ├── k8s-cicd.yml
 ├── registry-trust.yml
@@ -45,6 +47,7 @@ infra/ansible/
 │       ├── db.yml             # DB 노드: 이미지 버전, 튜닝값, backend/.env 매핑
 │       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
 │       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
+│       ├── payment.yml        # 결제 노드: 이미지 버전, 결제 DB / ElasticMQ 큐, 클러스터 NodePort
 │       ├── aws.yml                # AWS 노드 공통: Tailscale 끔, CA cert hash 대기
 │       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신, Traefik 배치, whoami
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
@@ -53,9 +56,9 @@ infra/ansible/
 │                              # docker, firewall, db_stack,
 │                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
 │                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, whoami
-│                              # gitlab_bootstrap, gitlab_agent, backend_namespace
+│                              # gitlab_bootstrap, gitlab_agent, backend_namespace, payment_stack
 └── .secrets/                  # (자동 생성, gitignore) join.env, admin.conf, gitlab-runner.env,
-                               # gitlab-k8s.env, github-mirror.env
+                               # gitlab-k8s.env, github-mirror.env, payment-node.env
 ```
 
 ---
@@ -72,6 +75,7 @@ infra/ansible/
 | `tag:db` | DB 노드 (MariaDB + Valkey) | `db.yml` |
 | `tag:gitlab` | GitLab 노드 | `gitlab.yml` |
 | `tag:gitlab-runner` | GitLab Runner 노드 | `gitlab-runner.yml` |
+| `tag:payment` | 결제 서버 노드 (결제 DB + payment-service + ElasticMQ) | `payment.yml` |
 | `tag:ci` | GitHub Actions runner (ephemeral, 미러링 workflow) | `.github/workflows/mirror-gitlab.yml` |
 
 ```jsonc
@@ -82,6 +86,7 @@ infra/ansible/
     "tag:db":       ["autogroup:admin"],
     "tag:gitlab":        ["autogroup:admin"],
     "tag:gitlab-runner": ["autogroup:admin"],
+    "tag:payment":       ["autogroup:admin"],
     "tag:ci":            ["autogroup:admin"]
   },
   "grants": [
@@ -111,7 +116,17 @@ infra/ansible/
     // 팀원 PC → GitLab : SSH(VM 관리), 웹 UI / git (HTTPS, SSH 2222), Registry(5050)
     { "src": ["autogroup:member"], "dst": ["tag:gitlab"], "ip": ["tcp:22", "tcp:443", "tcp:2222", "tcp:5050"] },
     // 팀원 PC → Runner : SSH(VM 관리)
-    { "src": ["autogroup:member"], "dst": ["tag:gitlab-runner"], "ip": ["tcp:22"] }
+    { "src": ["autogroup:member"], "dst": ["tag:gitlab-runner"], "ip": ["tcp:22"] },
+
+    // ── 결제 노드 (14절) ─────────────────────────────────
+    // k8s Pod → 결제 노드 : api-gateway·booking-service → payment-service(gRPC 3004), booking-service → ElasticMQ(SQS 9324)
+    { "src": ["tag:k8s-node"], "dst": ["tag:payment"], "ip": ["tcp:3004", "tcp:9324"] },
+    // 결제 노드 → k8s : payment-service → booking-service(gRPC) / pg-mock-service(HTTP) NodePort
+    { "src": ["tag:payment"], "dst": ["tag:k8s-node"], "ip": ["tcp:30303", "tcp:30307"] },
+    // 결제 노드 → GitLab : gitops 태그 조회(443), 이미지 pull(5050)
+    { "src": ["tag:payment"], "dst": ["tag:gitlab"], "ip": ["tcp:443", "tcp:5050"] },
+    // 팀원 PC → 결제 노드 : SSH(VM 관리). 결제 DB 는 열지 않음 — SSH 터널로 접속
+    { "src": ["autogroup:member"], "dst": ["tag:payment"], "ip": ["tcp:22"] }
   ]
 }
 ```
@@ -124,6 +139,7 @@ infra/ansible/
 | DB 용 | `tag:db` | `TS_DB_OAUTH_CLIENT_SECRET` | DB 담당자 |
 | GitLab 용 | `tag:gitlab` | `TS_GITLAB_OAUTH_CLIENT_SECRET` | GitLab 담당자 |
 | GitLab Runner 용 | `tag:gitlab-runner` | `TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET` | Runner 담당자 |
+| 결제 노드 용 | `tag:payment` | `TS_PAYMENT_OAUTH_CLIENT_SECRET` | 결제 노드 담당자 |
 | GitHub Actions 용 | `tag:ci` | GitHub Repository Secret `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` | 레포 관리자 ([12절](#12-cicd-kas--registry--agent--파이프라인)) |
 
 1. [Admin console → Settings → Trust credentials (OAuth clients)](https://login.tailscale.com/admin/settings/trust-credentials) → **새 credential (OAuth)** 생성
@@ -628,7 +644,7 @@ ansible-playbook gitlab.yml -K                   # KAS/Registry 반영 (gitlab.r
 ansible-playbook gitlab.yml -K --tags bootstrap  # 부트스트랩만 다시
 ```
 
-- 결과: `.secrets/gitlab-k8s.env`(agent 토큰, Deploy Token → 12-3), `.secrets/github-mirror.env`(미러 토큰 → 12-4). 커밋 금지, 팀 비밀 채널로만 공유합니다.
+- 결과: `.secrets/gitlab-k8s.env`(agent 토큰, Deploy Token → 12-3), `.secrets/github-mirror.env`(미러 토큰 → 12-4), `.secrets/payment-node.env`(결제 노드 Deploy Token → 14-2). 커밋 금지, 팀 비밀 채널로만 공유합니다.
 - 토큰 교체: 해당 줄을 비우고(또는 CI 변수 `GITOPS_PUSH_TOKEN` 을 삭제하고) 다시 실행하면 그 토큰만 재발급하고 기존 것은 폐기합니다. Project Access Token 은 364일 뒤 만료됩니다.
 - Tailscale ACL(1-1)에 `tag:k8s-node → tag:gitlab tcp:443,5050`, `tag:gitlab-runner → tag:gitlab tcp:5050`, `tag:gitlab-runner → tag:db tcp:3306,6379` 가 있어야 합니다.
 
@@ -649,8 +665,8 @@ ansible-playbook k8s-cicd.yml -K --tags backend_secrets   # backend/.env 를 바
 - `gitlab-agent` 네임스페이스에 agentk(chart `gitlab-agent` 2.32.0 = v19.4.0)를 control plane 1대에 고정해 설치합니다. `hostAliases` 로 GitLab FQDN 을 Tailscale IP 에 고정합니다(Pod 의 CoreDNS 가 MagicDNS 를 해석한다는 보장이 없음).
 - `backend` 네임스페이스와 Role `cicd-deployer`(Deployment/Service/ConfigMap/Secret/Job/Ingress/HPA 등, 이 네임스페이스 안만)를 만들고, `kubectl auth can-i` 로 `backend` 허용 · `kube-system`·namespace 생성 거부를 확인합니다.
 - Secret `gitlab-registry`(Deploy Token)와 `backend-secrets`(`backend/.env` 에서 차트가 쓰는 key 만, `DB_HOST`·`REDIS_HOST` 는 `DB_TS_IP` 로 덮어씀)를 만듭니다.
-- **결제 DB**: 클러스터·메인 DB 노드와 분리된 별도 서버에 둘 예정이라 아직 없습니다. `PAYMENT_DB_*` 가 비어 있으면 Secret 에서 빠지고, gitops `envs/dev/values.yaml` 에서 `services.payment-service.enabled` 와 `migrations.payment.enabled` 를 `false` 로 둡니다(초기 seed 에 반영됨). 결제 DB 가 생기면 `backend/.env` 에 `PAYMENT_DB_*` 5개를 모두 채우고 `--tags backend_secrets` 로 Secret 을 갱신한 뒤 두 값을 `true` 로 바꿔 `deploy-dev` 를 실행합니다.
-  - 이미지 smoke test(`test:image`)는 결제 DB 와 무관하게 파이프라인 전용 DB 로 payment-service 를 계속 검증합니다.
+- **결제**: payment-service · 결제 DB · ElasticMQ 는 클러스터 밖 **결제 서버 노드**([14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq))에서 운영합니다. 그래서 `backend-secrets` 에는 `PAYMENT_DB_*` 를 넣지 않고(`backend/.env` 에 채워져 있어도 제외), gitops `envs/dev/values.yaml` 에서 `services.payment-service.enabled` 와 `migrations.payment.enabled` 는 `false` 로 둡니다(초기 seed 에 반영됨).
+  - 이미지 smoke test(`test:image`)는 파이프라인 전용 DB 로 payment-service 를 계속 검증합니다.
 
 확인: GitLab `team04/infra/k8s-agents` → Operate → Kubernetes clusters 에서 `dev-agent` 가 **Connected**.
 
@@ -748,4 +764,162 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | 클러스터 권한 | GitLab CE(Free)에는 ci_access impersonation 이 없어 **CI 권한 = agentk ServiceAccount 권한** → 차트 기본 cluster-admin 을 끄고 `backend` 네임스페이스 Role 만 부여 |
 | smoke test DB | dev DB 서버를 쓰되 database 는 파이프라인 전용(`ci_<id>`). hotel/user/auth/booking 이 `synchronize: true` 라 dev DB 에 붙으면 스키마가 바뀌기 때문 |
 
+---
 
+## 14. 결제 서버 노드 (결제 DB + payment-service + ElasticMQ)
+
+결제는 메인 클러스터 · 메인 DB 와 분리된 결제 전용 VM 1대에서 운영합니다. prod(AWS)의 "결제 VPC(결제 서버 + 결제 RDS) → SQS FIFO → 메인 클러스터 booking-service" 구조를 dev 에서 같은 모양으로 재현하는 것이 목적입니다.
+
+```
+k8s(dev)      api-gateway / booking-service ──tailnet──▶ payment-node:3004  payment-service (gRPC)
+              booking-service (결과 수신)    ──tailnet──▶ payment-node:9324  ElasticMQ (SQS API)
+payment-node  payment-service ─▶ 127.0.0.1:3306 결제 MariaDB (loopback 전용)
+              payment-service ─▶ 127.0.0.1:9324 payment-result.fifo 발행 (payment_outbox)
+              payment-service ─▶ <control plane>:30303 booking-service (gRPC) / :30307 pg-mock-service (HTTP)  ← NodePort
+              docker pull / git clone ─▶ <gitlab fqdn>:5050 / :443 (결제 노드 전용 Deploy Token)
+```
+
+| 구성 요소 | 이미지 | 포트 | 비고 |
+|---|---|---|---|
+| 결제 MariaDB | `mariadb:11.4.13` | `PAYMENT_DB_PORT`(3306) | `bind-address=127.0.0.1` — tailnet 에서도 접속 불가 |
+| Flyway | `<registry>/team04/hotel/payment-migrations:<tag>` | - | payment-service 갱신 직전 `compose run --rm` 1회 |
+| payment-service | `<registry>/team04/hotel/payment-service:<tag>` | 3004 (gRPC), 3104 (health, 내부) | `synchronize: false` — 테이블은 Flyway 만 만듦 |
+| ElasticMQ | `softwaremill/elasticmq:1.7.1` | 9324 (SQS) | 큐 `payment-result.fifo` + DLQ `payment-result-dlq.fifo`, 큐·메시지 디스크 저장 |
+
+- 모든 컨테이너는 `network_mode: host` 이고, ufw 가 `tailscale0` 의 **3004 · 9324 만** 허용합니다.
+- 경로: 설정·자격증명 `/opt/payment-node`(0700), 데이터 `/var/lib/payment-node/{mariadb,elasticmq}`
+- 이미지 태그: gitops `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` → `global.imageTag` 를 따릅니다. 클러스터에 배포된 것과 같은 커밋의 이미지를 씁니다. `PAYMENT_IMAGE_TAG` 를 지정하면 그 값을 우선합니다.
+
+### 왜 클러스터의 결제 마이그레이션(`migrations.payment`)을 끄는가
+
+마이그레이션을 없애는 것이 아니라 **실행 위치를 결제 노드로 옮긴 것**입니다. 차트의 `migrations.payment` 는 클러스터 안 Pod 에서 Flyway 로 `PAYMENT_DB_HOST` 에 접속하는 helm hook Job 입니다. 이걸 켜 두면:
+
+1. 결제 DB(3306)를 클러스터(tag:k8s-node)에 열어야 합니다 — DB 를 분리한 의미가 약해집니다.
+2. 같은 스키마를 helm Job 과 결제 노드 두 곳이 서로 다른 시점 · 이미지 태그로 migrate 하게 됩니다.
+3. `backend-secrets` 에 결제 DB 자격증명이 들어가 클러스터 쪽 노출 범위가 늘어납니다.
+
+그래서 dev 클러스터에서는 `payment-service` 와 `migrations.payment` 를 둘 다 끄고, 결제 노드가 `payment-migrations:<tag>` 로 Flyway 를 먼저 실행한 뒤 payment-service 를 갱신합니다. Flyway 가 실패하면 payment-service 는 이전 버전 그대로 남습니다.
+
+### 14-1. VM 사양
+
+| 구분 | vCPU | RAM | Disk |
+|---|---|---|---|
+| **권장** | 2 | 4 GB | 30 GB SSD |
+
+InnoDB buffer pool 은 메모리의 25%(자동 계산), ElasticMQ JVM heap 은 256 MB 입니다 (`group_vars/payment.yml`).
+
+### 14-2. 값 설정
+
+| 값 | 위치 | 비고 |
+|---|---|---|
+| `PAYMENT_DB_PORT`, `PAYMENT_DB_DATABASE`, `PAYMENT_DB_USERNAME`, `PAYMENT_DB_PASSWORD` | `backend/.env` | 결제 DB / 앱 계정. `PAYMENT_DB_HOST` 는 노드 안에서 `127.0.0.1` 로 덮어씀 |
+| `TS_PAYMENT_OAUTH_CLIENT_SECRET` | `infra/ansible/.env` | 1-2 의 결제 노드 용 OAuth client (`tag:payment`) |
+| `PAYMENT_DB_ROOT_PASSWORD` | `infra/ansible/.env` | 결제 MariaDB root. 최초 초기화 때만 반영 |
+| `CLUSTER_ENTRY_IP` | `infra/ansible/.env` | control plane Tailscale IP (booking / pg-mock NodePort 호출 대상) |
+| `PAYMENT_IMAGE_TAG` (선택) | `infra/ansible/.env` 또는 명령행 | 비우면 gitops 의 dev 태그 |
+| `GITLAB_URL`, `GITLAB_TS_IP`, `GITLAB_REGISTRY`, `PAYMENT_DEPLOY_USER`, `PAYMENT_DEPLOY_TOKEN` | `.secrets/payment-node.env` | `gitlab.yml --tags bootstrap` 이 생성 (12-1) |
+
+- 비밀번호에는 공백, 따옴표, 역슬래시, `$`, `#`, `` ` `` 를 쓸 수 없습니다.
+- `hosts.ini` 의 `[payment]` 그룹에 VM 을 추가합니다. (예시: `inventory/hosts.example.ini`)
+- 결제 노드 Deploy Token(`payment-node`, read_registry + read_repository)은 k8s 용(`k8s-registry-pull`)과 별개라 따로 폐기할 수 있습니다. `.secrets/payment-node.env` 의 `PAYMENT_DEPLOY_TOKEN` 을 비우고 부트스트랩을 다시 실행하면 재발급됩니다.
+
+### 14-3. 실행
+
+```bash
+cd infra/ansible
+set -a; source .env; source .secrets/payment-node.env; set +a
+ansible-playbook payment.yml -K                   # 전체 구성
+ansible-playbook payment.yml -K --tags deploy     # 이미지 태그 갱신만 (Tailscale·Docker·ufw 생략)
+PAYMENT_IMAGE_TAG=<short sha> ansible-playbook payment.yml -K --tags deploy   # 특정 태그로 (롤백)
+```
+
+순서: 결제 DB · ElasticMQ 기동 → 결제 DB 계정 맞추기 → Flyway migrate → payment-service 갱신(healthy 대기). 마지막에 적용된 스키마 버전과 **gitops 에 넣을 값**(14-4)이 출력됩니다.
+
+- `backend/.env` 의 `PAYMENT_DB_*` 를 바꿨을 때도 다시 실행하면 됩니다 — 앱 계정 접속이 실패할 때만 DB / 계정 / 비밀번호 / 권한을 다시 맞춥니다 (`db.yml` 과 같은 방식).
+- **`PAYMENT_DB_ROOT_PASSWORD` 변경은 자동화하지 않습니다.** 결제 노드에서 `docker exec -it payment-mariadb mariadb -uroot -p` → `ALTER USER 'root'@'localhost' IDENTIFIED BY '<새 값>';` 후 `.env` 를 바꿉니다.
+
+### 14-4. dev gitops 값 (최초 1회)
+
+클러스터 쪽 서비스가 결제 노드를 찾을 수 있게 gitops `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` 에 아래를 넣고 `deploy-dev` 를 실행합니다. `payment.yml` 실행 결과에 실제 IP 가 채워진 값이 출력됩니다.
+
+```yaml
+services:
+  api-gateway:
+    env:
+      PAYMENT_SERVICE_HOST: "<payment ts ip>:3004"
+  booking-service:
+    nodePort: 30303                       # 결제 노드 → booking-service gRPC
+    env:
+      PAYMENT_SERVICE_HOST: "<payment ts ip>:3004"
+      SQS_ENDPOINT: "http://<payment ts ip>:9324"
+      SQS_REGION: ap-northeast-2
+      PAYMENT_RESULT_QUEUE_URL: "http://<payment ts ip>:9324/000000000000/payment-result.fifo"
+      AWS_ACCESS_KEY_ID: elasticmq        # ElasticMQ 용 더미 (검증 안 함)
+      AWS_SECRET_ACCESS_KEY: elasticmq
+  pg-mock-service:
+    nodePort: 30307                       # 결제 노드 → pg-mock-service HTTP
+  payment-service:
+    enabled: false
+migrations:
+  payment:
+    enabled: false
+```
+
+- **NodePort**: 결제 노드는 k8s 노드가 아니라서 `booking-service:3003` 같은 ClusterIP · 클러스터 DNS 에 닿을 수 없습니다. 차트는 `nodePort` 를 지정한 서비스만 `type: NodePort` 로 만들고(ClusterIP 도 그대로 유지), 지정하지 않은 서비스는 지금처럼 ClusterIP 입니다.
+- 새로 만드는 gitops 레포는 `backend-deploy/gitops-seed` 에 NodePort 와 위 값의 주석이 들어 있습니다. IP 만 채우면 됩니다.
+
+### 14-5. 재배포 (수동) — 순서 주의
+
+결제 노드는 CI 가 자동 배포하지 않습니다(후속 작업). `deploy-dev` 와 별개로 `payment.yml --tags deploy` 를 실행합니다.
+
+| 배포 내용 | 순서 |
+|---|---|
+| 결제 쪽 계약 변경 (payment.proto, SQS 메시지 형식, 결제 마이그레이션 추가) | ① `PAYMENT_IMAGE_TAG=<새 sha> ... --tags deploy` 로 결제 노드 먼저 → ② `deploy-dev` |
+| 그 외 | ① `deploy-dev` → ② `payment.yml --tags deploy` (gitops 태그를 그대로 따라감) |
+
+> 클러스터와 결제 노드의 커밋이 어긋나면 gRPC / SQS 메시지 호환 문제가 생길 수 있습니다. `payment.yml` 출력의 "이미지 태그" 와 gitops `global.imageTag` 가 같은지 확인하세요.
+
+### 14-6. ElasticMQ (dev 용 SQS)
+
+- 결제 결과 이벤트: payment-service 가 `payment_outbox` 미발행 행을 `payment-result.fifo` 로 보내고, booking-service 가 받아 `payment_result_inbox` 에 기록합니다 (`MessageGroupId` = reservation_id, `MessageDeduplicationId` = outbox `event_id`).
+- 5회 수신 후에도 처리되지 않은 메시지는 `payment-result-dlq.fifo` 로 갑니다. 큐 이름 · 횟수 · visibility timeout 은 `group_vars/payment.yml` 에서 조정합니다.
+- 큐 URL 은 `node-address` 를 결제 노드 Tailscale IP 로 고정해, `GetQueueUrl` 결과를 클러스터에서도 그대로 쓸 수 있습니다.
+- ElasticMQ 는 인증이 없습니다. 접근 제어는 ACL(`tag:k8s-node → tag:payment tcp:9324`)과 ufw 로만 합니다.
+- **SQS 연동 환경변수 (확정)** — 발행기(payment-service)와 소비기(booking-service)가 같은 이름을 씁니다.
+
+  | 이름 | dev (ElasticMQ) | prod (AWS SQS) |
+  |---|---|---|
+  | `SQS_ENDPOINT` | `http://127.0.0.1:9324`(결제 노드) / `http://<payment ts ip>:9324`(클러스터) | 비움 → AWS SDK 기본 엔드포인트 |
+  | `SQS_REGION` | `ap-northeast-2` | 실제 리전 |
+  | `PAYMENT_RESULT_QUEUE_URL` | `http://<payment ts ip>:9324/000000000000/payment-result.fifo` | Terraform 43-messaging 의 큐 URL |
+  | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | 더미값(`elasticmq`) — ElasticMQ 는 검증 안 함 | 넣지 않음 (IAM 역할) |
+
+  결제 노드 쪽 값은 `group_vars/payment.yml` 의 `payment_sqs_env`, 클러스터 쪽 값은 14-4 의 booking-service env 입니다.
+- 큐 · 메시지는 `/var/lib/payment-node/elasticmq` 에 저장되어 재기동해도 남습니다. **저장된 큐 설정이 설정 파일보다 우선**하므로, 이미 만들어진 큐의 visibility timeout · DLQ 횟수를 바꾸려면 (dev 한정, 남은 메시지 삭제됨) `sudo docker compose -f /opt/payment-node/compose.yml stop elasticmq && sudo rm -rf /var/lib/payment-node/elasticmq/*` 후 playbook 을 다시 실행합니다.
+- 큐 상태 확인: `curl -s 'http://127.0.0.1:9324/?Action=GetQueueAttributes&QueueUrl=<큐 URL>&AttributeName.1=All'`
+
+### 14-7. 검증
+
+```bash
+# 결제 노드
+sudo docker compose -f /opt/payment-node/compose.yml ps    # payment-mariadb, elasticmq, payment-service 모두 healthy
+sudo ufw status                                            # tailscale0 의 3004, 9324 만 허용
+curl -s 'http://127.0.0.1:9324/?Action=ListQueues'         # payment-result.fifo, payment-result-dlq.fifo
+nc -zv <control plane Tailscale IP> 30303                  # booking-service NodePort (14-4 반영 후)
+
+# k8s 노드 (Tailnet 경유)
+nc -zv <결제 노드 Tailscale IP> 3004
+nc -zv <결제 노드 Tailscale IP> 9324
+nc -zv <결제 노드 Tailscale IP> 3306                        # 실패해야 정상 (결제 DB 는 loopback 전용)
+```
+
+- 적용된 스키마는 `payment.yml` 마지막 출력(`schema V<n>`) 또는 `docker exec payment-mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/app.cnf -e "SELECT version, description FROM flyway_schema_history"` 로 확인합니다.
+- 다시 실행하면 거의 모든 task 가 `ok` (changed=0 에 가까움) 로 끝나야 합니다.
+
+### 14-8. 트러블슈팅
+
+- **gitops clone 실패**: Deploy Token 에 `read_repository` 가 없거나 만료된 경우 → `.secrets/payment-node.env` 의 `PAYMENT_DEPLOY_TOKEN` 을 비우고 `gitlab.yml --tags bootstrap` 재실행. timeout 이면 ACL `tag:payment → tag:gitlab tcp:443`.
+- **이미지 pull 실패**: 401 이면 Deploy Token, `manifest unknown` 이면 해당 태그가 아직 승격(`push` job) 전인지 확인. timeout 이면 ACL `tag:payment → tag:gitlab tcp:5050`.
+- **Flyway 실패 (validate)**: 이미 적용된 SQL 파일이 바뀐 경우입니다. 파일을 되돌리고 새 버전(`V<n+1>__...sql`)으로 추가합니다. payment-service 는 이전 버전으로 계속 동작합니다.
+- **payment-service 가 healthy 가 안 됨**: playbook 이 마지막 로그 40줄을 출력합니다. `docker logs payment-service` 로 DB 접속 / 환경변수 누락을 확인합니다.
+- **booking-service 호출 timeout**: gitops 에 `booking-service.nodePort` 가 반영됐는지(`kubectl -n backend get svc booking-service` 가 `NodePort`), ACL `tag:payment → tag:k8s-node tcp:30303` 을 확인합니다.

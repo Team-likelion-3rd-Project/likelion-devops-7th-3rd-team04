@@ -57,6 +57,7 @@ defaultResources:
     memory: 512Mi
 
 # 서비스 목록. env 는 평문 값, secretEnv 는 global.secretName Secret 에서 같은 이름의 key 를 읽음
+# 클러스터 밖(온프레미스 결제 노드)에서 호출해야 하는 서비스는 환경별 values 에 nodePort: <30000-32767> 를 지정
 services:
   api-gateway:
     enabled: true

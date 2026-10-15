@@ -17,15 +17,31 @@ ingress:
     - /api
     - /api-docs   # dev 전용 Swagger
 
+# 결제 서비스 · 결제 DB · ElasticMQ(SQS 대체)는 클러스터 밖 결제 노드(infra/ansible payment.yml)에서 운영합니다.
+# 결제 노드 Tailscale IP 는 payment.yml 실행 결과 마지막에 이 파일에 넣을 값과 함께 출력됩니다 — 아래 주석의 <payment ts ip> 를 채우세요.
 services:
   api-gateway:
     env:
       CORS_ORIGIN: http://localhost:5173
-  # 결제 DB 는 클러스터·메인 DB 노드와 분리된 별도 서버에 둘 예정 — 준비 전까지 결제 서비스는 배포하지 않음.
-  # 결제 DB 가 생기면 backend/.env 의 PAYMENT_DB_* 를 채워 k8s-cicd.yml --tags backend_secrets 실행 후 둘 다 true 로
+      # PAYMENT_SERVICE_HOST: "<payment ts ip>:3004"
+  booking-service:
+    # 결제 노드의 payment-service 가 gRPC 로 호출 (<control plane Tailscale IP>:30303)
+    nodePort: 30303
+    # env:
+    #   PAYMENT_SERVICE_HOST: "<payment ts ip>:3004"
+    #   SQS_ENDPOINT: "http://<payment ts ip>:9324"
+    #   SQS_REGION: ap-northeast-2
+    #   PAYMENT_RESULT_QUEUE_URL: "http://<payment ts ip>:9324/000000000000/payment-result.fifo"
+    #   AWS_ACCESS_KEY_ID: elasticmq        # ElasticMQ 용 더미 (검증 안 함)
+    #   AWS_SECRET_ACCESS_KEY: elasticmq
+  pg-mock-service:
+    # 결제 노드의 payment-service 가 HTTP 로 호출 (<control plane Tailscale IP>:30307)
+    nodePort: 30307
+  # 결제 노드에서 운영 — 클러스터에는 배포하지 않음
   payment-service:
     enabled: false
 
+# 결제 DB 마이그레이션(Flyway)은 결제 노드가 payment-service 갱신 직전에 실행 — 결제 DB 를 클러스터에 노출하지 않음
 migrations:
   payment:
     enabled: false

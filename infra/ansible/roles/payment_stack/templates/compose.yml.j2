@@ -1,0 +1,72 @@
+# Ansible(payment_stack role)이 생성 — 직접 수정하지 마세요.
+# network_mode: host + ufw 로 tailscale0 의 payment-service(gRPC)·ElasticMQ(SQS API) 만 허용
+# (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음. MariaDB 는 127.0.0.1 에만 바인딩)
+name: payment-node
+
+services:
+  mariadb:
+    image: {{ mariadb_image }}
+    container_name: payment-mariadb
+    network_mode: host
+    restart: unless-stopped
+    env_file: [mariadb.env]
+    labels:
+      payment-node.config-checksum: "{{ pay_mariadb_conf.checksum }}"
+    volumes:
+      - {{ payment_data_dir }}/mariadb:/var/lib/mysql
+      - ./conf/mariadb.cnf:/etc/mysql/conf.d/zz-payment.cnf:ro
+      - ./mysql:/etc/mysql/ansible:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # dev 용 SQS 대체. 결제 결과 이벤트(payment_outbox) → booking-service(클러스터)가 tailnet 으로 수신
+  elasticmq:
+    image: {{ elasticmq_image }}
+    container_name: elasticmq
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx{{ elasticmq_heap }}"
+    labels:
+      payment-node.config-checksum: "{{ pay_elasticmq_conf.checksum }}"
+    volumes:
+      - ./conf/elasticmq.conf:/opt/elasticmq.conf:ro
+      - {{ payment_data_dir }}/elasticmq:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:{{ elasticmq_port }}/?Action=ListQueues' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # 결제 DB 스키마 (Flyway). payment-service 와 같은 커밋으로 빌드된 이미지.
+  # profile 로 분리해 up 에서는 뜨지 않고, Ansible 이 앱 갱신 전에 `compose run --rm` 으로 1회 실행
+  payment-db-migration:
+    image: {{ payment_migrations_image }}
+    profiles: [migrate]
+    network_mode: host
+    restart: "no"
+    env_file: [flyway.env]
+    command: ["migrate"]
+
+  payment-service:
+    image: {{ payment_service_image }}
+    container_name: payment-service
+    network_mode: host
+    restart: unless-stopped
+    env_file: [payment.env]
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      elasticmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:{{ payment_health_port }}/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
