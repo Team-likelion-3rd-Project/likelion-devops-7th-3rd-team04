@@ -1,0 +1,10 @@
+image:
+  tag: "{{ aws_ccm_image_tag }}"
+
+# 노드 컨트롤러만 쓴다 (providerID · 주소 · zone 라벨 설정, 종료된 인스턴스의 Node 삭제).
+# Service LoadBalancer 는 쓰지 않고(ALB 는 80-main-edge), 파드 라우팅은 Calico VXLAN 이다
+args:
+  - --v=2
+  - --cloud-provider=aws
+  - --controllers=cloud-node,cloud-node-lifecycle
+  - --configure-cloud-routes=false

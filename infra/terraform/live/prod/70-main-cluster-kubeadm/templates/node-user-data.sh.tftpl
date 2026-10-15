@@ -1,10 +1,28 @@
 #!/bin/bash
 # 노드(CP · 워커) 부트스트랩. S3 의 infra/ansible 묶음을 받아 ${playbook} 을 자기 자신에게 실행한다.
 # 진행 · 실패 로그는 /var/log/cloud-init-output.log (README 6절)
-set -euo pipefail
+set -Eeuo pipefail
 
 VENV=/opt/team04/venv
 ANSIBLE_DIR=/opt/team04/ansible
+
+IMDS=http://169.254.169.254/latest
+IMDS_TOKEN=$(curl -sf -X PUT "$IMDS/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 600")
+INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "$IMDS/meta-data/instance-id")
+NODE_NAME=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "$IMDS/meta-data/local-hostname")
+%{ if report_asg_health ~}
+
+# 실패하면 ASG 에 Unhealthy 를 보고해 교체되게 한다. aws CLI 설치 전에 실패했으면 인스턴스를 끈다
+# (stopped 인스턴스는 ASG EC2 헬스체크가 교체). 디버깅 중 교체를 막으려면 README 6절
+# 부트스트랩은 health check grace period 안에 끝나므로, grace period 를 무시해야 보고가 받아들여진다
+report_unhealthy() {
+  echo "[bootstrap] 실패 → ASG 에 Unhealthy 보고 ($INSTANCE_ID)"
+  aws autoscaling set-instance-health --region "${region}" --instance-id "$INSTANCE_ID" --health-status Unhealthy \
+    --no-should-respect-grace-period ||
+    shutdown -h now
+}
+trap report_unhealthy ERR
+%{ endif ~}
 
 # Kubernetes 노드 이름 = private DNS(FQDN). 재부팅 때 cloud-init 이 hostname 을 짧은 이름으로 되돌리지 않게 한다
 echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-team04-hostname.cfg
@@ -18,10 +36,6 @@ ln -sf "$VENV/bin/aws" /usr/local/bin/aws
 
 echo "[bootstrap] Ansible 묶음 다운로드"
 aws s3 sync --only-show-errors --region "${region}" "s3://${bucket}/${prefix}/" "$ANSIBLE_DIR"
-
-IMDS=http://169.254.169.254/latest
-IMDS_TOKEN=$(curl -sf -X PUT "$IMDS/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
-NODE_NAME=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "$IMDS/meta-data/local-hostname")
 
 cat > "$ANSIBLE_DIR/aws-bootstrap.json" <<'EOF'
 ${extra_vars}

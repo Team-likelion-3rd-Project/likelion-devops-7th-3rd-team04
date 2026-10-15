@@ -11,6 +11,10 @@
 # Tailscale 없이 VPC private IP 를 노드 IP 로 쓴다
 use_tailscale: false
 
+# kubelet 이 노드를 uninitialized taint 로 등록하고, aws-cloud-controller-manager 가 providerID 를 넣어 초기화한다
+# (aws_node_lifecycle role). 온프레미스는 정의하지 않는다 (kubeadm 템플릿에 들어가지 않음)
+kubelet_cloud_provider: external
+
 # 70 스택이 CA cert hash 파라미터를 만들 때 넣는 값 (Parameter Store 는 빈 값을 허용하지 않는다)
 kubeadm_ca_cert_hash_pending: pending
 

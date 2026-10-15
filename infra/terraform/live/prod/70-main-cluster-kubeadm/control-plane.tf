@@ -11,9 +11,11 @@ resource "aws_instance" "cp" {
   iam_instance_profile   = aws_iam_instance_profile.node["cp"].name
 
   user_data = templatefile("${path.module}/templates/node-user-data.sh.tftpl", merge(local.node_user_data_vars, {
-    playbook = "aws-control-plane.yml"
+    playbook          = "aws-control-plane.yml"
+    report_asg_health = false
     extra_vars = jsonencode(merge(local.node_extra_vars, {
-      k8s_cp_role = each.key == "a" ? "init" : "join"
+      k8s_cp_role   = each.key == "a" ? "init" : "join"
+      nth_queue_url = aws_sqs_queue.nth.url
     }))
   }))
 
@@ -29,10 +31,10 @@ resource "aws_instance" "cp" {
     encrypted   = true
   }
 
-  tags = {
+  tags = merge(local.cluster_tags, {
     Name = "${local.name}-cp-${each.key}"
     Role = "control-plane"
-  }
+  })
 
   volume_tags = {
     Name = "${local.name}-cp-${each.key}"

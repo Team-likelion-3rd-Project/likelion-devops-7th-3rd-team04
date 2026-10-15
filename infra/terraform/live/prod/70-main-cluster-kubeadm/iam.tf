@@ -1,5 +1,6 @@
-# 노드 Instance Profile. SSM 접속 권한과 부트스트랩(Ansible 묶음 S3 조회, join 정보 Parameter Store) 권한을 둔다.
-# 파드의 AWS 권한은 노드 Role 이 아니라 IRSA 로 준다.
+# 노드 Instance Profile. SSM 접속 권한, 부트스트랩(Ansible 묶음 S3 조회, join 정보 Parameter Store) 권한,
+# 노드 수명주기(CCM · NTH, 부트스트랩 실패 보고) 권한을 둔다.
+# 파드의 AWS 권한은 노드 Role 이 아니라 IRSA 로 준다 (CP 에 hostNetwork 로 뜨는 CCM · NTH 만 예외).
 
 locals {
   node_roles = {
@@ -102,4 +103,55 @@ resource "aws_iam_role_policy" "worker_bootstrap" {
   name   = "bootstrap"
   role   = aws_iam_role.node["worker"].id
   policy = data.aws_iam_policy_document.node_bootstrap.json
+}
+
+# CP: 노드 수명주기 (aws_node_lifecycle role). CCM · NTH 가 CP 에 hostNetwork 로 떠서 이 Role 을 쓴다
+data "aws_iam_policy_document" "cp_node_lifecycle" {
+  # CCM 노드 컨트롤러: 인스턴스 ID · 주소 · zone 조회, 종료 여부 확인. Describe 는 리소스 지정이 안 된다
+  # NTH: 이벤트의 인스턴스 → Node 이름(private DNS) · 태그 · ASG 확인
+  statement {
+    sid = "DescribeNodes"
+    actions = [
+      "ec2:DescribeInstances",
+      "ec2:DescribeInstanceTopology",
+      "ec2:DescribeAvailabilityZones",
+      "ec2:DescribeRegions",
+      "autoscaling:DescribeAutoScalingInstances",
+      "autoscaling:DescribeTags",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "ReceiveNodeEvents"
+    actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage"]
+    resources = [aws_sqs_queue.nth.arn]
+  }
+
+  statement {
+    sid       = "CompleteWorkerTermination"
+    actions   = ["autoscaling:CompleteLifecycleAction"]
+    resources = [aws_autoscaling_group.worker.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "cp_node_lifecycle" {
+  name   = "node-lifecycle"
+  role   = aws_iam_role.node["cp"].id
+  policy = data.aws_iam_policy_document.cp_node_lifecycle.json
+}
+
+# 워커: 부트스트랩 실패 시 자기 ASG 에 Unhealthy 보고 (user-data trap) → ASG 가 교체
+data "aws_iam_policy_document" "worker_health" {
+  statement {
+    sid       = "ReportBootstrapFailure"
+    actions   = ["autoscaling:SetInstanceHealth"]
+    resources = [aws_autoscaling_group.worker.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "worker_health" {
+  name   = "health"
+  role   = aws_iam_role.node["worker"].id
+  policy = data.aws_iam_policy_document.worker_health.json
 }

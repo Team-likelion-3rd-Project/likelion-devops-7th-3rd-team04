@@ -51,6 +51,11 @@ locals {
   # AZ 접미사 → cp 서브넷 ID. 20-network enable_control_plane_subnets = false 면 cp 계층이 없다
   cp_subnet_ids = try(local.network.subnet_ids_by_az.cp, {})
 
+  # aws-cloud-controller-manager 가 클러스터 소속 인스턴스를 구분하는 태그 (CP · 워커)
+  cluster_tags = {
+    "kubernetes.io/cluster/${local.name}" = "owned"
+  }
+
   # IMDSv2 강제. hop limit 1 이라 파드(호스트 네트워크 제외) 는 노드 Role 자격 증명을 얻지 못한다 → 파드 권한은 IRSA
   metadata_options = {
     http_endpoint               = "enabled"
