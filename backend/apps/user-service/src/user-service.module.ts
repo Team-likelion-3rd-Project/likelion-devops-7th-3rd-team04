@@ -38,7 +38,9 @@ import { HealthModule } from '@app/common';
         // users/deleted_user는 고객 도메인, admins는 관리자 도메인 소유지만, 같은 서비스가
         // 같은 DB 커넥션을 쓰므로 연결 설정 자체는 루트에서 한 번만 합니다.
         entities: [User, DeletedUser, Admin],
-        synchronize: true, // ⚠️ 개발 환경(Dev)에서만 true 사용
+        // 테이블 구조는 Flyway(backend/migrations, V6)만 바꿉니다. true로 두면 Flyway보다 먼저 떠서
+        // 테이블을 만들어 버려 Flyway가 "non-empty schema"로 멈춥니다(LDP-60).
+        synchronize: false,
         logging: true, // SQL 실행 쿼리 로깅
       }),
     }),

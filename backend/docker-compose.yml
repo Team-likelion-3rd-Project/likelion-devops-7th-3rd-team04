@@ -205,6 +205,11 @@ services:
       - .env
     environment:
       - NODE_ENV=development
+    # users/deleted_user/admins는 main-db-migration(Flyway V6)이 만듭니다
+    # (synchronize: false라 user-service 자신은 테이블을 안 만듦).
+    depends_on:
+      main-db-migration:
+        condition: service_completed_successfully
 
   auth-service:
     build:
@@ -226,9 +231,14 @@ services:
     environment:
       - NODE_ENV=development
       - USER_SERVICE_HOST=user-service:3001
+    # credentials/admin_credentials도 main-db-migration(Flyway V6)이 만듭니다.
     depends_on:
-      - user-service
-      - redis
+      user-service:
+        condition: service_started
+      redis:
+        condition: service_started
+      main-db-migration:
+        condition: service_completed_successfully
 
   hotel-service:
     build:
