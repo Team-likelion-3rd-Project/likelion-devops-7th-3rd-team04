@@ -6,7 +6,7 @@
 |---|---|---|
 | `control-plane.yml` | `[control_plane]` (1대) | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm init` → Calico(VXLAN) 설치 → worker용 `join.env` 생성 |
 | `worker-join.yml` | `[workers]` | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm join` |
-| `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → MariaDB + Valkey (Docker Compose) — [7절](#7-db-노드-구성-mariadb--valkey) |
+| `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → MariaDB + Valkey (Docker Compose) → dev 시딩(`--tags seed`, 스키마가 있을 때만) — [7절](#7-db-노드-구성-mariadb--valkey) |
 | `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
 | `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
@@ -53,7 +53,7 @@ infra/ansible/
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,
-│                              # docker, firewall, db_stack,
+│                              # docker, firewall, db_stack, db_seed,
 │                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
 │                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, whoami
 │                              # gitlab_bootstrap, gitlab_agent, backend_namespace, payment_stack
@@ -378,6 +378,35 @@ kubectl run vktest --rm -it --image=valkey/valkey:9.1 --restart=Never --   valke
 - DB VM 의 사설 IP 로 3306 에 접속하면 **차단**되어야 정상입니다.
 - 다시 실행하면 거의 모든 task 가 `ok` (changed=0 에 가까움) 로 끝나야 합니다.
 
+### 7-5. dev DB 스키마 · 시딩
+
+앱(user/auth/hotel/booking)은 모두 `synchronize: false` 라 **메인 DB 테이블은 Flyway 만 만듭니다.**
+
+| 단계 | 하는 곳 | 내용 |
+|---|---|---|
+| 스키마 | 클러스터 — 차트의 `main-db-migration` hook Job | `deploy-dev` 때 앱보다 먼저 `main-migrations:<tag>`(backend/migrations V1~) 적용. 실패하면 배포 중단 · 롤백 |
+| 초기 데이터 | DB 노드 — `db.yml --tags seed` (`db_seed` role) | `backend/scripts/seed.ts` 를 `scripts/Dockerfile.seed` 로 빌드해 1회 실행 — 관리자 계정, 호텔 3 · 객실, 편의시설, 객실 재고(오늘부터 30일) |
+
+```bash
+# 순서: db.yml(DB 기동) → GitLab 에서 deploy-dev(스키마 생성) → 시딩
+cd infra/ansible
+set -a; source .env; set +a
+ansible-playbook db.yml -K --tags seed
+```
+
+- 관리자 계정은 `backend/.env` 의 `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` / `SEED_ADMIN_NAME` 으로 만듭니다 (비우면 관리자만 건너뜀).
+- 스키마(`flyway_schema_history`, `hotels`, `admins`)가 아직 없으면 시딩을 **건너뛰고 안내만** 합니다. 그래서 `db.yml` 전체 실행에 포함되어 있어도 최초 구성이 깨지지 않습니다.
+- 시딩 이미지는 로컬 `backend/` 소스 해시를 태그로 씁니다(`hotel-db-seed:<hash>`). 소스가 바뀔 때만 업로드 · 빌드하고(`node_modules`, `dist`, `.env*` 는 올리지 않음), 이전 태그는 지웁니다.
+- seed.ts 는 멱등입니다. 다시 실행하면 이미 있는 관리자 · 호텔 · 편의시설 · 방별 재고는 건너뜁니다. (재고 기간을 늘리는 기능은 없음 — 재고를 새로 채우려면 해당 방의 `room_availabilities` 를 지운 뒤 다시 실행)
+- **기존 dev DB 에 synchronize 로 만들어진 테이블이 남아 있으면** `main-db-migration` 이 `Found non-empty schema(s) ... but no schema history table` 로 실패합니다. dev 데이터만 있는 DB 라면 비우고 다시 배포합니다 (자동화하지 않음 — 데이터가 모두 지워짐).
+  ```bash
+  # DB 노드 — 확인
+  sudo docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf -e "SHOW TABLES FROM <DB_DATABASE>"
+  # 비우기 (database 를 지우고 db.yml 로 다시 만들면 계정 권한도 그대로 맞춰짐)
+  sudo docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf -e "DROP DATABASE <DB_DATABASE>"
+  ansible-playbook db.yml -K      # → deploy-dev 재실행 → db.yml -K --tags seed
+  ```
+
 ---
 
 ## 8. GitLab 노드 구성
@@ -610,10 +639,10 @@ GitHub push(develop|main)
   └ .github/workflows/mirror-gitlab.yml ──(Tailscale tag:ci)──▶ GitLab team04/hotel (같은 브랜치 force push)
 GitLab 파이프라인 (.gitlab-ci.yml)
   test       : lint · jest (non-blocking) · nest build · helm lint
-  build      : kaniko × 9 → <registry>/team04/hotel/<svc>:ci-<sha>        (develop 만 push)
-  image-test : ci_<pipeline id> DB 생성 → flyway → 후보 이미지 기동 → GET /health
+  build      : kaniko × 10 → <registry>/team04/hotel/<svc>:ci-<sha>       (develop 만 push, 서비스 8 + main/payment-migrations)
+  image-test : ci_<id>(결제) · ci_main_<id>(메인) DB 생성 → flyway(main, payment) → 후보 이미지 기동 → GET /health
   push       : crane tag ci-<sha> → <sha>                                  (레이어 재업로드 없음)
-  deploy-dev : (수동) gitops envs/dev/values.yaml 태그 커밋 → helm upgrade --atomic → rollout status
+  deploy-dev : (수동) gitops envs/dev/values.yaml 태그 커밋 → helm upgrade --atomic (pre hook: main-db-migration) → rollout status
                └ ci_access ──▶ KAS ──▶ dev-agent(agentk, 온프레미스) ──▶ namespace backend
 ```
 
@@ -765,7 +794,7 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | 브랜치 | develop → dev, main → prod. 테스트·빌드는 자동, **배포는 수동(`when: manual`)**, 같은 환경 배포는 `resource_group` 으로 직렬화 |
 | 이미지 태그 | 커밋 SHA (`$CI_COMMIT_SHORT_SHA`). `latest` 는 차트가 렌더링을 거부 |
 | 클러스터 권한 | GitLab CE(Free)에는 ci_access impersonation 이 없어 **CI 권한 = agentk ServiceAccount 권한** → 차트 기본 cluster-admin 을 끄고 `backend` 네임스페이스 Role 만 부여 |
-| smoke test DB | dev DB 서버를 쓰되 database 는 파이프라인 전용(`ci_<id>`). hotel/user/auth/booking 이 `synchronize: true` 라 dev DB 에 붙으면 스키마가 바뀌기 때문 |
+| smoke test DB | dev DB 서버를 쓰되 database 는 파이프라인 전용(`ci_<id>` 결제, `ci_main_<id>` 메인). 후보 이미지의 마이그레이션을 빈 DB 에 처음부터 적용해 검증하고, dev 데이터와 분리하기 위해 |
 
 ---
 
