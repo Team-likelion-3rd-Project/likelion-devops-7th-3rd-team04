@@ -5,9 +5,9 @@ output "apiserver_endpoint" {
   value       = aws_lb.apiserver.dns_name
 }
 
-output "control_plane_instance_ids" {
-  description = "AZ 접미사 → CP 인스턴스 ID (SSM 접속 · 포트포워딩용)"
-  value       = { for az, i in aws_instance.cp : az => i.id }
+output "control_plane_asg_names" {
+  description = "AZ 접미사 → CP ASG 이름 (인스턴스 ID 조회 → SSM 접속, README 6절)"
+  value       = { for az, g in aws_autoscaling_group.cp : az => g.name }
 }
 
 output "worker_asg_name" {

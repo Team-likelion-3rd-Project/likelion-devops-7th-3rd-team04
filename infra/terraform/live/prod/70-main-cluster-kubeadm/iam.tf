@@ -1,5 +1,5 @@
 # 노드 Instance Profile. SSM 접속 권한, 부트스트랩(Ansible 묶음 S3 조회, join 정보 Parameter Store) 권한,
-# 노드 수명주기(CCM · NTH, 부트스트랩 실패 보고) 권한을 둔다.
+# 노드 수명주기(CCM · NTH, 부트스트랩 실패 보고, CP reconcile) 권한을 둔다.
 # 파드의 AWS 권한은 노드 Role 이 아니라 IRSA 로 준다 (CP 에 hostNetwork 로 뜨는 CCM · NTH 만 예외).
 
 locals {
@@ -109,6 +109,7 @@ resource "aws_iam_role_policy" "worker_bootstrap" {
 data "aws_iam_policy_document" "cp_node_lifecycle" {
   # CCM 노드 컨트롤러: 인스턴스 ID · 주소 · zone 조회, 종료 여부 확인. Describe 는 리소스 지정이 안 된다
   # NTH: 이벤트의 인스턴스 → Node 이름(private DNS) · 태그 · ASG 확인
+  # CP reconcile timer: etcd 멤버 이름(private DNS) 의 인스턴스가 살아 있는지 확인
   statement {
     sid = "DescribeNodes"
     actions = [
@@ -141,7 +142,21 @@ resource "aws_iam_role_policy" "cp_node_lifecycle" {
   policy = data.aws_iam_policy_document.cp_node_lifecycle.json
 }
 
-# 워커: 부트스트랩 실패 시 자기 ASG 에 Unhealthy 보고 (user-data trap) → ASG 가 교체
+# 부트스트랩 실패 시 자기 ASG 에 Unhealthy 보고 (user-data trap) → ASG 가 교체
+data "aws_iam_policy_document" "cp_health" {
+  statement {
+    sid       = "ReportBootstrapFailure"
+    actions   = ["autoscaling:SetInstanceHealth"]
+    resources = [for g in aws_autoscaling_group.cp : g.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "cp_health" {
+  name   = "health"
+  role   = aws_iam_role.node["cp"].id
+  policy = data.aws_iam_policy_document.cp_health.json
+}
+
 data "aws_iam_policy_document" "worker_health" {
   statement {
     sid       = "ReportBootstrapFailure"

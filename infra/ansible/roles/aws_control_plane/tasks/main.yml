@@ -133,3 +133,40 @@
     enabled: true
     state: started
     daemon_reload: true
+
+# CP 교체 뒷정리: 사라진 CP 의 etcd 멤버 제거, kubeadm-certs Secret 유지 (교체된 CP 의 join 준비).
+# CP 3대가 모두 돌려 어느 CP 가 사라져도 남은 CP 가 정리한다
+- name: crictl 설치 (reconcile 이 apiserver 를 거치지 않고 로컬 etcd 컨테이너의 etcdctl 을 쓴다)
+  ansible.builtin.apt:
+    name: cri-tools
+    state: present
+
+- name: crictl 설정 (없으면 실행마다 엔드포인트 탐색 경고가 남는다)
+  ansible.builtin.copy:
+    dest: /etc/crictl.yaml
+    content: |
+      runtime-endpoint: unix:///run/containerd/containerd.sock
+      image-endpoint: unix:///run/containerd/containerd.sock
+    mode: "0644"
+
+- name: CP reconcile 스크립트
+  ansible.builtin.template:
+    src: cp-reconcile.sh.j2
+    dest: /usr/local/sbin/team04-cp-reconcile
+    mode: "0700"
+
+- name: CP reconcile systemd unit
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - team04-cp-reconcile.service
+    - team04-cp-reconcile.timer
+
+- name: CP reconcile timer 활성화
+  ansible.builtin.systemd_service:
+    name: team04-cp-reconcile.timer
+    enabled: true
+    state: started
+    daemon_reload: true
