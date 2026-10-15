@@ -46,3 +46,6 @@
     - tailscale_serve
     - role: gitlab_runner_token
       tags: [runner_token]
+    # 그룹/프로젝트/agent/토큰/CI 변수 (README 12-1) — --tags bootstrap 단독 실행 가능
+    - role: gitlab_bootstrap
+      tags: [bootstrap]

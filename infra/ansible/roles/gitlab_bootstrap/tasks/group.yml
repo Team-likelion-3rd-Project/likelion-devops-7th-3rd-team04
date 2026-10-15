@@ -1,0 +1,28 @@
+---
+# 그룹 하나를 조회하고 없으면 만듭니다. (vars: grp_path, grp_parent — 최상위 그룹이면 빈 문자열)
+# 결과 id 는 gl_ids[<전체 경로>] 에 기록
+- name: "그룹 경로 계산 ({{ grp_path }})"
+  ansible.builtin.set_fact:
+    grp_full_path: "{{ (grp_parent ~ '/' ~ grp_path) if grp_parent | length > 0 else grp_path }}"
+
+- name: "그룹 조회 ({{ grp_full_path }})"
+  ansible.builtin.uri:
+    url: "{{ gl_api }}/groups/{{ grp_full_path | replace('/', '%2F') }}"
+    status_code: [200, 404]
+  register: gl_grp
+
+- name: "그룹 생성 ({{ grp_full_path }})"
+  ansible.builtin.uri:
+    url: "{{ gl_api }}/groups"
+    method: POST
+    body: >-
+      {{ {'name': grp_path, 'path': grp_path, 'visibility': 'private'}
+         | combine({'parent_id': gl_ids[grp_parent]} if grp_parent | length > 0 else {}) }}
+    status_code: 201
+  register: gl_grp_new
+  when: gl_grp.status == 404
+  changed_when: true
+
+- name: "그룹 id 기록 ({{ grp_full_path }})"
+  ansible.builtin.set_fact:
+    gl_ids: "{{ gl_ids | combine({grp_full_path: (gl_grp_new.json.id if gl_grp.status == 404 else gl_grp.json.id)}) }}"

@@ -27,6 +27,23 @@
     mode: "0600"
   no_log: true
 
+- name: 사설 CA 신뢰 (private_ca_cert_file 이 있을 때만)
+  # Runner 는 /etc/gitlab-runner/certs/<host>.crt 로 GitLab 에 접속하고, job 에 CI_SERVER_TLS_CA_FILE 로 전달
+  # (tailscale serve 의 *.ts.net 인증서는 공인 CA 라 기본적으로 필요 없음)
+  when: private_ca_cert_file | length > 0
+  block:
+    - name: certs 디렉토리
+      ansible.builtin.file:
+        path: /etc/gitlab-runner/certs
+        state: directory
+        mode: "0755"
+
+    - name: GitLab / Registry CA
+      ansible.builtin.copy:
+        src: "{{ private_ca_cert_file }}"
+        dest: "/etc/gitlab-runner/certs/{{ gitlab_fqdn }}.crt"
+        mode: "0644"
+
 - name: gitlab-runner 활성화
   ansible.builtin.systemd_service:
     name: gitlab-runner
@@ -43,7 +60,7 @@
   delay: 5
 
 - name: 빌드 캐시 / 오래된 이미지 주간 정리
-  # docker.sock 을 공유하므로 job 의 빌드 결과물이 호스트 docker 에 계속 쌓임
+  # job / service 컨테이너 이미지와 (docker.sock 을 공유하면) job 의 빌드 결과물이 호스트 docker 에 계속 쌓임
   ansible.builtin.cron:
     name: gitlab-runner docker prune
     special_time: weekly
@@ -55,5 +72,5 @@
 - name: 접속 정보
   ansible.builtin.debug:
     msg:
-      - "Runner {{ node_name }} → {{ gitlab_url }} (executor=docker, docker.sock 바인드)"
+      - "Runner {{ node_name }} → {{ gitlab_url }} (executor=docker{{ ', docker.sock 바인드' if gitlab_runner_mount_docker_sock else '' }})"
       - "GitLab Admin → CI/CD → Runners 에서 online 상태 확인"

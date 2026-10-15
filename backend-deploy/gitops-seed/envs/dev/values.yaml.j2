@@ -1,0 +1,31 @@
+# 온프레미스 dev 클러스터 (agent: team04/infra/k8s-agents:dev-agent, namespace: backend)
+# 차트: GitHub 모노레포 backend-deploy/charts/backend (기본값은 그 values.yaml)
+#
+# global.imageTag 는 CI deploy-dev job 이 커밋 SHA 로 갱신하고 커밋합니다 — 직접 고치지 마세요.
+# 나머지 값(리소스, env, Ingress 등)은 이 파일을 MR/커밋으로 고치면 다음 배포부터 반영됩니다.
+global:
+  imageRegistry: {{ gitlab_fqdn }}:{{ gitlab_registry_port }}
+  imageRepositoryPrefix: {{ gitlab_app_project_path }}/
+  imageTag: ""
+
+# Traefik(NodePort 30080) — 개발자 PC 의 Vite proxy 가 http://<control-plane>.<tailnet>.ts.net:30080 으로 연결
+ingress:
+  enabled: true
+  className: traefik
+  host: ""
+  paths:
+    - /api
+    - /api-docs   # dev 전용 Swagger
+
+services:
+  api-gateway:
+    env:
+      CORS_ORIGIN: http://localhost:5173
+  # 결제 DB 는 클러스터·메인 DB 노드와 분리된 별도 서버에 둘 예정 — 준비 전까지 결제 서비스는 배포하지 않음.
+  # 결제 DB 가 생기면 backend/.env 의 PAYMENT_DB_* 를 채워 k8s-cicd.yml --tags backend_secrets 실행 후 둘 다 true 로
+  payment-service:
+    enabled: false
+
+migrations:
+  payment:
+    enabled: false

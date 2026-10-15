@@ -18,4 +18,5 @@ payment-service는 `synchronize: false`라서 테이블을 직접 만들거나 �
 
 ## 실행
 - 로컬: `docker compose --profile local-infra up` 하면 `payment-db-migration` 서비스가 자동 실행됩니다.
+- 클러스터: 이 폴더의 `Dockerfile`로 만든 `payment-migrations` 이미지를 Helm hook Job(`backend-deploy/charts/backend/templates/migration-job.yaml`)이 앱 배포 전에 실행합니다. GitLab CI의 이미지 smoke test도 파이프라인 전용 DB에 같은 이미지를 먼저 적용합니다.
 - 적용 현황 확인: 결제 DB의 `flyway_schema_history` 테이블을 조회합니다.

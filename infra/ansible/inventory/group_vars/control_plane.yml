@@ -10,11 +10,56 @@ traefik_namespace: traefik
 # ACL 의 autogroup:member → tag:k8s-node tcp:30000-32767 범위 안이어야 함
 traefik_http_nodeport: 30080
 
-# ── api-gateway Ingress (api_gateway_ingress role) ────────
-# 온프레미스에는 아직 앱 배포 체계(GitOps/ArgoCD)가 없어 namespace 도 Ansible 이 만듦.
-# 이후 api-gateway 를 배포할 때 같은 namespace / Service 이름 / 포트를 사용
-api_gateway_namespace: team04-dev
-api_gateway_service: api-gateway
-api_gateway_port: 3000
-# dev 전용: /api-docs (Swagger) 도 Ingress 로 노출
-api_gateway_expose_swagger: true
+# api-gateway Ingress(/api, /api-docs)는 backend Helm 차트가 관리 (gitops envs/dev/values.yaml 의 ingress)
+
+# ── CI/CD: GitLab Agent + backend 네임스페이스 (k8s-cicd.yml, README 12-3) ──
+# GitLab 주소 / 토큰은 gitlab.yml --tags bootstrap 이 만든 .secrets/gitlab-k8s.env 에서
+gitlab_url: "{{ lookup('env', 'GITLAB_URL') }}"
+gitlab_ts_ip: "{{ lookup('env', 'GITLAB_TS_IP') }}"
+gitlab_fqdn: "{{ gitlab_url | urlsplit('hostname') }}"
+gitlab_registry: "{{ lookup('env', 'GITLAB_REGISTRY') }}"
+gitlab_agent_token: "{{ lookup('env', 'DEV_AGENT_TOKEN') }}"
+registry_deploy_user: "{{ lookup('env', 'REGISTRY_DEPLOY_USER') }}"
+registry_deploy_token: "{{ lookup('env', 'REGISTRY_DEPLOY_TOKEN') }}"
+
+gitlab_agent_name: dev-agent                       # gitlab.yml 의 gitlab_agents 중 이 클러스터 것
+gitlab_agents_project_path: team04/infra/k8s-agents
+gitlab_agent_namespace: gitlab-agent
+gitlab_agent_sa: gitlab-agent
+# 버전 고정 — agentk 는 GitLab(KAS) 과 major.minor 를 맞춤 (chart 2.32.0 = agentk v19.4.0)
+gitlab_agent_chart_version: "2.32.0"
+gitlab_agent_chart_repo: "https://charts.gitlab.io"
+cicd_manifest_dir: /etc/kubernetes/cicd
+
+# 앱 네임스페이스 — dev(온프레미스)·prod(EKS) 모두 같은 이름 (클러스터로 환경 구분)
+backend_namespace: backend
+backend_secret_name: backend-secrets
+
+# backend-secrets: backend/.env 를 단일 소스로 (db.yml 과 같은 파일)
+backend_env_file: "{{ (lookup('env', 'BACKEND_ENV_FILE') | default(playbook_dir ~ '/../../backend/.env', true)) | expanduser | realpath }}"
+backend_env: "{{ lookup('file', backend_env_file) | parse_dotenv }}"
+db_ts_ip: "{{ lookup('env', 'DB_TS_IP') }}"
+# 차트(backend-deploy/charts/backend values.yaml)의 secretEnv 에 나오는 key 전부
+backend_secret_keys:
+  - DB_HOST
+  - DB_USERNAME
+  - DB_PASSWORD
+  - DB_DATABASE
+  - JWT_ACCESS_SECRET
+  - JWT_REFRESH_SECRET
+  - REDIS_HOST
+  - REDIS_PASSWORD
+  - MOCK_PG_SECRET
+backend_secret_required_keys: "{{ backend_secret_keys | reject('equalto', 'REDIS_PASSWORD') | list }}"
+# 결제 DB 는 클러스터·메인 DB 노드와 분리된 별도 서버에 둘 예정 → 준비 전에는 비워 둬도 됨.
+# 값이 비어 있으면 Secret 에서 빠지고, gitops envs/dev/values.yaml 에서 payment-service / 결제 마이그레이션을 꺼 둠 (README 12-3)
+backend_secret_optional_keys:
+  - PAYMENT_DB_HOST
+  - PAYMENT_DB_PORT
+  - PAYMENT_DB_USERNAME
+  - PAYMENT_DB_PASSWORD
+  - PAYMENT_DB_DATABASE
+# 온프레미스 dev 는 메인 MariaDB 와 Valkey 가 DB 노드 한 대에 있음 (결제 DB 는 backend/.env 의 PAYMENT_DB_HOST 를 그대로 사용)
+backend_secret_host_overrides:
+  DB_HOST: "{{ db_ts_ip }}"
+  REDIS_HOST: "{{ db_ts_ip }}"

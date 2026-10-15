@@ -1,0 +1,243 @@
+# 공통 기본값 — 환경별 차이(레지스트리, 이미지 태그, Ingress, 리소스)는
+# GitLab team04/infra/backend-gitops 의 envs/<env>/values.yaml 로 덮어씁니다. (초기본: backend-deploy/gitops-seed)
+#
+# 배포:
+#   helm upgrade --install --atomic --wait backend backend-deploy/charts/backend \
+#     -n backend -f <gitops>/envs/dev/values.yaml
+# Namespace 는 차트에 넣지 않습니다 — CI agent 권한이 backend 네임스페이스 안으로 제한되어 있어
+# 클러스터 범위 리소스를 만들 수 없음 (온프레미스는 Ansible k8s-cicd.yml 이 미리 생성)
+
+global:
+  # 이미지 = <imageRegistry>/<imageRepositoryPrefix><services.*.image.repository>:<tag>
+  #   dev : <gitlab fqdn>:5050 / team04/hotel/          (GitLab Container Registry)
+  #   prod: <account>.dkr.ecr.us-east-1.amazonaws.com / team04-hotel/   (Terraform 11-registry)
+  imageRegistry: ""
+  imageRepositoryPrefix: ""
+  # 한 커밋에서 빌드한 이미지 9개는 같은 태그(커밋 SHA)를 씀 → CI deploy job 이 이 값만 갱신.
+  # 서비스별 image.tag 를 채우면 그 서비스만 다른 태그를 씀. latest 는 차트가 거부
+  imageTag: ""
+  imagePullPolicy: IfNotPresent
+  # 온프레미스: GitLab Deploy Token(read_registry) 으로 만든 Secret (Ansible backend_namespace role)
+  imagePullSecrets:
+    - gitlab-registry
+  # DB 비밀번호·JWT secret 등 — 차트 밖에서 만든 Secret (온프레미스: Ansible 이 backend/.env 로 생성)
+  secretName: backend-secrets
+  # 모든 서비스에 공통으로 들어가는 환경변수
+  env:
+    NODE_ENV: production
+
+# Pod 공통
+terminationGracePeriodSeconds: 30
+# SIGTERM 직후 Service 에서 빠지는 시간 동안 들어온 요청까지 처리 (2nd 프로젝트에서 겪은 커넥션 리셋 대응)
+preStopSleepSeconds: 5
+podSecurityContext: {}
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+
+# 헬스체크: libs/common HealthController 의 GET /health (DB 등 외부 의존성은 확인하지 않음)
+#   - HTTP 서비스(api-gateway, pg-mock)는 서비스 포트, gRPC 서비스는 gRPC 포트 + 100 의 HTTP 포트
+probes:
+  startup:
+    periodSeconds: 3
+    failureThreshold: 40      # 최대 2분 (DB 연결 대기 포함)
+  readiness:
+    periodSeconds: 5
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 3
+
+defaultResources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# 서비스 목록. env 는 평문 값, secretEnv 는 global.secretName Secret 에서 같은 이름의 key 를 읽음
+services:
+  api-gateway:
+    enabled: true
+    image:
+      repository: api-gateway
+      tag: ""
+    port: 3000
+    healthPort: 3000
+    replicas: 1
+    env:
+      PORT: "3000"
+      USER_SERVICE_HOST: user-service:3001
+      HOTEL_SERVICE_HOST: hotel-service:3002
+      BOOKING_SERVICE_HOST: booking-service:3003
+      PAYMENT_SERVICE_HOST: payment-service:3004
+      CHAT_BOT_SERVICE_HOST: chat-bot-service:3005
+      AUTH_SERVICE_HOST: auth-service:3006
+      JWT_REFRESH_EXPIRES_IN: 7d
+      CORS_ORIGIN: http://localhost:5173
+    secretEnv:
+      - JWT_ACCESS_SECRET
+      - MOCK_PG_SECRET
+    resources: {}
+    hpa:
+      enabled: false
+
+  user-service:
+    enabled: true
+    image:
+      repository: user-service
+      tag: ""
+    port: 3001
+    healthPort: 3101
+    replicas: 1
+    env:
+      DB_PORT: "3306"
+    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+    resources: {}
+    hpa:
+      enabled: false
+
+  hotel-service:
+    enabled: true
+    image:
+      repository: hotel-service
+      tag: ""
+    port: 3002
+    healthPort: 3102
+    replicas: 1
+    env:
+      DB_PORT: "3306"
+    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+    resources: {}
+    hpa:
+      enabled: false
+
+  booking-service:
+    enabled: true
+    image:
+      repository: booking-service
+      tag: ""
+    port: 3003
+    healthPort: 3103
+    replicas: 1
+    env:
+      DB_PORT: "3306"
+      HOTEL_SERVICE_HOST: hotel-service:3002
+      PAYMENT_SERVICE_HOST: payment-service:3004
+    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+    resources: {}
+    hpa:
+      enabled: false
+
+  payment-service:
+    enabled: true
+    image:
+      repository: payment-service
+      tag: ""
+    port: 3004
+    healthPort: 3104
+    replicas: 1
+    env:
+      BOOKING_SERVICE_HOST: booking-service:3003
+      PG_MOCK_SERVICE_URL: http://pg-mock-service:3007
+    secretEnv:
+      - PAYMENT_DB_HOST
+      - PAYMENT_DB_PORT
+      - PAYMENT_DB_USERNAME
+      - PAYMENT_DB_PASSWORD
+      - PAYMENT_DB_DATABASE
+    resources: {}
+    hpa:
+      enabled: false
+
+  chat-bot-service:
+    enabled: true
+    image:
+      repository: chat-bot-service
+      tag: ""
+    port: 3005
+    healthPort: 3105
+    replicas: 1
+    env:
+      DYNAMODB_REGION: ap-northeast-2
+      # 기동 시 필수값(getRequiredEnv). n8n 이 없는 환경에서는 호출만 실패하고 기동은 됨
+      N8N_WEBHOOK_URL: http://n8n.langchain.svc.cluster.local:5678/webhook/chat
+    secretEnv: []
+    resources: {}
+    hpa:
+      enabled: false
+
+  auth-service:
+    enabled: true
+    image:
+      repository: auth-service
+      tag: ""
+    port: 3006
+    healthPort: 3106
+    replicas: 1
+    env:
+      DB_PORT: "3306"
+      USER_SERVICE_HOST: user-service:3001
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      JWT_REFRESH_ABSOLUTE_MAX_DAYS: "30"
+      REDIS_PORT: "6379"
+      REDIS_TLS: "false"
+    secretEnv:
+      - DB_HOST
+      - DB_USERNAME
+      - DB_PASSWORD
+      - DB_DATABASE
+      - JWT_ACCESS_SECRET
+      - JWT_REFRESH_SECRET
+      - REDIS_HOST
+      - REDIS_PASSWORD
+    resources: {}
+    hpa:
+      enabled: false
+
+  pg-mock-service:
+    enabled: true
+    image:
+      repository: pg-mock-service
+      tag: ""
+    port: 3007
+    healthPort: 3007
+    replicas: 1
+    env:
+      PORT: "3007"
+      PAYMENT_SERVICE_WEBHOOK_URL: http://api-gateway:3000/api/payments/webhook
+    secretEnv:
+      - MOCK_PG_SECRET
+    resources: {}
+    hpa:
+      enabled: false
+
+# api-gateway 외부 노출 (dev: Traefik NodePort 30080, prod: ALB)
+ingress:
+  enabled: false
+  className: traefik
+  annotations: {}
+  # 비우면 host 규칙 없이 모든 이름으로 라우팅 (MagicDNS 이름 / Tailscale IP 어느 쪽이든)
+  host: ""
+  tls: []
+  service: api-gateway
+  paths:
+    - /api
+
+# DB 마이그레이션 — helm pre-install/pre-upgrade hook Job (실패하면 앱 배포 전에 중단, --atomic 로 롤백)
+migrations:
+  payment:
+    enabled: true
+    image:
+      repository: payment-migrations
+      tag: ""
+    activeDeadlineSeconds: 300
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi

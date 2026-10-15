@@ -1,0 +1,27 @@
+{{- range $name, $svc := .Values.services }}
+{{- if and $svc.enabled $svc.hpa.enabled }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+# metrics-server 필요. ArgoCD 전환 시 Application 에 ignoreDifferences /spec/replicas 추가 (README 12-6)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "backend.labels" $ctx | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ $svc.hpa.minReplicas | default 1 }}
+  maxReplicas: {{ $svc.hpa.maxReplicas | default 3 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $svc.hpa.cpuUtilization | default 70 }}
+{{- end }}
+{{- end }}

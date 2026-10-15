@@ -35,6 +35,7 @@
           - db_password is regex(secret_charset_regex)
           - db_root_password is regex(secret_charset_regex)
           - valkey_password is regex(secret_charset_regex)
+          - ci_smoke_db_password | length == 0 or ci_smoke_db_password is regex(secret_charset_regex)
         fail_msg: >-
           DB_USERNAME 은 root 를 쓸 수 없습니다(앱 전용 계정 사용). 비밀번호에는 공백, 따옴표, 역슬래시, $, #, ` 를 쓸 수 없습니다.
         quiet: true
