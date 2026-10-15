@@ -50,6 +50,9 @@ lerna-debug.log*
 pids
 *.pid
 *.seed
+# 위 *.seed 규칙(Node 템플릿 기본값)이 db-seed용 Dockerfile까지 무시해서, 새로 clone하면
+# docker compose --profile local-infra 가 db-seed 빌드에서 실패하던 문제 (LDP-60)
+!scripts/Dockerfile.seed
 *.pid.lock
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
