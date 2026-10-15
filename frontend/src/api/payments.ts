@@ -1,12 +1,6 @@
 import { ApiError, authorizedFetch, parseJsonResponse } from './gateway'
 import { fetchMyBookings } from './bookings'
 
-// gateway CreatePaymentRequestDto와 1:1 대응. userId는 서버가 Authorization 헤더의 JWT에서 추출한다.
-export interface CreatePaymentRequest {
-  reservationId: number
-  paymentMethod: string
-}
-
 // proto의 Payment 메시지 / gateway PaymentDto와 1:1 대응
 export interface Payment {
   paymentId: number
@@ -17,20 +11,6 @@ export interface Payment {
   status: string
   paidAt: string
   userId: number
-}
-
-// ⚠️ 2차 결제 방식. 새 결제 흐름(아래 preparePayment → confirmPayment)으로 바뀌면서 화면에서는 더 이상
-// 호출하지 않는다 — backend가 POST /api/payments를 제거할 때 함께 지운다.
-// POST /api/payments — 로그인한 사용자 본인 명의의 예약에 대해 결제를 요청한다 (인증 필요).
-// payment-service가 예약 금액/소유자/상태를 검증하고 PG(mock)에 승인을 동기로 요청한 뒤, 성공하면
-// 결제내역을 저장하고 해당 예약을 PENDING_PAYMENT -> RESERVED로 확정한다.
-export async function createPayment(payload: CreatePaymentRequest): Promise<Payment> {
-  const res = await authorizedFetch('/api/payments', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return parseJsonResponse<Payment>(res)
 }
 
 // GET /api/payments/me — 로그인한 사용자 본인의 결제 목록을 조회한다 (인증 필요).
@@ -76,7 +56,7 @@ export interface ConfirmPaymentRequest {
 export interface ConfirmPaymentResponse {
   result: ConfirmResult
   retryable: boolean
-  /** result가 FAILED일 때만 온다 (PAYMENT_DECLINED, MAX_PAYMENT_ATTEMPTS_EXCEEDED) */
+  /** result가 FAILED일 때만 온다 (PAYMENT_DECLINED, MAX_PAYMENT_ATTEMPTS_EXCEEDED, ALREADY_PAID) */
   code?: string
   message: string
 }
@@ -104,6 +84,8 @@ const PAYMENT_ERROR_MESSAGE: Record<string, string> = {
   PAYMENT_ATTEMPT_NOT_FOUND: '결제 정보를 찾을 수 없습니다. 다시 결제해 주세요.',
   AMOUNT_MISMATCH: '결제 금액이 일치하지 않아 결제가 취소되었습니다.',
   PAYMENT_DECLINED: '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
+  ALREADY_PAID: '이미 결제가 완료된 예약입니다. 내 예약에서 확인해주세요.',
+  PAYMENT_SERVICE_UNAVAILABLE: '결제 서비스에 일시적으로 연결할 수 없습니다. 잠시 후 다시 시도해주세요.',
 }
 
 export function paymentErrorMessage(code: string | undefined, message: string | undefined, fallback: string): string {

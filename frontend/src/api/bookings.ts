@@ -22,9 +22,9 @@ export interface Booking {
   guestCount: number
   totalAmount: number
   status: string
-  /** 결제 마감 시각 (명세 5.1 추가 예정 — 오기 전까지는 없음) */
+  /** 결제 마감 시각(ISO 8601). 없으면 빈 문자열 */
   paymentDueAt?: string
-  /** 최근 결제 시도 상태 REQUESTED / SUCCEEDED / FAILED (명세 5.1 추가 예정) */
+  /** 최근 결제 시도 상태 REQUESTED / SUCCEEDED / FAILED. 시도가 없으면 빈 문자열 */
   lastPaymentAttemptStatus?: string
 }
 
