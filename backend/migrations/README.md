@@ -39,5 +39,7 @@ payment_result_inbox를 실제로 쓰는 로직(토스 승인 연동, SQS 수신
   네 서비스와 `db-seed`는 이게 성공한 뒤에 시작합니다.
 - 클러스터: 이 폴더의 `Dockerfile`로 만든 메인 DB 마이그레이션 이미지를 앱 배포 전에 실행합니다
   (결제 DB의 `payment-migrations`와 같은 방식 — CI 이미지 목록·Helm hook Job 연결은 인프라 작업).
+  → 반영 완료(LDP-64): CI가 `main-migrations` 이미지를 빌드하고, 차트의 `main-db-migration` hook Job이 배포 전에 적용합니다.
+  dev 초기 데이터(seed.ts)는 Ansible `db.yml --tags seed`가 넣습니다 (infra/ansible/README.md 7-5).
   이미 synchronize로 테이블이 만들어진 DB에는 그대로 적용할 수 없으니, 비우고 V1부터 적용합니다.
 - 적용 현황 확인: 메인 DB의 `flyway_schema_history` 테이블을 조회합니다.

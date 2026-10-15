@@ -2,10 +2,16 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ClientsModule } from '@nestjs/microservices';
-import { getGrpcOptions, HealthModule } from '@app/common';
+import {
+  getGrpcOptions,
+  HealthModule,
+  createSqsClient,
+  SQS_CLIENT,
+} from '@app/common';
 import { BookingServiceController } from './booking-service.controller';
 import { BookingServiceService } from './booking-service.service';
 import { ReservationFacilityService } from './reservation-facility.service';
+import { PaymentResultConsumer } from './payment-result/payment-result.consumer';
 import { Reservation } from './entities/reservation.entity';
 import { ReservationFacility } from './entities/reservation-facility.entity';
 import { PaymentAttempt } from './entities/payment-attempt.entity';
@@ -82,6 +88,12 @@ import { PaymentResultInbox } from './entities/payment-result-inbox.entity';
     ]),
   ],
   controllers: [BookingServiceController],
-  providers: [BookingServiceService, ReservationFacilityService],
+  providers: [
+    BookingServiceService,
+    ReservationFacilityService,
+    // 결제 결과 이벤트 수신 (SQS FIFO / ElasticMQ -> payment_result_inbox, LDP-26)
+    PaymentResultConsumer,
+    { provide: SQS_CLIENT, useFactory: createSqsClient },
+  ],
 })
 export class BookingServiceModule {}

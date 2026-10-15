@@ -3,13 +3,17 @@ import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
-import { DataSource, In, Repository } from 'typeorm';
-import { apiRpcException } from '@app/common';
+import { DataSource, In, QueryFailedError, Repository } from 'typeorm';
+import { apiRpcException, PaymentResultEvent } from '@app/common';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
 import {
   PaymentAttempt,
   PaymentAttemptStatus,
 } from './entities/payment-attempt.entity';
+import {
+  PaymentResultEventType,
+  PaymentResultInbox,
+} from './entities/payment-result-inbox.entity';
 import { ReservationFacilityService } from './reservation-facility.service';
 
 // 결제 마감: 예약 생성 후 이 시간 안에 결제가 끝나야 한다 (ERD 상태 모델, 위키 API 명세 5.1)
@@ -526,27 +530,16 @@ export class BookingServiceService implements OnModuleInit {
     }
 
     if (approved.result === 'APPROVED') {
-      // ⚠️ 임시: 예약 확정(PENDING_PAYMENT -> RESERVED)은 원래 결제 결과 이벤트(SQS, LDP-26)로 반영한다.
-      // 이벤트 경로가 생기기 전까지는 승인 응답을 받은 이 자리에서 바로 반영한다. 조건부 UPDATE라서
-      // LDP-26의 이벤트가 같은 예약에 다시 와도 한 번만 반영된다.
-      await this.dataSource.transaction(async (manager) => {
-        await manager.update(
-          PaymentAttempt,
-          {
-            attemptId: attempt.attemptId,
-            status: PaymentAttemptStatus.REQUESTED,
-          },
-          { status: PaymentAttemptStatus.SUCCEEDED },
-        );
-        await manager.update(
-          Reservation,
-          {
-            reservationId: data.reservationId,
-            status: ReservationStatus.PENDING_PAYMENT,
-          },
-          { status: ReservationStatus.RESERVED },
-        );
-      });
+      // 시도 기록만 성공으로 남긴다. 예약 확정(PENDING_PAYMENT -> RESERVED)은 결제 결과 이벤트
+      // (payment_outbox -> SQS FIFO -> applyPaymentResult)로만 반영한다 — ERD "예약 상태는 결과 이벤트
+      // 경로로만 바뀐다". 보통 1초 안에 반영되고, 프론트는 GET /api/bookings/me 재조회로 확인한다.
+      await this.paymentAttemptRepository.update(
+        {
+          attemptId: attempt.attemptId,
+          status: PaymentAttemptStatus.REQUESTED,
+        },
+        { status: PaymentAttemptStatus.SUCCEEDED },
+      );
       return {
         result: 'APPROVED',
         retryable: false,
@@ -584,6 +577,137 @@ export class BookingServiceService implements OnModuleInit {
       code: approved.code || 'PAYMENT_DECLINED',
       message: approved.message,
     };
+  }
+
+  // 결제 결과 이벤트 반영 (payment_outbox -> SQS FIFO -> 여기, ERD "이벤트별 메인 처리").
+  // payment_result_inbox 기록과 예약·시도 상태 변경을 한 트랜잭션으로 묶는다. event_id가 UNIQUE라서
+  // 같은 이벤트가 두 번 와도(큐 재전송·발행기 재시도) 두 번째 INSERT가 막혀 한 번만 반영된다 (Inbox 패턴).
+  // 처리에 실패하면 에러를 그대로 던진다 — 수신기가 메시지를 지우지 않아 큐가 다시 보내고,
+  // 5번 실패하면 DLQ(payment-result-dlq.fifo)로 옮겨진다.
+  async applyPaymentResult(event: PaymentResultEvent): Promise<void> {
+    const reservationToRelease = await this.dataSource.transaction(
+      async (manager) => {
+        const attempt = event.orderId
+          ? await manager.findOne(PaymentAttempt, {
+              where: { pgOrderId: event.orderId },
+            })
+          : null;
+
+        try {
+          await manager.save(
+            manager.create(PaymentResultInbox, {
+              eventId: event.eventId,
+              eventType: event.eventType as PaymentResultEventType,
+              reservationId: event.reservationId,
+              attemptId: attempt?.attemptId,
+              paymentId: event.paymentId,
+              payload: event as unknown as Record<string, unknown>,
+            }),
+          );
+        } catch (error: unknown) {
+          if (
+            error instanceof QueryFailedError &&
+            (error.driverError as { code?: string })?.code === 'ER_DUP_ENTRY'
+          ) {
+            this.logger.log(
+              `이미 처리한 결제 결과 이벤트입니다 — 건너뜁니다 (event_id=${event.eventId})`,
+            );
+            return null;
+          }
+          throw error;
+        }
+
+        let release: Reservation | null = null;
+        switch (event.eventType) {
+          case 'PAYMENT_APPROVED': {
+            if (attempt) {
+              await manager.update(
+                PaymentAttempt,
+                {
+                  attemptId: attempt.attemptId,
+                  status: PaymentAttemptStatus.REQUESTED,
+                },
+                { status: PaymentAttemptStatus.SUCCEEDED },
+              );
+            }
+            const { affected } = await manager.update(
+              Reservation,
+              {
+                reservationId: event.reservationId,
+                status: ReservationStatus.PENDING_PAYMENT,
+              },
+              { status: ReservationStatus.RESERVED },
+            );
+            if (!affected) {
+              const current = await manager.findOne(Reservation, {
+                where: { reservationId: event.reservationId },
+              });
+              if (current?.status !== ReservationStatus.RESERVED) {
+                // 결제는 승인됐는데 예약이 이미 만료·취소·실패 상태 → 돈만 빠져나간 상태라 환불이 필요하다
+                // (토스 취소 연동 LDP-28 / 대사 배치에서 처리). 지금은 알람 로그로 남긴다.
+                this.logger.error(
+                  `[알람] 결제 승인 이벤트를 받았지만 예약(#${event.reservationId})이 ${current?.status} 상태입니다 — 환불 필요 (paymentId=${event.paymentId})`,
+                );
+              }
+            }
+            break;
+          }
+          case 'PAYMENT_FAILED': {
+            if (attempt) {
+              await manager.update(
+                PaymentAttempt,
+                {
+                  attemptId: attempt.attemptId,
+                  status: PaymentAttemptStatus.REQUESTED,
+                },
+                {
+                  status: PaymentAttemptStatus.FAILED,
+                  failureReason: 'PAYMENT_DECLINED',
+                },
+              );
+            }
+            // 재시도할 수 있는 실패면 예약은 그대로(PENDING_PAYMENT), 재시도 불가면 PAYMENT_FAILED + 재고 반환
+            if (!event.retryable) {
+              const { affected } = await manager.update(
+                Reservation,
+                {
+                  reservationId: event.reservationId,
+                  status: ReservationStatus.PENDING_PAYMENT,
+                },
+                { status: ReservationStatus.PAYMENT_FAILED },
+              );
+              if (affected) {
+                release = await manager.findOne(Reservation, {
+                  where: { reservationId: event.reservationId },
+                });
+              }
+            }
+            break;
+          }
+          case 'PAYMENT_REFUND_FAILED':
+            this.logger.error(
+              `[알람] 환불 실패 이벤트 (reservationId=${event.reservationId}, paymentId=${event.paymentId}) — 결제 쪽 대사 배치가 재시도합니다.`,
+            );
+            break;
+          case 'PAYMENT_REFUNDED':
+          default:
+            // 환불 완료는 예약이 이미 CANCELLED 상태라 기록만 남긴다
+            break;
+        }
+
+        await manager.update(
+          PaymentResultInbox,
+          { eventId: event.eventId },
+          { processedAt: new Date() },
+        );
+        return release;
+      },
+    );
+
+    // 재고 반환은 다른 서비스(hotel) 호출이라 트랜잭션이 끝난 뒤에 한다
+    if (reservationToRelease) {
+      await this.releaseRoomAvailability(reservationToRelease, '결제 실패');
+    }
   }
 
   // 결제 가능한 예약인지 (본인 · 결제 대기 · 마감 전). 아니면 api-error로 던진다.
