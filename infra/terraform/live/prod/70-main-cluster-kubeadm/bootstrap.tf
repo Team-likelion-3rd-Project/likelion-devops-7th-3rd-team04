@@ -1,7 +1,8 @@
-# CP 자동 부트스트랩 재료. CP user-data 가 S3 의 infra/ansible 묶음을 받아 aws-control-plane.yml 을 실행하고,
-# join 정보는 Parameter Store 로 주고받는다.
+# 노드 자동 부트스트랩 재료. 노드 user-data 가 S3 의 infra/ansible 묶음을 받아
+# aws-control-plane.yml (CP) / aws-worker.yml (워커) 을 실행하고, join 정보는 Parameter Store 로 주고받는다.
 #
-#   join-token, certificate-key  여기서 생성 (SecureString). CP-a 가 init 에 쓰고 CP-b · c 가 join 에 쓴다
+#   join-token, certificate-key  여기서 생성 (SecureString). CP-a 가 init 에 쓰고 CP-b · c · 워커가 join 에 쓴다.
+#                                join-token 은 CP 가 주기적으로 갱신 (Terraform 은 값 변경 무시)
 #   ca-cert-hash                 placeholder 로 생성, CP-a 가 init 후 기록 (Terraform 은 값 변경 무시)
 #
 # CA 는 Terraform 이 만들지 않는다. 만들면 CA 개인키가 state 에 남는다.
@@ -20,6 +21,21 @@ locals {
   )
 
   kubeadm_param_prefix = "/${var.project}/${var.environment}/kubeadm"
+
+  # templates/node-user-data.sh.tftpl 공통 값. playbook, extra_vars 는 CP · 워커가 각자 넣는다
+  node_user_data_vars = {
+    bucket               = aws_s3_bucket.ansible.id
+    prefix               = local.ansible_prefix
+    region               = var.region
+    ansible_core_version = var.ansible_core_version
+  }
+
+  # Ansible extra vars 공통 값 (infra/ansible group_vars/aws.yml 주석). node_name 은 user-data 가 IMDS 로 채운다
+  node_extra_vars = {
+    k8s_control_plane_endpoint = aws_lb.apiserver.dns_name
+    kubeadm_param_prefix       = local.kubeadm_param_prefix
+    aws_region                 = var.region
+  }
 }
 
 # 이름에 계정 ID 를 넣지 않으려고 bucket_prefix 로 만든다
@@ -70,6 +86,11 @@ resource "aws_ssm_parameter" "join_token" {
   name  = "${local.kubeadm_param_prefix}/join-token"
   type  = "SecureString"
   value = "${random_password.join_token_id.result}.${random_password.join_token_secret.result}"
+
+  # CP 가 주기적으로 새 token 으로 덮어쓴다 (워커 교체 · 확장 대비). 첫 값만 Terraform 이 넣는다
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
 resource "aws_ssm_parameter" "certificate_key" {

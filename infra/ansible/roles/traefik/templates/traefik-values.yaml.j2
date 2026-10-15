@@ -1,8 +1,9 @@
 # Traefik chart {{ traefik_chart_version }} values — Ansible(roles/traefik) 이 관리. 직접 수정 금지
 #
-# 워커는 팀원 PC 의 VM 이라 꺼질 수 있으므로 항상 켜져 있는 control plane 1대에 고정합니다.
+# 배치 · Service 정책은 group_vars 의 traefik_* 값 (온프레미스: control plane 1대 고정, AWS: 워커)
 deployment:
-  replicas: 1
+  replicas: {{ traefik_replicas }}
+{% if traefik_on_control_plane %}
 
 nodeSelector:
   node-role.kubernetes.io/control-plane: ""
@@ -11,6 +12,7 @@ tolerations:
   - key: node-role.kubernetes.io/control-plane
     operator: Exists
     effect: NoSchedule
+{% endif %}
 
 ingressClass:
   enabled: true
@@ -37,8 +39,7 @@ ports:
 service:
   spec:
     type: NodePort
-    # kube-proxy SNAT 없이 개발자 PC 의 출발지 IP 를 보존 (Traefik Pod 가 있는 노드로만 들어옴)
-    externalTrafficPolicy: Local
+    externalTrafficPolicy: {{ traefik_external_traffic_policy }}
 
 # 클라이언트 IP / 라우팅 확인용
 accessLog:

@@ -1,0 +1,17 @@
+---
+# AWS Main 클러스터 노드 공통 (aws-control-plane.yml, aws-worker.yml). 온프레미스와 다른 값만 둔다.
+#
+# 아래 값은 70-main-cluster-kubeadm user-data 가 extra vars 로 넘긴다.
+#   node_name                   EC2 private DNS (ip-10-10-4-10.ec2.internal)
+#   k8s_control_plane_endpoint  kube-apiserver 내부 NLB DNS
+#   kubeadm_param_prefix        Parameter Store 경로 (/team04-hotel/prod/kubeadm)
+#   aws_region
+
+# Tailscale 없이 VPC private IP 를 노드 IP 로 쓴다
+use_tailscale: false
+
+# 70 스택이 CA cert hash 파라미터를 만들 때 넣는 값 (Parameter Store 는 빈 값을 허용하지 않는다)
+kubeadm_ca_cert_hash_pending: pending
+
+# join 노드가 CP-a 의 init 완료(CA cert hash 기록)를 기다리는 최대 시간 = retries × 10초
+kubeadm_ca_cert_hash_wait_retries: 90

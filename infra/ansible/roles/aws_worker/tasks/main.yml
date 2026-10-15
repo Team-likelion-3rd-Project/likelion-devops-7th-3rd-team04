@@ -1,0 +1,44 @@
+---
+# AWS Main 클러스터 워커 join. join 정보를 환경변수(K8S_*) 대신 Parameter Store 에서 읽어 worker_join role 에 넘긴다.
+#   join-token    SecureString. 70 스택이 생성, CP 가 주기적으로 갱신 (aws_control_plane role)
+#   ca-cert-hash  CP-a 가 init 후 기록. 기록 전에는 kubeadm_ca_cert_hash_pending
+- name: CA cert hash 기록 대기 (CP-a init 완료)
+  ansible.builtin.command: >-
+    aws ssm get-parameter --region {{ aws_region }}
+    --name {{ kubeadm_param_prefix }}/ca-cert-hash
+    --query Parameter.Value --output text
+  register: ca_hash_wait
+  until: ca_hash_wait.rc == 0 and ca_hash_wait.stdout != kubeadm_ca_cert_hash_pending
+  retries: "{{ kubeadm_ca_cert_hash_wait_retries }}"
+  delay: 10
+  changed_when: false
+
+- name: join token 조회
+  ansible.builtin.command: >-
+    aws ssm get-parameter --region {{ aws_region }}
+    --name {{ kubeadm_param_prefix }}/join-token
+    --with-decryption --query Parameter.Value --output text
+  register: join_token_param
+  changed_when: false
+  no_log: true
+
+- name: worker_join 입력값 등록 (온프레미스는 .env 의 K8S_* 환경변수)
+  ansible.builtin.set_fact:
+    k8s_api_endpoint: "{{ k8s_control_plane_endpoint }}:6443"
+    k8s_join_token: "{{ join_token_param.stdout | trim }}"
+    k8s_ca_cert_hash: "{{ ca_hash_wait.stdout | trim }}"
+  no_log: true
+
+- name: kube-apiserver 응답 대기 (내부 NLB)
+  # /readyz 는 익명 접근 허용. 인증서 검증은 kubeadm 이 CA cert hash 로 한다
+  ansible.builtin.uri:
+    url: "https://{{ k8s_api_endpoint }}/readyz"
+    validate_certs: false
+  register: apiserver_readyz
+  until: apiserver_readyz.status == 200
+  retries: 60
+  delay: 10
+
+- name: kubeadm join
+  ansible.builtin.include_role:
+    name: worker_join

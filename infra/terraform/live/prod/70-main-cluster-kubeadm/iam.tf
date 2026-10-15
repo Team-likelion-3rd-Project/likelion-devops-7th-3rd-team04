@@ -1,5 +1,4 @@
 # 노드 Instance Profile. SSM 접속 권한과 부트스트랩(Ansible 묶음 S3 조회, join 정보 Parameter Store) 권한을 둔다.
-# 워커 부트스트랩 권한은 워커 자동 join 이슈에서 추가한다.
 # 파드의 AWS 권한은 노드 Role 이 아니라 IRSA 로 준다.
 
 locals {
@@ -42,8 +41,8 @@ resource "aws_iam_instance_profile" "node" {
   role = aws_iam_role.node[each.key].name
 }
 
-# CP 부트스트랩: Ansible 묶음 다운로드, join token · certificate-key · CA cert hash 조회, CA cert hash 기록
-data "aws_iam_policy_document" "cp_bootstrap" {
+# 부트스트랩 공통: Ansible 묶음 다운로드, join token · CA cert hash 조회
+data "aws_iam_policy_document" "node_bootstrap" {
   statement {
     sid       = "ListAnsibleBundle"
     actions   = ["s3:ListBucket"]
@@ -63,19 +62,32 @@ data "aws_iam_policy_document" "cp_bootstrap" {
   }
 
   statement {
-    sid     = "GetKubeadmParameters"
+    sid     = "GetJoinParameters"
     actions = ["ssm:GetParameter"]
     resources = [
       aws_ssm_parameter.join_token.arn,
-      aws_ssm_parameter.certificate_key.arn,
       aws_ssm_parameter.ca_cert_hash.arn,
     ]
   }
+}
+
+# CP: 공통 + certificate-key 조회, CA cert hash 기록, join token 갱신
+data "aws_iam_policy_document" "cp_bootstrap" {
+  source_policy_documents = [data.aws_iam_policy_document.node_bootstrap.json]
 
   statement {
-    sid       = "PutCaCertHash"
-    actions   = ["ssm:PutParameter"]
-    resources = [aws_ssm_parameter.ca_cert_hash.arn]
+    sid       = "GetCertificateKey"
+    actions   = ["ssm:GetParameter"]
+    resources = [aws_ssm_parameter.certificate_key.arn]
+  }
+
+  statement {
+    sid     = "PutJoinParameters"
+    actions = ["ssm:PutParameter"]
+    resources = [
+      aws_ssm_parameter.ca_cert_hash.arn,
+      aws_ssm_parameter.join_token.arn,
+    ]
   }
 }
 
@@ -83,4 +95,11 @@ resource "aws_iam_role_policy" "cp_bootstrap" {
   name   = "bootstrap"
   role   = aws_iam_role.node["cp"].id
   policy = data.aws_iam_policy_document.cp_bootstrap.json
+}
+
+# 워커: 공통만. certificate-key(CP 인증서 복호화 키) 는 읽지 못한다
+resource "aws_iam_role_policy" "worker_bootstrap" {
+  name   = "bootstrap"
+  role   = aws_iam_role.node["worker"].id
+  policy = data.aws_iam_policy_document.node_bootstrap.json
 }

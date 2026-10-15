@@ -1,4 +1,5 @@
-# 워커 ASG. 교체된 인스턴스는 워커 자동 join 이슈에서 추가할 user-data 로 클러스터에 붙는다.
+# 워커 ASG. 새로 뜬 인스턴스(최초 · 교체 · 확장) 는 user-data 가 aws-worker.yml 을 실행해 클러스터에 join 한다.
+# 스케일 인 · 교체 때 기존 Node 객체는 NotReady 로 남는다 (drain · 삭제 자동화 없음, README 6절).
 # ALB Target Group 연결(aws_autoscaling_attachment) 은 사용하는 쪽인 80-main-edge 에 둔다.
 
 # provider default_tags 는 시작 템플릿으로 띄운 인스턴스 · 볼륨에 붙지 않아 직접 넣는다
@@ -13,6 +14,11 @@ resource "aws_launch_template" "worker" {
   iam_instance_profile {
     name = aws_iam_instance_profile.node["worker"].name
   }
+
+  user_data = base64encode(templatefile("${path.module}/templates/node-user-data.sh.tftpl", merge(local.node_user_data_vars, {
+    playbook   = "aws-worker.yml"
+    extra_vars = jsonencode(local.node_extra_vars)
+  })))
 
   metadata_options {
     http_endpoint               = local.metadata_options.http_endpoint
@@ -46,6 +52,12 @@ resource "aws_launch_template" "worker" {
   tags = {
     Name = "${local.name}-worker"
   }
+
+  # user-data 는 첫 부팅에만 실행되므로 묶음 업로드 · 권한이 먼저 있어야 한다
+  depends_on = [
+    aws_s3_object.ansible,
+    aws_iam_role_policy.worker_bootstrap,
+  ]
 }
 
 resource "aws_autoscaling_group" "worker" {

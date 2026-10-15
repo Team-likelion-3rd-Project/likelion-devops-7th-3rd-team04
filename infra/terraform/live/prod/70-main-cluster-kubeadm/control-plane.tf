@@ -10,15 +10,12 @@ resource "aws_instance" "cp" {
   vpc_security_group_ids = [local.sg_ids.main_cp]
   iam_instance_profile   = aws_iam_instance_profile.node["cp"].name
 
-  user_data = templatefile("${path.module}/templates/cp-user-data.sh.tftpl", {
-    role                 = each.key == "a" ? "init" : "join"
-    apiserver_endpoint   = aws_lb.apiserver.dns_name
-    bucket               = aws_s3_bucket.ansible.id
-    prefix               = local.ansible_prefix
-    param_prefix         = local.kubeadm_param_prefix
-    region               = var.region
-    ansible_core_version = var.ansible_core_version
-  })
+  user_data = templatefile("${path.module}/templates/node-user-data.sh.tftpl", merge(local.node_user_data_vars, {
+    playbook = "aws-control-plane.yml"
+    extra_vars = jsonencode(merge(local.node_extra_vars, {
+      k8s_cp_role = each.key == "a" ? "init" : "join"
+    }))
+  }))
 
   metadata_options {
     http_endpoint               = local.metadata_options.http_endpoint
