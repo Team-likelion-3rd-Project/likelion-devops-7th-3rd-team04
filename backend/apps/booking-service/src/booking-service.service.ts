@@ -1,10 +1,40 @@
+import { randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
-import { Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
+import { apiRpcException } from '@app/common';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
+import {
+  PaymentAttempt,
+  PaymentAttemptStatus,
+} from './entities/payment-attempt.entity';
 import { ReservationFacilityService } from './reservation-facility.service';
+
+// 결제 마감: 예약 생성 후 이 시간 안에 결제가 끝나야 한다 (ERD 상태 모델, 위키 API 명세 5.1)
+const PAYMENT_DUE_MINUTES = 30;
+// 예약 1건당 결제 시도(결제 준비 호출) 최대 횟수 (10/13 프론트 합의, 위키 API 명세 5.8)
+const MAX_PAYMENT_ATTEMPTS = 5;
+
+// 결제 승인 결과 (위키 API 명세 5.9 result)
+type ConfirmResultType = 'APPROVED' | 'FAILED' | 'UNKNOWN' | 'PROCESSING';
+
+// proto의 ConfirmPaymentResponse와 1:1 대응
+export interface ConfirmPaymentResponse {
+  result: ConfirmResultType;
+  retryable: boolean;
+  code: string;
+  message: string;
+}
+
+// proto의 PreparePaymentResponse와 1:1 대응
+export interface PreparePaymentResponse {
+  orderId: string;
+  amount: number;
+  orderName: string;
+  paymentDueAt: string;
+}
 
 // libs/common/src/proto/hotel.proto의 HotelService / SetRoomAvailability와 1:1 대응
 interface HotelGrpcService {
@@ -43,11 +73,26 @@ interface HotelGrpcService {
   }): Observable<{ facilities: FacilityGrpcResponse[] }>;
 }
 
-// libs/common/src/proto/payment.proto의 PaymentService / RefundPayment와 1:1 대응
+// libs/common/src/proto/payment.proto의 PaymentService / RefundPayment, ApprovePayment와 1:1 대응
 interface PaymentGrpcService {
   refundPayment(data: {
     reservationId: number;
   }): Observable<{ refunded: boolean }>;
+  approvePayment(data: {
+    idempotencyKey: string;
+    reservationId: number;
+    userId: number;
+    orderId: string;
+    paymentKey: string;
+    amount: number;
+    orderName: string;
+  }): Observable<{
+    result: ConfirmResultType;
+    paymentId: number;
+    retryable: boolean;
+    code: string;
+    message: string;
+  }>;
 }
 
 // 'YYYY-MM-DD' 문자열에 일 단위 offset을 더한 'YYYY-MM-DD' 문자열을 반환한다 (UTC 기준 계산,
@@ -82,6 +127,8 @@ export interface BookingGrpcResponse {
   guestCount: number;
   totalAmount: number;
   status: string;
+  paymentDueAt: string; // ISO 8601, 없으면 빈 문자열
+  lastPaymentAttemptStatus: string; // REQUESTED/SUCCEEDED/FAILED, 시도 없으면 빈 문자열
 }
 
 // 호텔 상세 페이지의 "호텔별 지표" 섹션이 사용하는 응답. hotelId 스냅샷 컬럼 덕분에
@@ -105,6 +152,9 @@ export class BookingServiceService implements OnModuleInit {
   constructor(
     @InjectRepository(Reservation)
     private readonly reservationRepository: Repository<Reservation>,
+    @InjectRepository(PaymentAttempt)
+    private readonly paymentAttemptRepository: Repository<PaymentAttempt>,
+    private readonly dataSource: DataSource,
     private readonly reservationFacilityService: ReservationFacilityService,
     @Inject('HOTEL_SERVICE') private readonly hotelClient: ClientGrpc,
     @Inject('PAYMENT_SERVICE') private readonly paymentClient: ClientGrpc,
@@ -208,6 +258,8 @@ export class BookingServiceService implements OnModuleInit {
       guestCount: data.guestCount,
       totalAmount,
       status: ReservationStatus.PENDING_PAYMENT,
+      // 이 시각까지 결제가 끝나지 않으면 결제할 수 없고, 만료 배치가 EXPIRED로 돌린다
+      paymentDueAt: new Date(Date.now() + PAYMENT_DUE_MINUTES * 60 * 1000),
     });
     const saved = await this.reservationRepository.save(reservation);
 
@@ -229,7 +281,7 @@ export class BookingServiceService implements OnModuleInit {
     const reservations = await this.reservationRepository.find({
       order: { createdAt: 'DESC' },
     });
-    return reservations.map((reservation) => this.toGrpcResponse(reservation));
+    return this.toGrpcResponsesWithLastAttempt(reservations);
   }
 
   // 특정 유저의 예약 목록 조회. userId가 이 서비스의 DB에 존재하지 않아도(유저 존재 여부는
@@ -239,7 +291,7 @@ export class BookingServiceService implements OnModuleInit {
       where: { userId },
       order: { createdAt: 'DESC' },
     });
-    return reservations.map((reservation) => this.toGrpcResponse(reservation));
+    return this.toGrpcResponsesWithLastAttempt(reservations);
   }
 
   // 단건 예약 조회. payment-service가 결제 요청을 검증(금액/소유자/상태)하기 위해 호출한다.
@@ -290,21 +342,7 @@ export class BookingServiceService implements OnModuleInit {
     reservation.status = ReservationStatus.CANCELLED;
     const saved = await this.reservationRepository.save(reservation);
 
-    try {
-      await firstValueFrom(
-        this.hotelService.setRoomAvailability({
-          roomId: reservation.roomId,
-          startDate: reservation.checkInDate,
-          endDate: this.dayBefore(reservation.checkOutDate),
-          isAvailable: true,
-        }),
-      );
-    } catch (error) {
-      this.logger.error(
-        `예약(#${reservationId}) 취소 후 room_availabilities 복구 요청 실패`,
-        error instanceof Error ? error.stack : String(error),
-      );
-    }
+    await this.releaseRoomAvailability(reservation, '취소');
 
     try {
       await firstValueFrom(
@@ -338,6 +376,366 @@ export class BookingServiceService implements OnModuleInit {
     return this.toGrpcResponse(saved);
   }
 
+  // 결제 준비 (위키 API 명세 5.8). "결제하기"를 누를 때마다 새 결제 시도(payment_attempts)를 기록하고
+  // 토스 결제창에 넘길 주문번호·금액을 돌려준다.
+  //  - 시도마다 새 주문번호(pg_order_id)를 써서, 재결제해도 토스 주문번호가 이전 시도와 충돌하지 않는다.
+  //  - 멱등 키(idempotency_key)도 시도마다 새로 만들어 payment-service 승인 호출에 쓴다 (프론트는 모름).
+  //  - 금액은 예약에 저장된 금액(totalAmount)만 쓴다 — 승인 때 프론트가 보낸 금액과 대조해 위변조를 거른다.
+  // 예약 행을 잠그고(비관적 락) 시도 횟수를 세서, "결제하기"를 동시에 여러 번 눌러도 5회를 넘지 않게 한다.
+  async preparePayment(
+    reservationId: number,
+    userId: number,
+  ): Promise<PreparePaymentResponse> {
+    return this.dataSource.transaction(async (manager) => {
+      const reservation = await manager.findOne(Reservation, {
+        where: { reservationId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      this.assertPayableReservation(reservation, userId);
+
+      const attemptCount = await manager.count(PaymentAttempt, {
+        where: { reservationId },
+      });
+      if (attemptCount >= MAX_PAYMENT_ATTEMPTS) {
+        throw apiRpcException({
+          status: 409,
+          code: 'MAX_PAYMENT_ATTEMPTS_EXCEEDED',
+          message: `결제는 예약당 최대 ${MAX_PAYMENT_ATTEMPTS}번까지 시도할 수 있습니다.`,
+          retryable: false,
+        });
+      }
+
+      const attempt = await manager.save(
+        manager.create(PaymentAttempt, {
+          reservationId,
+          idempotencyKey: randomUUID(),
+          // 토스 orderId 규칙: 영문·숫자·-·_ 6~64자
+          pgOrderId: `rsv${reservationId}-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+          amount: reservation.totalAmount,
+          status: PaymentAttemptStatus.REQUESTED,
+        }),
+      );
+
+      return {
+        orderId: attempt.pgOrderId,
+        amount: attempt.amount,
+        orderName: this.orderName(reservationId),
+        paymentDueAt: this.paymentDueAt(reservation).toISOString(),
+      };
+    });
+  }
+
+  // 결제 승인 (위키 API 명세 5.9). 토스 결제창(또는 MOCK)이 돌려준 paymentKey·orderId·amount로
+  // 시도와 금액을 대조한 뒤 payment-service에 승인을 요청한다.
+  //  - 같은 orderId로 다시 호출하면(새로고침·중복 클릭) 처음 결과를 돌려준다 — 이미 끝난 시도는 다시 승인하지 않고,
+  //    아직 처리 중이면 같은 멱등 키로 다시 요청하므로 payment-service가 결제를 1건만 만든다.
+  //  - 결제 결과(승인·거절·확인 중)는 에러가 아니라 result로 돌려준다. 요청 자체가 잘못된 경우만 api-error.
+  async confirmPayment(data: {
+    reservationId: number;
+    userId: number;
+    paymentKey: string;
+    orderId: string;
+    amount: number;
+  }): Promise<ConfirmPaymentResponse> {
+    const reservation = await this.reservationRepository.findOne({
+      where: { reservationId: data.reservationId },
+    });
+    if (!reservation) {
+      throw this.reservationNotFound();
+    }
+    if (reservation.userId !== data.userId) {
+      throw this.notOwner();
+    }
+
+    const attempt = await this.paymentAttemptRepository.findOne({
+      where: { reservationId: data.reservationId, pgOrderId: data.orderId },
+    });
+    if (!attempt) {
+      throw apiRpcException({
+        status: 404,
+        code: 'PAYMENT_ATTEMPT_NOT_FOUND',
+        message:
+          '결제 요청 정보를 찾을 수 없습니다. 결제를 다시 진행해 주세요.',
+        retryable: true,
+      });
+    }
+
+    // 이미 끝난 시도 → 처음 결과 그대로 (새로고침·중복 클릭)
+    if (attempt.status === PaymentAttemptStatus.SUCCEEDED) {
+      return {
+        result: 'APPROVED',
+        retryable: false,
+        code: '',
+        message: '결제가 승인되었습니다.',
+      };
+    }
+    if (attempt.status === PaymentAttemptStatus.FAILED) {
+      return this.failedAttemptResponse(reservation, attempt.failureReason);
+    }
+
+    this.assertPayableReservation(reservation, data.userId);
+
+    // 금액 위변조: 결제 준비 때 서버가 정한 금액과 다르면 거절하고, 재시도 없이 예약을 PAYMENT_FAILED로 (ERD)
+    if (data.amount !== attempt.amount) {
+      this.logger.warn(
+        `결제 금액 불일치 (reservationId=${data.reservationId}, orderId=${data.orderId}, 저장=${attempt.amount}, 요청=${data.amount})`,
+      );
+      await this.failAttempt(attempt, 'AMOUNT_MISMATCH');
+      await this.failReservation(reservation);
+      throw apiRpcException({
+        status: 409,
+        code: 'AMOUNT_MISMATCH',
+        message: '결제 금액이 올바르지 않아 결제를 진행할 수 없습니다.',
+        retryable: false,
+      });
+    }
+
+    const approved = await firstValueFrom(
+      this.paymentService.approvePayment({
+        idempotencyKey: attempt.idempotencyKey,
+        reservationId: data.reservationId,
+        userId: data.userId,
+        orderId: data.orderId,
+        paymentKey: data.paymentKey,
+        amount: attempt.amount,
+        orderName: this.orderName(data.reservationId),
+      }),
+    ).catch((error: unknown) => {
+      // payment-service 호출 자체가 실패 — 승인 요청이 처리됐는지 알 수 없으므로 시도는 REQUESTED로 두고 UNKNOWN.
+      // 같은 orderId로 다시 호출하면 같은 멱등 키로 재요청되어 결제가 중복으로 생기지 않는다.
+      this.logger.error(
+        `결제 승인 요청 실패 (reservationId=${data.reservationId}, orderId=${data.orderId})`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      return null;
+    });
+
+    if (
+      !approved ||
+      approved.result === 'UNKNOWN' ||
+      approved.result === 'PROCESSING'
+    ) {
+      return {
+        result: approved?.result ?? 'UNKNOWN',
+        retryable: false,
+        code: '',
+        message:
+          approved?.message ||
+          '결제 결과를 확인하고 있습니다. 잠시 후 예약 내역에서 확인해 주세요.',
+      };
+    }
+
+    if (approved.result === 'APPROVED') {
+      // ⚠️ 임시: 예약 확정(PENDING_PAYMENT -> RESERVED)은 원래 결제 결과 이벤트(SQS, LDP-26)로 반영한다.
+      // 이벤트 경로가 생기기 전까지는 승인 응답을 받은 이 자리에서 바로 반영한다. 조건부 UPDATE라서
+      // LDP-26의 이벤트가 같은 예약에 다시 와도 한 번만 반영된다.
+      await this.dataSource.transaction(async (manager) => {
+        await manager.update(
+          PaymentAttempt,
+          {
+            attemptId: attempt.attemptId,
+            status: PaymentAttemptStatus.REQUESTED,
+          },
+          { status: PaymentAttemptStatus.SUCCEEDED },
+        );
+        await manager.update(
+          Reservation,
+          {
+            reservationId: data.reservationId,
+            status: ReservationStatus.PENDING_PAYMENT,
+          },
+          { status: ReservationStatus.RESERVED },
+        );
+      });
+      return {
+        result: 'APPROVED',
+        retryable: false,
+        code: '',
+        message: approved.message || '결제가 승인되었습니다.',
+      };
+    }
+
+    // FAILED
+    await this.failAttempt(attempt, approved.code || 'PAYMENT_DECLINED');
+    const attemptCount = await this.paymentAttemptRepository.count({
+      where: { reservationId: data.reservationId },
+    });
+    if (!approved.retryable || attemptCount >= MAX_PAYMENT_ATTEMPTS) {
+      // 더 시도할 수 없음 → 예약을 PAYMENT_FAILED로 돌리고 재고 반환 (ERD 상태 모델)
+      if (approved.code !== 'ALREADY_PAID') {
+        await this.failReservation(reservation);
+      }
+      return {
+        result: 'FAILED',
+        retryable: false,
+        code:
+          approved.code === 'ALREADY_PAID'
+            ? approved.code
+            : 'MAX_PAYMENT_ATTEMPTS_EXCEEDED',
+        message:
+          approved.code === 'ALREADY_PAID'
+            ? approved.message
+            : `결제에 ${MAX_PAYMENT_ATTEMPTS}번 실패해 예약이 취소되었습니다. 다시 예약해 주세요.`,
+      };
+    }
+    return {
+      result: 'FAILED',
+      retryable: true,
+      code: approved.code || 'PAYMENT_DECLINED',
+      message: approved.message,
+    };
+  }
+
+  // 결제 가능한 예약인지 (본인 · 결제 대기 · 마감 전). 아니면 api-error로 던진다.
+  private assertPayableReservation(
+    reservation: Reservation | null,
+    userId: number,
+  ): asserts reservation is Reservation {
+    if (!reservation) {
+      throw this.reservationNotFound();
+    }
+    if (reservation.userId !== userId) {
+      throw this.notOwner();
+    }
+    if (reservation.status !== ReservationStatus.PENDING_PAYMENT) {
+      throw apiRpcException({
+        status: 409,
+        code: 'INVALID_RESERVATION_STATUS',
+        message: '결제할 수 없는 예약 상태입니다.',
+        retryable: false,
+      });
+    }
+    if (Date.now() > this.paymentDueAt(reservation).getTime()) {
+      throw apiRpcException({
+        status: 409,
+        code: 'PAYMENT_DUE_EXPIRED',
+        message: '결제 가능 시간이 지났습니다. 예약을 다시 진행해 주세요.',
+        retryable: false,
+      });
+    }
+  }
+
+  // 이미 FAILED로 끝난 시도를 다시 승인 요청했을 때의 응답
+  private failedAttemptResponse(
+    reservation: Reservation,
+    failureReason?: string,
+  ): ConfirmPaymentResponse {
+    const finished = reservation.status !== ReservationStatus.PENDING_PAYMENT;
+    return {
+      result: 'FAILED',
+      retryable: !finished,
+      code: failureReason || 'PAYMENT_DECLINED',
+      message: finished
+        ? '결제를 더 진행할 수 없는 예약입니다.'
+        : '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
+    };
+  }
+
+  private async failAttempt(
+    attempt: PaymentAttempt,
+    reason: string,
+  ): Promise<void> {
+    await this.paymentAttemptRepository.update(
+      { attemptId: attempt.attemptId, status: PaymentAttemptStatus.REQUESTED },
+      { status: PaymentAttemptStatus.FAILED, failureReason: reason },
+    );
+  }
+
+  // 재시도할 수 없는 결제 실패 → 예약 PAYMENT_FAILED (조건부) + 잡아둔 재고 반환
+  private async failReservation(reservation: Reservation): Promise<void> {
+    const { affected } = await this.reservationRepository.update(
+      {
+        reservationId: reservation.reservationId,
+        status: ReservationStatus.PENDING_PAYMENT,
+      },
+      { status: ReservationStatus.PAYMENT_FAILED },
+    );
+    if (affected) {
+      await this.releaseRoomAvailability(reservation, '결제 실패');
+    }
+  }
+
+  // 예약이 잡아둔 날짜(체크인~체크아웃 전날)를 다시 예약 가능으로 돌린다. 실패해도 예약 상태 변경은
+  // 이미 끝났으므로 요청을 실패시키지 않고 로그만 남긴다(가용일 동기화는 별도로 복구 가능).
+  private async releaseRoomAvailability(
+    reservation: Reservation,
+    reason: string,
+  ): Promise<void> {
+    try {
+      await firstValueFrom(
+        this.hotelService.setRoomAvailability({
+          roomId: reservation.roomId,
+          startDate: reservation.checkInDate,
+          endDate: this.dayBefore(reservation.checkOutDate),
+          isAvailable: true,
+        }),
+      );
+    } catch (error) {
+      this.logger.error(
+        `예약(#${reservation.reservationId}) ${reason} 후 room_availabilities 복구 요청 실패`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  // 결제 마감 시각. 이 컬럼이 생기기 전에 만든 예약(payment_due_at이 NULL)은 생성 시각 + 30분으로 본다.
+  private paymentDueAt(reservation: Reservation): Date {
+    return (
+      reservation.paymentDueAt ??
+      new Date(
+        reservation.createdAt.getTime() + PAYMENT_DUE_MINUTES * 60 * 1000,
+      )
+    );
+  }
+
+  private orderName(reservationId: number): string {
+    return `호텔 예약 #${reservationId}`;
+  }
+
+  private reservationNotFound(): RpcException {
+    return apiRpcException({
+      status: 404,
+      code: 'RESERVATION_NOT_FOUND',
+      message: '존재하지 않는 예약입니다.',
+      retryable: false,
+    });
+  }
+
+  private notOwner(): RpcException {
+    return apiRpcException({
+      status: 403,
+      code: 'NOT_RESERVATION_OWNER',
+      message: '본인의 예약만 결제할 수 있습니다.',
+      retryable: false,
+    });
+  }
+
+  // 목록 응답에 예약별 "가장 최근 결제 시도 상태"를 붙인다 (위키 API 명세 5.1 lastPaymentAttemptStatus).
+  // 예약마다 따로 조회하지 않도록 한 번에 가져와서 예약별 최신 시도만 고른다.
+  private async toGrpcResponsesWithLastAttempt(
+    reservations: Reservation[],
+  ): Promise<BookingGrpcResponse[]> {
+    if (reservations.length === 0) {
+      return [];
+    }
+    const attempts = await this.paymentAttemptRepository.find({
+      where: { reservationId: In(reservations.map((r) => r.reservationId)) },
+      order: { attemptId: 'DESC' },
+    });
+    const lastStatus = new Map<number, string>();
+    for (const attempt of attempts) {
+      if (!lastStatus.has(attempt.reservationId)) {
+        lastStatus.set(attempt.reservationId, attempt.status);
+      }
+    }
+    return reservations.map((reservation) =>
+      this.toGrpcResponse(
+        reservation,
+        lastStatus.get(reservation.reservationId),
+      ),
+    );
+  }
+
   // 'YYYY-MM-DD' 문자열을 하루 전 날짜로 변환한다. date 컬럼은 시간 정보가 없으므로 UTC 기준으로
   // 계산해도 타임존에 따라 날짜가 밀리지 않는다.
   private dayBefore(dateStr: string): string {
@@ -346,7 +744,10 @@ export class BookingServiceService implements OnModuleInit {
     return date.toISOString().slice(0, 10);
   }
 
-  private toGrpcResponse(reservation: Reservation): BookingGrpcResponse {
+  private toGrpcResponse(
+    reservation: Reservation,
+    lastPaymentAttemptStatus?: string,
+  ): BookingGrpcResponse {
     return {
       reservationId: reservation.reservationId,
       userId: reservation.userId,
@@ -357,6 +758,10 @@ export class BookingServiceService implements OnModuleInit {
       guestCount: reservation.guestCount,
       totalAmount: reservation.totalAmount,
       status: reservation.status,
+      paymentDueAt: reservation.paymentDueAt
+        ? reservation.paymentDueAt.toISOString()
+        : '',
+      lastPaymentAttemptStatus: lastPaymentAttemptStatus ?? '',
     };
   }
 

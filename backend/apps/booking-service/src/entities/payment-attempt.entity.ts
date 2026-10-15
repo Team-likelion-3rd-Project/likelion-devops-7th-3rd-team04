@@ -17,7 +17,7 @@ export enum PaymentAttemptStatus {
 @Entity('payment_attempts')
 export class PaymentAttempt {
   // bigint PK는 JS Number 안전 범위를 넘을 수 있어 TypeORM이 string으로 다룬다.
-  @PrimaryGeneratedColumn({ type: 'bigint' })
+  @PrimaryGeneratedColumn({ name: 'attempt_id', type: 'bigint' })
   attemptId!: string;
 
   @Column({ name: 'reservation_id' })

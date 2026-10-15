@@ -11,7 +11,7 @@ export enum PaymentResultEventType {
 // event_id가 UNIQUE라 같은 이벤트가 중복으로 와도 한 번만 반영된다(Inbox 패턴).
 @Entity('payment_result_inbox')
 export class PaymentResultInbox {
-  @PrimaryGeneratedColumn({ type: 'bigint' })
+  @PrimaryGeneratedColumn({ name: 'inbox_id', type: 'bigint' })
   inboxId!: string;
 
   // payment-service의 payment_outbox.event_id와 같은 값.

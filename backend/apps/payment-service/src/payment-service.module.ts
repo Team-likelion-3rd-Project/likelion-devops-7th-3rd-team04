@@ -10,6 +10,7 @@ import { Payment } from './entities/payment.entity';
 import { PaymentOutbox } from './entities/payment-outbox.entity';
 import { PgWebhookInbox } from './entities/pg-webhook-inbox.entity';
 import { PgMockClient } from './pg-mock/pg-mock.client';
+import { TossPaymentsClient } from './pg/toss-payments.client';
 
 @Module({
   imports: [
@@ -46,7 +47,7 @@ import { PgMockClient } from './pg-mock/pg-mock.client';
     // 3. 엔티티 리포지토리 등록
     TypeOrmModule.forFeature([Payment, PaymentOutbox, PgWebhookInbox]),
 
-    // 4. pg-mock-service HTTP 호출용
+    // 4. PG HTTP 호출용 (pg-mock-service, 토스페이먼츠 API)
     HttpModule,
 
     // 5. booking-service gRPC 클라이언트 등록 (결제 요청 시 예약 금액/소유자/상태 검증)
@@ -62,6 +63,6 @@ import { PgMockClient } from './pg-mock/pg-mock.client';
     ]),
   ],
   controllers: [PaymentServiceController],
-  providers: [PaymentServiceService, PgMockClient],
+  providers: [PaymentServiceService, PgMockClient, TossPaymentsClient],
 })
 export class PaymentServiceModule {}

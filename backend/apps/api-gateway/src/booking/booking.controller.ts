@@ -5,6 +5,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  HttpCode,
   Inject,
   NotFoundException,
   OnModuleInit,
@@ -30,8 +31,11 @@ import {
   Roles,
   CurrentUser,
   AuthenticatedUser,
+  parseApiRpcError,
+  toHttpException,
 } from '@app/common';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 
 // proto의 Booking 메시지와 1:1 대응되는 응답 형태. 편의시설(수영장/라운지) 이용 여부/인원수는
 // 여기 담기지 않는다 — reservation_facilities가 유일한 소스이며, GET /api/bookings/:reservationId/facilities로
@@ -46,6 +50,24 @@ interface BookingDto {
   guestCount: number;
   totalAmount: number;
   status: string;
+  paymentDueAt: string; // 결제 마감 시각(ISO 8601). 없으면 빈 문자열
+  lastPaymentAttemptStatus: string; // 최근 결제 시도 상태 REQUESTED/SUCCEEDED/FAILED. 없으면 빈 문자열
+}
+
+// proto의 PreparePaymentResponse와 1:1 대응 (위키 API 명세 5.8)
+interface PreparePaymentDto {
+  orderId: string;
+  amount: number;
+  orderName: string;
+  paymentDueAt: string;
+}
+
+// proto의 ConfirmPaymentResponse와 1:1 대응 (위키 API 명세 5.9). code는 FAILED일 때만 의미가 있다.
+interface ConfirmPaymentResultDto {
+  result: 'APPROVED' | 'FAILED' | 'UNKNOWN' | 'PROCESSING';
+  retryable: boolean;
+  code: string;
+  message: string;
 }
 
 // proto의 HotelBookingStats 메시지와 1:1 대응되는 응답 형태
@@ -96,6 +118,32 @@ interface BookingService {
   getHotelBookingStats(data: {
     hotelId: number;
   }): Observable<HotelBookingStatsDto>;
+  preparePayment(data: {
+    reservationId: number;
+    userId: number;
+  }): Observable<PreparePaymentDto>;
+  confirmPayment(data: {
+    reservationId: number;
+    userId: number;
+    paymentKey: string;
+    orderId: string;
+    amount: number;
+  }): Observable<ConfirmPaymentResultDto>;
+}
+
+// 결제 API(5.8, 5.9)의 실패를 위키 API 명세 5.10 형식({ statusCode, error, code, message, retryable })으로 바꾼다.
+// booking-service가 api-error 형식으로 던진 에러는 그대로 옮기고, 그 밖의 에러(서비스 연결 실패 등)는 500 계열로 둔다.
+function toPaymentHttpError(err: unknown, fallbackMessage: string): Error {
+  const payload = parseApiRpcError(err);
+  if (payload) {
+    return toHttpException(payload);
+  }
+  return toHttpException({
+    status: 503,
+    code: 'PAYMENT_SERVICE_UNAVAILABLE',
+    message: fallbackMessage,
+    retryable: true,
+  });
 }
 
 @ApiTags('BookingService')
@@ -198,7 +246,9 @@ export class BookingController implements OnModuleInit {
   async getHotelBookingStats(
     @Param('hotelId', ParseIntPipe) hotelId: number,
   ): Promise<HotelBookingStatsDto> {
-    return firstValueFrom(this.bookingService.getHotelBookingStats({ hotelId }));
+    return firstValueFrom(
+      this.bookingService.getHotelBookingStats({ hotelId }),
+    );
   }
 
   /**
@@ -309,6 +359,101 @@ export class BookingController implements OnModuleInit {
     ).catch((err) => {
       throw new NotFoundException(
         err?.details || err?.message || '예약 가능한 객실이 아닙니다.',
+      );
+    });
+  }
+
+  /**
+   * POST http://localhost:3000/api/bookings/{reservationId}/payment-attempts
+   * 결제 준비 (위키 API 명세 5.8). "결제하기"를 누를 때마다 새 결제 시도와 새 주문번호를 만든다.
+   */
+  @Post(':reservationId/payment-attempts')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiParam({
+    name: 'reservationId',
+    description: '결제할 예약 PK ID',
+    type: Number,
+  })
+  @ApiOperation({
+    summary: '결제 준비',
+    description:
+      '본인 예약·결제 대기 상태·결제 마감 전·결제 시도 5회 미만을 확인한 뒤 새 결제 시도를 기록하고, ' +
+      '토스 결제창에 넘길 주문번호(orderId)·금액(amount)·주문명(orderName)·결제 마감 시각(paymentDueAt)을 돌려줍니다.',
+  })
+  @ApiResponse({ status: 201, description: '결제 준비 성공' })
+  @ApiResponse({ status: 403, description: 'NOT_RESERVATION_OWNER' })
+  @ApiResponse({ status: 404, description: 'RESERVATION_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'INVALID_RESERVATION_STATUS / PAYMENT_DUE_EXPIRED / MAX_PAYMENT_ATTEMPTS_EXCEEDED',
+  })
+  async preparePayment(
+    @Param('reservationId', ParseIntPipe) reservationId: number,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<PreparePaymentDto> {
+    return firstValueFrom(
+      this.bookingService.preparePayment({
+        reservationId,
+        userId: user.userId,
+      }),
+    ).catch((err) => {
+      throw toPaymentHttpError(
+        err,
+        '결제 준비에 실패했습니다. 잠시 후 다시 시도해 주세요.',
+      );
+    });
+  }
+
+  /**
+   * POST http://localhost:3000/api/bookings/{reservationId}/payment-attempts/confirm
+   * 결제 승인 (위키 API 명세 5.9). 결제 결과(승인·거절·확인 중)는 모두 200으로 내려가고 result로 구분한다.
+   */
+  @Post(':reservationId/payment-attempts/confirm')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiParam({
+    name: 'reservationId',
+    description: '결제할 예약 PK ID',
+    type: Number,
+  })
+  @ApiOperation({
+    summary: '결제 승인',
+    description:
+      '토스 결제창 성공 URL로 받은 paymentKey·orderId·amount를 그대로 보냅니다. 결제 준비 때 받은 금액과 다르면 거절됩니다. ' +
+      '같은 orderId로 다시 호출하면 처음 결과를 돌려줍니다. MOCK 모드에서는 paymentKey를 mock_{orderId}로 보냅니다.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'result: APPROVED / FAILED / UNKNOWN / PROCESSING',
+  })
+  @ApiResponse({ status: 403, description: 'NOT_RESERVATION_OWNER' })
+  @ApiResponse({
+    status: 404,
+    description: 'RESERVATION_NOT_FOUND / PAYMENT_ATTEMPT_NOT_FOUND',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'AMOUNT_MISMATCH / INVALID_RESERVATION_STATUS / PAYMENT_DUE_EXPIRED',
+  })
+  async confirmPayment(
+    @Param('reservationId', ParseIntPipe) reservationId: number,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ConfirmPaymentDto,
+  ): Promise<ConfirmPaymentResultDto> {
+    return firstValueFrom(
+      this.bookingService.confirmPayment({
+        reservationId,
+        userId: user.userId,
+        ...dto,
+      }),
+    ).catch((err) => {
+      throw toPaymentHttpError(
+        err,
+        '결제 승인 요청에 실패했습니다. 잠시 후 예약 내역에서 확인해 주세요.',
       );
     });
   }
