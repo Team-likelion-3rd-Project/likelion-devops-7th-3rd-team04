@@ -23,9 +23,16 @@
   no_log: true
 
 - name: kubeadm join
-  ansible.builtin.command: kubeadm join --config /etc/kubernetes/kubeadm-join.yaml
+  # 재시도할 때는 실패한 join 이 남긴 파일을 reset 으로 지운 뒤 다시 시도한다
+  ansible.builtin.shell: >-
+    kubeadm join --config /etc/kubernetes/kubeadm-join.yaml
+    {% if kubeadm_join_retries | int > 0 %}|| { kubeadm reset -f > /dev/null 2>&1; exit 1; }{% endif %}
   args:
     creates: /etc/kubernetes/kubelet.conf
+  register: kubeadm_join
+  until: kubeadm_join.rc == 0
+  retries: "{{ kubeadm_join_retries }}"
+  delay: 30
 
 - name: join 설정 파일 삭제 (token 포함)
   ansible.builtin.file:

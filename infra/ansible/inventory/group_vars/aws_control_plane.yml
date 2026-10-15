@@ -23,6 +23,13 @@ kubeadm_join_token_renew_ttl: 24h
 traefik_replicas: 2
 traefik_on_control_plane: false
 traefik_external_traffic_policy: Cluster
+# ALB 가 붙인 X-Forwarded-For(클라이언트 IP) 유지. Traefik 이 보는 출발지는 Cluster 정책 SNAT 로
+# 워커 IP(VPC CIDR) 또는 다른 워커의 vxlan.calico IP(pod_subnet) 다
+traefik_trusted_ips:
+  - "{{ vpc_cidr }}"
+  - "{{ pod_subnet }}"
+# 80-main-edge ALB Target Group 헬스체크 경로 (/ping)
+traefik_ping_on_web: true
 
 # 수직 경로 검증용 테스트 백엔드 (api-gateway 는 ECR · 배포 파이프라인 이후)
 whoami_namespace: whoami

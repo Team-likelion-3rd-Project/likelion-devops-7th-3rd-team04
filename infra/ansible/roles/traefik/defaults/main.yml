@@ -6,3 +6,7 @@ traefik_replicas: 1
 traefik_on_control_plane: true
 # kube-proxy SNAT 없이 개발자 PC 의 출발지 IP 를 보존 (Traefik Pod 가 있는 노드로만 들어옴)
 traefik_external_traffic_policy: Local
+# 앞단 프록시가 없으므로 X-Forwarded-For 를 신뢰하지 않음 (템플릿 ports.web 주석)
+traefik_trusted_ips: []
+# 앞단 LB 헬스체크가 없으므로 /ping 을 web 엔트리포인트에 노출하지 않음
+traefik_ping_on_web: false

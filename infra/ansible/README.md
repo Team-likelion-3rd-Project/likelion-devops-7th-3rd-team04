@@ -705,10 +705,13 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | `controlPlaneEndpoint` | 노드 IP | 내부 NLB DNS (`certSANs` 에 포함) |
 | CP 대수 | 1대 (`kubeadm init`) | 3대 — CP-a `kubeadm init --upload-certs`, CP-b · c `kubeadm join --control-plane` |
 | 워커 join | 사람이 `.env` 에 `K8S_*` 를 넣고 `worker-join.yml` 실행 | ASG 인스턴스가 기동 시 `aws-worker.yml` 자동 실행 (`worker_join` role 재사용) |
+| 워커 join 재시도 (`kubeadm_join_retries`) | 0 (1회 실행) | 3 — 실패 시 `kubeadm reset` 후 30초 간격. CP-b · c 의 etcd 멤버 추가 중 apiserver 타임아웃 대비 |
 | join 정보 | `.secrets/join.env` (로컬) | Parameter Store `/team04-hotel/prod/kubeadm/*` |
 | Calico 노드 IP 감지 / MTU | `tailscale0` / 1230 | `NodeInternalIP` / 8951 (VPC 점보 프레임 9001 − VXLAN 50) |
 | Felix mark 대역 변경 | 함 (Tailscale fwmark 충돌) | 안 함 |
 | Traefik | `ingress.yml` 수동 실행, control plane 1대 고정, `externalTrafficPolicy: Local` | CP-a 부트스트랩 마지막 단계(워커 Ready 대기 후), 워커에 2개, `externalTrafficPolicy: Cluster` (어느 워커 NodePort 로 와도 응답, 앞단 ALB) |
+| Traefik `forwardedHeaders.trustedIPs` | 미설정 (11절) | Main VPC CIDR + `pod_subnet` — ALB 가 붙인 `X-Forwarded-For`(클라이언트 IP) 유지. Cluster 정책 SNAT 로 출발지가 워커 IP 또는 다른 워커의 `vxlan.calico` IP |
+| Traefik `/ping` | `traefik` 엔트리포인트(비공개)만 | `web` 엔트리포인트(NodePort 30080)에도 노출 — `80-main-edge` Target Group 헬스체크 |
 | Ingress 대상 | api-gateway (`/api`, `/api-docs`) | 테스트 백엔드 whoami (`/whoami`, 그 외 경로는 Traefik 404). api-gateway 는 ECR · 배포 파이프라인 이후 |
 
 **Parameter Store** (`/team04-hotel/prod/kubeadm/`)

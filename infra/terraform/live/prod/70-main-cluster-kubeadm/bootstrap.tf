@@ -35,6 +35,7 @@ locals {
     k8s_control_plane_endpoint = aws_lb.apiserver.dns_name
     kubeadm_param_prefix       = local.kubeadm_param_prefix
     aws_region                 = var.region
+    vpc_cidr                   = local.network.vpc_cidr
   }
 }
 
