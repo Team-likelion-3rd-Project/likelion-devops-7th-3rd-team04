@@ -9,6 +9,9 @@ import { formatDate as formatDateObj, parseDateISO } from '../utils/date'
 export const STATUS_LABEL: Record<Booking['status'], string> = {
   PENDING_PAYMENT: '결제 대기',
   RESERVED: '예약 확정',
+  // 3차 결제 흐름에서 추가된 상태 (메인 DB V3): 결제 5회 실패 / 결제 기한 만료
+  PAYMENT_FAILED: '결제 실패',
+  EXPIRED: '결제 기한 만료',
   CANCELLED: '취소됨',
   COMPLETED: '이용 완료',
 }

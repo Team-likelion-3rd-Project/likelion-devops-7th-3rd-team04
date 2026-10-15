@@ -1,22 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { isUnauthorized, refreshAccessToken } from '../api/gateway'
-import { confirmPayment, fetchPaymentProgress } from '../api/payments'
+import { PaymentApiError, confirmPayment, fetchPaymentProgress, paymentErrorMessage } from '../api/payments'
 import { customerAuth } from '../api/tokenStore'
 import { CheckIcon } from '../components/reservation/icons'
 import './PaymentResultPage.css'
 
-// 승인 결과가 UNKNOWN·PROCESSING이면 1초 간격으로 최대 10초까지 다시 확인한다 (백엔드 합의 기준).
-// 그래도 확정되지 않으면 서버의 대사 배치가 확정하므로, "확정 처리 중"으로 안내하고 내 예약에서 확인하게 한다.
+// 승인 요청 뒤에는 예약이 RESERVED로 바뀌었는지 1초 간격으로 최대 10초까지 다시 확인한다 (명세 5.9).
+// - APPROVED: 결제는 승인됐고, 결과가 SQS로 booking-service에 전달돼 예약이 확정되기를 기다린다.
+// - UNKNOWN·PROCESSING: 서버가 아직 결제를 확정하지 못했다. 대사 배치가 토스 조회로 확정한다.
+// 10초 안에 확정되지 않으면 "확정 처리 중"으로 안내하고 내 예약에서 확인하게 한다.
 const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 10_000
 
 type ViewState =
   | { kind: 'confirming' }
-  | { kind: 'checking' }
+  | { kind: 'checking'; approved: boolean }
   | { kind: 'approved' }
   | { kind: 'failed'; message: string; retryable: boolean }
-  | { kind: 'pending' }
+  | { kind: 'pending'; approved: boolean }
   | { kind: 'error'; message: string }
 
 function sleep(ms: number): Promise<void> {
@@ -49,17 +51,18 @@ function PaymentSuccessPage() {
         if (!customerAuth.getAccessToken()) await refreshAccessToken()
 
         const response = await confirmPayment(reservationId, { paymentKey, orderId, amount })
-        if (response.result === 'APPROVED') {
-          setView({ kind: 'approved' })
-          return
-        }
         if (response.result === 'FAILED') {
-          setView({ kind: 'failed', message: response.message, retryable: response.retryable })
+          setView({
+            kind: 'failed',
+            message: paymentErrorMessage(response.code, response.message, '결제가 승인되지 않았습니다.'),
+            retryable: response.retryable,
+          })
           return
         }
 
-        // UNKNOWN·PROCESSING: 서버가 아직 확정하지 못했으니 잠시 다시 확인한다.
-        setView({ kind: 'checking' })
+        // APPROVED·UNKNOWN·PROCESSING 모두 예약이 확정됐는지 다시 확인한다.
+        const approved = response.result === 'APPROVED'
+        setView({ kind: 'checking', approved })
         const startedAt = Date.now()
         while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
           await sleep(POLL_INTERVAL_MS)
@@ -73,10 +76,15 @@ function PaymentSuccessPage() {
             return
           }
         }
-        setView({ kind: 'pending' })
+        setView({ kind: 'pending', approved })
       } catch (err) {
         if (isUnauthorized(err)) {
           navigate('/login')
+          return
+        }
+        // 서버가 요청을 확인하고 거절한 경우(금액 불일치, 결제 기한 만료 등 4xx)는 결제가 안 된 것이 확실하다 (명세 5.10).
+        if (err instanceof PaymentApiError && err.status >= 400 && err.status < 500) {
+          setView({ kind: 'failed', message: err.message, retryable: err.retryable })
           return
         }
         // 승인 요청이 서버에 닿았는지 알 수 없으므로 실패로 단정하지 않고 내 예약에서 확인하게 한다.
@@ -101,7 +109,13 @@ function PaymentSuccessPage() {
         {(current.kind === 'confirming' || current.kind === 'checking') && (
           <>
             <span className="payment-result-spinner" aria-hidden="true" />
-            <h1>{current.kind === 'confirming' ? '결제를 승인하는 중입니다' : '결제 결과를 확인하는 중입니다'}</h1>
+            <h1>
+              {current.kind === 'confirming'
+                ? '결제를 승인하는 중입니다'
+                : current.approved
+                  ? '결제가 승인되었습니다. 예약을 확정하는 중입니다'
+                  : '결제 결과를 확인하는 중입니다'}
+            </h1>
             <p>잠시만 기다려주세요. 이 화면을 닫거나 새로고침하지 마세요.</p>
           </>
         )}
@@ -155,7 +169,9 @@ function PaymentSuccessPage() {
             <p>
               {current.kind === 'error'
                 ? current.message
-                : '결제 결과를 확인하는 데 시간이 걸리고 있습니다. 확정되면 내 예약에 반영됩니다.'}
+                : current.approved
+                  ? '결제는 승인되었고, 예약 확정에 시간이 걸리고 있습니다. 확정되면 내 예약에 반영됩니다.'
+                  : '결제 결과를 확인하는 데 시간이 걸리고 있습니다. 확정되면 내 예약에 반영됩니다.'}
             </p>
             <p>중복 결제를 막기 위해, 확정될 때까지 다시 결제하지 마세요.</p>
             <div className="payment-result-actions">

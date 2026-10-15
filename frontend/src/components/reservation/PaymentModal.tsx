@@ -45,13 +45,14 @@ function PaymentModal({ reservationId, summary, onClose }: PaymentModalProps) {
     try {
       const attempt = await preparePayment(reservationId, { amount: summary.amount, orderName })
       // MOCK은 토스 결제창이 없으므로, 토스가 성공 URL로 돌려보낼 때와 같은 값을 직접 붙여 결과 화면으로 간다.
-      // paymentKey는 토스가 발급하는 값이라 MOCK에서는 임의 값을 쓴다 (명세 확정 시 형식 맞춤).
+      // paymentKey는 토스가 발급하는 값이라 MOCK에서는 mock_{orderId}를 보낸다 (명세 5.9).
       const successUrl = new URL(paymentSuccessUrl(reservationId))
       successUrl.searchParams.set('paymentKey', `mock_${attempt.orderId}`)
       successUrl.searchParams.set('orderId', attempt.orderId)
       successUrl.searchParams.set('amount', String(attempt.amount))
       navigate(`${successUrl.pathname}${successUrl.search}`)
     } catch (err) {
+      // 결제 기한 만료·시도 횟수 초과 등은 서버가 code와 안내 문구를 함께 준다 (명세 5.8·5.10).
       setErrorMessage(err instanceof Error ? err.message : '결제를 시작하지 못했습니다.')
       setIsSubmitting(false)
     }

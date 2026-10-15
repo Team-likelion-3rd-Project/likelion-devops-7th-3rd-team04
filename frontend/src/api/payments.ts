@@ -1,4 +1,4 @@
-import { authorizedFetch, parseJsonResponse } from './gateway'
+import { ApiError, authorizedFetch, parseJsonResponse } from './gateway'
 import { fetchMyBookings } from './bookings'
 
 // gateway CreatePaymentRequestDto와 1:1 대응. userId는 서버가 Authorization 헤더의 JWT에서 추출한다.
@@ -42,7 +42,7 @@ export async function fetchMyPayments(): Promise<Payment[]> {
 }
 
 // ─── 새 결제 흐름: 결제 준비 → (토스 결제위젯) → 결제 승인 → 결과 확인 ──────────────────────────────
-// 요청·응답 형식은 2026-10-13 백엔드(김좌형)와 합의한 내용 기준이다. Wiki API 명세가 확정되면 이름을 맞춘다.
+// 요청·응답 형식은 Wiki API 명세 5.8(결제 준비)·5.9(결제 승인)·5.10(실패 응답) 기준이다.
 
 // PG 방식. payment-service 설정(MOCK/TOSS)과 같은 값으로 맞춘다.
 // MOCK이면 토스 결제창 없이 바로 승인을 요청하고, 서버가 pg-mock으로 승인한다.
@@ -76,7 +76,49 @@ export interface ConfirmPaymentRequest {
 export interface ConfirmPaymentResponse {
   result: ConfirmResult
   retryable: boolean
+  /** result가 FAILED일 때만 온다 (PAYMENT_DECLINED, MAX_PAYMENT_ATTEMPTS_EXCEEDED) */
+  code?: string
   message: string
+}
+
+// 명세 5.10 실패 응답: NestJS 기본 형식에 code(오류 종류)·retryable(같은 예약으로 다시 결제 가능 여부)이 더해진다.
+export class PaymentApiError extends ApiError {
+  readonly code?: string
+  readonly retryable: boolean
+
+  constructor(message: string, status: number, code?: string, retryable = false) {
+    super(message, status)
+    this.name = 'PaymentApiError'
+    this.code = code
+    this.retryable = retryable
+  }
+}
+
+// 서버 message가 비어 있을 때 쓸 안내 문구 (명세 5.8·5.9의 code 목록)
+const PAYMENT_ERROR_MESSAGE: Record<string, string> = {
+  NOT_RESERVATION_OWNER: '본인 예약만 결제할 수 있습니다.',
+  RESERVATION_NOT_FOUND: '예약을 찾을 수 없습니다.',
+  INVALID_RESERVATION_STATUS: '결제할 수 없는 예약 상태입니다. 내 예약에서 상태를 확인해주세요.',
+  PAYMENT_DUE_EXPIRED: '결제 가능 시간이 지났습니다. 예약을 다시 진행해 주세요.',
+  MAX_PAYMENT_ATTEMPTS_EXCEEDED: '결제 시도 횟수(5회)를 넘어 더 이상 결제할 수 없습니다.',
+  PAYMENT_ATTEMPT_NOT_FOUND: '결제 정보를 찾을 수 없습니다. 다시 결제해 주세요.',
+  AMOUNT_MISMATCH: '결제 금액이 일치하지 않아 결제가 취소되었습니다.',
+  PAYMENT_DECLINED: '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
+}
+
+export function paymentErrorMessage(code: string | undefined, message: string | undefined, fallback: string): string {
+  return message || (code ? PAYMENT_ERROR_MESSAGE[code] : undefined) || fallback
+}
+
+async function parsePaymentResponse<T>(res: Response): Promise<T> {
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다.
+    const rawMessage = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
+    const message = paymentErrorMessage(body?.code, rawMessage, `${res.status} ${res.statusText}`)
+    throw new PaymentApiError(message, res.status, body?.code, body?.retryable === true)
+  }
+  return body as T
 }
 
 function fakeDelay(): Promise<void> {
@@ -100,7 +142,7 @@ export async function preparePayment(
   }
 
   const res = await authorizedFetch(`/api/bookings/${reservationId}/payment-attempts`, { method: 'POST' })
-  return parseJsonResponse<PaymentAttempt>(res)
+  return parsePaymentResponse<PaymentAttempt>(res)
 }
 
 // 가짜 응답 모드에서 PROCESSING이 언제 확정된 것으로 볼지 계산하는 기준 시각
@@ -114,11 +156,10 @@ export async function confirmPayment(
   if (FAKE_RESULT) {
     await fakeDelay()
     fakeConfirmedAt = Date.now()
-    return {
-      result: FAKE_RESULT,
-      retryable: FAKE_RESULT === 'FAILED',
-      message: FAKE_RESULT === 'FAILED' ? '카드 승인이 거절되었습니다. (가짜 응답)' : '',
+    if (FAKE_RESULT === 'FAILED') {
+      return { result: 'FAILED', retryable: true, code: 'PAYMENT_DECLINED', message: '카드 승인이 거절되었습니다. (가짜 응답)' }
     }
+    return { result: FAKE_RESULT, retryable: false, message: '' }
   }
 
   const res = await authorizedFetch(`/api/bookings/${reservationId}/payment-attempts/confirm`, {
@@ -126,17 +167,20 @@ export async function confirmPayment(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  return parseJsonResponse<ConfirmPaymentResponse>(res)
+  return parsePaymentResponse<ConfirmPaymentResponse>(res)
 }
 
-// 결과 다시 확인 (UNKNOWN·PROCESSING일 때 1초 간격으로 호출).
-// 내 예약 목록(GET /api/bookings/me)에서 해당 예약 상태를 본다 — 결제가 확정되면 예약이 RESERVED로 바뀐다.
+// 결과 다시 확인 (1초 간격으로 호출).
+// 내 예약 목록(GET /api/bookings/me)에서 해당 예약 상태를 본다. 결제 결과는 결제 서버 → SQS → booking-service로
+// 비동기 전달되므로, 승인(APPROVED) 응답을 받은 뒤에도 예약이 RESERVED로 바뀌었는지 여기서 확인한다 (명세 5.9).
 export type PaymentProgress = 'APPROVED' | 'FAILED' | 'PENDING'
 
 export async function fetchPaymentProgress(reservationId: number): Promise<PaymentProgress> {
   if (FAKE_RESULT) {
-    // PROCESSING은 3초 뒤 승인된 것으로, UNKNOWN은 계속 확인 중으로 둬서 두 경우 화면을 모두 볼 수 있게 한다.
-    if (FAKE_RESULT === 'PROCESSING' && Date.now() - fakeConfirmedAt > 3000) return 'APPROVED'
+    // APPROVED·PROCESSING은 2초 뒤 예약이 확정된 것으로, UNKNOWN은 계속 확인 중으로 둬서 각 화면을 볼 수 있게 한다.
+    if ((FAKE_RESULT === 'APPROVED' || FAKE_RESULT === 'PROCESSING') && Date.now() - fakeConfirmedAt > 2000) {
+      return 'APPROVED'
+    }
     return 'PENDING'
   }
 

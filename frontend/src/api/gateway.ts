@@ -295,7 +295,11 @@ export interface Booking {
   checkOutDate: string
   guestCount: number
   totalAmount: number
-  status: 'PENDING_PAYMENT' | 'RESERVED' | 'CANCELLED' | 'COMPLETED'
+  status: 'PENDING_PAYMENT' | 'RESERVED' | 'PAYMENT_FAILED' | 'EXPIRED' | 'CANCELLED' | 'COMPLETED'
+  /** 결제 마감 시각 (명세 5.1 추가 예정 — 오기 전까지는 없음) */
+  paymentDueAt?: string
+  /** 최근 결제 시도 상태 REQUESTED / SUCCEEDED / FAILED (명세 5.1 추가 예정) */
+  lastPaymentAttemptStatus?: string
 }
 
 // proto의 ReservationFacilityItem 메시지와 1:1 대응되는 응답 형태
