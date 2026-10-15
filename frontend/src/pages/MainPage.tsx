@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { HOTELS } from '../data/hotels'
+import { useHotels } from '../data/hotelStore'
 import HotelCard from '../components/HotelCard'
 import { customerAuth } from '../api/tokenStore'
 import { loginStateFrom } from '../utils/loginRedirect'
@@ -11,6 +12,7 @@ const heroPhoto = HOTELS[0]?.images.hero
 const heroStyle = heroPhoto ? ({ '--main-hero-photo': `url(${heroPhoto})` } as CSSProperties) : undefined
 
 function MainPage() {
+  const hotels = useHotels()
   const accessToken = customerAuth.useAccessToken()
 
   return (
@@ -40,7 +42,7 @@ function MainPage() {
           </Link>
         </div>
         <div className="hotel-intro-grid">
-          {HOTELS.map((hotel) => (
+          {hotels.map((hotel) => (
             <HotelCard key={hotel.id} hotel={hotel} />
           ))}
         </div>

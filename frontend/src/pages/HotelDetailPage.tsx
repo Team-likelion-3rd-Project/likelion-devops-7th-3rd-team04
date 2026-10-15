@@ -36,6 +36,10 @@ function HotelDetailPage() {
         <p className="hotel-detail-location">{hotel.location}</p>
         <h1 className="hotel-detail-name">{hotel.name}</h1>
         <p className="hotel-detail-summary">{hotel.summary}</p>
+        {/* 주소·전화번호는 API(GET /api/hotels) 응답을 받은 뒤에만 표시된다 */}
+        {(hotel.address || hotel.phoneNumber) && (
+          <p className="hotel-detail-contact">{[hotel.address, hotel.phoneNumber].filter(Boolean).join(' · ')}</p>
+        )}
 
         <div className="hotel-detail-features">
           <Link to={`/hotels/${hotel.id}/stay`} className="hotel-detail-feature">
