@@ -3,7 +3,12 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 import { ClientsModule } from '@nestjs/microservices';
-import { getGrpcOptions, HealthModule } from '@app/common';
+import {
+  createSqsClient,
+  getGrpcOptions,
+  HealthModule,
+  SQS_CLIENT,
+} from '@app/common';
 import { PaymentServiceController } from './payment-service.controller';
 import { PaymentServiceService } from './payment-service.service';
 import { Payment } from './entities/payment.entity';
@@ -11,6 +16,7 @@ import { PaymentOutbox } from './entities/payment-outbox.entity';
 import { PgWebhookInbox } from './entities/pg-webhook-inbox.entity';
 import { PgMockClient } from './pg-mock/pg-mock.client';
 import { TossPaymentsClient } from './pg/toss-payments.client';
+import { OutboxPublisherService } from './outbox/outbox-publisher.service';
 
 @Module({
   imports: [
@@ -63,6 +69,13 @@ import { TossPaymentsClient } from './pg/toss-payments.client';
     ]),
   ],
   controllers: [PaymentServiceController],
-  providers: [PaymentServiceService, PgMockClient, TossPaymentsClient],
+  providers: [
+    PaymentServiceService,
+    PgMockClient,
+    TossPaymentsClient,
+    // 결제 결과 이벤트 발행 (payment_outbox → SQS FIFO / ElasticMQ, LDP-26)
+    OutboxPublisherService,
+    { provide: SQS_CLIENT, useFactory: createSqsClient },
+  ],
 })
 export class PaymentServiceModule {}
