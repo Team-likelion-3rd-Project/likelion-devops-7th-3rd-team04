@@ -228,12 +228,34 @@ ingress:
     - /api
 
 # DB 마이그레이션 — helm pre-install/pre-upgrade hook Job (실패하면 앱 배포 전에 중단, --atomic 로 롤백)
+# 앱은 모두 synchronize: false 라 테이블은 이 Job(Flyway)만 만듭니다.
+#   db.envPrefix: global.secretName Secret 에서 <prefix>_HOST/_PORT/_DATABASE/_USERNAME/_PASSWORD 를 읽음
+#   db.port     : 지정하면 포트는 Secret 대신 이 값 (backend-secrets 에 DB_PORT 가 없음)
 migrations:
+  main:
+    enabled: true
+    image:
+      repository: main-migrations
+      tag: ""
+    db:
+      envPrefix: DB
+      port: "3306"
+    activeDeadlineSeconds: 300
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  # dev(온프레미스)는 결제 노드가 실행하므로 gitops envs/dev 에서 false
   payment:
     enabled: true
     image:
       repository: payment-migrations
       tag: ""
+    db:
+      envPrefix: PAYMENT_DB
     activeDeadlineSeconds: 300
     resources:
       requests:

@@ -120,7 +120,7 @@
   when: app_login.rc != 0
 
 # ── GitLab CI smoke test 전용 계정 (ci_smoke_db_password 가 있을 때만) ──
-# CI 는 파이프라인마다 ci_<id> database 를 만들고 지움 → synchronize: true 서비스가 dev 스키마를 건드리지 않게 분리
+# CI 는 파이프라인마다 ci_<id>(결제) · ci_main_<id>(메인) database 를 만들고 지움 → 마이그레이션 검증을 dev 데이터와 분리
 - name: CI smoke 계정 client 자격증명
   ansible.builtin.template:
     src: ci_smoke.cnf.j2
