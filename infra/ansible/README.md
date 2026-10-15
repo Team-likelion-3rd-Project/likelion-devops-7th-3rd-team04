@@ -12,6 +12,9 @@
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) — [11절](#11-ingress-controller-traefik) |
 | `k8s-cicd.yml` | `[control_plane]` (1대) | GitLab Agent(agentk) 설치 → `backend` 네임스페이스 / CI 배포 RBAC → 레지스트리 pull Secret · `backend-secrets` — [12절](#12-cicd-kas--registry--agent--파이프라인) |
 | `registry-trust.yml` | `[control_plane]`, `[workers]` | containerd `certs.d` 설정 (사설 CA 를 쓸 때 레지스트리 CA 신뢰) — [12-7](#12-7-사설-ca-를-쓸-때-선택) |
+| `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) → api-gateway Ingress(`/api`) — [11절](#11-ingress-controller-traefik) |
+| `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행. CP-a 는 마지막에 Traefik · whoami 까지 — [12절](#12-aws-main-클러스터-user-data-전용) |
+| `aws-worker.yml` | AWS 워커 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** 워커 Launch Template user-data 가 실행 → `kubeadm join` — [12절](#12-aws-main-클러스터-user-data-전용) |
 
 - OS: Ubuntu 22.04 / Kubernetes v1.33 / containerd / Calico v3.30 (tigera-operator)
 - Pod CIDR `10.0.0.0/16`, Service CIDR `10.96.0.0/12`
@@ -31,6 +34,8 @@ infra/ansible/
 ├── ingress.yml
 ├── k8s-cicd.yml
 ├── registry-trust.yml
+├── aws-control-plane.yml      # AWS CP user-data 전용 (12절)
+├── aws-worker.yml             # AWS 워커 user-data 전용 (12절)
 ├── inventory/
 │   ├── hosts.example.ini      # → hosts.ini 로 복사 (gitignore)
 │   ├── aws.ini                # AWS 노드가 자기 자신에게 실행할 때 쓰는 inventory (12절)
@@ -40,13 +45,14 @@ infra/ansible/
 │       ├── db.yml             # DB 노드: 이미지 버전, 튜닝값, backend/.env 매핑
 │       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
 │       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
-│       └── aws_control_plane.yml  # AWS CP: Tailscale 끔, Calico MTU / 노드 IP 감지
+│       ├── aws.yml                # AWS 노드 공통: Tailscale 끔, CA cert hash 대기
+│       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신, Traefik 배치, whoami
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,
 │                              # docker, firewall, db_stack,
 │                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
-│                              # helm, traefik,
+│                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, whoami
 │                              # gitlab_bootstrap, gitlab_agent, backend_namespace
 └── .secrets/                  # (자동 생성, gitignore) join.env, admin.conf, gitlab-runner.env,
                                # gitlab-k8s.env, github-mirror.env
@@ -604,14 +610,6 @@ GitLab 파이프라인 (.gitlab-ci.yml)
 | agent 설정 (`ci_access`) | `infra/gitlab/k8s-agents` → GitLab `team04/infra/k8s-agents` | Ansible `gitlab.yml --tags bootstrap` |
 | agentk · RBAC · Secret | 온프레미스 클러스터 | Ansible `k8s-cicd.yml` |
 
-| 결정 | 내용 |
-|---|---|
-| 환경 | dev = 온프레미스(`dev-agent`), prod = AWS EKS(`prod-agent`, 준비 중). 네임스페이스는 둘 다 `backend` |
-| 브랜치 | develop → dev, main → prod. 테스트·빌드는 자동, **배포는 수동(`when: manual`)**, 같은 환경 배포는 `resource_group` 으로 직렬화 |
-| 이미지 태그 | 커밋 SHA (`$CI_COMMIT_SHORT_SHA`). `latest` 는 차트가 렌더링을 거부 |
-| 클러스터 권한 | GitLab CE(Free)에는 ci_access impersonation 이 없어 **CI 권한 = agentk ServiceAccount 권한** → 차트 기본 cluster-admin 을 끄고 `backend` 네임스페이스 Role 만 부여 |
-| smoke test DB | dev DB 서버를 쓰되 database 는 파이프라인 전용(`ci_<id>`). hotel/user/auth/booking 이 `synchronize: true` 라 dev DB 에 붙으면 스키마가 바뀌기 때문 |
-
 ### 12-1. GitLab: KAS · Registry · 부트스트랩 (GitLab 담당자)
 
 `gitlab.yml` 이 KAS 와 Container Registry(`<fqdn>:5050`)를 켜고, `gitlab_bootstrap` role 이 REST API 로 아래를 멱등하게 맞춥니다.
@@ -701,9 +699,53 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 - Runner 의 docker.sock 바인드: backend 파이프라인은 kaniko 라 필요 없습니다. 다른 프로젝트가 docker CLI 를 쓰지 않으면 `group_vars/gitlab_runner.yml` 의 `gitlab_runner_mount_docker_sock: false` 로 바꿔 job 이 호스트 root 권한을 갖지 않게 합니다.
 
 ### 12-8. 트러블슈팅
+| `use_tailscale` | `true` (기본값) | `false` — tailscale role, `TS_OAUTH_CLIENT_SECRET` 확인 생략 |
+| 노드 IP (`node_ip`) | Tailscale IP (100.x) | VPC private IP |
+| 노드 이름 | `hosts.ini` 의 `node_name` | EC2 private DNS (`ip-10-10-4-10.ec2.internal`) |
+| `controlPlaneEndpoint` | 노드 IP | 내부 NLB DNS (`certSANs` 에 포함) |
+| CP 대수 | 1대 (`kubeadm init`) | 3대 — CP-a `kubeadm init --upload-certs`, CP-b · c `kubeadm join --control-plane` |
+| 워커 join | 사람이 `.env` 에 `K8S_*` 를 넣고 `worker-join.yml` 실행 | ASG 인스턴스가 기동 시 `aws-worker.yml` 자동 실행 (`worker_join` role 재사용) |
+| join 정보 | `.secrets/join.env` (로컬) | Parameter Store `/team04-hotel/prod/kubeadm/*` |
+| Calico 노드 IP 감지 / MTU | `tailscale0` / 1230 | `NodeInternalIP` / 8951 (VPC 점보 프레임 9001 − VXLAN 50) |
+| Felix mark 대역 변경 | 함 (Tailscale fwmark 충돌) | 안 함 |
+| Traefik | `ingress.yml` 수동 실행, control plane 1대 고정, `externalTrafficPolicy: Local` | CP-a 부트스트랩 마지막 단계(워커 Ready 대기 후), 워커에 2개, `externalTrafficPolicy: Cluster` (어느 워커 NodePort 로 와도 응답, 앞단 ALB) |
+| Ingress 대상 | api-gateway (`/api`, `/api-docs`) | 테스트 백엔드 whoami (`/whoami`, 그 외 경로는 Traefik 404). api-gateway 는 ECR · 배포 파이프라인 이후 |
+
+**Parameter Store** (`/team04-hotel/prod/kubeadm/`)
+
+| 이름 | 만드는 쪽 | 쓰는 쪽 |
+|---|---|---|
+| `join-token` (SecureString) | Terraform (랜덤, ttl 72h) → CP 3대가 12시간마다 새 token(ttl 24h)으로 덮어씀 | CP-a init 의 bootstrap token, CP-b · c · 워커 join |
+| `certificate-key` (SecureString) | Terraform (랜덤) | CP-a 가 인증서를 `kubeadm-certs` Secret 으로 올릴 때 암호화 키, CP-b · c 가 내려받을 때 |
+| `ca-cert-hash` (String) | Terraform 이 `pending` 으로 생성 → CP-a 가 init 후 기록 | CP-b · c · 워커가 이 값이 바뀔 때까지 기다린 뒤 join |
+
+- `ca-cert-hash` 가 이미 기록돼 있으면 CP-a 도 init 대신 join 합니다. CP-a 만 교체됐을 때 클러스터를 새로 만들지 않게 하려는 것입니다.
+- **CP 교체 제약:** `kubeadm-certs` Secret 은 init 후 2시간이 지나면 삭제되므로, 그 뒤에 교체된 CP 는 join 에 실패합니다. 남은 CP 에서 `sudo kubeadm init phase upload-certs --upload-certs --certificate-key <파라미터 값>` 으로 다시 올린 뒤 교체합니다. 교체 전 `etcdctl member remove` 로 기존 멤버도 지웁니다. 클러스터는 매일 재생성하므로 자동화하지 않았습니다.
+- **join token 갱신:** CP 마다 systemd timer `team04-renew-join-token.timer` 가 `kubeadm token create` → `join-token` 파라미터 덮어쓰기. 즉시 갱신하려면 CP 에서 `sudo systemctl start team04-renew-join-token.service`. Terraform 은 이 파라미터 값 변경을 무시합니다.
+- **워커 교체 · 스케일 인 제약:** 종료된 워커의 Node 객체는 `NotReady` 로 남습니다 (drain · 삭제 자동화는 범위 밖). 새 워커는 다른 private DNS 이름으로 따로 join 합니다. 남은 객체는 `kubectl delete node <이름>` 으로 지웁니다.
+- 클러스터 확인 (SSM 접속 후): `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide`
+- Ingress 확인 (워커에 SSM 접속 후): `curl -i http://$(hostname -I | awk '{print $1}'):30080/whoami` → whoami 200 (`/` 는 Traefik 404 가 정상). 워커 30080 인바운드는 ALB SG 에서만 열려 있어(M2) **다른 노드에서는 연결되지 않습니다.** 노드 자신의 IP 로 확인합니다 (Traefik 파드가 다른 워커에 있어도 kube-proxy 가 넘겨 줍니다).
 
 - **agent 가 Not connected**: `kubectl -n gitlab-agent logs -l app.kubernetes.io/instance=dev-agent`. `unauthenticated` 면 토큰(12-1 재발급 후 `k8s-cicd.yml` 재실행), `dial`/timeout 이면 ACL `tag:k8s-node → tag:gitlab tcp:443` 과 `hostAliases` IP 를 확인합니다. GitLab 노드에서 `gitlab.yml` 의 "KAS WebSocket 프록시 확인" 이 502/504 면 KAS 가 안 떠 있는 것입니다(`docker exec gitlab gitlab-ctl status gitlab-kas`).
 - **deploy job 이 `context ... does not exist`**: agent 설정의 `ci_access.projects` 와 job 의 `environment` 이름(dev/prod)이 맞는지, `team04/hotel` 이 `team04` 그룹 안에 있는지 확인합니다.
 - **`forbidden` (deploy job)**: Role `cicd-deployer` 에 없는 리소스를 차트에 추가한 경우입니다. `roles/gitlab_agent/templates/cicd-rbac.yaml.j2` 에 추가하고 `k8s-cicd.yml` 을 다시 실행합니다.
 - **ImagePullBackOff**: `kubectl -n backend describe pod` → 401 이면 `gitlab-registry` Secret(Deploy Token), `no such host` 면 노드의 MagicDNS, timeout 이면 ACL `tag:k8s-node → tag:gitlab tcp:5050` 입니다.
 - **smoke test 에서 DB 접속 실패**: ACL `tag:gitlab-runner → tag:db tcp:3306,6379`, CI 변수 `SMOKE_DB_HOST`(Tailscale IP), `db.yml` 로 `ci_smoke` 계정을 만들었는지 확인합니다.
+
+## 13. AWS Main 클러스터 (user-data 전용)
+
+`aws-control-plane.yml`, `aws-worker.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대와 워커 ASG 인스턴스의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
+
+- **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/whoami` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다 (Traefik 배치는 `roles/traefik/defaults`).
+- `inventory/aws.ini` 는 CP · 워커 group_vars 가 섞이지 않게 `localhost` 대신 별칭(`aws-cp`, `aws-worker`)을 쓰고, `aws-cp` 를 `control_plane` 그룹에도 넣어 Traefik 버전 · NodePort 를 온프레미스와 같이 씁니다.
+- S3 에는 커밋 대상 파일만 올라갑니다. `.env`, `.secrets/`, `inventory/hosts.ini` 는 올라가지 않습니다.
+
+| 결정 | 내용 |
+|---|---|
+| 환경 | dev = 온프레미스(`dev-agent`), prod = AWS EKS(`prod-agent`, 준비 중). 네임스페이스는 둘 다 `backend` |
+| 브랜치 | develop → dev, main → prod. 테스트·빌드는 자동, **배포는 수동(`when: manual`)**, 같은 환경 배포는 `resource_group` 으로 직렬화 |
+| 이미지 태그 | 커밋 SHA (`$CI_COMMIT_SHORT_SHA`). `latest` 는 차트가 렌더링을 거부 |
+| 클러스터 권한 | GitLab CE(Free)에는 ci_access impersonation 이 없어 **CI 권한 = agentk ServiceAccount 권한** → 차트 기본 cluster-admin 을 끄고 `backend` 네임스페이스 Role 만 부여 |
+| smoke test DB | dev DB 서버를 쓰되 database 는 파이프라인 전용(`ci_<id>`). hotel/user/auth/booking 이 `synchronize: true` 라 dev DB 에 붙으면 스키마가 바뀌기 때문 |
+
+

@@ -13,3 +13,29 @@
     - aws_control_plane
     - role: calico
       when: kubeadm_mode == 'init'
+
+# Traefik 은 워커에만 뜨므로 워커가 join 한 뒤 설치한다. 클러스터당 한 번이면 되어 init 한 CP-a 만 실행
+- name: AWS Main 클러스터 Ingress Controller (Traefik, NodePort) + whoami
+  hosts: aws_control_plane
+  become: true
+  pre_tasks:
+    - name: init 한 CP 만 진행
+      ansible.builtin.meta: end_host
+      when: kubeadm_mode != 'init'
+
+    - name: 워커 Ready 대기
+      ansible.builtin.command: >-
+        kubectl get nodes -l '!node-role.kubernetes.io/control-plane'
+        -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: worker_ready
+      until: "'True' in worker_ready.stdout"
+      retries: 60
+      delay: 10
+      changed_when: false
+
+  roles:
+    - helm
+    - traefik
+    - whoami

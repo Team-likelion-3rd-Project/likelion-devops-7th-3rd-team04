@@ -1,0 +1,12 @@
+# Ansible(roles/aws_control_plane) 이 관리. 갱신 주기 < token ttl 이어야 워커 join 이 끊기지 않는다
+[Unit]
+Description=Renew kubeadm join token every {{ kubeadm_join_token_renew_interval }}
+
+[Timer]
+OnActiveSec={{ kubeadm_join_token_renew_interval }}
+OnUnitActiveSec={{ kubeadm_join_token_renew_interval }}
+RandomizedDelaySec=10m
+Persistent=false
+
+[Install]
+WantedBy=timers.target

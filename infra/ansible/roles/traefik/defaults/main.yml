@@ -1,0 +1,8 @@
+---
+# 온프레미스(ingress.yml) 기본값. AWS 는 group_vars/aws_control_plane.yml 에서 덮어쓴다
+#
+# 워커는 팀원 PC 의 VM 이라 꺼질 수 있으므로 항상 켜져 있는 control plane 1대에 고정
+traefik_replicas: 1
+traefik_on_control_plane: true
+# kube-proxy SNAT 없이 개발자 PC 의 출발지 IP 를 보존 (Traefik Pod 가 있는 노드로만 들어옴)
+traefik_external_traffic_policy: Local

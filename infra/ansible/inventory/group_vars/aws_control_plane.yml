@@ -1,15 +1,8 @@
 ---
-# AWS Main 클러스터 CP (aws-control-plane.yml). 온프레미스와 다른 값만 둔다.
+# AWS Main 클러스터 CP (aws-control-plane.yml). 공통값은 aws.yml, 온프레미스와 다른 값만 둔다.
 #
-# 아래 값은 70-main-cluster-kubeadm user-data 가 extra vars 로 넘긴다.
-#   node_name                   EC2 private DNS (ip-10-10-4-10.ec2.internal)
+# user-data 가 aws.yml 의 값 외에 넘기는 extra vars
 #   k8s_cp_role                 init (CP-a) | join (CP-b · c)
-#   k8s_control_plane_endpoint  kube-apiserver 내부 NLB DNS
-#   kubeadm_param_prefix        Parameter Store 경로 (/team04-hotel/prod/kubeadm)
-#   aws_region
-
-# Tailscale 없이 VPC private IP 를 노드 IP 로 쓴다
-use_tailscale: false
 
 # VPC 점보 프레임 MTU(9001) - VXLAN 오버헤드(50)
 calico_mtu: 8951
@@ -19,8 +12,19 @@ calico_node_address_autodetection:
 # 접속은 SSM. kubeconfig 는 /etc/kubernetes/admin.conf 를 sudo 로 쓴다
 copy_user_kubeconfig: false
 
-# 70 스택이 CA cert hash 파라미터를 만들 때 넣는 값 (Parameter Store 는 빈 값을 허용하지 않는다)
-kubeadm_ca_cert_hash_pending: pending
+# join token 갱신 (systemd timer). Terraform 이 만든 첫 token 은 kubeadm_token_ttl(72h) 후 만료되므로
+# 당일 ASG 교체 · 확장에 대비해 CP 가 새 token 을 만들어 join-token 파라미터를 덮어쓴다
+kubeadm_join_token_renew_interval: 12h
+kubeadm_join_token_renew_ttl: 24h
 
-# join 노드가 CP-a 의 init 완료(CA cert hash 기록)를 기다리는 최대 시간 = retries × 10초
-kubeadm_ca_cert_hash_wait_retries: 90
+# ── Ingress Controller (CP-a 만 설치). 버전 · NodePort 는 control_plane.yml ──
+# 워커는 ASG 라 교체 · 확장된다. 어느 워커 NodePort 로 들어와도 응답하도록 워커에 2개 띄우고 Cluster 정책을 쓴다
+# (앞단 ALB 가 출발지라 Local 로 클라이언트 IP 를 보존할 이유가 없다)
+traefik_replicas: 2
+traefik_on_control_plane: false
+traefik_external_traffic_policy: Cluster
+
+# 수직 경로 검증용 테스트 백엔드 (api-gateway 는 ECR · 배포 파이프라인 이후)
+whoami_namespace: whoami
+whoami_image: "traefik/whoami:v1.12.0"
+whoami_replicas: 2
