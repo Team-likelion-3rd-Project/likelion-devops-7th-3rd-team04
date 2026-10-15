@@ -2,8 +2,8 @@
 # GitLab 쪽에서 직접 고치면 다음 미러링 때 덮어써집니다.
 #
 #   test        : lint · jest (현재 기존 실패가 있어 non-blocking) · nest build · helm lint
-#   build       : kaniko 로 이미지 9개 빌드 → 후보 태그 ci-<sha> 로 push (develop 만, 그 외는 빌드만)
-#   image-test  : 파이프라인 전용 DB(ci_<pipeline id>) 준비 → 후보 이미지를 띄워 /health smoke test
+#   build       : kaniko 로 이미지 10개 빌드 → 후보 태그 ci-<sha> 로 push (develop 만, 그 외는 빌드만)
+#   image-test  : 파이프라인 전용 DB(ci_<id>, ci_main_<id>) 준비 → 후보 이미지를 띄워 /health smoke test
 #   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
 #   deploy      : (수동) gitops 레포에 태그 커밋 → helm upgrade --atomic → rollout status
 #                 deploy-dev: develop → 온프레미스(dev-agent) / deploy-prod: main → EKS(prod-agent, 준비 중)
@@ -44,8 +44,8 @@ variables:
   # ── 이미지 태그: 커밋 SHA (latest 미사용) ──
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
   CANDIDATE_TAG: ci-$CI_COMMIT_SHORT_SHA
-  # build 와 push 가 같은 목록을 써야 함 (8 서비스 + 결제 DB 마이그레이션)
-  IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service payment-migrations"
+  # build 와 push 가 같은 목록을 써야 함 (8 서비스 + 메인 / 결제 DB 마이그레이션)
+  IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service main-migrations payment-migrations"
 
   # ── 배포 ──
   CHART_PATH: backend-deploy/charts/backend
@@ -55,8 +55,10 @@ variables:
   GITOPS_REPO: team04/infra/backend-gitops
 
   # ── smoke test: dev DB 서버를 쓰되 database 는 파이프라인 전용 ──
-  # (hotel/user/auth/booking 이 synchronize: true 라 dev DB 에 붙으면 스키마가 바뀜)
+  # 후보 이미지의 마이그레이션을 빈 DB 에 처음부터 적용해 보고 그 위에서 앱을 띄움 (dev 데이터와 분리).
+  # Flyway 히스토리는 DB 당 하나라 메인 / 결제 마이그레이션을 서로 다른 DB 에 적용 (ci_ 접두어 = ci_smoke 권한 범위)
   SMOKE_DB: ci_$CI_PIPELINE_ID
+  SMOKE_MAIN_DB: ci_main_$CI_PIPELINE_ID
   SMOKE_REDIS_DB: "15"
 
   GIT_DEPTH: "20"
@@ -136,10 +138,14 @@ build:
           - payment-service
           - pg-mock-service
           - user-service
+          - main-migrations
           - payment-migrations
   script:
     - |
-      if [ "$SERVICE" = "payment-migrations" ]; then
+      if [ "$SERVICE" = "main-migrations" ]; then
+        CONTEXT="$CI_PROJECT_DIR/backend/migrations"
+        DOCKERFILE="$CONTEXT/Dockerfile"
+      elif [ "$SERVICE" = "payment-migrations" ]; then
         CONTEXT="$CI_PROJECT_DIR/backend/apps/payment-service/migrations"
         DOCKERFILE="$CONTEXT/Dockerfile"
       else
@@ -176,29 +182,37 @@ smoke:db-create:
   needs: []
   script:
     - export MYSQL_PWD="$SMOKE_DB_PASSWORD"
-    - >-
-      mariadb -h "$SMOKE_DB_HOST" -P "$SMOKE_DB_PORT" -u "$SMOKE_DB_USER"
-      -e "CREATE DATABASE IF NOT EXISTS \`$SMOKE_DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+    - |
+      for db in "$SMOKE_DB" "$SMOKE_MAIN_DB"; do
+        mariadb -h "$SMOKE_DB_HOST" -P "$SMOKE_DB_PORT" -u "$SMOKE_DB_USER" -e "CREATE DATABASE IF NOT EXISTS \`$db\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+      done
 
-# 결제 DB 마이그레이션 이미지를 전용 DB 에 먼저 적용 (마이그레이션 자체 검증 겸 payment-service 기동 준비)
+# 마이그레이션 이미지를 전용 DB 에 먼저 적용 (마이그레이션 자체 검증 겸 앱 기동 준비 — 앱은 synchronize: false)
+#   main    : backend/migrations                 → $SMOKE_MAIN_DB (user/auth/hotel/booking)
+#   payment : apps/payment-service/migrations    → $SMOKE_DB      (payment-service)
 smoke:migrate:
   extends: .rules-develop
   stage: image-test
   image:
-    name: $CI_REGISTRY_IMAGE/payment-migrations:$CANDIDATE_TAG
+    name: $CI_REGISTRY_IMAGE/$MIGRATIONS-migrations:$CANDIDATE_TAG
     entrypoint: [""]
+  parallel:
+    matrix:
+      - MIGRATIONS: [main, payment]
   needs:
     - smoke:db-create
     - job: build
       parallel:
         matrix:
+          - SERVICE: main-migrations
           - SERVICE: payment-migrations
   variables:
     GIT_STRATEGY: none
   script:
+    - if [ "$MIGRATIONS" = "main" ]; then DB="$SMOKE_MAIN_DB"; else DB="$SMOKE_DB"; fi
     - >-
       flyway migrate
-      -url="jdbc:mariadb://$SMOKE_DB_HOST:$SMOKE_DB_PORT/$SMOKE_DB"
+      -url="jdbc:mariadb://$SMOKE_DB_HOST:$SMOKE_DB_PORT/$DB"
       -user="$SMOKE_DB_USER" -password="$SMOKE_DB_PASSWORD"
       -connectRetries=5
 
@@ -231,7 +245,7 @@ test:image:
     DB_PORT: $SMOKE_DB_PORT
     DB_USERNAME: $SMOKE_DB_USER
     DB_PASSWORD: $SMOKE_DB_PASSWORD
-    DB_DATABASE: $SMOKE_DB
+    DB_DATABASE: $SMOKE_MAIN_DB
     PAYMENT_DB_HOST: $SMOKE_DB_HOST
     PAYMENT_DB_PORT: $SMOKE_DB_PORT
     PAYMENT_DB_USERNAME: $SMOKE_DB_USER
@@ -295,10 +309,13 @@ smoke:db-drop:
     GIT_STRATEGY: none
   script:
     - export MYSQL_PWD="$SMOKE_DB_PASSWORD"
-    - mariadb -h "$SMOKE_DB_HOST" -P "$SMOKE_DB_PORT" -u "$SMOKE_DB_USER" -e "DROP DATABASE IF EXISTS \`$SMOKE_DB\`"
+    - |
+      for db in "$SMOKE_DB" "$SMOKE_MAIN_DB"; do
+        mariadb -h "$SMOKE_DB_HOST" -P "$SMOKE_DB_PORT" -u "$SMOKE_DB_USER" -e "DROP DATABASE IF EXISTS \`$db\`"
+      done
 
 # ── push: 후보 → 최종 태그 승격 ───────────────────────────────
-# 모든 smoke test 가 통과해야 실행 (같은 커밋의 이미지 9개를 한 번에 배포하므로 전부 함께 승격)
+# 모든 smoke test 가 통과해야 실행 (같은 커밋의 이미지 10개를 한 번에 배포하므로 전부 함께 승격)
 push:
   extends: .rules-develop
   stage: push
