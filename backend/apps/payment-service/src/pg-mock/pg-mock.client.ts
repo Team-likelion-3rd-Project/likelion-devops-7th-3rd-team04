@@ -3,6 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { RpcException } from '@nestjs/microservices';
 import { AxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
+import { PgConfirmResult } from '../pg/pg-confirm-result';
 
 export interface PgMockPaymentResult {
   paymentKey: string;
@@ -54,6 +55,72 @@ export class PgMockClient {
     });
   }
 
+  // 새 결제 흐름(위키 API 명세 5.9)의 MOCK 모드 승인. 토스 승인 API와 같은 결과 형태(PgConfirmResult)로
+  // 돌려줘서 payment-service가 PG 종류와 상관없이 같은 로직을 쓰게 합니다.
+  // pg-mock은 결제창이 없어서 "결제 생성 → 승인"을 이어서 호출합니다 (프론트가 보낸 mock_ paymentKey는
+  // pg-mock이 발급한 키가 아니므로 쓰지 않고, 승인 후 pg-mock이 발급한 키를 저장합니다).
+  //   forceFail: 승인 거절 화면 확인용 — pg-mock의 X-Mock-Result: fail 헤더로 거절을 재현
+  async confirm(params: {
+    orderId: string;
+    amount: number;
+    orderName: string;
+    forceFail?: boolean;
+  }): Promise<PgConfirmResult> {
+    const baseUrl = process.env.PG_MOCK_SERVICE_URL || DEFAULT_BASE_URL;
+
+    let created: PgMockPaymentResult;
+    try {
+      created = await this.post<PgMockPaymentResult>(`${baseUrl}/payments`, {
+        orderId: params.orderId,
+        amount: params.amount,
+        orderName: params.orderName,
+        paymentMethod: 'CARD',
+      });
+    } catch (error: unknown) {
+      // 결제 생성 단계 실패는 승인 요청이 나가기 전이라 돈이 안 움직였음이 확실 → 거절로 처리
+      this.logError('PG(mock) 결제 생성 실패', error);
+      return {
+        outcome: 'DECLINED',
+        pgCode: 'PG_MOCK_CREATE_FAILED',
+        pgMessage:
+          '결제 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+      };
+    }
+
+    try {
+      const approved = await this.post<PgMockPaymentResult>(
+        `${baseUrl}/payments/${created.paymentKey}/approve`,
+        undefined,
+        params.forceFail ? { 'X-Mock-Result': 'fail' } : undefined,
+      );
+      return {
+        outcome: 'APPROVED',
+        paymentKey: approved.paymentKey,
+        approvalNumber: approved.approvalNumber,
+        approvedAt: approved.approvedAt
+          ? new Date(approved.approvedAt)
+          : new Date(),
+        method: approved.paymentMethod,
+        raw: approved as unknown as Record<string, unknown>,
+      };
+    } catch (error: unknown) {
+      const err = error as AxiosError<{ message?: string }>;
+      const status = err.response?.status;
+      if (status && status >= 400 && status < 500) {
+        return {
+          outcome: 'DECLINED',
+          pgCode: 'PG_MOCK_DECLINED',
+          pgMessage:
+            err.response?.data?.message ?? '결제 승인이 거절되었습니다.',
+          raw: err.response?.data ?? {},
+        };
+      }
+      // 승인 요청 후 응답을 못 받음 → 승인됐는지 알 수 없음 (실제 PG의 타임아웃과 같은 상황)
+      this.logError('PG(mock) 결제 승인 결과 불명', error);
+      return { outcome: 'UNKNOWN', pgMessage: err.message };
+    }
+  }
+
   // PG 결제 취소(환불) 요청. 승인(approve)된 결제만 취소할 수 있다 — pg-mock 쪽에서 상태 검증.
   async cancel(
     paymentKey: string,
@@ -70,9 +137,16 @@ export class PgMockClient {
     });
   }
 
-  private async post<T>(url: string, data?: unknown): Promise<T> {
+  private async post<T>(
+    url: string,
+    data?: unknown,
+    headers?: Record<string, string>,
+  ): Promise<T> {
     const { data: body } = await firstValueFrom(
-      this.httpService.post<T>(url, data, { timeout: DEFAULT_TIMEOUT_MS }),
+      this.httpService.post<T>(url, data, {
+        timeout: DEFAULT_TIMEOUT_MS,
+        headers,
+      }),
     );
     return body;
   }

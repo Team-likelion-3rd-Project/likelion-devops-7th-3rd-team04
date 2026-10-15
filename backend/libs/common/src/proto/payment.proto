@@ -32,6 +32,30 @@ service PaymentService {
   // (ConfirmBooking) 호출이 실패해 예약이 PENDING_PAYMENT로 남아있는 경우에도 환불이 누락되지
   // 않는다.
   rpc RefundPayment (RefundPaymentRequest) returns (RefundPaymentResponse);
+
+  // 결제 승인 (booking-service의 ConfirmPayment가 호출). 멱등 키로 payments에 PROCESSING을 먼저
+  // 기록(UNIQUE로 중복 결제 방지)한 뒤 PG(MOCK: pg-mock / TOSS: 토스 승인 API)에 승인을 요청하고,
+  // 승인되면 한 트랜잭션에서 APPROVED 전환 + payment_outbox 기록. 같은 멱등 키로 다시 호출하면
+  // 이미 기록된 결과를 그대로 돌려준다. 결제 결과(거절·타임아웃 포함)는 에러가 아니라 result로 돌려준다.
+  rpc ApprovePayment (ApprovePaymentRequest) returns (ApprovePaymentResponse);
+}
+
+message ApprovePaymentRequest {
+  string idempotencyKey = 1; // booking-service payment_attempts.idempotency_key
+  int32 reservationId = 2;
+  int32 userId = 3;
+  string orderId = 4; // payment_attempts.pg_order_id
+  string paymentKey = 5;
+  int32 amount = 6;
+  string orderName = 7;
+}
+
+message ApprovePaymentResponse {
+  string result = 1; // APPROVED | FAILED | UNKNOWN | PROCESSING
+  int32 paymentId = 2;
+  bool retryable = 3;
+  string code = 4; // FAILED일 때 사유 코드 (PAYMENT_DECLINED 등)
+  string message = 5;
 }
 
 message PaymentWebhookRequest {
