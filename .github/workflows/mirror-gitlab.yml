@@ -1,0 +1,71 @@
+name: Mirror to GitLab
+
+# develop / main 에 push 되면 온프레미스 GitLab(team04/hotel)으로 같은 브랜치를 미러링합니다.
+# GitLab 은 Tailnet 안에만 있으므로 tag:ci OAuth client 로 runner 를 Tailnet 에 잠깐 붙입니다.
+# 미러 이후의 테스트·빌드·배포는 GitLab 파이프라인(.gitlab-ci.yml)이 담당합니다.
+#
+# 필요한 설정 (infra/ansible/README.md 12-4):
+#   Secrets  : TS_OAUTH_CLIENT_ID, TS_OAUTH_SECRET (Tailscale tag:ci OAuth client)
+#              GITLAB_MIRROR_TOKEN (infra/ansible/.secrets/github-mirror.env)
+#   Variables: GITLAB_HOST (예: gitlab.<tailnet>.ts.net), GITLAB_MIRROR_REPO (team04/hotel)
+
+on:
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 같은 브랜치 미러는 순서대로 (나중 push 가 앞의 것을 덮어쓰지 않게)
+concurrency:
+  group: mirror-gitlab-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Push to GitLab
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 전체 히스토리가 있어야 GitLab 쪽 브랜치를 그대로 맞출 수 있음
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Tailnet 접속 (tag:ci)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: GitLab 접속 확인
+        env:
+          GITLAB_HOST: ${{ vars.GITLAB_HOST }}
+        run: |
+          test -n "$GITLAB_HOST" || { echo "::error::Repository variable GITLAB_HOST 가 없습니다"; exit 1; }
+          for i in 1 2 3 4 5; do
+            curl -sf -o /dev/null "https://$GITLAB_HOST/users/sign_in" && exit 0
+            sleep 5
+          done
+          echo "::error::https://$GITLAB_HOST 에 접속할 수 없습니다 (Tailscale ACL tag:ci → tag:gitlab tcp:443 확인)"
+          exit 1
+
+      - name: 브랜치 미러 push
+        # --mirror 대신 브랜치 단위로 push (GitLab 에만 있는 브랜치를 지우지 않음).
+        # GitHub 이 원본이므로 GitLab 브랜치는 --force 로 맞춤 (보호 브랜치 allow_force_push — gitlab_bootstrap role)
+        env:
+          GITLAB_HOST: ${{ vars.GITLAB_HOST }}
+          GITLAB_MIRROR_REPO: ${{ vars.GITLAB_MIRROR_REPO || 'team04/hotel' }}
+          GITLAB_MIRROR_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}
+        run: |
+          git push --force \
+            "https://github-mirror:${GITLAB_MIRROR_TOKEN}@${GITLAB_HOST}/${GITLAB_MIRROR_REPO}.git" \
+            "HEAD:refs/heads/${GITHUB_REF_NAME}"
+          {
+            echo "### GitLab 미러 완료"
+            echo "- 브랜치: \`${GITHUB_REF_NAME}\` @ \`${GITHUB_SHA::8}\`"
+            echo "- 파이프라인: https://${GITLAB_HOST}/${GITLAB_MIRROR_REPO}/-/pipelines?ref=${GITHUB_REF_NAME}"
+          } >> "$GITHUB_STEP_SUMMARY"

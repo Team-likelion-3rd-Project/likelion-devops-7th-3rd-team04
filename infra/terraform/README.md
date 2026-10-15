@@ -118,8 +118,13 @@ bootstrap                                  🔒 최초 1회
 |---|---|---|---|
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 | 1분 52초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
-| `30-security` | `enable_control_plane = true` (SG 6개, 규칙 23개) | 14초 | 15초 |
-| `70-main-cluster-kubeadm` | CP 3대, 워커 2대, user-data 없음 | 2분 55초 | 1분 26초 |
+| `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 | 15초 |
+| `70-main-cluster-kubeadm` | CP 3대, 워커 2대 (부트스트랩 포함) | 3분 16초 – 3분 36초 | 1분 40초 – 2분 13초 |
+| `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 37초 |
+
+`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, CP-a 의 Traefik · whoami 설치 완료까지 약 7분 – 7분 30초** (apply 중 내부 NLB 생성이 약 2분 45초, 노드 부팅 후 부트스트랩 약 3분 – 4분). 워커 1대 종료 후 교체 워커 Ready 까지 약 3분.
+
+`70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분** 입니다. 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 4분.
 
 ---
 
@@ -134,3 +139,58 @@ bootstrap                                  🔒 최초 1회
 | S3 | `force_destroy = true` |
 
 🔒 스택의 리소스에는 `prevent_destroy = true` 를 겁니다.
+
+---
+
+## 6. `70-main-cluster-kubeadm` 부트스트랩 확인
+
+CP 3대와 워커는 apply 가 끝난 뒤 user-data 가 각각 [`aws-control-plane.yml`](../ansible/aws-control-plane.yml), [`aws-worker.yml`](../ansible/aws-worker.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 12절). CP-a 는 워커가 Ready 가 되면 Traefik · whoami 까지 설치합니다.
+**terraform apply 가 성공해도 부트스트랩은 그 뒤 몇 분 더 걸리고, 실패해도 apply 결과에 나타나지 않습니다.**
+
+```bash
+# 인스턴스 ID 확인 → SSM 접속 (SSM 은 키 페어 · 22 포트 없이 접속)
+AWS_PROFILE=team04 terraform output control_plane_instance_ids
+AWS_PROFILE=team04 aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$(AWS_PROFILE=team04 terraform output -raw worker_asg_name)" \
+  --query 'AutoScalingGroups[0].Instances[].InstanceId'   # 워커
+AWS_PROFILE=team04 aws ssm start-session --target <인스턴스 ID>
+
+# 노드 안에서
+sudo tail -f /var/log/cloud-init-output.log        # user-data · Ansible 출력. 마지막 줄 "[bootstrap] 완료" 면 성공
+cloud-init status --long                           # status: done / error
+sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide
+```
+
+- CP-b · c · 워커 로그가 `CA cert hash 기록 대기` 에서 멈춰 있으면 CP-a 의 로그를 먼저 봅니다.
+- CP-a 로그가 `워커 Ready 대기` 에서 멈춰 있으면 워커 로그를 봅니다.
+- Ansible 묶음을 고친 뒤 apply 하면 S3 객체만 바뀌고, 이미 떠 있는 CP 에는 반영되지 않습니다 (user-data 는 첫 부팅에만 실행). 다시 확인하려면 스택을 destroy → apply 합니다. 워커만 확인하려면 워커 인스턴스를 종료해 ASG 가 새로 띄우게 합니다 (시작 템플릿은 최신 버전을 씀).
+- 워커 join 은 CP-b · c 가 etcd 멤버로 추가되는 동안 타임아웃 날 수 있어 reset 후 30초 간격으로 3회까지 다시 시도합니다 (`kubeadm_join_retries`). 그래도 실패한 워커는 종료해 ASG 가 새로 띄우게 합니다.
+
+---
+
+## 7. `80-main-edge` 동작 확인
+
+`인터넷 → ALB → 워커 NodePort 30080 → Traefik → 파드` 경로입니다. 워커 ASG 를 Target Group 에 연결하므로 ASG 가 새로 띄운 워커도 자동 등록됩니다.
+Target Group 헬스체크는 Traefik `/ping` 입니다. **Traefik 은 CP-a 부트스트랩이 설치하므로 `70` apply 직후 `80` 을 apply 하면 부트스트랩이 끝날 때까지 타깃이 unhealthy 로 보입니다.**
+
+도메인 · 인증서 유무(`10-global` output)에 따라 리스너가 달라집니다.
+
+| `10-global` 상태 | 리스너 | 접속 주소 (`terraform output api_url`) |
+|---|---|---|
+| 도메인 구매 전 | 80 → 워커 | `http://<ALB DNS>` |
+| Zone 만 있음 | 80 → 워커, `api.<도메인>` 레코드 | `http://api.<도메인>` |
+| 인증서 발급 후 | 80 → 443 리다이렉트, 443 → 워커 | `https://api.<도메인>` |
+
+```bash
+cd live/prod/80-main-edge
+curl -i "$(AWS_PROFILE=team04 terraform output -raw api_url)/whoami"   # 200, X-Forwarded-For 첫 값이 내 공인 IP
+
+# Target Group 상태 (워커 전부 healthy)
+AWS_PROFILE=team04 aws elbv2 describe-target-health \
+  --target-group-arn "$(AWS_PROFILE=team04 aws elbv2 describe-target-groups --names team04-hotel-main-worker --query 'TargetGroups[0].TargetGroupArn' --output text)" \
+  --query 'TargetHealthDescriptions[].[Target.Id,TargetHealth.State]' --output text
+```
+
+- WAF 차단 응답은 403 입니다. IP 당 rate limit 은 기본 60초에 300회(`waf_rate_limit`, `waf_rate_limit_window_sec`)이고, 넘은 뒤 차단까지 수십 초 걸립니다.
+- 본문 8KB 초과 요청은 `waf_large_body_path_regex`(기본: 객실 등록 · 수정 `/api/hotels/<id>/rooms[/<id>]`, Base64 이미지) 경로만 허용하고 나머지는 403 입니다. 큰 본문을 받는 API 가 생기면 이 정규식에 추가합니다.
+- 액세스 로그는 `10-global` 로그 버킷 `alb/` 에 5분 단위로 쌓입니다. Object Lock 버킷이라 잠금 기간(7일) 동안 지워지지 않습니다.
+- unhealthy 타깃이 있으면 그 워커가 클러스터에 join 했는지(`kubectl get nodes`) 먼저 봅니다 (6절). join 하지 못한 워커는 kube-proxy 가 없어 NodePort 가 응답하지 않습니다.

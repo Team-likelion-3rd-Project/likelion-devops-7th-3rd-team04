@@ -29,6 +29,7 @@ import PaymentDetailPage from './pages/PaymentDetailPage'
 import LoginPage from './pages/LoginPage'
 import SignupPage from './pages/SignupPage'
 import { refreshAccessToken } from './api/gateway'
+import { loadHotels } from './data/hotelStore'
 
 // 고객 프론트와 완전히 독립된 관리자 화면. 별도 청크로 code splitting되도록 lazy import한다.
 const AdminApp = lazy(() => import('./admin/AdminApp'))
@@ -38,6 +39,8 @@ function App() {
     // 액세스 토큰은 메모리에만 두므로 새로고침하면 사라진다. httpOnly 리프레시 토큰 쿠키가
     // 남아있다면 앱 부팅 시 조용히 재발급받아 로그인 상태를 복구한다 (없거나 만료됐으면 그냥 비로그인 상태).
     refreshAccessToken().catch(() => {})
+    // 호텔 이름·소개 등을 DB 값으로 갱신한다 (실패하면 data/hotels.ts 기본값 유지).
+    loadHotels()
   }, [])
 
   return (

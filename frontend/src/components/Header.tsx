@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Link, NavLink, useNavigate } from 'react-router-dom'
-import { HOTELS } from '../data/hotels'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { useHotels } from '../data/hotelStore'
 import { logout } from '../api/gateway'
 import { customerAuth } from '../api/tokenStore'
+import { loginStateFrom } from '../utils/loginRedirect'
 import './Header.css'
 
 const PHILOSOPHY_ITEMS = [
@@ -15,8 +16,11 @@ const PHILOSOPHY_ITEMS = [
 type MenuKey = 'philosophy' | 'hotels' | 'profile' | null
 
 function Header() {
+  // 호텔 이름·소개는 API(GET /api/hotels) 응답으로 갱신된다 (data/hotelStore.ts)
+  const hotels = useHotels()
   const [openMenu, setOpenMenu] = useState<MenuKey>(null)
   const accessToken = customerAuth.useAccessToken()
+  const location = useLocation()
   const user = customerAuth.useUser()
   const navigate = useNavigate()
 
@@ -79,7 +83,7 @@ function Header() {
           </button>
           {openMenu === 'hotels' && (
             <ul className="nav-dropdown">
-              {HOTELS.map((hotel) => (
+              {hotels.map((hotel) => (
                 <li key={hotel.id}>
                   <NavLink to={`/hotels/${hotel.id}`} onClick={closeMenu}>
                     {hotel.name}
@@ -98,7 +102,12 @@ function Header() {
       </nav>
 
       <div className="header-actions">
-        <Link to={accessToken ? '/reservation' : '/login'} className="nav-cta">
+        {/* 비로그인이면 로그인 화면을 거쳐 예약 화면으로 오도록 from을 넘긴다. */}
+        <Link
+          to={accessToken ? '/reservation' : '/login'}
+          state={accessToken ? undefined : loginStateFrom('/reservation')}
+          className="nav-cta"
+        >
           예약하기
         </Link>
         {accessToken && user ? (
@@ -138,7 +147,7 @@ function Header() {
             )}
           </div>
         ) : (
-          <Link to="/login" className="nav-login">
+          <Link to="/login" state={loginStateFrom(`${location.pathname}${location.search}`)} className="nav-login">
             로그인
           </Link>
         )}

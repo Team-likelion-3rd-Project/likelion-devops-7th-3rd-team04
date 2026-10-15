@@ -1,11 +1,14 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { register } from '../api/gateway'
+import { loginRedirectPath, type LoginLocationState } from '../utils/loginRedirect'
 import './SignupPage.css'
 
 function SignupPage() {
   const navigate = useNavigate()
+  // 로그인 화면에서 넘어온 경우, 가입 후에도 원래 보던 화면으로 돌려보낸다.
+  const from = (useLocation().state as LoginLocationState | null)?.from
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
@@ -33,7 +36,7 @@ function SignupPage() {
       // register()가 회원가입과 동시에 로그인을 처리하고 액세스 토큰을 메모리(tokenStore)에 저장한다.
       // 리프레시 토큰은 서버가 httpOnly 쿠키로 내려주므로 JS에서는 다루지 않는다.
       await register({ email, password, name, phoneNumber })
-      navigate('/')
+      navigate(loginRedirectPath(from), { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '회원가입에 실패했습니다.')
     } finally {
@@ -117,7 +120,9 @@ function SignupPage() {
         </form>
 
         <p className="signup-footer">
-          이미 계정이 있으신가요? <Link to="/login">로그인</Link>
+          이미 계정이 있으신가요? <Link to="/login" state={from ? { from } : undefined}>
+            로그인
+          </Link>
         </p>
       </div>
     </section>

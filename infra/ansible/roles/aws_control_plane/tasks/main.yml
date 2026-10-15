@@ -1,0 +1,135 @@
+---
+# AWS Main 클러스터 HA control plane. join 정보는 로컬 .secrets 대신 Parameter Store 로 주고받는다.
+#   join-token, certificate-key  70 스택이 생성 (SecureString)
+#   ca-cert-hash                 init 한 CP 가 기록. 기록 전에는 kubeadm_ca_cert_hash_pending
+- name: CA cert hash 파라미터 조회
+  ansible.builtin.command: >-
+    aws ssm get-parameter --region {{ aws_region }}
+    --name {{ kubeadm_param_prefix }}/ca-cert-hash
+    --query Parameter.Value --output text
+  register: ca_hash_param
+  changed_when: false
+
+- name: init / join 결정
+  # CA cert hash 가 이미 있으면 클러스터가 있는 것 → CP-a 를 교체한 경우에도 다시 init 하지 않고 join
+  ansible.builtin.set_fact:
+    kubeadm_mode: >-
+      {{ 'init' if k8s_cp_role == 'init' and ca_hash_param.stdout == kubeadm_ca_cert_hash_pending else 'join' }}
+
+- name: 부트스트랩 방식 출력
+  ansible.builtin.debug:
+    msg: "{{ node_name }} ({{ node_ip }}) : kubeadm {{ kubeadm_mode }}, endpoint {{ k8s_control_plane_endpoint }}:6443"
+
+- name: join token / certificate-key 조회
+  ansible.builtin.command: >-
+    aws ssm get-parameter --region {{ aws_region }}
+    --name {{ kubeadm_param_prefix }}/{{ item }}
+    --with-decryption --query Parameter.Value --output text
+  loop: [join-token, certificate-key]
+  register: kubeadm_secret_params
+  changed_when: false
+  no_log: true
+
+- name: join token / certificate-key fact 등록
+  ansible.builtin.set_fact:
+    kubeadm_bootstrap_token: "{{ kubeadm_secret_params.results[0].stdout }}"
+    kubeadm_certificate_key: "{{ kubeadm_secret_params.results[1].stdout }}"
+  no_log: true
+
+- name: init (CP-a)
+  when: kubeadm_mode == 'init'
+  block:
+    - name: kubeadm init --upload-certs
+      ansible.builtin.include_role:
+        name: control_plane
+
+    - name: CA 인증서 해시 계산
+      ansible.builtin.shell: >-
+        set -o pipefail &&
+        openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt
+        | openssl rsa -pubin -outform der 2>/dev/null
+        | openssl dgst -sha256 -hex | sed 's/^.* //'
+      args:
+        executable: /bin/bash
+      register: ca_hash
+      changed_when: false
+
+    - name: CA cert hash 파라미터 기록 (join 노드가 기다리는 값)
+      ansible.builtin.command: >-
+        aws ssm put-parameter --region {{ aws_region }}
+        --name {{ kubeadm_param_prefix }}/ca-cert-hash
+        --value sha256:{{ ca_hash.stdout | trim }} --overwrite
+      changed_when: true
+
+- name: join --control-plane (CP-b · c, 교체된 CP)
+  when: kubeadm_mode == 'join'
+  block:
+    - name: CA cert hash 기록 대기 (CP-a init 완료)
+      ansible.builtin.command: >-
+        aws ssm get-parameter --region {{ aws_region }}
+        --name {{ kubeadm_param_prefix }}/ca-cert-hash
+        --query Parameter.Value --output text
+      register: ca_hash_wait
+      until: ca_hash_wait.rc == 0 and ca_hash_wait.stdout != kubeadm_ca_cert_hash_pending
+      retries: "{{ kubeadm_ca_cert_hash_wait_retries }}"
+      delay: 10
+      changed_when: false
+
+    - name: kube-apiserver 응답 대기 (내부 NLB)
+      # /readyz 는 익명 접근 허용. 인증서 검증은 kubeadm 이 CA cert hash 로 한다
+      ansible.builtin.uri:
+        url: "https://{{ k8s_control_plane_endpoint }}:6443/readyz"
+        validate_certs: false
+      register: apiserver_readyz
+      until: apiserver_readyz.status == 200
+      retries: 60
+      delay: 10
+
+    - name: kubeadm join 설정 파일 생성
+      ansible.builtin.template:
+        src: kubeadm-join-control-plane.yaml.j2
+        dest: /etc/kubernetes/kubeadm-join.yaml
+        mode: "0600"
+      vars:
+        kubeadm_ca_cert_hash: "{{ ca_hash_wait.stdout | trim }}"
+      no_log: true
+
+    - name: kubeadm join --control-plane
+      # CP-b · c 가 동시에 etcd 멤버로 추가되면 한쪽이 실패할 수 있어, 실패 시 reset 후 다시 시도한다
+      ansible.builtin.shell: >-
+        kubeadm join --config /etc/kubernetes/kubeadm-join.yaml
+        || { kubeadm reset -f > /dev/null 2>&1; exit 1; }
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+      register: kubeadm_join
+      until: kubeadm_join.rc == 0
+      retries: 3
+      delay: 30
+
+    - name: join 설정 파일 삭제 (token 포함)
+      ansible.builtin.file:
+        path: /etc/kubernetes/kubeadm-join.yaml
+        state: absent
+
+# 당일 워커 교체 · 확장 대비. CP 3대가 모두 돌려 CP 1대가 없어도 갱신이 이어진다 (token 이 여러 개여도 문제없음)
+- name: join token 갱신 스크립트
+  ansible.builtin.template:
+    src: renew-join-token.sh.j2
+    dest: /usr/local/sbin/team04-renew-join-token
+    mode: "0700"
+
+- name: join token 갱신 systemd unit
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - team04-renew-join-token.service
+    - team04-renew-join-token.timer
+
+- name: join token 갱신 timer 활성화
+  ansible.builtin.systemd_service:
+    name: team04-renew-join-token.timer
+    enabled: true
+    state: started
+    daemon_reload: true

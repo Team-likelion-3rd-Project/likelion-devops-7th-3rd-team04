@@ -4,8 +4,8 @@
 #   내부 NLB       cp 서브넷 a · b · c, TCP 6443 → CP. controlPlaneEndpoint 로 쓴다
 #   워커           worker 서브넷 a · b 의 ASG
 #
-# Terraform 범위는 EC2 · 네트워크까지다. kubeadm · containerd · Calico 설치는 user-data 가 Ansible 을 실행해 처리하며,
-# CP 자동 부트스트랩 · 워커 자동 join 이슈에서 user-data 를 채운다.
+# Terraform 범위는 EC2 · 네트워크까지다. kubeadm · containerd · Calico · Traefik 설치와 워커 join 은
+# user-data 가 Ansible 을 실행해 처리한다 (bootstrap.tf).
 # 노드 접속은 SSM Session Manager 로 한다 (22 포트, 키 페어 없음).
 
 data "terraform_remote_state" "network" {

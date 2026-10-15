@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { HOTELS } from '../data/hotels'
+import { getHotels } from '../data/hotelStore'
 import type { Hotel } from '../data/hotels'
 import { fetchRoom, toImageDataUrl } from '../api/hotels'
 import type { Room } from '../api/hotels'
@@ -68,7 +68,7 @@ function ReservationCompletePage() {
       setBooking(found)
 
       // Booking 응답엔 roomId만 있고 hotelId가 없어, 등록된 호텔들을 순서대로 시도해 소속 호텔/객실을 찾는다.
-      for (const h of HOTELS) {
+      for (const h of getHotels()) {
         try {
           const r = await fetchRoom(h.hotelId, found.roomId)
           if (cancelled) return

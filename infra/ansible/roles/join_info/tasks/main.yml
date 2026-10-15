@@ -42,7 +42,7 @@
     content: |
       # control-plane.yml 이 생성 — 커밋 금지, 팀 비밀 채널로만 공유
       # token 만료: {{ kubeadm_token_ttl }} 후
-      K8S_API_ENDPOINT={{ ts_ip }}:6443
+      K8S_API_ENDPOINT={{ k8s_control_plane_endpoint }}:6443
       K8S_JOIN_TOKEN={{ join_token.stdout | trim }}
       K8S_CA_CERT_HASH=sha256:{{ ca_hash.stdout | trim }}
     mode: "0600"

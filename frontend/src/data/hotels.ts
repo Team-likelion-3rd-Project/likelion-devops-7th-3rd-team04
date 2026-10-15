@@ -4,8 +4,12 @@ import seoulWaters from '../assets/images/hotels/seoul/waters.jpg'
 import busanHero from '../assets/images/hotels/busan/hero.jpg'
 import busanStay from '../assets/images/hotels/busan/stay.jpg'
 import busanWaters from '../assets/images/hotels/busan/waters.jpg'
+import jejuHero from '../assets/images/hotels/jeju/hero.jpg'
+import jejuStay from '../assets/images/hotels/jeju/stay.jpg'
+import jejuWaters from '../assets/images/hotels/jeju/waters.jpg'
 
-// TODO: 실제 데이터가 준비되면 api-gateway(/api/hotels)에서 가져오도록 교체
+// 화면에 쓰는 호텔 기본값. 이름·소개·주소·전화번호는 앱 시작 시 GET /api/hotels 응답으로 덮어쓴다
+// (data/hotelStore.ts). id(주소용 slug)·사진·색은 DB에 없어 여기 값을 그대로 쓴다.
 export interface Hotel {
   id: string
   /** hotel-service(백엔드)의 실제 PK. 객실 조회 등 gRPC 연동 API 호출 시 이 숫자 ID를 사용한다. */
@@ -13,6 +17,9 @@ export interface Hotel {
   name: string
   location: string
   summary: string
+  /** DB의 전체 주소·전화번호 — API 응답을 받은 뒤에만 채워진다 */
+  address?: string
+  phoneNumber?: string
   /** 실사진이 준비되기 전까지 카드/히어로에 쓸 플레이스홀더 그라디언트 */
   accent: string
   /** 실사진이 준비된 슬롯만 채운다. 비어있는 슬롯은 accent 그라디언트로 대체 렌더링된다. */
@@ -50,7 +57,6 @@ export const HOTELS: Hotel[] = [
     location: '제주 서귀포시',
     summary: '자연 속 프라이빗한 힐링 스테이',
     accent: 'linear-gradient(135deg, #2f3a26, #5a6b3d)',
-    // 사진 미제공 — accent 그라디언트로 대체 표시됨
-    images: {},
+    images: { hero: jejuHero, stay: jejuStay, waters: jejuWaters },
   },
 ]

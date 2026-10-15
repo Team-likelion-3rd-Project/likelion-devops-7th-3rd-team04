@@ -67,6 +67,27 @@ export class BookingServiceController {
     return this.bookingServiceService.confirmBooking(data.reservationId);
   }
 
+  // 결제 준비 (위키 API 명세 5.8). api-gateway가 JWT의 userId와 함께 넘긴다.
+  @GrpcMethod('BookingService', 'PreparePayment')
+  async preparePayment(data: { reservationId: number; userId: number }) {
+    return this.bookingServiceService.preparePayment(
+      data.reservationId,
+      data.userId,
+    );
+  }
+
+  // 결제 승인 (위키 API 명세 5.9). 토스 결제창(또는 MOCK)이 돌려준 값으로 승인을 요청한다.
+  @GrpcMethod('BookingService', 'ConfirmPayment')
+  async confirmPayment(data: {
+    reservationId: number;
+    userId: number;
+    paymentKey: string;
+    orderId: string;
+    amount: number;
+  }) {
+    return this.bookingServiceService.confirmPayment(data);
+  }
+
   // 특정 예약에 연결된 편의시설 이용 내역 목록 조회
   @GrpcMethod('BookingService', 'GetReservationFacilitiesByReservationId')
   async getReservationFacilitiesByReservationId(data: {

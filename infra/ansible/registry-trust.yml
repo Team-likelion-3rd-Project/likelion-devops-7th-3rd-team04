@@ -1,0 +1,9 @@
+---
+# k8s 노드의 containerd 설정만 다시 맞춥니다 (certs.d 사용 + 사설 CA 를 쓸 때 레지스트리 CA 신뢰).
+# 기본 구성(tailscale serve 의 공인 인증서)에서는 config_path 설정만 반영됩니다. (README 12-7)
+# 워커는 각자 자기 노드만:  ansible-playbook registry-trust.yml -K -l worker-<이름>
+- name: containerd 레지스트리 설정 (모든 k8s 노드)
+  hosts: control_plane:workers
+  become: true
+  roles:
+    - containerd

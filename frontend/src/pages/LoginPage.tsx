@@ -2,17 +2,16 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { login } from '../api/gateway'
+import { loginRedirectPath, type LoginLocationState } from '../utils/loginRedirect'
 import './LoginPage.css'
-
-interface LoginLocationState {
-  message?: string
-}
 
 function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
   // 비밀번호 변경 후 로그아웃 -> 재로그인 유도처럼, 다른 페이지에서 안내 메시지를 들고 넘어올 수 있다.
-  const infoMessage = (location.state as LoginLocationState | null)?.message
+  // from은 로그인 전에 보던 화면 — 로그인 후 그 화면으로 돌려보낸다(없으면 홈).
+  const loginState = location.state as LoginLocationState | null
+  const infoMessage = loginState?.message
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -27,7 +26,7 @@ function LoginPage() {
       // login()이 응답의 액세스 토큰을 메모리(tokenStore)에 저장한다.
       // 리프레시 토큰은 서버가 httpOnly 쿠키로 내려주므로 JS에서는 다루지 않는다.
       await login({ email, password })
-      navigate('/')
+      navigate(loginRedirectPath(loginState?.from), { replace: true })
     } catch {
       // 서버가 내려주는 구체적인 실패 사유(비밀번호 형식 오류/이메일 불일치 등)를 그대로 노출하지 않고
       // 하나의 문구로 통일한다 (계정 존재 여부·비밀번호 정책을 추측할 수 있는 단서를 주지 않기 위함).
@@ -78,7 +77,9 @@ function LoginPage() {
         </form>
 
         <p className="login-footer">
-          계정이 없으신가요? <Link to="/signup">회원가입</Link>
+          계정이 없으신가요? <Link to="/signup" state={loginState?.from ? { from: loginState.from } : undefined}>
+            회원가입
+          </Link>
         </p>
       </div>
     </section>

@@ -1,0 +1,4 @@
+---
+# kubeadm join 실패 시 reset 후 다시 시도하는 횟수. 온프레미스는 사람이 실행하므로 재시도하지 않는다 (0 = 1회 실행).
+# AWS 는 group_vars/aws.yml 에서 덮어쓴다
+kubeadm_join_retries: 0

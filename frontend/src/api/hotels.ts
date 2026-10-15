@@ -46,6 +46,22 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   return res.json()
 }
 
+// proto의 Hotel 메시지 / gateway HotelDto와 1:1 대응
+export interface HotelInfo {
+  hotelId: number
+  name: string
+  address: string
+  phoneNumber: string
+  description: string
+}
+
+// GET /api/hotels — 등록된 전체 호텔 목록 조회 (인증 불필요)
+export async function fetchHotels(): Promise<HotelInfo[]> {
+  const res = await fetch(`${BASE_URL}/api/hotels`)
+  const data = await parseJsonOrThrow<{ hotels: HotelInfo[] }>(res)
+  return data.hotels
+}
+
 // GET /api/hotels/{hotelId}/rooms — 특정 호텔의 전체 객실 목록 조회 (인증 불필요)
 export async function fetchRooms(hotelId: number): Promise<Room[]> {
   const res = await fetch(`${BASE_URL}/api/hotels/${hotelId}/rooms`)

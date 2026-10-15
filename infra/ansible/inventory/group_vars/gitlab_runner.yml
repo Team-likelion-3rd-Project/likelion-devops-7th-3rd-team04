@@ -15,6 +15,9 @@ gitlab_fqdn: "{{ gitlab_url | urlsplit('hostname') }}"
 # ── Runner 설정 ───────────────────────────────────────────
 gitlab_runner_concurrent: 2                    # 동시 job 수 (vCPU 수 이하 권장)
 gitlab_runner_default_image: "alpine:3.22"     # .gitlab-ci.yml 에 image 미지정 시
+# backend 파이프라인은 kaniko 로 빌드하므로 docker.sock 이 필요 없음.
+# 다른 프로젝트가 docker CLI 를 쓰지 않는 것을 확인했으면 false 로 바꿔 job 의 호스트 root 권한을 없앱니다 (README 12-7)
+gitlab_runner_mount_docker_sock: true
 
 # ── 방화벽: 인바운드 서비스 없음 (SSH / Tailscale 만) ─────────
 firewall_tailnet_tcp_ports: []

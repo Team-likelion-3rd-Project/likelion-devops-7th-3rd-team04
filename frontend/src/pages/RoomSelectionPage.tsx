@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { HOTELS } from '../data/hotels'
+import { useHotels } from '../data/hotelStore'
 import { searchRooms, toImageDataUrl } from '../api/hotels'
 import type { Room, RoomSearchResult } from '../api/hotels'
 import ReservationSteps from '../components/reservation/ReservationSteps'
@@ -16,12 +16,14 @@ type ListStatus = 'loading' | 'success' | 'error'
 type SortOrder = 'price-asc' | 'price-desc'
 
 function RoomSelectionPage() {
+  // 호텔 이름·소개는 API(GET /api/hotels) 응답으로 갱신된다 (data/hotelStore.ts)
+  const hotels = useHotels()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
 
   // 1단계(호텔/날짜/투숙인원 선택)에서 쿼리스트링으로 실어 보낸 검색 조건.
   const search = useMemo(() => parseReservationSearchParams(searchParams), [searchParams])
-  const hotel = search ? HOTELS.find((h) => h.id === search.hotelSlug) ?? null : null
+  const hotel = search ? hotels.find((h) => h.id === search.hotelSlug) ?? null : null
 
   // GET /rooms/search 결과 — capacity가 투숙 인원 이상이고 지정 기간 동안 예약 가능한 객실만 담겨
   // 있으므로, 목록에 뜨는 객실은 전부 바로 "선택" 가능하다(별도 가용성 재확인이 필요 없다).

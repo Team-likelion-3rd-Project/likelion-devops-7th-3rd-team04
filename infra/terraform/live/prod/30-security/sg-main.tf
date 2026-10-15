@@ -1,4 +1,4 @@
-# Main VPC SG 와 규칙 (설계 문서 4-1절 M1 – M12, M14)
+# Main VPC SG 와 규칙 (설계 문서 4-1절 M1 – M12, M14, M15)
 #
 # 노드(워커 · CP) 는 아웃바운드 전체 허용(M14) 이라 노드에서 출발하는 흐름은 대상 SG 인바운드만 만든다.
 # 아웃바운드가 제한된 LB(ALB, 내부 NLB) 에서 출발하는 흐름은 인바운드 · 아웃바운드 양쪽을 만든다.
@@ -48,11 +48,17 @@ locals {
       # M5 NLB → kube-apiserver, 헬스체크. Target Group preserve_client_ip = false 라 출처가 NLB
       m5_cp_apiserver_from_nlb = { sg = "main_cp", source = "main_internal_nlb", port = 6443, description = "M5 kube-apiserver from internal NLB" }
 
+      # M15 파드 → kubernetes Service(10.96.0.1:443) → kube-apiserver. kube-proxy 가 NLB 가 아닌 CP IP:6443 으로 DNAT 한다
+      m15_cp_apiserver_from_worker = { sg = "main_cp", source = "main_worker", port = 6443, description = "M15 kube-apiserver via kubernetes Service from workers" }
+      m15_cp_apiserver_from_cp     = { sg = "main_cp", source = "main_cp", port = 6443, description = "M15 kube-apiserver via kubernetes Service from control plane" }
+
       # M6 스택형 etcd 클라이언트 · 피어
       m6_cp_etcd_from_cp = { sg = "main_cp", source = "main_cp", from_port = 2379, to_port = 2380, description = "M6 etcd from control plane" }
 
       # M7 kube-apiserver → kubelet (logs, exec, port-forward)
       m7_worker_kubelet_from_cp = { sg = "main_worker", source = "main_cp", port = 10250, description = "M7 kubelet from control plane" }
+      # CP 파드 대상. 요청이 NLB 를 거쳐 다른 CP 의 apiserver 로 가면 CP → CP 로 붙는다
+      m7_cp_kubelet_from_cp = { sg = "main_cp", source = "main_cp", port = 10250, description = "M7 kubelet from control plane" }
 
       # M9 · M10 Calico VXLAN, Typha (워커 ↔ CP, CP ↔ CP)
       m9_worker_vxlan_from_cp  = { sg = "main_worker", source = "main_cp", protocol = "udp", port = 4789, description = "M9 Calico VXLAN from control plane" }

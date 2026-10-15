@@ -15,6 +15,8 @@ import { REDIS_CLIENT } from './redis.constants';
           host: process.env.REDIS_HOST || 'localhost',
           port: Number(process.env.REDIS_PORT || 6379),
           password: process.env.REDIS_PASSWORD || undefined,
+          // 같은 Redis를 쓰는 다른 용도(GitLab CI 이미지 smoke test 등)와 키가 섞이지 않게 DB 번호를 분리할 때 사용
+          db: Number(process.env.REDIS_DB || 0),
           tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
         });
       },

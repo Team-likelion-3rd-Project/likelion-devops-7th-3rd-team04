@@ -57,3 +57,9 @@ variable "root_volume_size" {
   type        = number
   default     = 30
 }
+
+variable "ansible_core_version" {
+  description = "노드 user-data 가 pip 로 설치할 ansible-core 마이너 버전. Ubuntu 22.04 python 3.10 은 2.17 까지 지원"
+  type        = string
+  default     = "2.17"
+}

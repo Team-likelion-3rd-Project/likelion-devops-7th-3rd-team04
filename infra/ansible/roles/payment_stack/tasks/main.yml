@@ -1,0 +1,340 @@
+---
+# 결제 노드: 결제 MariaDB + ElasticMQ 기동 → 결제 DB 계정 맞추기 → Flyway(payment-migrations) → payment-service
+# payment-service 는 synchronize: false 라 테이블을 직접 만들지 않으므로, 앱보다 Flyway 가 먼저 성공해야 함.
+# (클러스터 차트의 migrations.payment hook 은 dev 에서 끔 — 결제 DB 를 클러스터에 노출하지 않기 위해, README 14절)
+
+# ── --tags deploy 단독 실행 대비 (tailscale role 을 건너뛴 경우) ──
+- name: Tailscale IP 조회
+  ansible.builtin.command: tailscale ip -4
+  register: pay_ts_ip
+  changed_when: false
+  when: ts_ip is not defined
+
+- name: ts_ip fact 등록
+  ansible.builtin.set_fact:
+    ts_ip: "{{ pay_ts_ip.stdout_lines | first }}"
+  when: ts_ip is not defined
+
+- name: 필수값 확인 (--tags deploy 포함)
+  ansible.builtin.assert:
+    that: item.value | length > 0
+    fail_msg: "{{ item.key }} 가 비어 있습니다. README 14-2 의 값 설정을 확인하세요."
+    quiet: true
+  loop: "{{ required_env | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  no_log: true
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+# dockerd / git 이 MagicDNS 해석에 의존하지 않게 GitLab 주소 고정 (Runner 의 extra_hosts 와 같은 이유)
+- name: GitLab FQDN → Tailscale IP 고정
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '\s{{ gitlab_fqdn | regex_escape }}$'
+    line: "{{ gitlab_ts_ip }} {{ gitlab_fqdn }}"
+
+# ── 이미지 태그 결정 ─────────────────────────────────────
+- name: gitops 태그 조회
+  when: payment_image_tag_override | length == 0
+  block:
+    - name: gitops 레포 임시 디렉토리
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: gitops
+      register: pay_gitops_tmp
+      changed_when: false
+
+    # Deploy Token 은 Authorization 헤더를 환경변수(GIT_CONFIG_*)로 넘겨 명령행·디스크에 남기지 않음
+    - name: gitops 레포 clone ({{ payment_gitops_repo }})
+      ansible.builtin.command:
+        argv:
+          - git
+          - clone
+          - --quiet
+          - --depth=1
+          - --branch={{ payment_gitops_branch }}
+          - "{{ gitlab_url }}/{{ payment_gitops_repo }}.git"
+          - "{{ pay_gitops_tmp.path }}/repo"
+      environment:
+        GIT_TERMINAL_PROMPT: "0"
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: http.extraHeader
+        GIT_CONFIG_VALUE_0: "Authorization: Basic {{ (payment_deploy_user ~ ':' ~ payment_deploy_token) | b64encode }}"
+      changed_when: false
+      no_log: true
+      register: pay_gitops_clone
+      failed_when: false
+
+    - name: gitops clone 실패 안내
+      ansible.builtin.fail:
+        msg: >-
+          {{ gitlab_url }}/{{ payment_gitops_repo }} 를 clone 하지 못했습니다 (rc={{ pay_gitops_clone.rc }}).
+          PAYMENT_DEPLOY_TOKEN 에 read_repository 권한이 있는지(gitlab.yml --tags bootstrap 로 재발급),
+          ACL tag:payment → tag:gitlab tcp:443 을 확인하세요.
+          {{ pay_gitops_clone.stderr | default('') | regex_replace('Basic [A-Za-z0-9+/=]+', 'Basic ***') }}
+      when: pay_gitops_clone.rc != 0
+
+    - name: gitops values 읽기
+      ansible.builtin.slurp:
+        src: "{{ pay_gitops_tmp.path }}/repo/{{ payment_gitops_values }}"
+      register: pay_gitops_values
+
+    - name: gitops 태그 등록
+      ansible.builtin.set_fact:
+        pay_gitops_tag: "{{ ((pay_gitops_values.content | b64decode | from_yaml).global | default({})).imageTag | default('') | string }}"
+  always:
+    - name: gitops 임시 디렉토리 삭제
+      ansible.builtin.file:
+        path: "{{ pay_gitops_tmp.path }}"
+        state: absent
+      when: pay_gitops_tmp.path is defined
+      changed_when: false
+
+- name: 이미지 태그 결정
+  ansible.builtin.set_fact:
+    payment_image_tag: "{{ payment_image_tag_override if payment_image_tag_override | length > 0 else pay_gitops_tag }}"
+
+- name: 이미지 태그 확인
+  ansible.builtin.assert:
+    that:
+      - payment_image_tag | length > 0
+      - payment_image_tag != 'latest'
+    fail_msg: >-
+      사용할 이미지 태그가 없습니다. gitops {{ payment_gitops_values }} 의 global.imageTag 가 비어 있으면
+      develop 파이프라인의 deploy-dev 를 먼저 실행하거나, PAYMENT_IMAGE_TAG=<커밋 short sha> 로 지정하세요. (latest 는 사용 불가)
+    quiet: true
+
+- name: 이미지 경로
+  ansible.builtin.set_fact:
+    payment_service_image: "{{ gitlab_registry }}/{{ payment_image_prefix }}/payment-service:{{ payment_image_tag }}"
+    payment_migrations_image: "{{ gitlab_registry }}/{{ payment_image_prefix }}/payment-migrations:{{ payment_image_tag }}"
+
+# ── 레지스트리 로그인 (root 의 ~/.docker/config.json) ───────────
+- name: GitLab Container Registry 로그인
+  ansible.builtin.command:
+    cmd: docker login --username {{ payment_deploy_user }} --password-stdin {{ gitlab_registry }}
+    stdin: "{{ payment_deploy_token }}"
+  changed_when: false
+  no_log: true
+  register: pay_registry_login
+  failed_when: false
+
+- name: 레지스트리 로그인 실패 안내
+  ansible.builtin.fail:
+    msg: >-
+      {{ gitlab_registry }} 로그인 실패 (rc={{ pay_registry_login.rc }}): {{ pay_registry_login.stderr | default('') }}
+      — PAYMENT_DEPLOY_USER/TOKEN 과 ACL tag:payment → tag:gitlab tcp:5050 을 확인하세요.
+  when: pay_registry_login.rc != 0
+
+# ── 디렉토리 / 설정 ──────────────────────────────────────
+- name: 설정 디렉토리 (비밀값 포함 → root 전용)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ payment_base_dir }}"
+    - "{{ payment_base_dir }}/conf"
+    - "{{ payment_base_dir }}/mysql"
+
+- name: MariaDB 데이터 디렉토리
+  ansible.builtin.file:
+    path: "{{ payment_data_dir }}/mariadb"
+    state: directory
+    mode: "0755"
+
+# ElasticMQ 이미지는 elasticmq 사용자로 실행 → 이미지 안의 uid 로 데이터 디렉토리 소유자를 맞춤
+- name: ElasticMQ 이미지 pull
+  ansible.builtin.command: docker pull --quiet {{ elasticmq_image }}
+  changed_when: false
+
+- name: ElasticMQ 실행 uid/gid 조회
+  ansible.builtin.command: docker run --rm --entrypoint id {{ elasticmq_image }} -u
+  register: pay_elasticmq_uid
+  changed_when: false
+
+- name: ElasticMQ 데이터 디렉토리
+  ansible.builtin.file:
+    path: "{{ payment_data_dir }}/elasticmq"
+    state: directory
+    owner: "{{ pay_elasticmq_uid.stdout | trim }}"
+    mode: "0750"
+
+- name: MariaDB 설정
+  ansible.builtin.template:
+    src: mariadb.cnf.j2
+    dest: "{{ payment_base_dir }}/conf/mariadb.cnf"
+    mode: "0644"
+  register: pay_mariadb_conf
+
+- name: ElasticMQ 설정 (큐 정의)
+  ansible.builtin.template:
+    src: elasticmq.conf.j2
+    dest: "{{ payment_base_dir }}/conf/elasticmq.conf"
+    mode: "0644"
+  register: pay_elasticmq_conf
+
+- name: 컨테이너 환경변수 파일
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ payment_base_dir }}/{{ item }}"
+    mode: "0600"
+  loop: [mariadb.env, payment.env, flyway.env]
+  no_log: true
+
+- name: reconcile 용 client 자격증명 (명령행에 비밀번호 노출 방지)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ payment_base_dir }}/mysql/{{ item }}"
+    mode: "0600"
+  loop: [root.cnf, app.cnf]
+  no_log: true
+
+- name: compose 파일
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ payment_base_dir }}/compose.yml"
+    mode: "0600"
+
+- name: 이미지 pull (payment-service / payment-migrations / mariadb)
+  ansible.builtin.command: docker compose --profile migrate pull --quiet
+  args:
+    chdir: "{{ payment_base_dir }}"
+  changed_when: false
+
+# ── 1) 결제 DB · ElasticMQ ───────────────────────────────
+- name: 결제 DB · ElasticMQ 기동 (healthy 까지 대기)
+  ansible.builtin.command: docker compose up -d --wait --wait-timeout 300 mariadb elasticmq
+  args:
+    chdir: "{{ payment_base_dir }}"
+  register: pay_infra_up
+  changed_when: >-
+    'Started' in pay_infra_up.stderr or
+    'Recreated' in pay_infra_up.stderr or
+    'Created' in pay_infra_up.stderr
+
+# 공식 이미지는 MARIADB_* 를 최초 초기화 시 1회만 반영 → 매 실행 앱 계정 접속을 검사하고 실패할 때만 재설정 (db_stack 과 같음)
+- name: 결제 DB 앱 계정 접속 검사
+  ansible.builtin.command: >-
+    docker exec payment-mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/app.cnf -e "SELECT 1"
+  register: pay_app_login
+  changed_when: false
+  failed_when: false
+
+- name: 결제 DB / 앱 계정 재설정
+  ansible.builtin.command:
+    cmd: docker exec -i payment-mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf
+    stdin: |
+      CREATE DATABASE IF NOT EXISTS `{{ payment_db_database }}` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+      CREATE USER IF NOT EXISTS '{{ payment_db_username }}'@'%' IDENTIFIED BY '{{ payment_db_password }}';
+      ALTER USER '{{ payment_db_username }}'@'%' IDENTIFIED BY '{{ payment_db_password }}';
+      GRANT ALL PRIVILEGES ON `{{ payment_db_database }}`.* TO '{{ payment_db_username }}'@'%';
+  when: pay_app_login.rc != 0
+  register: pay_db_reconcile
+  failed_when: false
+  changed_when: pay_db_reconcile.rc == 0
+  no_log: true
+
+- name: 재설정 실패 안내
+  ansible.builtin.fail:
+    msg: >-
+      root 계정으로 결제 DB 에 접속하지 못했습니다. PAYMENT_DB_ROOT_PASSWORD 가
+      최초 초기화 때 값과 다른 경우입니다 (root 비밀번호 변경은 자동화하지 않음 — README 14-3).
+  when: pay_db_reconcile is not skipped and pay_db_reconcile.rc != 0
+
+- name: 결제 DB 앱 계정 접속 재검사
+  ansible.builtin.command: >-
+    docker exec payment-mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/app.cnf -e "SELECT 1"
+  changed_when: false
+  when: pay_app_login.rc != 0
+
+- name: ElasticMQ 큐 확인
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ elasticmq_port }}/?Action=GetQueueUrl&QueueName={{ item }}"
+  loop:
+    - "{{ payment_result_queue }}"
+    - "{{ payment_result_dlq }}"
+  changed_when: false
+
+# ── 2) Flyway — payment-service 보다 먼저 ─────────────────────
+- name: 결제 DB 마이그레이션 (payment-migrations:{{ payment_image_tag }})
+  ansible.builtin.command: docker compose --profile migrate run --rm payment-db-migration
+  args:
+    chdir: "{{ payment_base_dir }}"
+  register: pay_migrate
+  changed_when: "'Successfully applied' in pay_migrate.stdout"
+  failed_when: false
+
+- name: 마이그레이션 실패 안내
+  ansible.builtin.fail:
+    msg:
+      - "Flyway migrate 실패 (rc={{ pay_migrate.rc }}) — payment-service 는 갱신하지 않았습니다."
+      - "이미 적용된 SQL 을 수정했다면 validate 오류입니다. 새 버전 파일로 추가하세요 (backend/apps/payment-service/migrations/README.md)."
+      - "{{ ((pay_migrate.stdout_lines | default([])) + (pay_migrate.stderr_lines | default([])))[-15:] }}"
+  when: pay_migrate.rc != 0
+
+# ── 3) payment-service ──────────────────────────────────
+- name: payment-service 기동 (healthy 까지 대기)
+  ansible.builtin.command: docker compose up -d --wait --wait-timeout 180 payment-service
+  args:
+    chdir: "{{ payment_base_dir }}"
+  register: pay_app_up
+  changed_when: >-
+    'Started' in pay_app_up.stderr or
+    'Recreated' in pay_app_up.stderr or
+    'Created' in pay_app_up.stderr
+  failed_when: false
+
+- name: payment-service 기동 실패 안내
+  when: pay_app_up.rc != 0
+  block:
+    - name: payment-service 로그
+      ansible.builtin.command: docker logs --tail 40 payment-service
+      register: pay_app_logs
+      changed_when: false
+      failed_when: false
+
+    - name: payment-service 기동 실패
+      ansible.builtin.fail:
+        msg:
+          - "payment-service 가 healthy 가 되지 않았습니다 ({{ payment_service_image }})."
+          - "{{ (pay_app_logs.stdout_lines | default([])) + (pay_app_logs.stderr_lines | default([])) }}"
+
+# CI 가 빌드한 이미지(org.opencontainers.image.source label) 중 컨테이너가 쓰지 않고 7일 지난 것만 삭제.
+# 현재 태그의 payment-migrations 가 지워지면 다음 실행 때 다시 pull 함
+- name: 이전 태그 이미지 정리
+  ansible.builtin.command: >-
+    docker image prune -af
+    --filter "label=org.opencontainers.image.source"
+    --filter "until=168h"
+  register: pay_prune
+  changed_when: "'Total reclaimed space: 0B' not in pay_prune.stdout"
+
+- name: 적용된 결제 DB 마이그레이션 버전
+  ansible.builtin.command: >-
+    docker exec payment-mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/app.cnf -N
+    -e "SELECT version FROM flyway_schema_history WHERE success = 1 AND version IS NOT NULL ORDER BY installed_rank DESC LIMIT 1"
+  register: pay_schema_version
+  changed_when: false
+
+- name: 접속 정보 / dev gitops 값
+  ansible.builtin.debug:
+    msg:
+      - "이미지 태그 : {{ payment_image_tag }} ({{ 'PAYMENT_IMAGE_TAG 지정' if payment_image_tag_override | length > 0 else 'gitops ' ~ payment_gitops_values ~ ' 와 같음' }})"
+      - "결제 DB    : 127.0.0.1:{{ payment_db_port }} (노드 내부 전용, schema V{{ pay_schema_version.stdout | trim }})"
+      - "payment    : {{ ts_ip }}:{{ payment_service_port }} (gRPC)"
+      - "ElasticMQ  : {{ payment_result_queue_url }}  (DLQ {{ payment_result_dlq }})"
+      - "── gitops {{ payment_gitops_repo }} {{ payment_gitops_values }} 에 아래 값이 있어야 합니다 (README 14-4) ──"
+      - "services.api-gateway.env.PAYMENT_SERVICE_HOST: \"{{ ts_ip }}:{{ payment_service_port }}\""
+      - "services.booking-service.nodePort: {{ booking_nodeport }}"
+      - "services.booking-service.env.PAYMENT_SERVICE_HOST: \"{{ ts_ip }}:{{ payment_service_port }}\""
+      - "services.booking-service.env.SQS_ENDPOINT: \"http://{{ ts_ip }}:{{ elasticmq_port }}\""
+      - "services.booking-service.env.SQS_REGION: {{ elasticmq_region }}"
+      - "services.booking-service.env.PAYMENT_RESULT_QUEUE_URL: \"{{ payment_result_queue_url }}\""
+      - "services.booking-service.env.AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: elasticmq (더미)"
+      - "services.pg-mock-service.nodePort: {{ pg_mock_nodeport }}"
+      - "services.payment-service.enabled: false / migrations.payment.enabled: false"

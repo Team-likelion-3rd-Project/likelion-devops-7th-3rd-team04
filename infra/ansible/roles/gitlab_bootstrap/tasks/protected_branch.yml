@@ -1,0 +1,32 @@
+---
+# 미러 대상 브랜치를 보호합니다. (vars: branch_name)
+#  - protected CI 변수(GITOPS_PUSH_TOKEN 등)가 이 브랜치 파이프라인에만 노출되도록
+#  - GitHub 미러는 force push 로 브랜치를 맞추므로 allow_force_push 필요 (push 는 Maintainer = 미러 토큰만)
+- name: "보호 브랜치 조회 ({{ branch_name }})"
+  ansible.builtin.uri:
+    url: "{{ gl_api }}/projects/{{ gl_ids[gitlab_app_project_path] }}/protected_branches/{{ branch_name }}"
+    status_code: [200, 404]
+  register: pb_existing
+
+- name: "보호 브랜치 생성 ({{ branch_name }})"
+  ansible.builtin.uri:
+    url: "{{ gl_api }}/projects/{{ gl_ids[gitlab_app_project_path] }}/protected_branches"
+    method: POST
+    body:
+      name: "{{ branch_name }}"
+      push_access_level: 40
+      merge_access_level: 40
+      allow_force_push: true
+    status_code: 201
+  when: pb_existing.status == 404
+  changed_when: true
+
+- name: "force push 허용 ({{ branch_name }})"
+  ansible.builtin.uri:
+    url: "{{ gl_api }}/projects/{{ gl_ids[gitlab_app_project_path] }}/protected_branches/{{ branch_name }}"
+    method: PATCH
+    body:
+      allow_force_push: true
+    status_code: 200
+  when: pb_existing.status == 200 and not pb_existing.json.allow_force_push
+  changed_when: true

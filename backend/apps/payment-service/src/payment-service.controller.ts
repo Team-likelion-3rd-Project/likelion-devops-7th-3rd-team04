@@ -52,6 +52,20 @@ export class PaymentServiceController {
     return { payments };
   }
 
+  // 결제 승인. booking-service의 ConfirmPayment(위키 API 명세 5.9)가 호출한다. REST로는 노출되지 않는다.
+  @GrpcMethod('PaymentService', 'ApprovePayment')
+  async approvePayment(data: {
+    idempotencyKey: string;
+    reservationId: number;
+    userId: number;
+    orderId: string;
+    paymentKey: string;
+    amount: number;
+    orderName: string;
+  }) {
+    return this.paymentServiceService.approvePayment(data);
+  }
+
   // 예약 취소 시 booking-service가 호출하는 내부용 환불 RPC. REST로는 노출되지 않는다.
   @GrpcMethod('PaymentService', 'RefundPayment')
   async refundPayment(data: { reservationId: number }) {

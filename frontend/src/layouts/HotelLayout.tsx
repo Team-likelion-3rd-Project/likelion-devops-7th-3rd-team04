@@ -1,5 +1,5 @@
 import { Outlet, useParams } from 'react-router-dom'
-import { HOTELS } from '../data/hotels'
+import { useHotels } from '../data/hotelStore'
 import type { Hotel } from '../data/hotels'
 import PlaceholderPage from '../components/PlaceholderPage'
 import './HotelLayout.css'
@@ -14,8 +14,10 @@ export interface HotelOutletContext {
  * 자식 페이지들은 useOutletContext로 이미 확인된 hotel을 그대로 사용한다.
  */
 function HotelLayout() {
+  // 호텔 이름·소개는 API(GET /api/hotels) 응답으로 갱신된다 (data/hotelStore.ts)
+  const hotels = useHotels()
   const { hotelId } = useParams<{ hotelId: string }>()
-  const hotel = HOTELS.find((h) => h.id === hotelId)
+  const hotel = hotels.find((h) => h.id === hotelId)
 
   if (!hotel) {
     return <PlaceholderPage title="호텔을 찾을 수 없습니다" />
