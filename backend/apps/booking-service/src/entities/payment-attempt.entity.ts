@@ -46,6 +46,12 @@ export class PaymentAttempt {
   @Column({ name: 'failure_reason', nullable: true })
   failureReason?: string;
 
+  // payment-service에 승인을 요청하기 직전에 기록하는 시각 (V7). 값이 있는데 아직 REQUESTED면
+  // "승인을 요청했지만 결과를 모르는" 상태 — 예약 응답에서 CONFIRMING으로 내려 준다.
+  // 비어 있으면 결제 준비만 하고 승인 요청은 안 보낸 시도다 (토스 결제창에서 닫기 등).
+  @Column({ name: 'confirm_requested_at', type: 'datetime', nullable: true })
+  confirmRequestedAt?: Date | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 

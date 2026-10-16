@@ -51,7 +51,7 @@ interface BookingDto {
   totalAmount: number;
   status: string;
   paymentDueAt: string; // 결제 마감 시각(ISO 8601). 없으면 빈 문자열
-  lastPaymentAttemptStatus: string; // 최근 결제 시도 상태 REQUESTED/SUCCEEDED/FAILED. 없으면 빈 문자열
+  lastPaymentAttemptStatus: string; // 최근 결제 시도 상태 REQUESTED/CONFIRMING/SUCCEEDED/FAILED. 없으면 빈 문자열 (CONFIRMING = 승인 요청 후 결과 확인 중 → 결제 버튼 막기)
 }
 
 // proto의 PreparePaymentResponse와 1:1 대응 (위키 API 명세 5.8)
