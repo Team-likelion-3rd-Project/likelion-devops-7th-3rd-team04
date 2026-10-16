@@ -79,6 +79,7 @@ export class HotelServiceController {
     hotelId: number;
     name: string;
     capacity: number;
+    totalCount?: number;
     description: string;
     images?: RoomImageInput[];
   }) {
@@ -92,6 +93,7 @@ export class HotelServiceController {
     roomId: number;
     name: string;
     capacity: number;
+    totalCount?: number;
     description: string;
     images?: RoomImageInput[];
   }) {
@@ -120,7 +122,7 @@ export class HotelServiceController {
     );
   }
 
-  // proto의 HotelService / SetRoomAvailability 메서드와 매핑: 예약 가능일 갱신 (booking-service가 호출)
+  // proto의 HotelService / SetRoomAvailability 메서드와 매핑: 관리자 판매 중지/재개 (예약 수는 그대로)
   @GrpcMethod('HotelService', 'SetRoomAvailability')
   async setRoomAvailability(data: {
     roomId: number;
@@ -135,6 +137,7 @@ export class HotelServiceController {
       data.isAvailable,
     );
   }
+
   // proto의 HotelService / ReserveRoomAvailability 메서드와 매핑: booking-service가 예약 생성 시 호출
   @GrpcMethod('HotelService', 'ReserveRoomAvailability')
   async reserveRoomAvailability(data: {
@@ -143,6 +146,20 @@ export class HotelServiceController {
     endDate: string;
   }) {
     return this.roomService.reserveRoomAvailability(
+      data.roomId,
+      data.startDate,
+      data.endDate,
+    );
+  }
+
+  // proto의 HotelService / ReleaseRoomAvailability 메서드와 매핑: booking-service가 예약 취소·결제 실패 시 호출
+  @GrpcMethod('HotelService', 'ReleaseRoomAvailability')
+  async releaseRoomAvailability(data: {
+    roomId: number;
+    startDate: string;
+    endDate: string;
+  }) {
+    return this.roomService.releaseRoomAvailability(
       data.roomId,
       data.startDate,
       data.endDate,

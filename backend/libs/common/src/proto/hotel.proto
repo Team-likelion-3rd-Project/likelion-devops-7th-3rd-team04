@@ -17,7 +17,7 @@ service HotelService {
 
   // 체크인/체크아웃 날짜와 인원수를 바탕으로 특정 호텔에서 예약 가능한 객실을 검색합니다.
   // (hotelId가 존재하지 않으면 에러) capacity가 guests 이상이고, checkIn~(checkOut 전날)까지
-  // 모든 날짜의 room_availabilities가 하루도 빠짐없이 존재하며 isAvailable=true인 객실만 반환합니다.
+  // 모든 날짜의 room_availabilities가 하루도 빠짐없이 존재하며 "판매 중 + 남은 방 1개 이상"인 객실만 반환합니다.
   // 검색 과정에서 이미 조회한 room_availabilities.price로 minPrice(구간 중 최저 1박 요금)도 함께 계산해 돌려줍니다.
   rpc SearchRooms (SearchRoomsRequest) returns (RoomSearchResponse);
 
@@ -34,15 +34,21 @@ service HotelService {
   // 특정 객실의 지정 기간 예약 가능 여부를 조회합니다. (hotelId/roomId 조합이 존재하지 않으면 에러)
   rpc GetRoomAvailability (GetRoomAvailabilityRequest) returns (RoomAvailabilityResponse);
 
-  // booking-service가 예약 생성/취소 시 예약 가능일을 갱신하기 위해 호출합니다.
-  // (startDate~endDate 구간, 둘 다 포함) roomId에 해당하는 행이 없는 날짜는 조용히 건너뜁니다.
+  // 관리자 판매 중지/재개 (isAvailable=false → 판매 중지, true → 판매 재개).
+  // 판매 상태(is_available)만 바꾸고 예약 수(booked_count)는 그대로 둡니다 — 판매 중지해도 기존 예약은 유지되고
+  // 새 예약만 막힙니다. (startDate~endDate 구간, 둘 다 포함) roomId에 해당하는 행이 없는 날짜는 조용히 건너뜁니다.
+  // V8 전에는 booking-service가 예약 취소 시 이 RPC로 되돌렸지만, 이제 취소는 ReleaseRoomAvailability를 씁니다.
   rpc SetRoomAvailability (SetRoomAvailabilityRequest) returns (SetRoomAvailabilityResponse);
-  
+
   // booking-service 전용: 예약 생성 시 호출됩니다. roomId의 지정 기간(startDate~endDate, 둘 다 포함)에
-  // room_availabilities row가 하루도 빠짐없이 존재하고 전부 isAvailable=true인지 검증한 뒤, 원자적으로
-  // (같은 트랜잭션 내에서) 전부 isAvailable=false로 전환하고 가격 합계를 반환합니다.
-  // 하루라도 row가 없거나 이미 isAvailable=false면 예약을 막기 위해 RpcException을 던집니다.
+  // room_availabilities row가 하루도 빠짐없이 존재하고 전부 "판매 중 + 남은 방 1개 이상"인지 검증한 뒤,
+  // 같은 트랜잭션 내에서 날짜별 booked_count를 1씩 올리고 가격 합계를 반환합니다.
+  // 하루라도 row가 없거나 판매 중지·매진이면 예약을 막기 위해 RpcException을 던집니다.
   rpc ReserveRoomAvailability (ReserveRoomAvailabilityRequest) returns (ReserveRoomAvailabilityResponse);
+
+  // booking-service 전용: 예약이 취소·결제 실패·만료로 풀릴 때 호출됩니다. 지정 기간(startDate~endDate,
+  // 둘 다 포함)의 날짜별 booked_count를 1씩 내립니다(남은 방 +1). 판매 중지 여부는 바꾸지 않습니다.
+  rpc ReleaseRoomAvailability (ReleaseRoomAvailabilityRequest) returns (ReleaseRoomAvailabilityResponse);
 
   // 관리자 전용: 특정 호텔에 신규 편의시설을 등록합니다. (hotelId가 존재하지 않으면 에러)
   rpc CreateFacility (CreateFacilityRequest) returns (Facility);
@@ -118,6 +124,7 @@ message CreateRoomRequest {
   string description = 4;
   // 객실 이미지 목록 (배열 순서대로 sortOrder가 매겨짐, 0번째가 대표 이미지)
   repeated RoomImageInput images = 5;
+  int32 totalCount = 6; // 객실 타입별 보유 수량. 안 보내면(0) 1개
 }
 
 // 객실 이미지. Base64로 인코딩된 이미지 데이터를 DB 컬럼에 직접 저장한다.
@@ -141,6 +148,7 @@ message Room {
   int32 capacity = 4;
   string description = 5;
   repeated RoomImage images = 6;
+  int32 totalCount = 7; // 객실 타입별 보유 수량 (같은 날짜에 이 수만큼 예약 가능)
 }
 
 message UpdateRoomRequest {
@@ -151,6 +159,7 @@ message UpdateRoomRequest {
   string description = 5;
   // PUT은 이미지 전체를 교체한다 — 기존 이미지를 유지하려면 그대로 포함해서 다시 보내야 한다.
   repeated RoomImageInput images = 6;
+  int32 totalCount = 7; // 객실 타입별 보유 수량. 안 보내면(0) 기존 값 유지
 }
 
 message DeleteRoomRequest {
@@ -171,8 +180,10 @@ message GetRoomAvailabilityRequest {
 
 message RoomAvailabilityDay {
   string date = 1;
-  bool isAvailable = 2;
+  bool isAvailable = 2; // 예약 가능 = 판매 중 && 남은 방 > 0
   int32 price = 3;
+  int32 remainingCount = 4; // 남은 방 수 (0이면 매진)
+  bool isSaleStopped = 5; // 관리자 판매 중지 여부
 }
 
 message RoomAvailabilityResponse {
@@ -182,6 +193,7 @@ message RoomAvailabilityResponse {
   string endDate = 4;
   bool isAvailable = 5;
   repeated RoomAvailabilityDay availabilities = 6;
+  int32 totalCount = 7; // 객실 타입별 보유 수량
 }
 
 message SetRoomAvailabilityRequest {
@@ -202,8 +214,18 @@ message ReserveRoomAvailabilityRequest {
 }
 
 message ReserveRoomAvailabilityResponse {
-  // 예약 불가로 전환된 기간(startDate~endDate, 둘 다 포함)의 일별 price 합계
+  // 예약한 기간(startDate~endDate, 둘 다 포함)의 일별 price 합계
   int32 totalAmount = 1;
+}
+
+message ReleaseRoomAvailabilityRequest {
+  int32 roomId = 1;
+  string startDate = 2; // 포함
+  string endDate = 3; // 포함
+}
+
+message ReleaseRoomAvailabilityResponse {
+  bool success = 1;
 }
 
 message Facility {

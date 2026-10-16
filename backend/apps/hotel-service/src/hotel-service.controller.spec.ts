@@ -1,10 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { DataSource, MoreThanOrEqual } from 'typeorm';
+import { Between, DataSource, MoreThan, MoreThanOrEqual } from 'typeorm';
 import { RpcException } from '@nestjs/microservices';
 import { HotelServiceController } from './hotel-service.controller';
 import { HotelServiceService } from './hotel-service.service';
 import { RoomService } from './room.service';
+import { FacilityService } from './facility.service';
 import { Hotel } from './entities/hotel.entity';
 import { Room } from './entities/room.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
@@ -20,7 +21,15 @@ describe('HotelServiceController', () => {
     create: jest.Mock;
     delete: jest.Mock;
   };
-  let roomAvailabilityRepository: { find: jest.Mock; delete: jest.Mock };
+  let roomAvailabilityRepository: {
+    find: jest.Mock;
+    delete: jest.Mock;
+    update: jest.Mock;
+    decrement: jest.Mock;
+    maximum: jest.Mock;
+  };
+  // reserveRoomAvailability가 쓰는 트랜잭션 안의 manager
+  let manager: { findOne: jest.Mock; find: jest.Mock; increment: jest.Mock };
   let roomImageRepository: {
     find: jest.Mock;
     delete: jest.Mock;
@@ -40,6 +49,7 @@ describe('HotelServiceController', () => {
     hotelId: 1,
     name: '디럭스 더블룸',
     capacity: 2,
+    totalCount: 1,
     description: '시티뷰를 갖춘 넓은 더블룸입니다.',
   };
 
@@ -55,6 +65,18 @@ describe('HotelServiceController', () => {
     roomAvailabilityRepository = {
       find: jest.fn(),
       delete: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      decrement: jest.fn().mockResolvedValue({ affected: 1 }),
+      maximum: jest.fn().mockResolvedValue(null),
+    };
+    manager = {
+      findOne: jest.fn(),
+      find: jest.fn(),
+      increment: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const dataSource = {
+      transaction: (work: (m: typeof manager) => Promise<unknown>) =>
+        work(manager),
     };
     roomImageRepository = {
       find: jest.fn().mockResolvedValue([]),
@@ -70,7 +92,8 @@ describe('HotelServiceController', () => {
       providers: [
         HotelServiceService,
         RoomService,
-        { provide: DataSource, useValue: {} },
+        { provide: FacilityService, useValue: {} },
+        { provide: DataSource, useValue: dataSource },
         { provide: getRepositoryToken(Hotel), useValue: hotelRepository },
         { provide: getRepositoryToken(Room), useValue: roomRepository },
         {
@@ -170,6 +193,7 @@ describe('HotelServiceController', () => {
             hotelId: 1,
             name: '디럭스 더블룸',
             capacity: 2,
+            totalCount: 1,
             description: '시티뷰를 갖춘 넓은 더블룸입니다.',
             images: [],
           },
@@ -244,6 +268,7 @@ describe('HotelServiceController', () => {
         hotelId: 1,
         name: '디럭스 더블룸',
         capacity: 2,
+        totalCount: 1,
         description: '시티뷰를 갖춘 넓은 더블룸입니다.',
         images: [],
       });
@@ -260,15 +285,39 @@ describe('HotelServiceController', () => {
 
   describe('searchRooms', () => {
     const roomA = { ...room, roomId: 1, capacity: 2 };
-    const roomB = { roomId: 2, hotelId: 1, name: '패밀리 스위트', capacity: 4 };
+    const roomB = {
+      roomId: 2,
+      hotelId: 1,
+      name: '패밀리 스위트',
+      capacity: 4,
+      totalCount: 1,
+    };
 
     it('should return only rooms available for every night in the range', async () => {
       hotelRepository.findOne.mockResolvedValue(hotel);
       roomRepository.find.mockResolvedValue([roomA, roomB]);
       roomAvailabilityRepository.find.mockResolvedValue([
-        { roomId: 1, date: '2026-09-01', price: 100000, isAvailable: true },
-        { roomId: 1, date: '2026-09-02', price: 90000, isAvailable: true },
-        { roomId: 2, date: '2026-09-01', price: 150000, isAvailable: true },
+        {
+          roomId: 1,
+          date: '2026-09-01',
+          price: 100000,
+          isAvailable: true,
+          bookedCount: 0,
+        },
+        {
+          roomId: 1,
+          date: '2026-09-02',
+          price: 90000,
+          isAvailable: true,
+          bookedCount: 0,
+        },
+        {
+          roomId: 2,
+          date: '2026-09-01',
+          price: 150000,
+          isAvailable: true,
+          bookedCount: 0,
+        },
         // roomId 2는 09-02 행이 없어 구간을 전부 채우지 못함 -> 제외
       ]);
 
@@ -318,6 +367,53 @@ describe('HotelServiceController', () => {
       expect(result.results).toEqual([]);
       expect(roomAvailabilityRepository.find).not.toHaveBeenCalled();
     });
+
+    it('판매 중이어도 하루라도 매진(예약 수 = 보유 수량)이면 제외한다', async () => {
+      hotelRepository.findOne.mockResolvedValue(hotel);
+      roomRepository.find.mockResolvedValue([
+        { ...roomA, totalCount: 3 },
+        { ...roomB, totalCount: 2 },
+      ]);
+      roomAvailabilityRepository.find.mockResolvedValue([
+        {
+          roomId: 1,
+          date: '2026-09-01',
+          price: 100000,
+          isAvailable: true,
+          bookedCount: 2,
+        },
+        {
+          roomId: 1,
+          date: '2026-09-02',
+          price: 100000,
+          isAvailable: true,
+          bookedCount: 0,
+        },
+        {
+          roomId: 2,
+          date: '2026-09-01',
+          price: 150000,
+          isAvailable: true,
+          bookedCount: 2,
+        }, // 매진
+        {
+          roomId: 2,
+          date: '2026-09-02',
+          price: 150000,
+          isAvailable: true,
+          bookedCount: 0,
+        },
+      ]);
+
+      const result = await hotelServiceController.searchRooms({
+        hotelId: 1,
+        checkIn: '2026-09-01',
+        checkOut: '2026-09-03',
+        guests: 2,
+      });
+
+      expect(result.results.map((r) => r.room.roomId)).toEqual([1]);
+    });
   });
 
   describe('updateRoom', () => {
@@ -351,6 +447,7 @@ describe('HotelServiceController', () => {
         hotelId: 1,
         name: '스탠다드 트윈룸',
         capacity: 3,
+        totalCount: 1,
         description: '수정된 설명입니다.',
         images: [],
       });
@@ -443,8 +540,20 @@ describe('HotelServiceController', () => {
     it('should report overall availability true when every day in range is available', async () => {
       roomRepository.findOne.mockResolvedValue(room);
       roomAvailabilityRepository.find.mockResolvedValue([
-        { roomId: 1, date: '2026-08-20', price: 100000, isAvailable: true },
-        { roomId: 1, date: '2026-08-21', price: 100000, isAvailable: true },
+        {
+          roomId: 1,
+          date: '2026-08-20',
+          price: 100000,
+          isAvailable: true,
+          bookedCount: 0,
+        },
+        {
+          roomId: 1,
+          date: '2026-08-21',
+          price: 100000,
+          isAvailable: true,
+          bookedCount: 0,
+        },
       ]);
 
       const result = await hotelServiceController.getRoomAvailability({
@@ -464,9 +573,22 @@ describe('HotelServiceController', () => {
         startDate: '2026-08-20',
         endDate: '2026-08-21',
         isAvailable: true,
+        totalCount: 1,
         availabilities: [
-          { date: '2026-08-20', isAvailable: true, price: 100000 },
-          { date: '2026-08-21', isAvailable: true, price: 100000 },
+          {
+            date: '2026-08-20',
+            isAvailable: true,
+            price: 100000,
+            remainingCount: 1,
+            isSaleStopped: false,
+          },
+          {
+            date: '2026-08-21',
+            isAvailable: true,
+            price: 100000,
+            remainingCount: 1,
+            isSaleStopped: false,
+          },
         ],
       });
     });
@@ -475,7 +597,13 @@ describe('HotelServiceController', () => {
       roomRepository.findOne.mockResolvedValue(room);
       // 2026-08-21 하루가 비어있어 구간(20~21) 전체가 아님 -> false
       roomAvailabilityRepository.find.mockResolvedValue([
-        { roomId: 1, date: '2026-08-20', price: 100000, isAvailable: true },
+        {
+          roomId: 1,
+          date: '2026-08-20',
+          price: 100000,
+          isAvailable: true,
+          bookedCount: 0,
+        },
       ]);
 
       const result = await hotelServiceController.getRoomAvailability({
@@ -500,6 +628,215 @@ describe('HotelServiceController', () => {
         }),
       ).rejects.toThrow(RpcException);
       expect(roomAvailabilityRepository.find).not.toHaveBeenCalled();
+    });
+
+    it('날짜별로 매진(남은 방 0)과 판매 중지를 구분해서 내려 준다', async () => {
+      roomRepository.findOne.mockResolvedValue({ ...room, totalCount: 3 });
+      roomAvailabilityRepository.find.mockResolvedValue([
+        // 매진: 판매 중인데 남은 방 0
+        {
+          roomId: 1,
+          date: '2026-08-20',
+          price: 100000,
+          isAvailable: true,
+          bookedCount: 3,
+        },
+        // 판매 중지: 남은 방은 2개지만 관리자가 막음
+        {
+          roomId: 1,
+          date: '2026-08-21',
+          price: 100000,
+          isAvailable: false,
+          bookedCount: 1,
+        },
+        // 예약 가능
+        {
+          roomId: 1,
+          date: '2026-08-22',
+          price: 100000,
+          isAvailable: true,
+          bookedCount: 1,
+        },
+      ]);
+
+      const result = await hotelServiceController.getRoomAvailability({
+        hotelId: 1,
+        roomId: 1,
+        startDate: '2026-08-20',
+        endDate: '2026-08-22',
+      });
+
+      expect(result.isAvailable).toBe(false);
+      expect(result.totalCount).toBe(3);
+      expect(
+        result.availabilities.map(
+          ({ isAvailable, remainingCount, isSaleStopped }) => ({
+            isAvailable,
+            remainingCount,
+            isSaleStopped,
+          }),
+        ),
+      ).toEqual([
+        { isAvailable: false, remainingCount: 0, isSaleStopped: false },
+        { isAvailable: false, remainingCount: 2, isSaleStopped: true },
+        { isAvailable: true, remainingCount: 2, isSaleStopped: false },
+      ]);
+    });
+  });
+
+  // LDP-62: 객실 타입별 보유 수량(재고)
+  describe('reserveRoomAvailability (예약 → 날짜별 예약 수 +1)', () => {
+    const reserve = () =>
+      hotelServiceController.reserveRoomAvailability({
+        roomId: 1,
+        startDate: '2026-09-01',
+        endDate: '2026-09-02',
+      });
+    const day = (date: string, overrides: Record<string, unknown> = {}) => ({
+      roomId: 1,
+      date,
+      price: 100000,
+      isAvailable: true,
+      bookedCount: 0,
+      ...overrides,
+    });
+
+    it('남은 방이 있으면 날짜별 예약 수를 1씩 올리고 가격 합계를 돌려준다 (판매 상태는 그대로)', async () => {
+      manager.findOne.mockResolvedValue({ ...room, totalCount: 3 });
+      manager.find.mockResolvedValue([
+        day('2026-09-01', { bookedCount: 2 }),
+        day('2026-09-02', { price: 90000 }),
+      ]);
+
+      const result = await reserve();
+
+      expect(result).toEqual({ totalAmount: 190000 });
+      expect(manager.find).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ lock: { mode: 'pessimistic_write' } }),
+      );
+      expect(manager.increment).toHaveBeenCalledWith(
+        expect.anything(),
+        { roomId: 1, date: Between('2026-09-01', '2026-09-02') },
+        'bookedCount',
+        1,
+      );
+      expect(roomAvailabilityRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('하루라도 매진(예약 수 = 보유 수량)이면 거절한다 — N개면 N+1번째 예약 불가', async () => {
+      manager.findOne.mockResolvedValue({ ...room, totalCount: 3 });
+      manager.find.mockResolvedValue([
+        day('2026-09-01', { bookedCount: 3 }),
+        day('2026-09-02'),
+      ]);
+
+      await expect(reserve()).rejects.toThrow(RpcException);
+      expect(manager.increment).not.toHaveBeenCalled();
+    });
+
+    it('남은 방이 있어도 판매 중지한 날짜가 있으면 거절한다', async () => {
+      manager.findOne.mockResolvedValue({ ...room, totalCount: 3 });
+      manager.find.mockResolvedValue([
+        day('2026-09-01', { isAvailable: false }),
+        day('2026-09-02'),
+      ]);
+
+      await expect(reserve()).rejects.toThrow(RpcException);
+      expect(manager.increment).not.toHaveBeenCalled();
+    });
+
+    it('달력 행이 빠진 날짜가 있으면 거절한다', async () => {
+      manager.findOne.mockResolvedValue({ ...room, totalCount: 3 });
+      manager.find.mockResolvedValue([day('2026-09-01')]);
+
+      await expect(reserve()).rejects.toThrow(RpcException);
+      expect(manager.increment).not.toHaveBeenCalled();
+    });
+
+    it('존재하지 않는 객실이면 거절한다', async () => {
+      manager.findOne.mockResolvedValue(null);
+
+      await expect(reserve()).rejects.toThrow(RpcException);
+      expect(manager.find).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('releaseRoomAvailability (예약 취소 → 날짜별 예약 수 -1)', () => {
+    it('예약 수가 0보다 큰 날짜만 1씩 내리고, 판매 중지 여부는 건드리지 않는다', async () => {
+      const result = await hotelServiceController.releaseRoomAvailability({
+        roomId: 1,
+        startDate: '2026-09-01',
+        endDate: '2026-09-02',
+      });
+
+      expect(result).toEqual({ success: true });
+      expect(roomAvailabilityRepository.decrement).toHaveBeenCalledWith(
+        {
+          roomId: 1,
+          date: Between('2026-09-01', '2026-09-02'),
+          bookedCount: MoreThan(0),
+        },
+        'bookedCount',
+        1,
+      );
+      expect(roomAvailabilityRepository.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('setRoomAvailability (관리자 판매 중지/재개)', () => {
+    it('판매 상태만 바꾸고 예약 수는 건드리지 않는다', async () => {
+      await hotelServiceController.setRoomAvailability({
+        roomId: 1,
+        startDate: '2026-09-01',
+        endDate: '2026-09-02',
+        isAvailable: false,
+      });
+
+      expect(roomAvailabilityRepository.update).toHaveBeenCalledWith(
+        { roomId: 1, date: Between('2026-09-01', '2026-09-02') },
+        { isAvailable: false },
+      );
+      expect(roomAvailabilityRepository.decrement).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateRoom 보유 수량(totalCount)', () => {
+    const update = (totalCount?: number) =>
+      hotelServiceController.updateRoom({
+        hotelId: 1,
+        roomId: 1,
+        name: '디럭스 더블룸',
+        capacity: 2,
+        totalCount,
+        description: '',
+      });
+
+    beforeEach(() => {
+      roomRepository.findOne.mockResolvedValue({ ...room, totalCount: 5 });
+      roomRepository.save.mockImplementation((r) => Promise.resolve(r));
+    });
+
+    it('보유 수량을 보내면 바꾼다', async () => {
+      roomAvailabilityRepository.maximum.mockResolvedValue(2);
+
+      const result = await update(10);
+
+      expect(result.totalCount).toBe(10);
+    });
+
+    it('보유 수량을 안 보내면(0) 기존 값을 유지한다', async () => {
+      const result = await update(0);
+
+      expect(result.totalCount).toBe(5);
+      expect(roomAvailabilityRepository.maximum).not.toHaveBeenCalled();
+    });
+
+    it('오늘 이후 이미 예약된 수보다 적게 줄이려 하면 거절한다', async () => {
+      roomAvailabilityRepository.maximum.mockResolvedValue(4);
+
+      await expect(update(3)).rejects.toThrow(RpcException);
+      expect(roomRepository.save).not.toHaveBeenCalled();
     });
   });
 });

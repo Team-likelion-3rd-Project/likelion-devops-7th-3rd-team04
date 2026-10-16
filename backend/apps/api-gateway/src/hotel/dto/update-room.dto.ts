@@ -30,6 +30,15 @@ export class UpdateRoomDto {
   capacity: number;
 
   /**
+   * 객실 타입별 보유 수량. 생략하면 기존 값 유지. 오늘 이후 이미 예약된 수보다 적게는 줄일 수 없다
+   * @example 10
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  totalCount?: number;
+
+  /**
    * 객실 설명
    * @example "시티뷰를 갖춘 넓은 더블룸입니다."
    */

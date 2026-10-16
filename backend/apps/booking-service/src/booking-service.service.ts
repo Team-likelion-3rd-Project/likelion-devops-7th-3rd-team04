@@ -54,13 +54,12 @@ export interface PreparePaymentResponse {
   paymentDueAt: string;
 }
 
-// libs/common/src/proto/hotel.proto의 HotelService / SetRoomAvailability와 1:1 대응
+// libs/common/src/proto/hotel.proto의 HotelService / ReleaseRoomAvailability와 1:1 대응
 interface HotelGrpcService {
-  setRoomAvailability(data: {
+  releaseRoomAvailability(data: {
     roomId: number;
     startDate: string;
     endDate: string;
-    isAvailable: boolean;
   }): Observable<{ success: boolean }>;
 }
 // libs/common/src/proto/hotel.proto의 ReserveRoomAvailabilityResponse 메시지와 1:1 대응
@@ -829,19 +828,18 @@ export class BookingServiceService implements OnModuleInit {
     }
   }
 
-  // 예약이 잡아둔 날짜(체크인~체크아웃 전날)를 다시 예약 가능으로 돌린다. 실패해도 예약 상태 변경은
-  // 이미 끝났으므로 요청을 실패시키지 않고 로그만 남긴다(가용일 동기화는 별도로 복구 가능).
+  // 예약이 잡아둔 날짜(체크인~체크아웃 전날)의 예약 수를 1씩 돌려준다 (남은 방 +1, 판매 중지 여부는 그대로).
+  // 실패해도 예약 상태 변경은 이미 끝났으므로 요청을 실패시키지 않고 로그만 남긴다(재고 동기화는 별도로 복구 가능).
   private async releaseRoomAvailability(
     reservation: Reservation,
     reason: string,
   ): Promise<void> {
     try {
       await firstValueFrom(
-        this.hotelService.setRoomAvailability({
+        this.hotelService.releaseRoomAvailability({
           roomId: reservation.roomId,
           startDate: reservation.checkInDate,
           endDate: this.dayBefore(reservation.checkOutDate),
-          isAvailable: true,
         }),
       );
     } catch (error) {
