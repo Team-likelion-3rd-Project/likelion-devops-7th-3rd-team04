@@ -100,7 +100,7 @@ message Booking {
   int32 guestCount = 10;
   int32 hotelId = 11; // 스냅샷 컬럼. 이 컬럼 추가 이전에 생성된 예약은 0으로 내려온다.
   string paymentDueAt = 12; // 결제 마감 시각(ISO 8601). 없으면 빈 문자열
-  string lastPaymentAttemptStatus = 13; // 가장 최근 결제 시도 상태 REQUESTED/SUCCEEDED/FAILED. 시도 없으면 빈 문자열
+  string lastPaymentAttemptStatus = 13; // 가장 최근 결제 시도 상태 REQUESTED/CONFIRMING/SUCCEEDED/FAILED. 시도 없으면 빈 문자열 (CONFIRMING = 승인 요청 후 결과 확인 중, LDP-67)
 }
 
 message PreparePaymentRequest {

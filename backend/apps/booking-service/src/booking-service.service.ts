@@ -3,7 +3,7 @@ import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
-import { DataSource, In, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, In, IsNull, QueryFailedError, Repository } from 'typeorm';
 import { apiRpcException, PaymentResultEvent } from '@app/common';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
 import {
@@ -20,6 +20,10 @@ import { ReservationFacilityService } from './reservation-facility.service';
 const PAYMENT_DUE_MINUTES = 30;
 // 예약 1건당 결제 시도(결제 준비 호출) 최대 횟수 (10/13 프론트 합의, 위키 API 명세 5.8)
 const MAX_PAYMENT_ATTEMPTS = 5;
+// 승인을 요청한 뒤 결과가 이 시간 안에 확정되지 않으면 CONFIRMING 대신 REQUESTED로 내려 재결제를 허용한다 (LDP-67).
+// 결과를 PG 조회로 확정해 주는 대사 배치가 아직 없어서, 확정되지 않은 시도가 결제 버튼을 계속 막지 않게 하려는 것.
+// 그 사이 재결제로 이중 승인이 나도 payment-service가 ALREADY_PAID로 자동 취소한다.
+const CONFIRMING_MINUTES = 10;
 
 // 예약 취소 시 결제 서비스에 보내는 환불 멱등 키. 예약 ID로 항상 같은 값을 만들어서, 취소가 재시도되거나
 // 두 번 들어와도 같은 키로 요청한다 → payments.refund_idempotency_key UNIQUE·토스 Idempotency-Key로 환불 1번.
@@ -143,7 +147,7 @@ export interface BookingGrpcResponse {
   totalAmount: number;
   status: string;
   paymentDueAt: string; // ISO 8601, 없으면 빈 문자열
-  lastPaymentAttemptStatus: string; // REQUESTED/SUCCEEDED/FAILED, 시도 없으면 빈 문자열
+  lastPaymentAttemptStatus: string; // REQUESTED/CONFIRMING/SUCCEEDED/FAILED, 시도 없으면 빈 문자열
 }
 
 // 호텔 상세 페이지의 "호텔별 지표" 섹션이 사용하는 응답. hotelId 스냅샷 컬럼 덕분에
@@ -529,6 +533,17 @@ export class BookingServiceService implements OnModuleInit {
       });
     }
 
+    // 승인 요청 시각을 먼저 남긴다 — 이 뒤로는 "돈이 빠졌을 수도 있는" 시도라서, 결과가 확정될 때까지
+    // 예약 응답에 CONFIRMING으로 나간다. 같은 orderId로 다시 호출해도 처음 시각을 유지한다.
+    await this.paymentAttemptRepository.update(
+      {
+        attemptId: attempt.attemptId,
+        status: PaymentAttemptStatus.REQUESTED,
+        confirmRequestedAt: IsNull(),
+      },
+      { confirmRequestedAt: new Date() },
+    );
+
     const approved = await firstValueFrom(
       this.paymentService.approvePayment({
         idempotencyKey: attempt.idempotencyKey,
@@ -881,10 +896,14 @@ export class BookingServiceService implements OnModuleInit {
       where: { reservationId: In(reservations.map((r) => r.reservationId)) },
       order: { attemptId: 'DESC' },
     });
+    const now = Date.now();
     const lastStatus = new Map<number, string>();
     for (const attempt of attempts) {
       if (!lastStatus.has(attempt.reservationId)) {
-        lastStatus.set(attempt.reservationId, attempt.status);
+        lastStatus.set(
+          attempt.reservationId,
+          this.attemptStatusForResponse(attempt, now),
+        );
       }
     }
     return reservations.map((reservation) =>
@@ -893,6 +912,25 @@ export class BookingServiceService implements OnModuleInit {
         lastStatus.get(reservation.reservationId),
       ),
     );
+  }
+
+  // 응답에 내려 줄 결제 시도 상태 (LDP-67). DB 상태는 REQUESTED/SUCCEEDED/FAILED뿐이라, REQUESTED 중
+  // "승인을 요청했지만 결과를 모르는" 시도만 CONFIRMING으로 구분해 준다 — 프론트는 이때만 결제 버튼을 막는다.
+  //  - REQUESTED + 승인 요청 시각 없음        → REQUESTED (결제 준비만 함, 돈 안 빠짐)
+  //  - REQUESTED + 승인 요청 후 10분 이내     → CONFIRMING (돈이 빠졌을 수도 있음)
+  //  - REQUESTED + 승인 요청 후 10분 지남     → REQUESTED (확정되지 않아도 재결제 허용, CONFIRMING_MINUTES 참고)
+  private attemptStatusForResponse(
+    attempt: PaymentAttempt,
+    now: number,
+  ): string {
+    if (
+      attempt.status === PaymentAttemptStatus.REQUESTED &&
+      attempt.confirmRequestedAt &&
+      now - attempt.confirmRequestedAt.getTime() < CONFIRMING_MINUTES * 60_000
+    ) {
+      return 'CONFIRMING';
+    }
+    return attempt.status;
   }
 
   // 'YYYY-MM-DD' 문자열을 하루 전 날짜로 변환한다. date 컬럼은 시간 정보가 없으므로 UTC 기준으로
