@@ -1,6 +1,6 @@
-// 결제 관련 화면(PaymentsPage, PaymentDetailPage, PaymentCompleteModal)이 함께 쓰는 표시용 헬퍼.
+// 결제 관련 화면(PaymentsPage, PaymentDetailPage)이 함께 쓰는 표시용 헬퍼.
 
-// payment.paymentMethod("CARD" 등, PaymentModal이 보내는 값과 1:1 대응)를 한글 라벨로.
+// payment.paymentMethod("CARD" 등, 2차 결제 방식에서 저장된 값)를 한글 라벨로.
 export const PAYMENT_METHOD_LABEL: Record<string, string> = {
   CARD: '신용·체크카드',
   KAKAOPAY: '카카오페이',

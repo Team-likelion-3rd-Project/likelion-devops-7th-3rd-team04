@@ -2,9 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { fetchMyBookings, isUnauthorized, refreshAccessToken, type Booking } from '../api/gateway'
 import { toImageDataUrl } from '../api/hotels'
-import type { Payment } from '../api/payments'
 import PaymentModal from '../components/reservation/PaymentModal'
-import PaymentCompleteModal from '../components/reservation/PaymentCompleteModal'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { formatDate, fetchRoomLookup, type RoomWithHotel } from './reservationHistoryUtils'
 import { currentLoginState } from '../utils/loginRedirect'
@@ -34,7 +32,6 @@ function PaymentsPendingPage() {
   const [roomLookup, setRoomLookup] = useState<Map<number, RoomWithHotel> | null>(null)
 
   const [payingBooking, setPayingBooking] = useState<Booking | null>(null)
-  const [completedPayment, setCompletedPayment] = useState<Payment | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -96,15 +93,6 @@ function PaymentsPendingPage() {
   }, [])
 
   const pendingBookings = bookings?.filter((booking) => booking.status === 'PENDING_PAYMENT') ?? null
-
-  // 결제가 끝나면 이 페이지가 보여주는 목록(PENDING_PAYMENT만)에서 자연히 빠지므로 예약 상태를
-  // 굳이 갱신하지 않고 목록에서 제거하기만 한다. 결제완료 모달은 확인 시 /payments로 보낸다.
-  const handlePaid = (payment: Payment) => {
-    const paidReservationId = payingBooking?.reservationId
-    setBookings((prev) => prev?.filter((booking) => booking.reservationId !== paidReservationId) ?? prev)
-    setPayingBooking(null)
-    setCompletedPayment(payment)
-  }
 
   return (
     <section className="mypage-page">
@@ -206,12 +194,7 @@ function PaymentsPendingPage() {
             amount: payingBooking.totalAmount,
           }}
           onClose={() => setPayingBooking(null)}
-          onPaid={handlePaid}
         />
-      )}
-
-      {completedPayment && (
-        <PaymentCompleteModal payment={completedPayment} onClose={() => setCompletedPayment(null)} />
       )}
     </section>
   )

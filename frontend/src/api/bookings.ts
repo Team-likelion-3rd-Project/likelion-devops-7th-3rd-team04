@@ -22,6 +22,10 @@ export interface Booking {
   guestCount: number
   totalAmount: number
   status: string
+  /** 결제 마감 시각(ISO 8601). 없으면 빈 문자열 */
+  paymentDueAt?: string
+  /** 최근 결제 시도 상태 REQUESTED / SUCCEEDED / FAILED. 시도가 없으면 빈 문자열 */
+  lastPaymentAttemptStatus?: string
 }
 
 // proto의 ReservationFacilityItem 메시지와 1:1 대응되는 응답 형태
