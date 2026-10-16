@@ -36,12 +36,14 @@ resource "aws_lb_target_group" "apiserver" {
   # 매일 destroy 시간을 줄인다. kube-apiserver 요청은 대부분 짧고 watch 는 클라이언트가 다시 붙는다
   deregistration_delay = 30
 
-  # /readyz 는 익명 접근 허용(system:public-info-viewer). NLB 는 HTTPS 헬스체크 인증서를 검증하지 않는다
+  # /readyz 는 익명 접근 허용(system:public-info-viewer). NLB 는 HTTPS 헬스체크 인증서를 검증하지 않는다.
+  # CP 가 사라지면 unhealthy 판정 전까지 일부 연결이 그 CP 로 가므로 간격을 최소(5초) 로 둔다
   health_check {
     protocol            = "HTTPS"
     path                = "/readyz"
     port                = "traffic-port"
-    interval            = 10
+    interval            = 5
+    timeout             = 3 # interval 보다 짧아야 한다 (HTTPS 기본 10초)
     healthy_threshold   = 2
     unhealthy_threshold = 2
   }
@@ -62,10 +64,10 @@ resource "aws_lb_listener" "apiserver" {
   }
 }
 
-resource "aws_lb_target_group_attachment" "apiserver" {
-  for_each = aws_instance.cp
+# CP ASG 를 연결해 교체된 CP 도 자동 등록 · 해제된다
+resource "aws_autoscaling_attachment" "apiserver" {
+  for_each = aws_autoscaling_group.cp
 
-  target_group_arn = aws_lb_target_group.apiserver.arn
-  target_id        = each.value.id
-  port             = 6443
+  autoscaling_group_name = each.value.name
+  lb_target_group_arn    = aws_lb_target_group.apiserver.arn
 }

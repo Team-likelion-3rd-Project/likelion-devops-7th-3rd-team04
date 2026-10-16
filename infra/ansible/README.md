@@ -49,7 +49,7 @@ infra/ansible/
 │       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
 │       ├── payment.yml        # 결제 노드: 이미지 버전, 결제 DB / ElasticMQ 큐, 클러스터 NodePort
 │       ├── aws.yml                # AWS 노드 공통: Tailscale 끔, kubelet cloud-provider, CA cert hash 대기
-│       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신, CCM · NTH 버전, Traefik 배치, whoami
+│       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신 · CP reconcile 주기, CCM · NTH 버전, Traefik 배치, whoami
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,
@@ -773,7 +773,7 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | 노드 IP (`node_ip`) | Tailscale IP (100.x) | VPC private IP |
 | 노드 이름 | `hosts.ini` 의 `node_name` | EC2 private DNS (`ip-10-10-4-10.ec2.internal`) |
 | `controlPlaneEndpoint` | 노드 IP | 내부 NLB DNS (`certSANs` 에 포함) |
-| CP 대수 | 1대 (`kubeadm init`) | 3대 — CP-a `kubeadm init --upload-certs`, CP-b · c `kubeadm join --control-plane` |
+| CP 대수 | 1대 (`kubeadm init`) | 3대 (AZ 별 ASG) — CP-a `kubeadm init --upload-certs`, CP-b · c `kubeadm join --control-plane`. 교체된 CP 는 모두 join |
 | 워커 join | 사람이 `.env` 에 `K8S_*` 를 넣고 `worker-join.yml` 실행 | ASG 인스턴스가 기동 시 `aws-worker.yml` 자동 실행 (`worker_join` role 재사용) |
 | kubelet `cloud-provider` (`kubelet_cloud_provider`) | 미설정 (kubeadm 설정에 들어가지 않음) | `external` — aws-cloud-controller-manager 가 노드 초기화 (providerID, uninitialized taint 제거) |
 | 워커 join 재시도 (`kubeadm_join_retries`) | 0 (1회 실행) | 3 — 실패 시 `kubeadm reset` 후 30초 간격. CP-b · c 의 etcd 멤버 추가 중 apiserver 타임아웃 대비 |
@@ -794,7 +794,7 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | `ca-cert-hash` (String) | Terraform 이 `pending` 으로 생성 → CP-a 가 init 후 기록 | CP-b · c · 워커가 이 값이 바뀔 때까지 기다린 뒤 join |
 
 - `ca-cert-hash` 가 이미 기록돼 있으면 CP-a 도 init 대신 join 합니다. CP-a 만 교체됐을 때 클러스터를 새로 만들지 않게 하려는 것입니다.
-- **CP 교체 제약:** `kubeadm-certs` Secret 은 init 후 2시간이 지나면 삭제되므로, 그 뒤에 교체된 CP 는 join 에 실패합니다. 남은 CP 에서 `sudo kubeadm init phase upload-certs --upload-certs --certificate-key <파라미터 값>` 으로 다시 올린 뒤 교체합니다. 교체 전 `etcdctl member remove` 로 기존 멤버도 지웁니다. 클러스터는 매일 재생성하므로 자동화하지 않았습니다.
+- **CP 교체:** CP 는 AZ 별 ASG(1대 고정) 라 사라지면 새로 뜨고 join 합니다. CP 3대의 systemd timer `team04-cp-reconcile.timer`(1분) 가 사라진 CP 의 etcd 멤버를 지우고, init 2시간 후 삭제되는 `kubeadm-certs` Secret 을 같은 certificate-key 로 다시 올립니다. 동작 · 확인 방법 · 범위 밖(2대 이상 동시 장애, etcd 백업)은 [Terraform README](../terraform/README.md) 6절.
 - **join token 갱신:** CP 마다 systemd timer `team04-renew-join-token.timer` 가 `kubeadm token create` → `join-token` 파라미터 덮어쓰기. 즉시 갱신하려면 CP 에서 `sudo systemctl start team04-renew-join-token.service`. Terraform 은 이 파라미터 값 변경을 무시합니다.
 - **워커 교체 · 스케일 인:** 종료 전 drain 은 aws-node-termination-handler(NTH), 종료된 워커의 Node 삭제는 aws-cloud-controller-manager(CCM) 가 합니다. 둘 다 CP-a 부트스트랩의 `aws_node_lifecycle` role 이 CP 에 hostNetwork 로 설치합니다 (차트에 hostNetwork 값이 없어 Helm post-renderer 로 추가). 동작 · 확인 방법은 [Terraform README](../terraform/README.md) 6절.
 - 클러스터 확인 (SSM 접속 후): `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide`

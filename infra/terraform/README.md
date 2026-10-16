@@ -119,7 +119,7 @@ bootstrap                                  🔒 최초 1회
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 | 1분 52초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
 | `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 | 15초 |
-| `70-main-cluster-kubeadm` | CP 3대, 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 19초 |
+| `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 31초 |
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 37초 |
 
 `70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, CP-a 의 Traefik · whoami 설치 완료까지 약 7분 – 7분 30초** (apply 중 내부 NLB 생성이 약 2분 45초, 노드 부팅 후 부트스트랩 약 3분 – 4분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
@@ -148,10 +148,10 @@ CP 3대와 워커는 apply 가 끝난 뒤 user-data 가 각각 [`aws-control-pla
 **terraform apply 가 성공해도 부트스트랩은 그 뒤 몇 분 더 걸리고, 실패해도 apply 결과에 나타나지 않습니다.**
 
 ```bash
-# 인스턴스 ID 확인 → SSM 접속 (SSM 은 키 페어 · 22 포트 없이 접속)
-AWS_PROFILE=team04 terraform output control_plane_instance_ids
-AWS_PROFILE=team04 aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$(AWS_PROFILE=team04 terraform output -raw worker_asg_name)" \
-  --query 'AutoScalingGroups[0].Instances[].InstanceId'   # 워커
+# 인스턴스 ID 확인 → SSM 접속 (SSM 은 키 페어 · 22 포트 없이 접속). CP · 워커 모두 ASG 라 인스턴스 ID 는 교체 때마다 바뀐다
+AWS_PROFILE=team04 aws ec2 describe-instances \
+  --filters Name=tag:Project,Values=team04-hotel Name=tag:Role,Values=control-plane,worker Name=instance-state-name,Values=running \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId]' --output text
 AWS_PROFILE=team04 aws ssm start-session --target <인스턴스 ID>
 
 # 노드 안에서
@@ -162,7 +162,7 @@ sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide
 
 - CP-b · c · 워커 로그가 `CA cert hash 기록 대기` 에서 멈춰 있으면 CP-a 의 로그를 먼저 봅니다.
 - CP-a 로그가 `워커 Ready 대기` 에서 멈춰 있으면 워커 로그를 봅니다.
-- Ansible 묶음을 고친 뒤 apply 하면 S3 객체만 바뀌고, 이미 떠 있는 CP 에는 반영되지 않습니다 (user-data 는 첫 부팅에만 실행). 다시 확인하려면 스택을 destroy → apply 합니다. 워커만 확인하려면 워커 인스턴스를 종료해 ASG 가 새로 띄우게 합니다 (시작 템플릿은 최신 버전을 씀).
+- Ansible 묶음을 고친 뒤 apply 하면 S3 객체만 바뀌고, 이미 떠 있는 노드에는 반영되지 않습니다 (user-data 는 첫 부팅에만 실행). 다시 확인하려면 스택을 destroy → apply 하거나, 해당 인스턴스를 종료해 ASG 가 새로 띄우게 합니다 (시작 템플릿은 최신 버전을 씀). CP 는 한 번에 1대씩만 종료합니다 (아래 CP 교체).
 - 워커 join 은 CP-b · c 가 etcd 멤버로 추가되는 동안 타임아웃 날 수 있어 reset 후 30초 간격으로 3회까지 다시 시도합니다 (`kubeadm_join_retries`). 그래도 실패하면 아래 수명주기에 따라 ASG 가 교체합니다.
 
 ### 워커 수명주기 (교체 · 스케일 인 · 부트스트랩 실패)
@@ -194,6 +194,35 @@ $K get events -A --field-selector source=aws-node-termination-handler       # co
   ```
   부트스트랩 코드에 버그가 있으면 워커가 교체를 계속 반복하고, Traefik 이 클러스터 전체에서 죽으면 모든 워커가 ELB 헬스체크로 교체될 수 있습니다.
 - **instance refresh 없음 (상시 운영 시 필요):** 시작 템플릿이 바뀌어도 기존 워커는 그대로입니다. 매일 재생성하므로 지금은 다음 apply 때 반영됩니다. 24시간 운영이라면 AMI 패치 · Kubernetes 업그레이드 · 노드 설정 변경을 기존 워커에 반영하기 위해 instance refresh 가 필요하고, 그때는 AMI 고정(지금은 SSM `current` 를 따라가 관계없는 apply 에서도 템플릿이 바뀜), `min_healthy_percentage = 100` (새 워커를 먼저 띄움), warmup, 앱 PodDisruptionBudget, CP 먼저 업그레이드하는 순서를 함께 정합니다. 당일 반영이 필요하면 `aws autoscaling start-instance-refresh` 를 수동으로 실행하거나 워커를 한 대씩 종료합니다 (둘 다 NTH 가 drain).
+
+### CP 교체 (1대)
+
+CP 는 AZ 별 ASG(1대 고정) 입니다. CP 가 종료 · 장애로 사라지면 아래 과정이 자동으로 진행됩니다. etcd 3대 중 2대가 남아 있어 그동안 클러스터는 계속 동작합니다.
+
+| 단계 | 처리 | 담당 |
+|---|---|---|
+| 감지 · 교체 | EC2 상태 이상 → 종료 → 같은 AZ 에 새 CP 기동. 부트스트랩(join) 실패는 user-data 가 `Unhealthy` 보고 | ASG (`health_check_type = "EC2"`) |
+| apiserver 트래픽 | `/readyz` 실패 CP 를 트래픽에서 뺌 (5초 간격 × 2회), 새 CP 는 ASG 연결로 자동 등록 | 내부 NLB |
+| 사라진 CP 의 etcd 멤버 | 멤버 이름(private DNS) 의 pending · running 인스턴스가 없으면 `member remove` | 남은 CP 의 `team04-cp-reconcile.timer` (1분) |
+| `kubeadm-certs` Secret | init 2시간 후 삭제되면 같은 certificate-key 로 다시 올림 → 교체된 CP 가 언제든 join 가능 | 같은 timer |
+| 사라진 CP 의 Node 객체 | 인스턴스가 사라지면 Node 삭제 | CCM |
+| 새 CP join | `ca-cert-hash` 가 있으므로 CP-a 도 init 이 아니라 join | user-data → `aws-control-plane.yml` |
+
+- CP ASG 는 apiserver 헬스체크(ELB)를 쓰지 않습니다. etcd 가 잠시 불안정해 3대의 `/readyz` 가 동시에 실패하면 3대가 함께 교체되어 etcd 데이터가 모두 사라지기 때문입니다.
+- CP 가 사라진 직후 NLB 가 unhealthy 로 판정하기 전까지(수십 초 이내) 그 CP 로 간 연결은 실패합니다. kubelet · 컨트롤러 · kubectl 은 다시 연결하므로 요청이 잠깐 늦어지는 정도입니다.
+- 처리는 "꺼진 뒤" 에만 필요해서(CP 에는 drain 할 앱 파드가 없음) 워커처럼 lifecycle hook · 이벤트를 쓰지 않고 주기 점검(reconcile) 으로 합니다. 이벤트를 놓쳐도 다음 주기에 처리됩니다.
+
+```bash
+# CP 안에서
+sudo journalctl -u team04-cp-reconcile --since "1 hour ago"     # 고친 것이 있을 때만 로그 (멤버 제거, Secret 재업로드)
+sudo crictl exec "$(sudo crictl ps --name '^etcd$' -q)" \
+  etcdctl --endpoints https://127.0.0.1:2379 --cacert /etc/kubernetes/pki/etcd/ca.crt \
+  --cert /etc/kubernetes/pki/etcd/healthcheck-client.crt --key /etc/kubernetes/pki/etcd/healthcheck-client.key \
+  member list -w table                                              # 멤버 3개, 전부 started
+```
+
+- **범위 밖 (EC2 직접 운영의 제약):** CP 2대 이상 동시 장애(etcd 쿼럼 상실) 복구와 etcd 백업 · 복원은 구현하지 않았습니다. 쿼럼을 잃으면 남은 CP 의 `member remove` 도 실패하므로 스택을 destroy → apply 로 다시 만듭니다 (클러스터 상태는 초기화).
+- CP 를 일부러 교체할 때는 **1대씩**, 새 CP 가 `Ready` 이고 etcd 멤버가 3개 `started` 인 것을 확인한 뒤 다음 CP 를 종료합니다.
 
 ---
 

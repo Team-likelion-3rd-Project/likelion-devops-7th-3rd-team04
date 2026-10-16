@@ -18,6 +18,9 @@ copy_user_kubeconfig: false
 kubeadm_join_token_renew_interval: 12h
 kubeadm_join_token_renew_ttl: 24h
 
+# CP 교체 뒷정리 주기 (team04-cp-reconcile.timer). 사라진 CP 의 etcd 멤버 제거, kubeadm-certs Secret(2시간 후 삭제) 재업로드
+kubeadm_cp_reconcile_interval: 1min
+
 # ── 노드 수명주기 (CP-a 만 설치, aws_node_lifecycle role) ──
 # CCM 이미지는 Kubernetes 마이너 버전(kube_version) 과 맞춘다. 차트 0.0.9 기본값(v1.33.0) 대신 최신 패치
 aws_ccm_chart_version: "0.0.9"

@@ -1,6 +1,6 @@
 # Main VPC 의 kubeadm 클러스터 노드와 kube-apiserver 내부 NLB.
 #
-#   컨트롤 플레인  cp 서브넷 a · b · c 에 1대씩 (스택형 etcd 쿼럼 유지)
+#   컨트롤 플레인  cp 서브넷 a · b · c 에 AZ 별 ASG 1대씩 (스택형 etcd 쿼럼 유지)
 #   내부 NLB       cp 서브넷 a · b · c, TCP 6443 → CP. controlPlaneEndpoint 로 쓴다
 #   워커           worker 서브넷 a · b 의 ASG
 #
