@@ -27,6 +27,7 @@ payment-service의 마이그레이션 규칙과 동일합니다.
 | V4 | payment_attempts/payment_result_inbox 생성 (FK 6~8번) | booking-service |
 | V5 | reservations(user_id), reservations(room_id, check_in_date) 인덱스 추가 (V2 때 "FK+인덱스"였는데 인덱스만 누락됐던 것 뒤늦게 보강) | booking-service |
 | V6 | users/deleted_user/admins/credentials/admin_credentials 기준선 (synchronize가 만들던 구조 그대로) | user-service, auth-service |
+| V7 | payment_attempts.confirm_requested_at(승인 요청 시각) 추가 — "승인 확인 중"(CONFIRMING)과 "결제 준비만 함" 구분 | booking-service |
 
 payment_due_at을 실제로 채우는 로직(예약 생성 시 +30분 설정), payment_attempts/
 payment_result_inbox를 실제로 쓰는 로직(토스 승인 연동, SQS 수신)은 스키마만 다루는 이
