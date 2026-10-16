@@ -8,7 +8,7 @@ backend-deploy/
 │   ├── values.yaml        # 공통 기본값: 포트, healthPort, env, secretEnv, probe, 리소스
 │   └── templates/         # deployment, service, hpa, ingress(api-gateway), migration-job(메인 · 결제 DB Flyway hook)
 └── gitops-seed/           # GitLab team04/infra/backend-gitops 의 초기 내용 (Ansible 이 1회 커밋)
-    └── envs/{dev,prod}/values.yaml.j2
+    └── envs/dev/values.yaml.j2   # dev 전용 — prod values 는 GitHub 별도 prod gitops 레포
 ```
 
 ## 규칙

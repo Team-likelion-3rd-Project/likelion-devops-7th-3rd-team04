@@ -5,8 +5,11 @@
 #   build       : kaniko 로 이미지 10개 빌드 → 후보 태그 ci-<sha> 로 push (develop 만, 그 외는 빌드만)
 #   image-test  : 파이프라인 전용 DB(ci_<id>, ci_main_<id>) 준비 → 후보 이미지를 띄워 /health smoke test
 #   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
-#   deploy      : (수동) gitops 레포에 태그 커밋 → helm upgrade --atomic → rollout status
-#                 deploy-dev: develop → 온프레미스(dev-agent) / deploy-prod: main → EKS(prod-agent, 준비 중)
+#   deploy      : (수동) deploy-dev: develop → GitLab gitops(envs/dev) 태그 커밋 → helm upgrade --atomic → rollout status
+#                 (온프레미스 dev-agent)
+#
+# prod(EKS): 이 파이프라인은 main 에서 이미지 빌드 검증만 합니다 (ECR push 는 prod 구성 후 build job 에 추가).
+#   prod 배포 상태(values · 이미지 태그)는 GitHub 의 별도 prod gitops 레포가 PR 로 관리 — GitLab 은 prod 에 배포하지 않습니다.
 #
 # 클러스터 접근은 GitLab Agent ci_access (kubeconfig 변수 없음). 자세한 구성은 infra/ansible/README.md 12절.
 
@@ -52,6 +55,7 @@ variables:
   HELM_RELEASE: backend
   K8S_NAMESPACE: backend
   AGENT_PROJECT: team04/infra/k8s-agents
+  # dev 전용 gitops 레포 (prod 는 GitHub 별도 레포)
   GITOPS_REPO: team04/infra/backend-gitops
 
   # ── smoke test: dev DB 서버를 쓰되 database 는 파이프라인 전용 ──
@@ -159,7 +163,7 @@ build:
       printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY"
       "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
       > /kaniko/.docker/config.json
-    # develop 만 후보 태그로 push. main 은 prod(ECR) 준비 전까지 빌드 검증만
+    # develop 만 후보 태그로 push. main 은 빌드 검증만 — prod 구성 후 여기에 ECR push 를 추가
     - |
       if [ "$CI_COMMIT_BRANCH" = "develop" ]; then
         set -- --destination "$CI_REGISTRY_IMAGE/$SERVICE:$CANDIDATE_TAG"
@@ -333,7 +337,7 @@ push:
       done
 
 # ── deploy (수동) ─────────────────────────────────────────────
-# 1) gitops 레포 envs/<env>/values.yaml 의 global.imageTag 커밋  2) helm upgrade --atomic  3) rollout status
+# 1) gitops 레포(dev) envs/<env>/values.yaml 의 global.imageTag 커밋  2) helm upgrade --atomic  3) rollout status
 # 배포가 실패하면 1) 의 커밋을 revert 해서 gitops 레포 = 실제 배포 상태를 유지
 .deploy:
   stage: deploy
@@ -405,18 +409,4 @@ deploy-dev:
     name: dev
   rules:
     - if: $CI_COMMIT_BRANCH == "develop"
-      when: manual
-
-# prod(EKS) — ECR push 인증과 EKS 의 prod-agent 가 준비되면 PROD_DEPLOY_ENABLED=true (CI 변수) 로 활성화
-deploy-prod:
-  extends: .deploy
-  needs: [compile]
-  variables:
-    GITOPS_ENV: prod
-    KUBE_CONTEXT: $AGENT_PROJECT:prod-agent
-  resource_group: prod
-  environment:
-    name: prod
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main" && $PROD_DEPLOY_ENABLED == "true"
       when: manual

@@ -47,20 +47,18 @@ gitlab_agents_project_path: "{{ gitlab_group }}/{{ gitlab_infra_subgroup }}/{{ g
 gitlab_gitops_project_path: "{{ gitlab_group }}/{{ gitlab_infra_subgroup }}/{{ gitlab_gitops_project }}"
 gitlab_default_branch: main
 
-# dev-agent = 온프레미스 클러스터, prod-agent = EKS (EKS 스택 구축 후 설치)
-gitlab_agents: [dev-agent, prod-agent]
+# dev-agent = 온프레미스 클러스터. prod(EKS) 는 GitLab 이 배포하지 않으므로 agent 없음 (prod gitops 는 GitHub 별도 레포)
+gitlab_agents: [dev-agent]
 gitlab_agents_src_dir: "{{ playbook_dir }}/../gitlab/k8s-agents"
 gitlab_agents_files:
   - {path: .gitlab/agents/dev-agent/config.yaml, src: "{{ gitlab_agents_src_dir }}/.gitlab/agents/dev-agent/config.yaml"}
-  - {path: .gitlab/agents/prod-agent/config.yaml, src: "{{ gitlab_agents_src_dir }}/.gitlab/agents/prod-agent/config.yaml"}
 
-# backend-gitops 레포 초기 내용 (레포가 비어 있을 때 1회만 — 이후 태그는 CI deploy job 이 커밋)
+# backend-gitops 레포(dev 전용) 초기 내용 (레포가 비어 있을 때 1회만 — 이후 태그는 CI deploy-dev job 이 커밋)
 gitlab_gitops_seed_dir: "{{ playbook_dir }}/../../backend-deploy/gitops-seed"
 gitlab_gitops_seed_files:
   - {path: README.md, src: "{{ gitlab_gitops_seed_dir }}/README.md"}
   # values 는 GitLab 주소가 들어가는 템플릿 → 렌더링 후 커밋
   - {path: envs/dev/values.yaml, src: "{{ gitlab_gitops_seed_dir }}/envs/dev/values.yaml.j2", render: true}
-  - {path: envs/prod/values.yaml, src: "{{ gitlab_gitops_seed_dir }}/envs/prod/values.yaml.j2", render: true}
 
 gitlab_bootstrap_pat_name: ansible-bootstrap   # role 이 끝나면 폐기되는 1일짜리 root 토큰
 gitlab_access_token_days: 364                  # Project Access Token 유효기간 (만료 전 CI 변수/파일 삭제 후 재실행)
