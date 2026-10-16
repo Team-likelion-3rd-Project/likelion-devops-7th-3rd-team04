@@ -1,0 +1,54 @@
+---
+# AWS Main 클러스터 노드 수명주기. 클러스터당 한 번이면 되어 init 한 CP-a 만 실행한다.
+#   CCM  aws-cloud-controller-manager. kubelet cloud-provider: external 로 등록된 노드에 providerID 를 넣고
+#        uninitialized taint 를 지운다. 종료된 인스턴스의 Node 를 삭제한다 (Calico IP 블록은 kube-controllers 가 회수)
+#   NTH  aws-node-termination-handler 큐 모드. 워커 종료 전 cordon · drain 후 ASG lifecycle action 완료
+# 둘 다 CP 에 hostNetwork 로 띄워 CP Role(IMDS) 로 AWS API 를 호출한다
+- name: Helm post-renderer (hostNetwork 추가)
+  ansible.builtin.copy:
+    src: helm-host-network.sh
+    dest: /usr/local/sbin/team04-helm-host-network
+    mode: "0755"
+
+- name: values 파일 생성
+  ansible.builtin.template:
+    src: "{{ item }}-values.yaml.j2"
+    dest: "/etc/kubernetes/{{ item }}-values.yaml"
+    mode: "0644"
+  loop: [ccm, nth]
+
+- name: aws-cloud-controller-manager 설치
+  # 노드가 초기화(taint 제거) 되어야 다른 파드가 뜨므로 DaemonSet Ready 까지 기다린다
+  ansible.builtin.command: >-
+    helm upgrade --install aws-cloud-controller-manager aws-cloud-controller-manager
+    --repo https://kubernetes.github.io/cloud-provider-aws
+    --version {{ aws_ccm_chart_version }}
+    -n kube-system
+    -f /etc/kubernetes/ccm-values.yaml
+    --post-renderer /usr/local/sbin/team04-helm-host-network
+    --wait --timeout 5m
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  changed_when: true
+
+- name: CP 노드 초기화 대기 (providerID)
+  ansible.builtin.command: >-
+    kubectl get node {{ node_name }} -o jsonpath='{.spec.providerID}'
+  environment: *kubeconfig
+  register: cp_provider_id
+  until: cp_provider_id.stdout is match('aws://')
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: aws-node-termination-handler 설치
+  ansible.builtin.command: >-
+    helm upgrade --install aws-node-termination-handler
+    oci://public.ecr.aws/aws-ec2/helm/aws-node-termination-handler
+    --version {{ aws_nth_chart_version }}
+    -n kube-system
+    -f /etc/kubernetes/nth-values.yaml
+    --post-renderer /usr/local/sbin/team04-helm-host-network
+    --wait --timeout 5m
+  environment: *kubeconfig
+  changed_when: true

@@ -3,6 +3,7 @@
 #
 # user-data 가 aws.yml 의 값 외에 넘기는 extra vars
 #   k8s_cp_role                 init (CP-a) | join (CP-b · c)
+#   nth_queue_url               NTH 가 받는 SQS 큐 URL (70 node-lifecycle.tf)
 
 # VPC 점보 프레임 MTU(9001) - VXLAN 오버헤드(50)
 calico_mtu: 8951
@@ -16,6 +17,12 @@ copy_user_kubeconfig: false
 # 당일 ASG 교체 · 확장에 대비해 CP 가 새 token 을 만들어 join-token 파라미터를 덮어쓴다
 kubeadm_join_token_renew_interval: 12h
 kubeadm_join_token_renew_ttl: 24h
+
+# ── 노드 수명주기 (CP-a 만 설치, aws_node_lifecycle role) ──
+# CCM 이미지는 Kubernetes 마이너 버전(kube_version) 과 맞춘다. 차트 0.0.9 기본값(v1.33.0) 대신 최신 패치
+aws_ccm_chart_version: "0.0.9"
+aws_ccm_image_tag: "v1.33.4"
+aws_nth_chart_version: "0.27.6"   # NTH v1.25.6
 
 # ── Ingress Controller (CP-a 만 설치). 버전 · NodePort 는 control_plane.yml ──
 # 워커는 ASG 라 교체 · 확장된다. 어느 워커 NodePort 로 들어와도 응답하도록 워커에 2개 띄우고 Cluster 정책을 쓴다

@@ -12,3 +12,7 @@ nodeRegistration:
   kubeletExtraArgs:
     - name: node-ip
       value: "{{ node_ip }}"
+{% if kubelet_cloud_provider is defined %}
+    - name: cloud-provider
+      value: "{{ kubelet_cloud_provider }}"
+{% endif %}

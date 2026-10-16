@@ -119,10 +119,10 @@ bootstrap                                  🔒 최초 1회
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 | 1분 52초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
 | `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 | 15초 |
-| `70-main-cluster-kubeadm` | CP 3대, 워커 2대 (부트스트랩 포함) | 3분 16초 – 3분 36초 | 1분 40초 – 2분 13초 |
+| `70-main-cluster-kubeadm` | CP 3대, 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 19초 |
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 37초 |
 
-`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, CP-a 의 Traefik · whoami 설치 완료까지 약 7분 – 7분 30초** (apply 중 내부 NLB 생성이 약 2분 45초, 노드 부팅 후 부트스트랩 약 3분 – 4분). 워커 1대 종료 후 교체 워커 Ready 까지 약 3분.
+`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, CP-a 의 Traefik · whoami 설치 완료까지 약 7분 – 7분 30초** (apply 중 내부 NLB 생성이 약 2분 45초, 노드 부팅 후 부트스트랩 약 3분 – 4분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
 
 `70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분** 입니다. 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 4분.
 
@@ -144,7 +144,7 @@ bootstrap                                  🔒 최초 1회
 
 ## 6. `70-main-cluster-kubeadm` 부트스트랩 확인
 
-CP 3대와 워커는 apply 가 끝난 뒤 user-data 가 각각 [`aws-control-plane.yml`](../ansible/aws-control-plane.yml), [`aws-worker.yml`](../ansible/aws-worker.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 12절). CP-a 는 워커가 Ready 가 되면 Traefik · whoami 까지 설치합니다.
+CP 3대와 워커는 apply 가 끝난 뒤 user-data 가 각각 [`aws-control-plane.yml`](../ansible/aws-control-plane.yml), [`aws-worker.yml`](../ansible/aws-worker.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 13절). CP-a 는 워커가 Ready 가 되면 Traefik · whoami 까지 설치합니다.
 **terraform apply 가 성공해도 부트스트랩은 그 뒤 몇 분 더 걸리고, 실패해도 apply 결과에 나타나지 않습니다.**
 
 ```bash
@@ -163,7 +163,37 @@ sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide
 - CP-b · c · 워커 로그가 `CA cert hash 기록 대기` 에서 멈춰 있으면 CP-a 의 로그를 먼저 봅니다.
 - CP-a 로그가 `워커 Ready 대기` 에서 멈춰 있으면 워커 로그를 봅니다.
 - Ansible 묶음을 고친 뒤 apply 하면 S3 객체만 바뀌고, 이미 떠 있는 CP 에는 반영되지 않습니다 (user-data 는 첫 부팅에만 실행). 다시 확인하려면 스택을 destroy → apply 합니다. 워커만 확인하려면 워커 인스턴스를 종료해 ASG 가 새로 띄우게 합니다 (시작 템플릿은 최신 버전을 씀).
-- 워커 join 은 CP-b · c 가 etcd 멤버로 추가되는 동안 타임아웃 날 수 있어 reset 후 30초 간격으로 3회까지 다시 시도합니다 (`kubeadm_join_retries`). 그래도 실패한 워커는 종료해 ASG 가 새로 띄우게 합니다.
+- 워커 join 은 CP-b · c 가 etcd 멤버로 추가되는 동안 타임아웃 날 수 있어 reset 후 30초 간격으로 3회까지 다시 시도합니다 (`kubeadm_join_retries`). 그래도 실패하면 아래 수명주기에 따라 ASG 가 교체합니다.
+
+### 워커 수명주기 (교체 · 스케일 인 · 부트스트랩 실패)
+
+| 상황 | 처리 | 담당 |
+|---|---|---|
+| 워커 종료 (스케일 인 · 교체 · 수동 종료) | 종료 lifecycle hook 으로 `Terminating:Wait` → cordon · drain → lifecycle action 완료 → 종료 | NTH 큐 모드 (CP-a 가 설치, CP 에 hostNetwork) |
+| 종료된 워커의 Node 객체 | 인스턴스가 사라지면 Node 삭제 → Calico IP 블록 회수 | aws-cloud-controller-manager (CCM) · calico-kube-controllers |
+| 부트스트랩 실패 (`kubeadm_join_retries` 소진 등) | user-data 가 ASG 에 `Unhealthy` 보고 → 교체. aws CLI 설치 전 실패면 인스턴스를 꺼 EC2 헬스체크가 교체 | user-data `trap ERR` |
+| join 은 했지만 트래픽을 못 받음 | `80-main-edge` Target Group(Traefik `/ping`) unhealthy → 교체 | ASG `health_check_type = "ELB"`, 기동 후 600초는 판단 안 함 |
+
+- 노드는 kubelet `cloud-provider: external` 로 등록되어 CCM 이 초기화하기 전까지 `node.cloudprovider.kubernetes.io/uninitialized` taint 가 붙습니다. CCM 이 `spec.providerID`(`aws:///<AZ>/<인스턴스 ID>`) 를 넣고 taint 를 지웁니다.
+- NTH 는 `aws-node-termination-handler/managed` 태그가 있는 인스턴스(워커) 만 drain 합니다. drain 최대 120초, hook timeout 300초 (응답이 없으면 그대로 종료).
+- lifecycle hook 은 ASG 와 별도 리소스라 destroy 때 먼저 지워집니다. 스택 destroy 는 hook 을 기다리지 않습니다.
+
+```bash
+# 노드 안에서 (CP)
+K="sudo kubectl --kubeconfig /etc/kubernetes/admin.conf"
+$K get nodes -o custom-columns=NAME:.metadata.name,PROVIDER_ID:.spec.providerID,TAINTS:.spec.taints[*].key
+$K -n kube-system logs ds/aws-cloud-controller-manager | grep -i delet       # Node 삭제
+$K -n kube-system logs deploy/aws-node-termination-handler                   # drain · lifecycle action 완료
+$K get events -A --field-selector source=aws-node-termination-handler       # cordon · drain 이벤트
+```
+
+- **부트스트랩을 디버깅할 때:** 실패한 워커는 바로 교체되어 로그를 볼 시간이 없습니다. 먼저 ASG 교체를 멈추고, 끝나면 다시 켭니다.
+  ```bash
+  AWS_PROFILE=team04 aws autoscaling suspend-processes --auto-scaling-group-name team04-hotel-main-worker --scaling-processes ReplaceUnhealthy
+  AWS_PROFILE=team04 aws autoscaling resume-processes  --auto-scaling-group-name team04-hotel-main-worker --scaling-processes ReplaceUnhealthy
+  ```
+  부트스트랩 코드에 버그가 있으면 워커가 교체를 계속 반복하고, Traefik 이 클러스터 전체에서 죽으면 모든 워커가 ELB 헬스체크로 교체될 수 있습니다.
+- **instance refresh 없음 (상시 운영 시 필요):** 시작 템플릿이 바뀌어도 기존 워커는 그대로입니다. 매일 재생성하므로 지금은 다음 apply 때 반영됩니다. 24시간 운영이라면 AMI 패치 · Kubernetes 업그레이드 · 노드 설정 변경을 기존 워커에 반영하기 위해 instance refresh 가 필요하고, 그때는 AMI 고정(지금은 SSM `current` 를 따라가 관계없는 apply 에서도 템플릿이 바뀜), `min_healthy_percentage = 100` (새 워커를 먼저 띄움), warmup, 앱 PodDisruptionBudget, CP 먼저 업그레이드하는 순서를 함께 정합니다. 당일 반영이 필요하면 `aws autoscaling start-instance-refresh` 를 수동으로 실행하거나 워커를 한 대씩 종료합니다 (둘 다 NTH 가 drain).
 
 ---
 

@@ -1,0 +1,21 @@
+# 큐 모드: ASG 종료 lifecycle hook · EC2 상태 변경 · Spot 이벤트를 SQS 로 받아 cordon · drain 후
+# lifecycle action 을 완료한다. 큐 · EventBridge 규칙은 70-main-cluster-kubeadm (node-lifecycle.tf)
+enableSqsTerminationDraining: true
+queueURL: "{{ nth_queue_url }}"
+awsRegion: "{{ aws_region }}"
+
+# aws-node-termination-handler/managed 태그가 있는 인스턴스(워커) 만 drain 한다
+checkTagBeforeDraining: true
+
+# 클러스터에 없는 인스턴스(다른 스택 EC2, 이미 삭제된 Node) 의 이벤트는 지운다. 남겨 두면 계속 다시 받는다
+deleteSqsMsgIfNodeNotFound: true
+
+# cordon · drain 진행을 Node 이벤트로 남긴다 (kubectl get events)
+emitKubernetesEvents: true
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule

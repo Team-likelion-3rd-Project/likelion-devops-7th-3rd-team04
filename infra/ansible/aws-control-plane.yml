@@ -1,5 +1,5 @@
 ---
-# 70-main-cluster-kubeadm 의 CP user-data 가 노드 안에서 자기 자신에게 실행한다. 사람이 실행하지 않는다 (README 12절)
+# 70-main-cluster-kubeadm 의 CP user-data 가 노드 안에서 자기 자신에게 실행한다. 사람이 실행하지 않는다 (README 13절)
 - name: AWS Main 클러스터 control plane 구성 (kubeadm init / join --control-plane + Calico)
   hosts: aws_control_plane
   become: true
@@ -12,6 +12,11 @@
     - kubernetes
     - aws_control_plane
     - role: calico
+      when: kubeadm_mode == 'init'
+    # CCM 이 노드를 초기화해야(uninitialized taint 제거) 일반 파드가 뜬다. 워커 join 과 병행되도록 Calico 바로 뒤에 둔다
+    - role: helm
+      when: kubeadm_mode == 'init'
+    - role: aws_node_lifecycle
       when: kubeadm_mode == 'init'
 
 # Traefik 은 워커에만 뜨므로 워커가 join 한 뒤 설치한다. 클러스터당 한 번이면 되어 init 한 CP-a 만 실행
