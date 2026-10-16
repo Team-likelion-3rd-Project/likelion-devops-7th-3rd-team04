@@ -68,7 +68,10 @@ export class PaymentServiceController {
 
   // 예약 취소 시 booking-service가 호출하는 내부용 환불 RPC. REST로는 노출되지 않는다.
   @GrpcMethod('PaymentService', 'RefundPayment')
-  async refundPayment(data: { reservationId: number }) {
-    return this.paymentServiceService.refundPayment(data.reservationId);
+  async refundPayment(data: {
+    reservationId: number;
+    refundIdempotencyKey: string;
+  }) {
+    return this.paymentServiceService.refundPayment(data);
   }
 }

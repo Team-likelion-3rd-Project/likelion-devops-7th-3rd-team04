@@ -28,6 +28,9 @@ describe('PaymentServiceService', () => {
   const saveMock = jest.fn();
   const pgMockConfirmMock = jest.fn();
   const tossConfirmMock = jest.fn();
+  const repoUpdateMock = jest.fn();
+  const pgMockRefundMock = jest.fn();
+  const tossCancelMock = jest.fn();
   // 트랜잭션 안에서 쓰는 EntityManager 대역 — update/insert 호출을 확인한다
   const managerUpdateMock = jest.fn();
   const managerInsertMock = jest.fn();
@@ -55,6 +58,7 @@ describe('PaymentServiceService', () => {
             findOne: findOneMock,
             create: createMock,
             save: saveMock,
+            update: repoUpdateMock,
           },
         },
         {
@@ -72,11 +76,12 @@ describe('PaymentServiceService', () => {
             createAndApprove: createAndApproveMock,
             cancel: cancelMock,
             confirm: pgMockConfirmMock,
+            refund: pgMockRefundMock,
           },
         },
         {
           provide: TossPaymentsClient,
-          useValue: { confirm: tossConfirmMock },
+          useValue: { confirm: tossConfirmMock, cancel: tossCancelMock },
         },
         {
           provide: DataSource,
@@ -238,36 +243,187 @@ describe('PaymentServiceService', () => {
     expect(result.status).toBe(PaymentStatus.APPROVED);
   });
 
-  describe('refundPayment', () => {
-    it('APPROVED 결제가 있으면 PG 취소를 요청하고 결제내역을 REFUNDED로 바꾼다', async () => {
-      const paid = {
-        paymentId: 1,
-        paymentKey: 'pgmock_1',
-        status: PaymentStatus.APPROVED,
-      };
-      findOneMock.mockResolvedValue(paid);
-      cancelMock.mockResolvedValue({});
-      saveMock.mockResolvedValue({ ...paid, status: PaymentStatus.REFUNDED });
+  describe('refundPayment (LDP-28 환불)', () => {
+    const refundKey = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const approved = {
+      paymentId: 7,
+      reservationId: 1,
+      pgOrderId: 'rsv1-abc',
+      amount: 50000,
+      provider: PaymentProvider.MOCK,
+      paymentKey: 'pgmock_1',
+      status: PaymentStatus.APPROVED,
+      refundIdempotencyKey: null,
+      rawResponse: { approvalNumber: '123' },
+    };
+    const originalProvider = process.env.PAYMENT_PROVIDER;
 
-      const result = await service.refundPayment(1);
-
-      expect(cancelMock).toHaveBeenCalledWith('pgmock_1', {
-        cancelReason: '예약 취소',
-      });
-      expect(saveMock).toHaveBeenCalledWith(
-        expect.objectContaining({ status: PaymentStatus.REFUNDED }),
-      );
-      expect(result).toEqual({ refunded: true });
+    beforeEach(() => {
+      repoUpdateMock.mockResolvedValue({ affected: 1 });
+      managerUpdateMock.mockResolvedValue({ affected: 1 });
+      managerInsertMock.mockResolvedValue({});
     });
 
-    it('APPROVED 결제가 없으면 아무것도 하지 않는다(no-op)', async () => {
+    afterAll(() => {
+      process.env.PAYMENT_PROVIDER = originalProvider;
+    });
+
+    it('승인된 결제가 없으면 아무것도 하지 않는다 (NO_PAYMENT)', async () => {
       findOneMock.mockResolvedValue(null);
 
-      const result = await service.refundPayment(1);
+      const result = await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: refundKey,
+      });
 
-      expect(cancelMock).not.toHaveBeenCalled();
-      expect(saveMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ refunded: false });
+      expect(result).toEqual({ refunded: false, status: 'NO_PAYMENT' });
+      expect(pgMockRefundMock).not.toHaveBeenCalled();
+    });
+
+    it('APPROVED -> REFUND_REQUESTED(조건부, 환불 키 기록) -> PG 취소 -> REFUNDED + outbox(PAYMENT_REFUNDED)', async () => {
+      findOneMock.mockResolvedValue(approved);
+      pgMockRefundMock.mockResolvedValue({
+        outcome: 'CANCELED',
+        canceledAt: new Date('2026-10-15T02:00:00.000Z'),
+      });
+
+      const result = await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: refundKey,
+      });
+
+      expect(result).toEqual({
+        refunded: true,
+        status: PaymentStatus.REFUNDED,
+      });
+      expect(repoUpdateMock).toHaveBeenCalledWith(
+        { paymentId: 7, status: expect.anything() as unknown },
+        {
+          status: PaymentStatus.REFUND_REQUESTED,
+          refundIdempotencyKey: refundKey,
+        },
+      );
+      expect(pgMockRefundMock).toHaveBeenCalledWith('pgmock_1', '예약 취소');
+      expect(managerUpdateMock).toHaveBeenCalledWith(
+        Payment,
+        { paymentId: 7, status: PaymentStatus.REFUND_REQUESTED },
+        expect.objectContaining({ status: PaymentStatus.REFUNDED }),
+      );
+      expect(managerInsertMock).toHaveBeenCalledWith(
+        PaymentOutbox,
+        expect.objectContaining({
+          eventType: PaymentOutboxEventType.PAYMENT_REFUNDED,
+        }),
+      );
+    });
+
+    it('이미 REFUNDED면 PG를 다시 부르지 않는다 (같은 취소의 재시도)', async () => {
+      findOneMock.mockResolvedValue({
+        ...approved,
+        status: PaymentStatus.REFUNDED,
+      });
+
+      const result = await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: refundKey,
+      });
+
+      expect(result).toEqual({
+        refunded: true,
+        status: PaymentStatus.REFUNDED,
+      });
+      expect(repoUpdateMock).not.toHaveBeenCalled();
+      expect(pgMockRefundMock).not.toHaveBeenCalled();
+    });
+
+    it('동시에 다른 요청이 먼저 상태를 바꿨으면(조건부 UPDATE 0건) PG를 부르지 않는다', async () => {
+      findOneMock.mockResolvedValueOnce(approved).mockResolvedValueOnce({
+        ...approved,
+        status: PaymentStatus.REFUND_REQUESTED,
+      });
+      repoUpdateMock.mockResolvedValue({ affected: 0 });
+
+      const result = await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: refundKey,
+      });
+
+      expect(result.status).toBe(PaymentStatus.REFUND_REQUESTED);
+      expect(pgMockRefundMock).not.toHaveBeenCalled();
+    });
+
+    it('PG 취소에 실패하면 REFUND_FAILED + outbox(PAYMENT_REFUND_FAILED), 에러는 던지지 않는다', async () => {
+      findOneMock.mockResolvedValue(approved);
+      pgMockRefundMock.mockResolvedValue({
+        outcome: 'FAILED',
+        pgCode: 'PG_MOCK_CANCEL_FAILED',
+      });
+
+      const result = await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: refundKey,
+      });
+
+      expect(result).toEqual({
+        refunded: false,
+        status: PaymentStatus.REFUND_FAILED,
+      });
+      expect(managerUpdateMock).toHaveBeenCalledWith(
+        Payment,
+        { paymentId: 7, status: PaymentStatus.REFUND_REQUESTED },
+        expect.objectContaining({
+          status: PaymentStatus.REFUND_FAILED,
+          refundedAt: null,
+        }),
+      );
+      expect(managerInsertMock).toHaveBeenCalledWith(
+        PaymentOutbox,
+        expect.objectContaining({
+          eventType: PaymentOutboxEventType.PAYMENT_REFUND_FAILED,
+        }),
+      );
+    });
+
+    it('TOSS 결제는 토스 취소 API를 환불 멱등 키와 함께 호출한다', async () => {
+      findOneMock.mockResolvedValue({
+        ...approved,
+        provider: PaymentProvider.TOSS,
+        paymentKey: 'tgen_1',
+      });
+      tossCancelMock.mockResolvedValue({ outcome: 'CANCELED' });
+
+      await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: refundKey,
+      });
+
+      expect(tossCancelMock).toHaveBeenCalledWith({
+        paymentKey: 'tgen_1',
+        cancelReason: '예약 취소',
+        idempotencyKey: refundKey,
+      });
+      expect(pgMockRefundMock).not.toHaveBeenCalled();
+    });
+
+    it('REFUND_FAILED 재시도는 처음 기록한 환불 키를 그대로 쓴다 (PG가 한 번만 취소)', async () => {
+      findOneMock.mockResolvedValue({
+        ...approved,
+        status: PaymentStatus.REFUND_FAILED,
+        refundIdempotencyKey: 'first-key-0000-0000-0000-000000000000',
+      });
+      pgMockRefundMock.mockResolvedValue({ outcome: 'CANCELED' });
+
+      await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: 'other-key',
+      });
+
+      expect(repoUpdateMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          refundIdempotencyKey: 'first-key-0000-0000-0000-000000000000',
+        }),
+      );
     });
   });
 
