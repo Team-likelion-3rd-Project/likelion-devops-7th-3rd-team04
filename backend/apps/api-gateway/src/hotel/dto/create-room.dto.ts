@@ -30,6 +30,15 @@ export class CreateRoomDto {
   capacity: number;
 
   /**
+   * 객실 타입별 보유 수량 (같은 날짜에 이 수만큼 예약 가능). 생략하면 1
+   * @example 10
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  totalCount?: number;
+
+  /**
    * 객실 설명
    * @example "시티뷰를 갖춘 넓은 더블룸입니다."
    */

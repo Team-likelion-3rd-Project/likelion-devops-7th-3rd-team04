@@ -54,6 +54,7 @@ interface RoomDto {
   hotelId: number;
   name: string;
   capacity: number;
+  totalCount: number; // 객실 타입별 보유 수량 (같은 날짜에 이 수만큼 예약 가능)
   description: string;
   images: RoomImageDto[];
 }
@@ -67,8 +68,10 @@ interface RoomSearchResultDto {
 // proto의 RoomAvailabilityDay 메시지와 1:1 대응되는 응답 형태
 interface RoomAvailabilityDayDto {
   date: string;
-  isAvailable: boolean;
+  isAvailable: boolean; // 예약 가능 = 판매 중 && 남은 방 > 0
   price: number;
+  remainingCount: number; // 남은 방 수 (0이면 매진)
+  isSaleStopped: boolean; // 관리자 판매 중지 여부
 }
 
 // proto의 RoomAvailabilityResponse 메시지와 1:1 대응되는 응답 형태
@@ -78,6 +81,7 @@ interface RoomAvailabilityDto {
   startDate: string;
   endDate: string;
   isAvailable: boolean;
+  totalCount: number;
   availabilities: RoomAvailabilityDayDto[];
 }
 
@@ -105,6 +109,7 @@ interface HotelService {
     hotelId: number;
     name: string;
     capacity: number;
+    totalCount?: number;
     description?: string;
     images?: { mimeType: string; imageBase64: string }[];
   }): Observable<RoomDto>;
@@ -113,6 +118,7 @@ interface HotelService {
     roomId: number;
     name: string;
     capacity: number;
+    totalCount?: number;
     description?: string;
     images?: { mimeType: string; imageBase64: string }[];
   }): Observable<RoomDto>;
@@ -347,7 +353,8 @@ export class HotelController implements OnModuleInit {
   @ApiOperation({
     summary: '객실 예약 가능 여부 조회',
     description:
-      '호텔 PK ID, 객실 PK ID와 조회 기간(startDate~endDate, 둘 다 포함)을 바탕으로 gRPC를 통해 hotel-service에서 날짜별 예약 가능 여부와 가격을 조회합니다.',
+      '호텔 PK ID, 객실 PK ID와 조회 기간(startDate~endDate, 둘 다 포함)을 바탕으로 gRPC를 통해 hotel-service에서 날짜별 예약 가능 여부와 가격을 조회합니다. ' +
+      '날짜별로 남은 방 수(remainingCount)와 관리자 판매 중지 여부(isSaleStopped)를 따로 내려 주므로 "매진"과 "판매 중지"를 구분할 수 있습니다.',
   })
   @ApiParam({
     name: 'hotelId',

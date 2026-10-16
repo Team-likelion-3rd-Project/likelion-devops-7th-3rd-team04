@@ -20,7 +20,7 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
     create: (_entity: unknown, value: unknown) => value,
     update: managerUpdate,
   };
-  const setRoomAvailability = jest.fn();
+  const releaseRoomAvailability = jest.fn();
   let service: BookingServiceService;
 
   const attempt = { attemptId: '3', reservationId: 1, pgOrderId: 'rsv1-abc' };
@@ -48,7 +48,7 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
     jest.clearAllMocks();
     managerSave.mockResolvedValue({});
     managerUpdate.mockResolvedValue({ affected: 1 });
-    setRoomAvailability.mockReturnValue(of({ success: true }));
+    releaseRoomAvailability.mockReturnValue(of({ success: true }));
     const dataSource = {
       transaction: (work: (m: typeof manager) => Promise<unknown>) =>
         work(manager),
@@ -58,7 +58,7 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
       {} as Repository<PaymentAttempt>,
       dataSource,
       {} as ReservationFacilityService,
-      { getService: () => ({ setRoomAvailability }) } as never,
+      { getService: () => ({ releaseRoomAvailability }) } as never,
       { getService: () => ({}) } as never,
     );
     service.onModuleInit();
@@ -116,11 +116,10 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
       { reservationId: 1, status: ReservationStatus.PENDING_PAYMENT },
       { status: ReservationStatus.PAYMENT_FAILED },
     );
-    expect(setRoomAvailability).toHaveBeenCalledWith({
+    expect(releaseRoomAvailability).toHaveBeenCalledWith({
       roomId: 2,
       startDate: '2026-10-20',
       endDate: '2026-10-20',
-      isAvailable: true,
     });
   });
 
@@ -136,7 +135,7 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
       expect.anything(),
       expect.anything(),
     );
-    expect(setRoomAvailability).not.toHaveBeenCalled();
+    expect(releaseRoomAvailability).not.toHaveBeenCalled();
   });
 
   it('승인 이벤트인데 예약이 이미 취소됐으면 에러 없이 알람 로그만 남긴다 (환불 필요)', async () => {

@@ -332,8 +332,8 @@ export class BookingController implements OnModuleInit {
     summary: '예약 생성',
     description:
       '유효한 액세스 토큰을 가진 사용자 본인 명의로 예약을 생성합니다. checkInDate부터 checkOutDate 전날까지 ' +
-      '해당 객실의 room_availabilities가 예약 가능(isAvailable=true) 상태여야 하며, 예약 생성과 동시에 ' +
-      '해당 기간은 전부 예약 불가(isAvailable=false)로 전환됩니다. 예약 금액은 해당 기간의 일별 가격 합계로 자동 계산됩니다.',
+      '해당 객실 타입이 판매 중이고 남은 방이 1개 이상이어야 하며, 예약 생성과 동시에 ' +
+      '해당 기간의 날짜별 예약 수(booked_count)가 1씩 늘어납니다. 예약 금액은 해당 기간의 일별 가격 합계로 자동 계산됩니다.',
   })
   @ApiResponse({ status: 201, description: '예약 생성 성공' })
   @ApiResponse({
