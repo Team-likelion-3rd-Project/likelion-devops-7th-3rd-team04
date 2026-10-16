@@ -651,14 +651,15 @@ GitLab 파이프라인 (.gitlab-ci.yml)
 | 미러 workflow | `.github/workflows/mirror-gitlab.yml` | GitHub |
 | 파이프라인 | `.gitlab-ci.yml` (레포 루트) | GitHub → 미러 |
 | Helm 차트 | `backend-deploy/charts/backend` | GitHub → 미러 |
-| 환경별 values · 이미지 태그 | GitLab `team04/infra/backend-gitops` 의 `envs/{dev,prod}/values.yaml` | CI deploy job 이 커밋 (초기본: `backend-deploy/gitops-seed`) |
+| dev values · 이미지 태그 | GitLab `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` | CI deploy-dev job 이 커밋 (초기본: `backend-deploy/gitops-seed`) |
+| prod values · 이미지 태그 | GitHub 별도 prod gitops 레포 | PR 로만 변경 (보호 규칙) — GitLab 은 관여하지 않음 |
 | agent 설정 (`ci_access`) | `infra/gitlab/k8s-agents` → GitLab `team04/infra/k8s-agents` | Ansible `gitlab.yml --tags bootstrap` |
 | agentk · RBAC · Secret | 온프레미스 클러스터 | Ansible `k8s-cicd.yml` |
 
 | 결정 | 내용 |
 |---|---|
-| 환경 | dev = 온프레미스(`dev-agent`), prod = AWS EKS(`prod-agent`, 준비 중). 네임스페이스는 둘 다 `backend` |
-| 브랜치 | develop → dev, main → prod. 테스트·빌드는 자동, **배포는 수동(`when: manual`)**, 같은 환경 배포는 `resource_group` 으로 직렬화 |
+| 환경 | dev = 온프레미스(`dev-agent`, 이 파이프라인이 배포), prod = AWS EKS(배포 상태는 GitHub prod gitops 레포 — GitLab 은 배포하지 않음). 네임스페이스는 둘 다 `backend` |
+| 브랜치 | develop → dev 빌드·smoke test·배포(수동 `when: manual`, `resource_group` 으로 직렬화). main → prod 이미지 빌드 검증 (ECR push 는 prod 구성 후 추가) |
 | 이미지 태그 | 커밋 SHA (`$CI_COMMIT_SHORT_SHA`). `latest` 는 차트가 렌더링을 거부 |
 | 클러스터 권한 | GitLab CE(Free)에는 ci_access impersonation 이 없어 **CI 권한 = agentk ServiceAccount 권한** → 차트 기본 cluster-admin 을 끄고 `backend` 네임스페이스 Role 만 부여 |
 | smoke test DB | dev DB 서버를 쓰되 database 는 파이프라인 전용(`ci_<id>` 결제, `ci_main_<id>` 메인). 후보 이미지의 마이그레이션을 빈 DB 에 처음부터 적용해 검증하고, dev 데이터와 분리하기 위해 |
@@ -669,7 +670,7 @@ GitLab 파이프라인 (.gitlab-ci.yml)
 
 - 그룹 `team04`, `team04/infra` / 프로젝트 `team04/hotel`(미러), `team04/infra/k8s-agents`, `team04/infra/backend-gitops`
   - `ci_access` 를 받는 프로젝트는 agent 설정 프로젝트와 **같은 최상위 그룹**에 있어야 해서 `team04` 하나로 묶었습니다.
-- agent `dev-agent` · `prod-agent` 등록과 토큰 발급, gitops 레포 초기 values 커밋(레포가 비어 있을 때만)
+- agent `dev-agent` 등록과 토큰 발급, gitops 레포(dev 전용) 초기 values 커밋(레포가 비어 있을 때만)
 - 그룹 Deploy Token(`read_registry`) — 클러스터 imagePullSecret 용
 - `team04/hotel` CI 변수: `GITOPS_PUSH_TOKEN`(gitops 레포 Project Access Token), `SMOKE_DB_*`, `SMOKE_REDIS_*` (모두 protected)
 - 미러용 Project Access Token, `main`/`develop` 보호 브랜치(force push 허용), 레지스트리 cleanup policy(`ci-*` 후보 태그·kaniko 캐시 7일)
@@ -731,11 +732,11 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
   docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf -N \
     -e "SHOW DATABASES LIKE 'ci%'"
   ```
-- prod: EKS 스택 · prod-agent 설치 · ECR push 인증이 준비되면 CI 변수 `PROD_DEPLOY_ENABLED=true` 로 `deploy-prod` 를 켭니다. 지금은 main 에서 빌드 검증만 합니다.
+- prod: 이 파이프라인은 main 에서 이미지 빌드 검증만 합니다. prod 구성 후 `build` job 의 main 분기에 ECR push 를 추가하고, 배포 상태는 GitHub 의 prod gitops 레포에 PR 로 반영합니다 (GitLab 의 `deploy-prod` · `prod-agent` 는 이 결정으로 제거).
 
 ### 12-6. ArgoCD 전환 메모
 
-- Application 은 multi-source 로 만듭니다: 차트 = `team04/hotel` 의 `backend-deploy/charts/backend`, values = `team04/infra/backend-gitops` 의 `$values/envs/<env>/values.yaml`. `destination.namespace: backend`, `CreateNamespace=false`.
+- (dev) Application 은 multi-source 로 만듭니다: 차트 = `team04/hotel` 의 `backend-deploy/charts/backend`, values = `team04/infra/backend-gitops` 의 `$values/envs/dev/values.yaml`. `destination.namespace: backend`, `CreateNamespace=false`. prod 는 GitHub prod gitops 레포를 바라봅니다.
 - HPA 를 켠 서비스가 있으면 `ignoreDifferences` 에 Deployment `/spec/replicas` 를 넣습니다(2nd 프로젝트에서 HPA 와 selfHeal 이 replicas 를 서로 되돌린 문제).
 - 전환 후 `.gitlab-ci.yml` 의 `.deploy` 는 gitops 커밋까지만 남기고 helm/kubectl 단계를 지웁니다. agent 의 `cicd-deployer` Role 도 회수합니다.
 

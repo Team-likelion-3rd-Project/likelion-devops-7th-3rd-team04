@@ -1,5 +1,6 @@
 # 공통 기본값 — 환경별 차이(레지스트리, 이미지 태그, Ingress, 리소스)는
-# GitLab team04/infra/backend-gitops 의 envs/<env>/values.yaml 로 덮어씁니다. (초기본: backend-deploy/gitops-seed)
+# dev: GitLab team04/infra/backend-gitops 의 envs/dev/values.yaml (초기본: backend-deploy/gitops-seed),
+# prod: GitHub 별도 prod gitops 레포(PR 로 관리) 로 덮어씁니다.
 #
 # 배포:
 #   helm upgrade --install --atomic --wait backend backend-deploy/charts/backend \
