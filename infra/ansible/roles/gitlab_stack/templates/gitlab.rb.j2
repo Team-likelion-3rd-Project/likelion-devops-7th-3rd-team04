@@ -35,6 +35,10 @@ registry_nginx['proxy_set_headers'] = {
 # 내장 nginx 가 /-/kubernetes-agent/ 를 WebSocket 업그레이드 포함해 KAS 로 프록시
 gitlab_kas['enable'] = true
 gitlab_kas_external_url 'wss://{{ gitlab_fqdn }}/-/kubernetes-agent/'
+# KAS → GitLab 내부 API(agent 인증 · ci_access 권한 갱신) 주소. 기본값은 external_url(https://<fqdn>:443)인데
+# 컨테이너 안에서는 hostname 때문에 <fqdn> 이 자기 자신(docker IP)으로 풀리고, TLS 는 호스트의 tailscale serve 가
+# 종료하므로 컨테이너 안 443 은 열려 있지 않음 → 컨테이너 내부 nginx(80)로 직접 호출
+gitlab_kas['gitlab_address'] = 'http://127.0.0.1'
 gitlab_rails['gitlab_kas_external_k8s_proxy_url'] = '{{ gitlab_url }}/-/kubernetes-agent/k8s-proxy/'
 
 # ── 사용하지 않는 기능 ────────────────────────────────────
