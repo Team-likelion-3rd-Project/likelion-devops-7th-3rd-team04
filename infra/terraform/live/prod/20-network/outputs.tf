@@ -1,4 +1,4 @@
-# 다른 스택은 data.terraform_remote_state.network.outputs.<vpc>.subnet_ids.<계층> 처럼 읽는다.
+# 다른 스택은 dependency.network.outputs.<vpc>.subnet_ids.<계층> 처럼 읽는다.
 #   main.subnet_ids       : public / worker / cp (enable_control_plane_subnets) / db
 #   payment.subnet_ids    : public / lb / app / db
 #   deployment.subnet_ids : public / runner

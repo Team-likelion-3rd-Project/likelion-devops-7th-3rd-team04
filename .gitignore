@@ -44,6 +44,7 @@ venv/
 # ── Terraform ─────────────────────────────────
 # .terraform.lock.hcl 은 커밋한다
 .terraform/
+.terragrunt-cache/
 *.tfstate
 *.tfstate.*
 *.tfplan

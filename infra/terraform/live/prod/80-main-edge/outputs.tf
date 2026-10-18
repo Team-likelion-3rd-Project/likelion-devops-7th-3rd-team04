@@ -1,4 +1,4 @@
-# 다른 스택은 data.terraform_remote_state.main_edge.outputs.<이름> 처럼 읽는다.
+# 다른 스택은 dependency.main_edge.outputs.<이름> 처럼 읽는다.
 
 output "alb_dns_name" {
   description = "ALB DNS 이름 (도메인 구매 전 접속 주소)"

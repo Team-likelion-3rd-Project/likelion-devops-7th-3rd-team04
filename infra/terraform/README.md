@@ -3,17 +3,14 @@
 AWS 운영 환경(`us-east-1`)을 구성하는 Terraform 코드입니다.
 스택을 왜 이렇게 나눴는지, 스택 사이의 의존 관계는 위키 [**AWS 인프라 Terraform 스택 설계**](https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04/wiki/AWS-%EC%9D%B8%ED%94%84%EB%9D%BC-Terraform-%EC%8A%A4%ED%83%9D-%EC%84%A4%EA%B3%84) 를 보세요.
 
+- `live/prod` 스택은 [Terragrunt](https://terragrunt.gruntwork.io/) 로 실행합니다. `live/bootstrap` 만 `terraform` 으로 실행합니다 (로컬 state).
 - 자격 증명: [`aws-login.sh`](aws-login.sh) 로 `team04` 프로필에 로그인한 뒤 실행합니다.
-- **모든 terraform 명령 앞에 `AWS_PROFILE=team04` 를 붙입니다.** 붙이지 않으면 기본 프로필(다른 계정)로 실행됩니다.
+- **모든 명령 앞에 `AWS_PROFILE=team04` 를 붙입니다.** 붙이지 않으면 기본 프로필(다른 계정)로 실행됩니다.
   ```bash
-  AWS_PROFILE=team04 terraform init -backend-config=../backend.hcl
-  AWS_PROFILE=team04 terraform plan
-  AWS_PROFILE=team04 terraform apply
-
-  # 또는 터미널 세션 단위로 지정
-  export AWS_PROFILE=team04
+  # 터미널 세션 단위로 지정 (TG_PROVIDER_CACHE 는 4절)
+  export AWS_PROFILE=team04 TG_PROVIDER_CACHE=1
   ```
-- 버전: Terraform `>= 1.11`, AWS provider `~> 6.0`. `.terraform.lock.hcl` 은 커밋합니다.
+- 버전: Terraform `>= 1.11`, Terragrunt `>= 1.1`, AWS provider `~> 6.0`. `.terraform.lock.hcl` 은 커밋합니다.
 
 ---
 
@@ -27,7 +24,7 @@ infra/terraform/
 └── live/
     ├── bootstrap/                   🔒 state 버킷
     └── prod/
-        ├── backend.hcl              # 공통 backend 설정
+        ├── root.hcl                 # 공통 설정 (backend · provider 생성, state key 계산)
         ├── 10-global/               🔒
         ├── 11-registry/             🔒
         ├── 20-network/              🔁
@@ -48,6 +45,8 @@ infra/terraform/
 ```
 
 🔒 상시 유지 (destroy 하지 않음) / 🔁 매일 재생성
+
+각 스택 디렉터리는 `*.tf` 와 `terragrunt.hcl` 로 이루어집니다. `backend.tf` · `providers.tf` 는 두지 않습니다 (`root.hcl` 이 생성).
 
 ---
 
@@ -70,28 +69,72 @@ state key 에는 **디렉터리 번호를 넣지 않습니다.** 번호가 바�
 | `live/bootstrap` | `bootstrap/terraform.tfstate` |
 | `live/prod/<번호>-<스택>` | `prod/<스택>/terraform.tfstate` (예: `prod/network/terraform.tfstate`) |
 
-새 스택은 `backend.tf` 에 key 만 적고, 나머지는 공통 `backend.hcl` 로 넘깁니다.
+`root.hcl` 이 디렉터리 이름에서 번호를 뗀 값(`20-network` → `network`)으로 state key 와 `Stack` 태그를 정하고, backend · provider 블록을 생성합니다.
+
+### 새 스택 추가
+
+1. `live/prod/<번호>-<스택>/` 에 `*.tf` (`versions.tf`, `variables.tf` 의 `project` · `environment` · `region` 포함) 를 작성합니다.
+2. `terragrunt.hcl` 을 추가합니다. 다른 스택 output 은 `dependency` 로 받아 변수로 넘깁니다 (`terraform_remote_state` 는 쓰지 않습니다).
 
 ```hcl
-# live/prod/20-network/backend.tf
-terraform {
-  backend "s3" {
-    key = "prod/network/terraform.tfstate"
+# live/prod/30-security/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+dependency "network" {
+  config_path = "../20-network"
+
+  # 인프라가 내려가 있을 때(output 없음) plan · validate · destroy 를 돌리기 위한 값
+  mock_outputs = {
+    main = { vpc_id = "vpc-00000000000000000" }
   }
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
+}
+
+inputs = {
+  main_vpc_id = dependency.network.outputs.main.vpc_id
 }
 ```
 
-```bash
-cd infra/terraform/live/prod/20-network
-AWS_PROFILE=team04 terraform init -backend-config=../backend.hcl
-```
+- 🔁 스택을 참조하면 `mock_outputs` 를 넣습니다. 받는 쪽 변수 타입에 맞춰 쓰는 속성만 채웁니다. 🔒 스택(`10-global`)은 항상 떠 있으므로 넣지 않습니다.
+- 값이 null 인 output(예: 도메인 구매 전 `10-global` 의 `zone_id`)은 state 에 저장되지 않아 키가 없습니다. `try(dependency.global.outputs.zone_id, null)` 로 받습니다.
+
+### 캐시 디렉터리
+
+Terragrunt 는 스택을 `.terragrunt-cache/` 로 복사해 실행합니다. 스택 밖 상대 경로(`../../../modules/vpc`, `70` 의 `../../../../ansible`)가 깨지지 않도록 `root.hcl` 의 `source` 가 `infra/` 전체를 복사합니다. `.terragrunt-cache/` 는 gitignore 되어 있고, 지워도 다음 실행 때 다시 만들어집니다. 스택 디렉터리의 `terraform.tfvars` 도 함께 복사되어 적용됩니다.
 
 ---
 
-## 4. apply / destroy 순서
+## 4. apply / destroy
+
+스택 사이 의존 관계(`dependency`)를 따라 순서가 정해지므로 **`live/prod` 에서 명령 한 번으로 전체를 apply / destroy** 합니다.
+
+```bash
+cd infra/terraform/live/prod
+
+terragrunt run --all plan        # 인프라가 내려가 있어도 실행 가능 (mock_outputs)
+terragrunt run --all apply       # 의존 순서대로 생성. 같은 단계 스택은 병렬
+terragrunt run --all destroy     # 역순 삭제. 10-global · 11-registry 는 제외
+
+# 스택 하나만
+cd 80-main-edge
+terragrunt plan
+terragrunt apply
+terragrunt output -raw api_url
+```
+
+- `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
+- `run --all apply` 는 🔒 `10-global` · `11-registry` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
+- `10-global` · `11-registry` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
+- **`TG_PROVIDER_CACHE=1` 을 켭니다.** 끄면 스택마다 캐시 디렉터리에 AWS provider 를 따로 받아 스택당 약 760MB 를 쓰고 첫 실행이 오래 걸립니다. 켜면 provider 를 한 번만 받아 공유합니다 (`run --all plan` 캐시가 찬 상태 약 1분).
+- **provider 버전은 모든 스택이 같게 맞춥니다.** lock 파일이 스택마다 있어서 처음 init 한 시점의 버전이 따로 고정됩니다. 버전을 올릴 때는 한 스택만 올리지 않고 전체를 한 번에 올린 뒤, 🔒 스택이 No changes 인지 확인합니다.
+  ```bash
+  terragrunt run --all -- init -upgrade
+  ```
 
 ```
-bootstrap                                  🔒 최초 1회
+bootstrap                                  🔒 최초 1회 (terraform)
 10-global   11-registry                    🔒 최초 1회, 이후 변경 시에만
 ─────────────────────── 매일 재생성 ───────────────────────
 20-network   21-observability-base
@@ -104,8 +147,6 @@ bootstrap                                  🔒 최초 1회
 90-observability-alarms
 ```
 
-- **apply:** `20` → `90` (번호 오름차순)
-- **destroy:** `90` → `20` (번호 내림차순)
 - `10-global` 은 도메인 없이 apply 할 수 있습니다. 도메인 구매 후 절차는 구매 계정(운영 계정 / 다른 계정)에 따라 다르며 [`dns.tf`](live/prod/10-global/dns.tf) 상단 주석을 따릅니다.
 - `bootstrap`, `10-global`, `11-registry` 는 **destroy 하지 않습니다.**
   Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라집니다.
@@ -116,15 +157,16 @@ bootstrap                                  🔒 최초 1회
 
 | 스택 | 조건 | apply | destroy |
 |---|---|---|---|
-| `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 | 1분 52초 |
+| `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
-| `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 | 15초 |
-| `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 31초 |
-| `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 37초 |
+| `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 – 20초 | 14초 – 15초 |
+| `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
+| `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
+| **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
 
-`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, CP-a 의 Traefik · whoami 설치 완료까지 약 7분 – 7분 30초** (apply 중 내부 NLB 생성이 약 2분 45초, 노드 부팅 후 부트스트랩 약 3분 – 4분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
+`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, CP-a 의 Traefik · whoami 설치 완료까지 약 7분 – 8분** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
 
-`70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분** 입니다. 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 4분.
+`70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분 – 8분** 입니다. `run --all apply` 는 `80` 을 공백 없이 바로 시작하므로 **명령이 끝난 뒤 1분 – 2분 더 지나야 부트스트랩이 끝납니다** (전체 시작부터 whoami 응답까지 약 11분 30초). 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 4분.
 
 ---
 
@@ -145,7 +187,7 @@ bootstrap                                  🔒 최초 1회
 ## 6. `70-main-cluster-kubeadm` 부트스트랩 확인
 
 CP 3대와 워커는 apply 가 끝난 뒤 user-data 가 각각 [`aws-control-plane.yml`](../ansible/aws-control-plane.yml), [`aws-worker.yml`](../ansible/aws-worker.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 13절). CP-a 는 워커가 Ready 가 되면 Traefik · whoami 까지 설치합니다.
-**terraform apply 가 성공해도 부트스트랩은 그 뒤 몇 분 더 걸리고, 실패해도 apply 결과에 나타나지 않습니다.**
+**apply 가 성공해도 부트스트랩은 그 뒤 몇 분 더 걸리고, 실패해도 apply 결과에 나타나지 않습니다.**
 
 ```bash
 # 인스턴스 ID 확인 → SSM 접속 (SSM 은 키 페어 · 22 포트 없이 접속). CP · 워커 모두 ASG 라 인스턴스 ID 는 교체 때마다 바뀐다
@@ -233,7 +275,7 @@ Target Group 헬스체크는 Traefik `/ping` 입니다. **Traefik 은 CP-a 부�
 
 도메인 · 인증서 유무(`10-global` output)에 따라 리스너가 달라집니다.
 
-| `10-global` 상태 | 리스너 | 접속 주소 (`terraform output api_url`) |
+| `10-global` 상태 | 리스너 | 접속 주소 (`terragrunt output api_url`) |
 |---|---|---|
 | 도메인 구매 전 | 80 → 워커 | `http://<ALB DNS>` |
 | Zone 만 있음 | 80 → 워커, `api.<도메인>` 레코드 | `http://api.<도메인>` |
@@ -241,7 +283,7 @@ Target Group 헬스체크는 Traefik `/ping` 입니다. **Traefik 은 CP-a 부�
 
 ```bash
 cd live/prod/80-main-edge
-curl -i "$(AWS_PROFILE=team04 terraform output -raw api_url)/whoami"   # 200, X-Forwarded-For 첫 값이 내 공인 IP
+curl -i "$(AWS_PROFILE=team04 terragrunt output -raw api_url)/whoami"   # 200, X-Forwarded-For 첫 값이 내 공인 IP
 
 # Target Group 상태 (워커 전부 healthy)
 AWS_PROFILE=team04 aws elbv2 describe-target-health \
