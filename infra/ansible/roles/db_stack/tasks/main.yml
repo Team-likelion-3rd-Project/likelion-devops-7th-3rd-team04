@@ -24,6 +24,7 @@
     - "{{ db_base_dir }}"
     - "{{ db_base_dir }}/conf"
     - "{{ db_base_dir }}/mysql"
+    - "{{ db_base_dir }}/minio"
 
 - name: 데이터 디렉토리
   ansible.builtin.file:
@@ -33,6 +34,7 @@
   loop:
     - "{{ db_data_dir }}/mariadb"
     - "{{ db_data_dir }}/valkey"
+    - "{{ db_data_dir }}/minio"
 
 - name: MariaDB 튜닝 설정
   ansible.builtin.template:
@@ -54,8 +56,15 @@
     src: "{{ item }}.j2"
     dest: "{{ db_base_dir }}/{{ item }}"
     mode: "0600"
-  loop: [mariadb.env, valkey.env]
+  loop: [mariadb.env, valkey.env, minio.env]
   no_log: true
+
+- name: MinIO 앱 계정 정책 (minio_bucket 에만 읽기/쓰기)
+  ansible.builtin.template:
+    src: minio-app-policy.json.j2
+    dest: "{{ db_base_dir }}/minio/app-policy.json"
+    mode: "0644"
+  register: minio_policy_file
 
 - name: reconcile 용 client 자격증명 (명령행에 비밀번호 노출 방지)
   ansible.builtin.template:
@@ -152,9 +161,72 @@
   changed_when: true
   no_log: true
 
+# ── MinIO 버킷 · 앱 계정 상태 맞추기 ──────────────────────────
+# mcli 의 alias(local=root, app=앱 계정)는 minio.env 의 MC_HOST_* 로 주입됨
+- name: MinIO 버킷 확인
+  ansible.builtin.command: docker exec minio mcli stat local/{{ minio_bucket }}
+  register: minio_bucket_stat
+  changed_when: false
+  failed_when: false
+
+- name: MinIO 버킷 생성
+  ansible.builtin.command: docker exec minio mcli mb --ignore-existing local/{{ minio_bucket }}
+  when: minio_bucket_stat.rc != 0
+  changed_when: true
+
+- name: MinIO 버킷 익명 접근 상태 확인
+  ansible.builtin.command: docker exec minio mcli anonymous get local/{{ minio_bucket }}
+  register: minio_bucket_anon
+  changed_when: false
+
+- name: MinIO 버킷 private 고정 (presigned URL 로만 접근)
+  ansible.builtin.command: docker exec minio mcli anonymous set none local/{{ minio_bucket }}
+  when: "'`private`' not in minio_bucket_anon.stdout"
+  changed_when: true
+
+- name: MinIO 앱 정책 확인
+  ansible.builtin.command: docker exec minio mcli admin policy info local {{ minio_app_policy }}
+  register: minio_policy_info
+  changed_when: false
+  failed_when: false
+
+- name: MinIO 앱 정책 생성 / 갱신
+  # 같은 이름으로 다시 만들면 내용이 갱신됨
+  ansible.builtin.command: >-
+    docker exec minio mcli admin policy create local {{ minio_app_policy }} /etc/minio/ansible/app-policy.json
+  when: minio_policy_info.rc != 0 or minio_policy_file.changed
+  changed_when: true
+
+- name: MinIO 앱 계정 접속 검사
+  ansible.builtin.command: docker exec minio mcli ls app/{{ minio_bucket }}
+  register: minio_app_login
+  changed_when: false
+  failed_when: false
+
+- name: MinIO 앱 계정 재설정
+  # 계정이 없거나 secret 이 바뀐 경우. user add 는 기존 계정이면 secret 을 갱신함.
+  # (secret 이 컨테이너 안 명령행에 잠깐 보임 — mcli 가 stdin 입력을 지원하지 않음)
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - docker exec minio mcli admin user add local {{ minio_app_access_key }} {{ minio_app_secret_key }}
+    - docker exec minio mcli admin policy attach local {{ minio_app_policy }} --user {{ minio_app_access_key }}
+  when: minio_app_login.rc != 0
+  register: minio_app_reconcile
+  # 이미 붙어 있는 정책을 다시 attach 하면 오류 → 무시
+  failed_when: minio_app_reconcile.rc != 0 and 'already' not in minio_app_reconcile.stderr
+  changed_when: minio_app_reconcile.rc == 0
+  no_log: true
+
+- name: MinIO 앱 계정 접속 재검사
+  ansible.builtin.command: docker exec minio mcli ls app/{{ minio_bucket }}
+  changed_when: false
+  when: minio_app_login.rc != 0
+
 - name: 접속 정보
   ansible.builtin.debug:
     msg:
       - "MariaDB : {{ ts_ip }}:{{ db_port }}  (DB={{ db_database }}, USER={{ db_username }})"
       - "Valkey  : {{ ts_ip }}:{{ valkey_port }}"
-      - "backend 연결 시 DB_HOST={{ ts_ip }}"
+      - "MinIO   : http://{{ ts_ip }}:{{ minio_api_port }}  (bucket={{ minio_bucket }}, region={{ minio_region }})"
+      - "Console : http://{{ ts_ip }}:{{ minio_console_port }}  (MINIO_ROOT_USER 로 로그인)"
+      - "backend 연결 시 DB_HOST={{ ts_ip }}, S3_ENDPOINT=http://{{ ts_ip }}:{{ minio_api_port }}"

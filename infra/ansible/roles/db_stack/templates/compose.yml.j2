@@ -1,5 +1,5 @@
 # Ansible(db_stack role)이 생성 — 직접 수정하지 마세요.
-# network_mode: host + ufw 로 tailscale0 에서만 접근 허용 (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
+# MariaDB · Valkey · MinIO 모두 network_mode: host + ufw 로 tailscale0 에서만 접근 허용 (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
 name: hotel-db
 
 services:
@@ -41,3 +41,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # dev 용 S3 (객실 이미지). 버킷 / 앱 계정은 db_stack role 이 기동 후 맞춤 (README 7-6)
+  minio:
+    image: {{ minio_image }}
+    container_name: minio
+    network_mode: host
+    restart: unless-stopped
+    command: ["server", "/data", "--address", ":{{ minio_api_port }}", "--console-address", ":{{ minio_console_port }}"]
+    # env_file 변경은 compose 가 감지해 재생성 / 정책 파일은 mcli 가 읽으므로 checksum label 불필요
+    env_file: [minio.env]
+    volumes:
+      - {{ db_data_dir }}/minio:/data
+      - ./minio:/etc/minio/ansible:ro
+    healthcheck:
+      # MC_HOST_local(minio.env) 로 root alias 사용
+      test: ["CMD", "mcli", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
