@@ -46,7 +46,7 @@
         "specifyBody": "json",
         "jsonBody": "={{ { message: $json.message, history: $json.history } }}",
         "options": {
-          "timeout": 25000
+          "timeout": 120000
         }
       },
       "id": "073d3cb7-efb4-4f34-999d-b9a4df03e984",
