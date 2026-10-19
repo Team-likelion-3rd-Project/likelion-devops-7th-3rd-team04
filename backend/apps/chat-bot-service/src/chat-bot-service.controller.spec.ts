@@ -73,6 +73,7 @@ describe('ChatBotServiceController', () => {
       });
       expect(result.sessionId).toBe('');
       expect(result.reply).toBe('안녕하세요!');
+      expect(result.action).toBeNull();
     });
 
     it('persists both turns and forwards history for a logged-in user', async () => {
@@ -121,7 +122,60 @@ describe('ChatBotServiceController', () => {
         sessionId: session.sessionId,
         reply: '안녕하세요!',
         createdAt: '2026-01-01T00:00:01.000Z',
+        action: null,
       });
+    });
+
+    it('returns a sanitized action for a logged-in user and stores only the reply text', async () => {
+      sessionService.getOrCreateSession.mockResolvedValue(session);
+      messageService.getRecentMessages.mockResolvedValue([]);
+      messageService.appendMessage.mockResolvedValue({
+        sessionId: session.sessionId,
+        messageId: 'm2',
+        role: 'ASSISTANT',
+        content: '아래 카드에서 취소할 예약을 골라 주세요.',
+        createdAt: '2026-01-01T00:00:01.000Z',
+      });
+      n8nClient.sendMessage.mockResolvedValue({
+        reply: '아래 카드에서 취소할 예약을 골라 주세요.',
+        intent: 'CANCEL',
+        action: { type: 'CANCEL', reservationId: 5 },
+      });
+
+      const result = await controller.sendMessage({
+        userId: 1,
+        message: '예약 취소해줘',
+      });
+
+      expect(result.action).toEqual({
+        type: 'CANCEL',
+        hotel: '',
+        roomName: '',
+        checkIn: '',
+        checkOut: '',
+        adults: 0,
+        children: 0,
+      });
+      expect(messageService.appendMessage).toHaveBeenLastCalledWith(
+        session.sessionId,
+        'ASSISTANT',
+        '아래 카드에서 취소할 예약을 골라 주세요.',
+      );
+    });
+
+    it('turns an anonymous intent into LOGIN_REQUIRED and drops the action', async () => {
+      n8nClient.sendMessage.mockResolvedValue({
+        reply: '로그인 후 이용할 수 있어요.',
+        intent: 'PAY',
+        action: { type: 'PAY' },
+      });
+
+      const result = await controller.sendMessage({
+        userId: 0,
+        message: '결제할래',
+      });
+
+      expect(result.action?.type).toBe('LOGIN_REQUIRED');
     });
   });
 

@@ -1,6 +1,7 @@
 import { Controller } from '@nestjs/common';
 import { GrpcMethod } from '@nestjs/microservices';
 import { ChatBotServiceService } from './chat-bot-service.service';
+import { ChatAction } from './chat-action';
 
 interface SendMessageRequest {
   userId: number;
@@ -11,6 +12,7 @@ interface SendMessageResponse {
   sessionId: string;
   reply: string;
   createdAt: string;
+  action: ChatAction | null; // null이면 proto에서 필드를 설정하지 않습니다
 }
 
 interface GetHistoryRequest {
