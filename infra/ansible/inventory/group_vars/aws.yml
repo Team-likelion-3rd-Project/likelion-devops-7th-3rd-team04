@@ -6,7 +6,6 @@
 #   k8s_control_plane_endpoint  kube-apiserver 내부 NLB DNS
 #   kubeadm_param_prefix        Parameter Store 경로 (/team04-hotel/prod/kubeadm)
 #   aws_region
-#   vpc_cidr                    Main VPC CIDR (Traefik forwardedHeaders.trustedIPs)
 
 # Tailscale 없이 VPC private IP 를 노드 IP 로 쓴다
 use_tailscale: false

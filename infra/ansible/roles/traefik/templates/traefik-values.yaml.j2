@@ -1,6 +1,6 @@
 # Traefik chart {{ traefik_chart_version }} values — Ansible(roles/traefik) 이 관리. 직접 수정 금지
 #
-# 배치 · Service 정책은 group_vars 의 traefik_* 값 (온프레미스: control plane 1대 고정, AWS: 워커)
+# 배치 · Service 정책은 traefik_* 값 (기본: control plane 1대 고정). AWS 는 gitops 레포 envs/prod/traefik
 deployment:
   replicas: {{ traefik_replicas }}
 {% if traefik_on_control_plane %}
@@ -28,28 +28,14 @@ providers:
 ports:
   web:
     nodePort: {{ traefik_http_nodeport }}
-{% if traefik_trusted_ips | length > 0 %}
-    # 앞단 프록시(ALB)가 붙인 X-Forwarded-For(클라이언트 IP)를 유지합니다
-    forwardedHeaders:
-      trustedIPs: {{ traefik_trusted_ips | to_json }}
-{% else %}
     # forwardedHeaders.trustedIPs 는 의도적으로 비워 둡니다.
     # 클라이언트가 보낸 X-Forwarded-For(Vite proxy 의 127.0.0.1 등)를 버리고
     # 실제 접속 IP(개발자 PC Tailscale IP)로 다시 써서 api-gateway 가 사용자별로 구분하게 합니다.
-{% endif %}
   websecure:
     # TLS 는 쓰지 않음 (필요 시 tailscale serve 로 앞단에서 종료)
     expose:
       default: false
 
-{% if traefik_ping_on_web %}
-# 앞단 LB 헬스체크용. Traefik 자체 /ping 을 web 엔트리포인트(NodePort)에 노출
-ingressRoute:
-  healthcheck:
-    enabled: true
-    entryPoints: ["web"]
-
-{% endif %}
 service:
   spec:
     type: NodePort
