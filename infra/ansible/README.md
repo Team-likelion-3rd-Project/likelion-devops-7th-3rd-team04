@@ -6,7 +6,7 @@
 |---|---|---|
 | `control-plane.yml` | `[control_plane]` (1대) | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm init` → Calico(VXLAN) 설치 → worker용 `join.env` 생성 |
 | `worker-join.yml` | `[workers]` | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm join` |
-| `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → MariaDB + Valkey (Docker Compose) → dev 시딩(`--tags seed`, 스키마가 있을 때만) — [7절](#7-db-노드-구성-mariadb--valkey) |
+| `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → MariaDB + Valkey + MinIO (Docker Compose) → dev 시딩(`--tags seed`, 스키마가 있을 때만) — [7절](#7-db-노드-구성-mariadb--valkey--minio) |
 | `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
 | `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
@@ -44,7 +44,7 @@ infra/ansible/
 │   └── group_vars/
 │       ├── all.yml            # 버전·CIDR 고정값, 환경변수 매핑
 │       ├── control_plane.yml  # Ingress: helm/Traefik 버전, NodePort / CI/CD: agent 버전, backend-secrets key
-│       ├── db.yml             # DB 노드: 이미지 버전, 튜닝값, backend/.env 매핑
+│       ├── db.yml             # DB 노드: 이미지 버전, 튜닝값, backend/.env 매핑, MinIO 버킷
 │       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
 │       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
 │       ├── payment.yml        # 결제 노드: 이미지 버전, 결제 DB / ElasticMQ 큐, 클러스터 NodePort
@@ -72,7 +72,7 @@ infra/ansible/
 | 태그 | 대상 | Playbook |
 |---|---|---|
 | `tag:k8s-node` | control plane, worker | `control-plane.yml`, `worker-join.yml` |
-| `tag:db` | DB 노드 (MariaDB + Valkey) | `db.yml` |
+| `tag:db` | DB 노드 (MariaDB + Valkey + MinIO) | `db.yml` |
 | `tag:gitlab` | GitLab 노드 | `gitlab.yml` |
 | `tag:gitlab-runner` | GitLab Runner 노드 | `gitlab-runner.yml` |
 | `tag:payment` | 결제 서버 노드 (결제 DB + payment-service + ElasticMQ) | `payment.yml` |
@@ -99,12 +99,12 @@ infra/ansible/
     { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:80", "tcp:443", "tcp:30000-32767"] },
 
     // ── DB ───────────────────────────────────────────────
-    // k8s Pod → DB. Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
-    { "src": ["tag:k8s-node"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379"] },
+    // k8s Pod → DB · MinIO(S3 API 9000). Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
+    { "src": ["tag:k8s-node"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379", "tcp:9000"] },
     // GitLab CI 이미지 smoke test → dev DB 서버 (파이프라인 전용 database ci_<id> 만 사용, 12절)
     { "src": ["tag:gitlab-runner"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379"] },
-    // 팀원 PC → DB : SSH, DBeaver 등 DB 클라이언트, valkey-cli 디버깅
-    { "src": ["autogroup:member"], "dst": ["tag:db"], "ip": ["tcp:22", "tcp:3306", "tcp:6379"] },
+    // 팀원 PC → DB : SSH, DBeaver 등 DB 클라이언트, valkey-cli 디버깅, 브라우저 → MinIO presigned URL(9000) / Console(9001)
+    { "src": ["autogroup:member"], "dst": ["tag:db"], "ip": ["tcp:22", "tcp:3306", "tcp:6379", "tcp:9000", "tcp:9001"] },
 
     // ── GitLab ───────────────────────────────────────────
     // Runner → GitLab : job 수신, git clone (HTTPS), git SSH, Container Registry(5050)
@@ -302,17 +302,18 @@ kubectl delete pod p1 p2
 
 ---
 
-## 7. DB 노드 구성 (MariaDB + Valkey)
+## 7. DB 노드 구성 (MariaDB + Valkey + MinIO)
 
-backend 서비스가 사용할 MariaDB와, 향후 Redis를 대체할 Valkey를 DB 전용 VM 1대에 Docker Compose로 띄웁니다.
+backend 서비스가 사용할 MariaDB와, 향후 Redis를 대체할 Valkey, 객실 이미지를 저장할 dev 용 S3(MinIO)를 DB 전용 VM 1대에 Docker Compose로 띄웁니다.
 
 | 서비스 | 이미지 | 포트 | 비고 |
 |---|---|---|---|
 | MariaDB | `mariadb:11.4.13` (LTS) | `DB_PORT` (3306) | backend `DB_*` 와 동일한 계정/DB |
 | Valkey | `valkey/valkey:9.1.2` | 6379 | 기동만 — backend `REDIS_*` 연동은 추후 |
+| MinIO | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` | 9000 (S3 API) / 9001 (Console) | dev 용 S3 — 객실 이미지 버킷. backend 연동은 추후 ([7-6](#7-6-minio-dev-용-s3)) |
 
-- 두 컨테이너 모두 `network_mode: host` 로 뜨고, **ufw 가 `tailscale0` 으로 들어오는 3306/6379 만 허용**합니다. (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
-- 데이터: `/var/lib/hotel-db/{mariadb,valkey}`, 설정·자격증명: `/opt/hotel-db` (root 전용 0700)
+- 모든 컨테이너가 `network_mode: host` 로 뜨고, **ufw 가 `tailscale0` 으로 들어오는 3306/6379/9000/9001 만 허용**합니다. (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
+- 데이터: `/var/lib/hotel-db/{mariadb,valkey,minio}`, 설정·자격증명: `/opt/hotel-db` (root 전용 0700)
 
 ### 7-1. VM 사양 (k6 부하 테스트 기준)
 
@@ -322,6 +323,7 @@ backend 서비스가 사용할 MariaDB와, 향후 Redis를 대체할 Valkey를 D
 | 최소 (기능 확인용) | 2 | 4 GB | 30 GB | buffer pool 2 GB / Valkey 512 MB (`valkey_maxmemory: 512mb` 로 낮춤) |
 
 - 커넥션: DB를 쓰는 서비스 5개(auth/booking/hotel/payment/user) × replica 수 × TypeORM(mysql2) 기본 풀 10. replica 3이면 약 150 → `max_connections=500` 으로 여유를 둡니다.
+- MinIO 객체(객실 이미지)도 같은 디스크에 쌓입니다. 이미지 수가 많아지면 Disk 를 늘리세요.
 - 호스트 PC는 다른 VM까지 포함해 **RAM 16 GB 이상 + SSD**, 가능하면 유선 네트워크를 권장합니다.
 - k6 결과가 네트워크에 왜곡되지 않도록 k8s 노드에서 `tailscale ping <DB 노드>` 가 **direct** 로 연결되는지 확인하세요. (`via DERP` 면 중계 서버 경유라 지연이 큽니다)
 - 앱 쪽 풀 크기(기본 10)를 키워야 하면 추후 backend 에 `DB_POOL_SIZE` → TypeORM `extra.connectionLimit` 를 추가합니다. (이번 범위 밖)
@@ -338,9 +340,12 @@ DB 계정 정보는 **`backend/.env` 를 직접 읽습니다.** Ansible 쪽에 �
 | `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `DB_ROOT_PASSWORD` | `backend/.env` | `DB_USERNAME=root` 이면 중단 (앱 전용 계정 사용) |
 | `TS_DB_OAUTH_CLIENT_SECRET` | `infra/ansible/.env` | 1-2 의 DB 용 OAuth client |
 | `VALKEY_PASSWORD` | `infra/ansible/.env` | 추후 backend `REDIS_PASSWORD` 와 같은 값으로 맞출 예정 |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | `infra/ansible/.env` | MinIO 관리자 (Console 로그인). 최초 기동 때만 반영 |
+| `MINIO_APP_ACCESS_KEY`, `MINIO_APP_SECRET_KEY` | `infra/ansible/.env` | 앱 전용 계정 (객실 이미지 버킷만). 추후 backend S3 접근 키와 같은 값으로 맞출 예정 |
 | `BACKEND_ENV_FILE` (선택) | `infra/ansible/.env` | backend/.env 대신 다른 파일을 쓸 때 |
 
 - 비밀번호에는 공백, 따옴표, 역슬래시, `$`, `#`, `` ` `` 를 쓸 수 없습니다. (설정 파일에 그대로 들어가기 때문)
+- `MINIO_*` 는 URL 에 들어가므로 영문, 숫자, `.` `_` `~` `-` 만 씁니다. USER / ACCESS_KEY 는 3자 이상, PASSWORD / SECRET_KEY 는 8자 이상이고, 앱 계정은 root 와 달라야 합니다.
 - `hosts.ini` 의 `[db]` 그룹에 DB VM 을 추가합니다. (예시: `inventory/hosts.example.ini`)
 
 ### 7-3. 실행
@@ -363,19 +368,22 @@ ansible-playbook db.yml -K
 
 ```bash
 # DB 노드
-sudo docker compose -f /opt/hotel-db/compose.yml ps        # mariadb, valkey 모두 healthy
-sudo ufw status                                             # 3306/6379 는 tailscale0 에서만 허용
+sudo docker compose -f /opt/hotel-db/compose.yml ps        # mariadb, valkey, minio 모두 healthy
+sudo ufw status                                             # 3306/6379/9000/9001 은 tailscale0 에서만 허용
+sudo docker exec minio mcli ls app/room-images              # 앱 계정으로 버킷 접근 (성공해야 정상)
+sudo docker exec minio mcli anonymous get local/room-images # `private` 이어야 정상
 
 # k8s 노드 (Tailnet 경유)
 nc -zv <DB Tailscale IP> 3306
 nc -zv <DB Tailscale IP> 6379
+curl -fsS http://<DB Tailscale IP>:9000/minio/health/live && echo ok
 
 # k8s 안에서 Pod → DB (앱과 같은 경로)
 kubectl run dbtest --rm -it --image=mariadb:11.4 --restart=Never --   mariadb -h <DB Tailscale IP> -u <DB_USERNAME> -p <DB_DATABASE> -e "SELECT 1"
 kubectl run vktest --rm -it --image=valkey/valkey:9.1 --restart=Never --   valkey-cli -h <DB Tailscale IP> -a <VALKEY_PASSWORD> --no-auth-warning ping   # PONG
 ```
 
-- DB VM 의 사설 IP 로 3306 에 접속하면 **차단**되어야 정상입니다.
+- DB VM 의 사설 IP 로 3306 / 9000 에 접속하면 **차단**되어야 정상입니다.
 - 다시 실행하면 거의 모든 task 가 `ok` (changed=0 에 가까움) 로 끝나야 합니다.
 
 ### 7-5. dev DB 스키마 · 시딩
@@ -405,6 +413,34 @@ ansible-playbook db.yml -K --tags seed
   # 비우기 (database 를 지우고 db.yml 로 다시 만들면 계정 권한도 그대로 맞춰짐)
   sudo docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf -e "DROP DATABASE <DB_DATABASE>"
   ansible-playbook db.yml -K      # → deploy-dev 재실행 → db.yml -K --tags seed
+  ```
+
+### 7-6. MinIO (dev 용 S3)
+
+객실 이미지를 MariaDB 의 Base64 컬럼(`room_images.image_base64`) 대신 S3 에 저장하도록 바꾸기 위한 dev 저장소입니다. **온프레미스에서는 객실 이미지에 관한 S3 역할(저장 · presigned URL 발급 대상 · 삭제)을 모두 MinIO 가 맡습니다.** 이번 단계는 인프라만 준비합니다.
+
+- **이미지**: 업스트림 `minio/minio` 는 커뮤니티 이미지 배포가 끝나 Docker Hub 에서 내려갔습니다. 그래서 호환 포크 [Silo(`pgsty/minio`)](https://github.com/pgsty/minio) 를 버전을 고정해 씁니다. `MINIO_*` 환경변수, S3 API, Console 은 동일하고, 클라이언트는 `mcli`(`mc` 와 같음)입니다.
+- **버킷**: `room-images` (`group_vars/db.yml` 의 `minio_bucket`). playbook 이 매번 버킷이 있는지와 **익명 접근이 꺼져 있는지(private)**를 확인합니다.
+- **앱 계정**: `MINIO_APP_ACCESS_KEY` 에 `hotel-app` 정책을 붙입니다. 이 정책은 버킷 하나에 Get / Put / Delete / List 만 허용합니다. MariaDB 와 같은 방식으로, 앱 계정으로 접속을 검사해 **실패할 때만** 계정 생성 · secret 갱신 · 정책 부여를 다시 합니다.
+- **접근 방식: presigned URL** — backend 가 앱 키로 서명한 URL 을 발급하면, 브라우저와 Pod 가 tailnet 으로 `:9000` 에 직접 접근합니다. 서명에 Host 가 들어가므로 **backend 의 endpoint 와 브라우저가 접근하는 주소가 같아야** 합니다(DB 노드 Tailscale IP).
+- **환경변수 (예정, 이름은 backend 연동 때 확정)**
+
+  | 이름 | dev (MinIO) | prod (AWS S3) |
+  |---|---|---|
+  | `S3_ENDPOINT` | `http://<DB ts ip>:9000` | 비움 → AWS SDK 기본 엔드포인트 |
+  | `S3_REGION` | `ap-northeast-2` | 실제 리전 |
+  | `S3_BUCKET` | `room-images` | (미정) |
+  | `S3_FORCE_PATH_STYLE` | `true` | `false` |
+  | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `MINIO_APP_ACCESS_KEY` / `MINIO_APP_SECRET_KEY` | 넣지 않음 (IAM 역할) |
+
+- **CORS**: `minio_cors_allow_origin: "*"`(서버 전역)입니다.
+- **자동화하지 않는 것**: `MINIO_ROOT_PASSWORD` 변경. root 자격증명은 데이터 디렉토리가 빈 상태로 처음 기동할 때만 반영됩니다. 값을 바꾸려면 Console 이나 `mcli admin` 으로 직접 변경한 뒤 `.env` 를 맞춥니다.
+- presigned 동작 확인 (DB 노드):
+  ```bash
+  echo hello | sudo docker exec -i minio mcli pipe app/room-images/test.txt
+  # 서명 Host 가 Tailscale IP 가 되도록 앱 키로 alias 를 잡아 발급 (127.0.0.1 로 발급하면 외부에서 못 씀)
+  sudo docker exec -it minio sh -c 'mcli alias set ts http://<DB ts ip>:9000 <APP_KEY> <APP_SECRET> >/dev/null && mcli share download ts/room-images/test.txt'
+  # 팀원 PC: 출력된 URL → 200, 서명 없이 http://<DB ts ip>:9000/room-images/test.txt → 403
   ```
 
 ---
