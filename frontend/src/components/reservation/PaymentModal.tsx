@@ -1,6 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { IS_PAYMENT_FAKE, PAYMENT_MODE, paymentSuccessUrl, preparePayment } from '../../api/payments'
+import type { Booking } from '../../api/gateway'
+import {
+  IS_PAYMENT_FAKE,
+  PAYMENT_BLOCK_MESSAGE,
+  PAYMENT_MODE,
+  PaymentApiError,
+  fetchLatestBooking,
+  paymentBlockReason,
+  paymentSuccessUrl,
+  preparePayment,
+} from '../../api/payments'
 import './PaymentModal.css'
 
 export interface PaymentModalSummary {
@@ -17,16 +27,21 @@ interface PaymentModalProps {
   reservationId: number
   summary: PaymentModalSummary
   onClose: () => void
+  /** 결제 직전에 다시 조회한 예약 상태가 화면과 달라 결제를 막았을 때, 화면도 최신 상태로 바꾸도록 넘겨준다 */
+  onBookingChange?: (booking: Booking) => void
 }
 
 /** 결제창. "결제하기"를 누르면 결제 준비(payment-attempts)로 주문번호와 금액을 받은 뒤 결제를 진행한다.
  * - MOCK: 토스 결제창 없이 바로 결과 화면(/reservation/payment/success)으로 이동해 승인을 요청한다.
  * - TOSS: 이 자리에 토스 결제위젯이 들어간다 (테스트 키 발급 후 연결 예정).
- * 결제 결과(승인·실패·확인 중)는 결과 화면이 보여주므로, 이 창은 결과를 따로 받지 않는다. */
-function PaymentModal({ reservationId, summary, onClose }: PaymentModalProps) {
+ * 결제 결과(승인·실패·확인 중)는 결과 화면이 보여주므로, 이 창은 결과를 따로 받지 않는다.
+ * 이중 결제를 막기 위해 결제 준비 직전에 예약을 다시 조회해, 승인 확인 중·결제 기한 만료면 진행하지 않는다. */
+function PaymentModal({ reservationId, summary, onClose, onBookingChange }: PaymentModalProps) {
   const navigate = useNavigate()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
+  // 결제할 수 없는 예약으로 확인되면 같은 창에서 다시 누르지 못하게 막는다
+  const [isBlocked, setIsBlocked] = useState(false)
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -39,9 +54,25 @@ function PaymentModal({ reservationId, summary, onClose }: PaymentModalProps) {
   const isToss = PAYMENT_MODE === 'TOSS'
   const orderName = summary.hotelName ? `${summary.hotelName} ${summary.roomName}` : summary.roomName
 
+  // 결제할 수 없는 예약이면 안내 문구를 보여주고, 화면에도 최신 예약 상태를 반영한다.
+  const blockWith = (message: string, latest: Booking | null) => {
+    setErrorMessage(message)
+    setIsBlocked(true)
+    setIsSubmitting(false)
+    if (latest) onBookingChange?.(latest)
+  }
+
   const handleConfirm = async () => {
     setErrorMessage('')
     setIsSubmitting(true)
+
+    const latest = await fetchLatestBooking(reservationId)
+    const reason = latest ? paymentBlockReason(latest) : null
+    if (reason) {
+      blockWith(PAYMENT_BLOCK_MESSAGE[reason], latest)
+      return
+    }
+
     try {
       const attempt = await preparePayment(reservationId, { amount: summary.amount, orderName })
       // MOCK은 토스 결제창이 없으므로, 토스가 성공 URL로 돌려보낼 때와 같은 값을 직접 붙여 결과 화면으로 간다.
@@ -53,7 +84,13 @@ function PaymentModal({ reservationId, summary, onClose }: PaymentModalProps) {
       navigate(`${successUrl.pathname}${successUrl.search}`)
     } catch (err) {
       // 결제 기한 만료·시도 횟수 초과 등은 서버가 code와 안내 문구를 함께 준다 (명세 5.8·5.10).
-      setErrorMessage(err instanceof Error ? err.message : '결제를 시작하지 못했습니다.')
+      // retryable=false면 같은 예약으로 다시 눌러도 결과가 같으므로 버튼을 막고 예약 상태를 다시 불러온다.
+      const message = err instanceof Error ? err.message : '결제를 시작하지 못했습니다.'
+      if (err instanceof PaymentApiError && err.code && !err.retryable) {
+        blockWith(message, await fetchLatestBooking(reservationId))
+        return
+      }
+      setErrorMessage(message)
       setIsSubmitting(false)
     }
   }
@@ -123,7 +160,7 @@ function PaymentModal({ reservationId, summary, onClose }: PaymentModalProps) {
             type="button"
             className="payment-modal-confirm"
             onClick={handleConfirm}
-            disabled={isSubmitting || isToss}
+            disabled={isSubmitting || isToss || isBlocked}
           >
             {isSubmitting ? '결제 준비 중…' : `${summary.amount.toLocaleString()}원 결제하기`}
           </button>

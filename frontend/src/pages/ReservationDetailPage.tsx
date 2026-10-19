@@ -10,6 +10,7 @@ import {
   type ReservationFacility,
 } from '../api/gateway'
 import { toImageDataUrl, type Room } from '../api/hotels'
+import { PAYMENT_BLOCK_MESSAGE, formatPaymentDue, paymentBlockReason } from '../api/payments'
 import type { Hotel } from '../data/hotels'
 import { CalendarIcon, PersonIcon, PinIcon } from '../components/reservation/icons'
 import PaymentModal from '../components/reservation/PaymentModal'
@@ -188,6 +189,11 @@ function ReservationDetailPage() {
 
   const thumbnail = roomInfo?.room.images[0]
 
+  // 결제 대기 예약만 결제 기한·결제 가능 여부를 보여준다 (승인 확인 중·기한 만료면 결제 버튼을 막는다)
+  const isPendingPayment = booking?.status === 'PENDING_PAYMENT'
+  const paymentDue = isPendingPayment ? formatPaymentDue(booking.paymentDueAt) : null
+  const paymentBlock = isPendingPayment ? paymentBlockReason(booking) : null
+
   return (
     <section className="mypage-page">
       <div className="mypage-content">
@@ -288,6 +294,13 @@ function ReservationDetailPage() {
                     {STATUS_LABEL[booking.status]}
                   </span>
                 </div>
+
+                {paymentDue && (
+                  <div className="reservation-detail-row">
+                    <span className="reservation-detail-label">결제 기한</span>
+                    <span className="reservation-detail-value">{paymentDue}</span>
+                  </div>
+                )}
               </div>
 
               <div className="reservation-detail-notice">
@@ -305,11 +318,18 @@ function ReservationDetailPage() {
                 </ul>
               </div>
 
+              {paymentBlock && <p className="mypage-hint">{PAYMENT_BLOCK_MESSAGE[paymentBlock]}</p>}
+
               {(booking.status === 'PENDING_PAYMENT' || booking.status === 'RESERVED') && (
                 <div className="mypage-actions">
                   {booking.status === 'PENDING_PAYMENT' && (
-                    <button type="button" className="mypage-submit" onClick={() => setShowPaymentModal(true)}>
-                      결제하기
+                    <button
+                      type="button"
+                      className="mypage-submit"
+                      onClick={() => setShowPaymentModal(true)}
+                      disabled={paymentBlock !== null}
+                    >
+                      {paymentBlock === 'CONFIRMING' ? '결제 확인 중' : '결제하기'}
                     </button>
                   )}
                   <button type="button" className="mypage-ghost-btn" onClick={() => setIsCancelModalOpen(true)}>
@@ -371,6 +391,7 @@ function ReservationDetailPage() {
             amount: booking.totalAmount,
           }}
           onClose={() => setShowPaymentModal(false)}
+          onBookingChange={setBooking}
         />
       )}
     </section>
