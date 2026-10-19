@@ -16,10 +16,49 @@ variable "region" {
   default     = "us-east-1"
 }
 
-variable "state_bucket" {
-  description = "다른 스택 state 를 읽을 버킷 (backend.hcl 의 bucket 과 같아야 한다)"
+# ── 다른 스택 output (terragrunt.hcl 의 dependency 가 넣는다) ──
+
+variable "log_bucket_name" {
+  description = "10-global 장기 로그 버킷 이름 (ALB 액세스 로그 대상)"
   type        = string
-  default     = "team04-hotel-tfstate"
+}
+
+variable "domain_name" {
+  description = "10-global 서비스 루트 도메인 (도메인 구매 전 null)"
+  type        = string
+  default     = null
+}
+
+variable "zone_id" {
+  description = "10-global Hosted Zone ID (도메인 구매 전 null)"
+  type        = string
+  default     = null
+}
+
+variable "certificate_arn" {
+  description = "10-global ACM 인증서 ARN (인증서 생성 전 null)"
+  type        = string
+  default     = null
+}
+
+variable "main_network" {
+  description = "20-network 의 main output (vpc_id, vpc_cidr, subnet_ids, subnet_ids_by_az)"
+  type = object({
+    vpc_id           = string
+    vpc_cidr         = string
+    subnet_ids       = map(list(string))
+    subnet_ids_by_az = map(map(string))
+  })
+}
+
+variable "sg_ids" {
+  description = "30-security 의 sg_ids output (<vpc>_<역할> → SG ID)"
+  type        = map(string)
+}
+
+variable "worker_asg_name" {
+  description = "70-main-cluster-kubeadm 워커 ASG 이름 (ALB Target Group 연결)"
+  type        = string
 }
 
 variable "api_subdomain" {

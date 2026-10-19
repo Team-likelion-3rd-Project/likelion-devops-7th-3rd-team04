@@ -1,4 +1,4 @@
-# 다른 스택은 data.terraform_remote_state.main_cluster.outputs.<이름> 처럼 읽는다.
+# 다른 스택은 dependency.main_cluster.outputs.<이름> 처럼 읽는다.
 
 output "apiserver_endpoint" {
   description = "kube-apiserver 내부 NLB DNS 이름 (kubeadm controlPlaneEndpoint, 포트 6443)"

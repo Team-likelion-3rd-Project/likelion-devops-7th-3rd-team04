@@ -11,16 +11,6 @@
 #
 # DB 계층은 NAT 경로 없이 isolated 라우트 테이블을 쓴다.
 
-data "terraform_remote_state" "global" {
-  backend = "s3"
-
-  config = {
-    bucket = var.state_bucket
-    key    = "prod/global/terraform.tfstate"
-    region = var.region
-  }
-}
-
 locals {
   name = var.project
 }
@@ -85,7 +75,7 @@ module "payment" {
   gateway_endpoints  = ["s3"]
 
   # 10-global 버킷 정책이 vpc-flow-logs/AWSLogs/<계정>/* 에만 쓰기를 허용한다
-  flow_log_destination_arn = "${data.terraform_remote_state.global.outputs.log_bucket_arn}/vpc-flow-logs/"
+  flow_log_destination_arn = "${var.log_bucket_arn}/vpc-flow-logs/"
 }
 
 # AZ 하나뿐이라 NAT 도 항상 1개

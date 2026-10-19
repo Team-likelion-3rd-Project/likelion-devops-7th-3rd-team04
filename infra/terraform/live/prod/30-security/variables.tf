@@ -16,10 +16,11 @@ variable "region" {
   default     = "us-east-1"
 }
 
-variable "state_bucket" {
-  description = "다른 스택 state 를 읽을 버킷 (backend.hcl 의 bucket 과 같아야 한다)"
+# ── 다른 스택 output (terragrunt.hcl 의 dependency 가 넣는다) ──
+
+variable "main_vpc_id" {
+  description = "20-network Main VPC ID"
   type        = string
-  default     = "team04-hotel-tfstate"
 }
 
 variable "enable_control_plane" {

@@ -8,26 +8,6 @@
 # user-data 가 Ansible 을 실행해 처리한다 (bootstrap.tf).
 # 노드 접속은 SSM Session Manager 로 한다 (22 포트, 키 페어 없음).
 
-data "terraform_remote_state" "network" {
-  backend = "s3"
-
-  config = {
-    bucket = var.state_bucket
-    key    = "prod/network/terraform.tfstate"
-    region = var.region
-  }
-}
-
-data "terraform_remote_state" "security" {
-  backend = "s3"
-
-  config = {
-    bucket = var.state_bucket
-    key    = "prod/security/terraform.tfstate"
-    region = var.region
-  }
-}
-
 # Ansible preflight 가 Ubuntu 22.04 만 허용한다. 노드는 Graviton(arm64)
 data "aws_ssm_parameter" "ubuntu_ami" {
   name = "/aws/service/canonical/ubuntu/server/22.04/stable/current/arm64/hvm/ebs-gp2/ami-id"
@@ -45,8 +25,8 @@ data "aws_ami" "ubuntu" {
 locals {
   name = "${var.project}-main"
 
-  network = data.terraform_remote_state.network.outputs.main
-  sg_ids  = data.terraform_remote_state.security.outputs.sg_ids
+  network = var.main_network
+  sg_ids  = var.sg_ids
 
   # AZ 접미사 → cp 서브넷 ID. 20-network enable_control_plane_subnets = false 면 cp 계층이 없다
   cp_subnet_ids = try(local.network.subnet_ids_by_az.cp, {})

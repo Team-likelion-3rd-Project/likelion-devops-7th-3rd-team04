@@ -1,4 +1,4 @@
-# 다른 스택은 data.terraform_remote_state.security.outputs.sg_ids.<vpc>_<역할> 처럼 읽는다.
+# 다른 스택은 dependency.security.outputs.sg_ids.<vpc>_<역할> 처럼 읽는다.
 # enable_control_plane = false 면 main_cp, main_internal_nlb 는 null
 
 output "sg_ids" {

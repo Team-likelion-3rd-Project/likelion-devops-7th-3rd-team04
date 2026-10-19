@@ -16,10 +16,21 @@ variable "region" {
   default     = "us-east-1"
 }
 
-variable "state_bucket" {
-  description = "다른 스택 state 를 읽을 버킷 (backend.hcl 의 bucket 과 같아야 한다)"
-  type        = string
-  default     = "team04-hotel-tfstate"
+# ── 다른 스택 output (terragrunt.hcl 의 dependency 가 넣는다) ──
+
+variable "main_network" {
+  description = "20-network 의 main output (vpc_id, vpc_cidr, subnet_ids, subnet_ids_by_az)"
+  type = object({
+    vpc_id           = string
+    vpc_cidr         = string
+    subnet_ids       = map(list(string))
+    subnet_ids_by_az = map(map(string))
+  })
+}
+
+variable "sg_ids" {
+  description = "30-security 의 sg_ids output (<vpc>_<역할> → SG ID)"
+  type        = map(string)
 }
 
 variable "control_plane_instance_type" {

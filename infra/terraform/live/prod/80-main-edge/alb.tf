@@ -15,7 +15,7 @@ resource "aws_lb" "main" {
 
   # 10-global 로그 버킷 정책이 alb/AWSLogs/<계정 ID>/ 경로에만 쓰기를 허용한다
   access_logs {
-    bucket  = local.global.log_bucket_name
+    bucket  = var.log_bucket_name
     prefix  = "alb"
     enabled = true
   }
@@ -55,7 +55,7 @@ resource "aws_lb_target_group" "worker" {
 
 # 연결 리소스는 사용하는 쪽 스택에 둔다. ASG 가 새로 띄운 워커도 자동 등록된다
 resource "aws_autoscaling_attachment" "worker" {
-  autoscaling_group_name = data.terraform_remote_state.main_cluster.outputs.worker_asg_name
+  autoscaling_group_name = var.worker_asg_name
   lb_target_group_arn    = aws_lb_target_group.worker.arn
 }
 

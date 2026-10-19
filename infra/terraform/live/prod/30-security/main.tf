@@ -6,21 +6,11 @@
 # - Terraform 은 SG 생성 시 AWS 기본 아웃바운드(전체 허용)를 지운다. 아웃바운드도 모두 규칙으로 적는다.
 # - SG · 규칙 description 은 AWS 가 ASCII 만 허용한다. 한글 설명은 주석으로 적는다.
 
-data "terraform_remote_state" "network" {
-  backend = "s3"
-
-  config = {
-    bucket = var.state_bucket
-    key    = "prod/network/terraform.tfstate"
-    region = var.region
-  }
-}
-
 locals {
   name = var.project
 
   vpc_ids = {
-    main = data.terraform_remote_state.network.outputs.main.vpc_id
+    main = var.main_vpc_id
   }
 
   # 키는 <vpc>_<역할>. SG 이름은 team04-hotel-<vpc>-<역할>, output 키도 같은 값

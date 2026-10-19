@@ -16,10 +16,11 @@ variable "region" {
   default     = "us-east-1"
 }
 
-variable "state_bucket" {
-  description = "다른 스택 state 를 읽을 버킷 (backend.hcl 의 bucket 과 같아야 한다)"
+# ── 다른 스택 output (terragrunt.hcl 의 dependency 가 넣는다) ──
+
+variable "log_bucket_arn" {
+  description = "10-global 장기 로그 버킷 ARN (Flow Logs 대상)"
   type        = string
-  default     = "team04-hotel-tfstate"
 }
 
 variable "single_nat_gateway" {

@@ -10,8 +10,8 @@
 # [A] 이 계정(운영 계정)에서 구매 — 자동 생성된 Zone 을 가져온다. NS 변경 없음
 #   1) Route53 에서 도메인 구매
 #   2) terraform.tfvars 에 domain_name, enable_certificate = true 설정
-#   3) AWS_PROFILE=team04 terraform import 'aws_route53_zone.main[0]' <자동 생성된 Zone ID>
-#   4) AWS_PROFILE=team04 terraform apply
+#   3) AWS_PROFILE=team04 terragrunt import 'aws_route53_zone.main[0]' <자동 생성된 Zone ID>
+#   4) AWS_PROFILE=team04 terragrunt apply
 #
 # [B] 다른 계정에서 구매 — 등록 계정의 이름 서버를 이 Zone 의 NS 로 바꿔 위임한다
 #   1) terraform.tfvars 에 domain_name 설정 → apply (Zone 만 생성)
