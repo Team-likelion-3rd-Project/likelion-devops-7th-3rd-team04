@@ -53,6 +53,13 @@
   margin: 12px 0 0;
 }
 
+/* 결제 대기 예약에만 보이는 "결제 기한 안에 결제하면 확정" 안내 */
+.reservation-complete-guide {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-h);
+}
+
 .reservation-complete-number {
   font-size: 14px;
   color: var(--text);

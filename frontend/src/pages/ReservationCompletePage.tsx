@@ -15,7 +15,13 @@ import type { RoomGuests } from '../components/reservation/guestTypes'
 import { CalendarIcon, CheckIcon, PersonIcon, PinIcon } from '../components/reservation/icons'
 import PaymentModal from '../components/reservation/PaymentModal'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
+import { STATUS_LABEL } from './reservationHistoryUtils'
 import './ReservationCompletePage.css'
+
+// 예약 상태 코드(PENDING_PAYMENT 등)를 다른 화면과 같은 한글 라벨로 바꾼다. 모르는 값이면 그대로 보여준다.
+function statusLabel(status: string): string {
+  return STATUS_LABEL[status as keyof typeof STATUS_LABEL] ?? status
+}
 
 type LoadStatus = 'loading' | 'success' | 'error'
 
@@ -167,6 +173,15 @@ function ReservationCompletePage() {
   const paymentDue = booking && isPendingPayment ? formatPaymentDue(booking.paymentDueAt) : null
   const paymentBlock = booking && isPendingPayment ? paymentBlockReason(booking) : null
 
+  // 3차 결제 흐름에서는 예약 직후가 결제 대기라, 결제를 마친(RESERVED) 예약만 "확정"으로 안내한다.
+  // 결제 대기는 "접수", 만료·취소 등은 현재 상태를 그대로 안내한다.
+  const isReserved = booking?.status === 'RESERVED'
+  const bannerTitle = isReserved
+    ? '예약이 확정되었습니다'
+    : isPendingPayment
+      ? '예약이 접수되었습니다'
+      : `예약이 ${booking ? statusLabel(booking.status) : ''} 상태입니다`
+
   return (
     <section className="reservation-complete-page">
       <div className="reservation-page-header">
@@ -186,13 +201,21 @@ function ReservationCompletePage() {
       {status === 'success' && booking && (
         <>
           <div className="reservation-complete-banner">
-            <span className="reservation-complete-check" aria-hidden="true">
-              <CheckIcon />
-            </span>
+            {(isReserved || isPendingPayment) && (
+              <span className="reservation-complete-check" aria-hidden="true">
+                <CheckIcon />
+              </span>
+            )}
             <h2>
               {greetingName}
-              {greetingHotel}예약이 확정되었습니다
+              {greetingHotel}
+              {bannerTitle}
             </h2>
+            {isPendingPayment && (
+              <p className="reservation-complete-guide">
+                {paymentDue ? `결제 기한(${paymentDue}) 안에` : '결제 기한 안에'} 결제를 완료하면 예약이 확정됩니다.
+              </p>
+            )}
             <p className="reservation-complete-number">예약번호 {booking.reservationId}</p>
           </div>
 
@@ -260,7 +283,7 @@ function ReservationCompletePage() {
 
                 <div className="reservation-complete-row">
                   <span className="reservation-complete-label">예약 상태</span>
-                  <span className="reservation-complete-value">{booking.status}</span>
+                  <span className="reservation-complete-value">{statusLabel(booking.status)}</span>
                 </div>
 
                 {paymentDue && (
