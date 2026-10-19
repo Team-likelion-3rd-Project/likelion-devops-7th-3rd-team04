@@ -1,13 +1,7 @@
-"""Real RAG retrieval: embeds text via the self-hosted Ollama embedding model
-and queries the S3 Vectors index directly via boto3 (`infra/terraform/modules/ai_data`).
+"""RAG 검색: Ollama 임베딩 모델로 질문을 벡터화하고 S3 Vectors 인덱스를 조회합니다.
+쓰기 쪽(인덱스 채우기)은 scripts/ingest.py가 담당합니다.
 
-This is what `chain.py`'s `_retrieve_context` calls now that the index can
-actually be queried — see that module's docstring, which already anticipated
-this. `scripts/ingest.py` is the write-side counterpart that populates the
-index from `app/corpus.py`.
-
-boto3's `s3vectors` client (verified against boto3==1.43.73, 2026-08 — check
-here first if AWS changes this API's shape later):
+boto3 `s3vectors` 클라이언트 API (boto3==1.43.73 기준 확인 — AWS가 API를 바꾸면 여기부터 확인):
   - put_vectors(vectorBucketName, indexName, vectors=[
         {"key": str, "data": {"float32": [float, ...]}, "metadata": {...}},
     ])
@@ -15,48 +9,40 @@ here first if AWS changes this API's shape later):
         returnMetadata=True, returnDistance=True)
     -> {"vectors": [{"key", "distance", "metadata"}], "distanceMetric", "nextToken"}
 
-Retrieval is deliberately best-effort: if the vector store isn't configured
-(no VECTOR_BUCKET_NAME) or the query fails for any reason (network, IAM,
-throttling), this returns None rather than raising — chain.py's contract is
-that llm-service keeps answering (without grounding) rather than 500ing when
-RAG is unavailable.
+검색은 best-effort입니다. 설정이 없거나(VECTOR_BUCKET_NAME 미설정) 조회가 실패해도
+(네트워크, IAM, throttling 등) 예외 대신 None을 돌려줍니다 — RAG를 못 쓰더라도 500을
+내지 않고 근거 없이라도 답변을 이어가기 위함입니다.
 """
 
 import asyncio
 import logging
-import os
 
 import boto3
 from langchain_ollama import OllamaEmbeddings
 
+from . import config
+
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-VECTOR_BUCKET_NAME = os.getenv("VECTOR_BUCKET_NAME")
-VECTOR_INDEX_NAME = os.getenv("VECTOR_INDEX_NAME")
-RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
+_embeddings = OllamaEmbeddings(base_url=config.OLLAMA_BASE_URL, model=config.OLLAMA_EMBED_MODEL)
 
-_embeddings = OllamaEmbeddings(base_url=OLLAMA_BASE_URL, model=OLLAMA_EMBED_MODEL)
-
-# None when VECTOR_BUCKET_NAME isn't set (local dev without AWS) — every
-# caller below treats that as "retrieval unavailable", not an error.
-s3vectors_client = boto3.client("s3vectors", region_name=AWS_REGION) if VECTOR_BUCKET_NAME else None
+# VECTOR_BUCKET_NAME이 없으면(AWS 없는 로컬 개발) None — 호출부는 이를 "RAG 사용 안 함"으로 취급합니다.
+s3vectors_client = (
+    boto3.client("s3vectors", region_name=config.AWS_REGION) if config.VECTOR_BUCKET_NAME else None
+)
 
 
 def is_configured() -> bool:
-    return s3vectors_client is not None and bool(VECTOR_INDEX_NAME)
+    return s3vectors_client is not None and bool(config.VECTOR_INDEX_NAME)
 
 
 async def embed(text: str) -> list[float]:
-    """Embed `text` with the self-hosted Ollama embedding model."""
     return await _embeddings.aembed_query(text)
 
 
-async def query_context(message: str, top_k: int = RAG_TOP_K) -> str | None:
-    """Embed `message`, query the S3 Vectors index, and join the top-k
-    matches' `metadata.text` into one context string. Never raises."""
+async def query_context(message: str, top_k: int = config.RAG_TOP_K) -> str | None:
+    """질문과 가장 가까운 top_k개 문서의 `metadata.text`를 하나의 context 문자열로 합칩니다.
+    예외를 던지지 않습니다."""
     if not is_configured():
         return None
 
@@ -64,15 +50,15 @@ async def query_context(message: str, top_k: int = RAG_TOP_K) -> str | None:
         vector = await embed(message)
         response = await asyncio.to_thread(
             s3vectors_client.query_vectors,
-            vectorBucketName=VECTOR_BUCKET_NAME,
-            indexName=VECTOR_INDEX_NAME,
+            vectorBucketName=config.VECTOR_BUCKET_NAME,
+            indexName=config.VECTOR_INDEX_NAME,
             topK=top_k,
             queryVector={"float32": vector},
             returnMetadata=True,
             returnDistance=True,
         )
     except Exception:
-        logger.exception("S3 Vectors retrieval failed; continuing without RAG context")
+        logger.exception("S3 Vectors 검색 실패 — RAG context 없이 계속합니다")
         return None
 
     matches = response.get("vectors", [])

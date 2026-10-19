@@ -1,67 +1,67 @@
-# langchain_rag/n8n/ — orchestration workflow
+# langchain_rag/n8n — 오케스트레이션 워크플로
 
-Implements the `N8N_WEBHOOK_URL` contract `backend/apps/chat-bot-service/src/n8n/n8n.client.ts` already calls (`{sessionId?, userId?, message, history}` in, `{reply}` out). Nothing pointed at that URL until now.
+`backend/apps/chat-bot-service/src/n8n/n8n.client.ts`가 호출하는 `N8N_WEBHOOK_URL` 계약을 구현합니다.
+요청은 `{sessionId?, userId?, message, history}`, 응답은 `{reply}`입니다.
 
-`workflows/chat-orchestration.json` is the workflow, four nodes:
+`workflows/chat-orchestration.json`의 노드 구성:
 
 ```
 Webhook (POST /webhook/chat)
-  → Map to llm-service contract   (Code: USER/ASSISTANT → user/assistant, drops sessionId/userId)
-  → Call llm-service               (HTTP Request: POST llm-service:8000/chat)
+  → Map to llm-service contract   (Code: USER/ASSISTANT → user/assistant, sessionId/userId 제거)
+  → Call llm-service               (HTTP Request: POST llm-service:8000/chat, 타임아웃 120초)
   → Respond to Webhook             ({ reply })
 ```
 
-RAG used to be mocked here with a "Mock RAG (placeholder)" node (a fixed
-string as `context`). That node is gone now — `langchain_rag/llm-service/app/chain.py`
-does its own real S3 Vectors retrieval whenever it's called without a
-`context` field, which is exactly what this workflow sends. See
-`../llm-service/README.md`'s "RAG retrieval" section for how that works and
-how to populate the index.
+RAG 검색은 워크플로에서 하지 않습니다. `context` 없이 호출하면 llm-service가 직접 S3 Vectors를 검색합니다(`../llm-service/README.md`의 "RAG 검색" 참고).
 
-## Running locally
+## 로컬 실행
 
 ```bash
-docker compose -f ../docker-compose.yml up --build   # or: cd .. && docker compose up --build
+docker compose -f ../docker-compose.yml up --build
 ```
 
-Brings up `ollama`, `llm-service`, `n8n`, and `n8n-init` (imports the workflow once, active, into `n8n`'s DB).
+`ollama`, `llm-service`, `n8n`, `n8n-init`이 뜹니다. `n8n-init`은 워크플로를 import하고 활성화한 뒤 종료합니다.
 
-**If the webhook 404s** (`n8n` had already finished booting before `n8n-init` wrote the active workflow — see the comment in `../docker-compose.yml`), run:
+**웹훅이 404일 때:** `http://localhost:5678`에서 워크플로가 있고 "Active"가 켜져 있는지 먼저 확인하세요. 꺼져 있으면 n8n을 재시작합니다.
 
 ```bash
 docker compose -f ../docker-compose.yml restart n8n
 ```
 
-You can also open `http://localhost:5678` and check the workflow is listed and its "Active" toggle is on.
+그래도 안 되면 `n8n-init`이 성공했는지 확인합니다.
 
-If that doesn't fix it, check whether `n8n-init` actually succeeded in the
-first place — `docker compose -f ../docker-compose.yml logs n8n-init` should
-show a successful import, not an error/non-zero exit. If it failed outright,
-restarting `n8n` won't help (there was never a workflow to activate); fix
-whatever broke the import and re-run `docker compose -f ../docker-compose.yml up n8n-init`.
+```bash
+docker compose -f ../docker-compose.yml logs n8n-init
+```
 
-## Testing
+import가 실패했다면 n8n을 재시작해도 소용없습니다(활성화할 워크플로가 없음). 원인을 고친 뒤 다시 실행하세요.
 
-**(a) Full-path orchestration test** — mimics `n8n.client.ts`'s exact request shape against the webhook:
+```bash
+docker compose -f ../docker-compose.yml up n8n-init
+```
+
+## 테스트
+
+**(a) 전체 경로 테스트** — `n8n.client.ts`와 같은 형태의 요청을 웹훅에 보냅니다.
 
 ```bash
 curl -X POST http://localhost:5678/webhook/chat -H 'Content-Type: application/json' \
   -d '{"sessionId":"test-session","userId":1,"message":"체크인은 몇 시부터 가능한가요?","history":[{"role":"USER","content":"안녕하세요"},{"role":"ASSISTANT","content":"안녕하세요! 무엇을 도와드릴까요?"}]}'
 ```
 
-Expect `{"reply": "..."}` — proves the whole local chain (n8n → llm-service → Ollama) end-to-end, including the uppercase→lowercase role mapping. Whether the reply is actually *grounded* in RAG content depends on whether `llm-service`'s `VECTOR_BUCKET_NAME`/AWS credentials are set up and `scripts/ingest.py` has been run against the real index — see `../llm-service/README.md`; without that, this still works, just without retrieval.
+`{"reply": "..."}`가 오면 n8n → llm-service → Ollama 전체 경로와 대문자 → 소문자 role 변환이 동작하는 것입니다. 답변이 RAG에 근거하는지는 llm-service에 AWS 자격 증명이 있고 `scripts/ingest.py`로 인덱스를 채웠는지에 달려 있습니다. 없어도 근거 없이 답변은 옵니다.
 
-**(b) Context-injection test** — verifies the `context` override mechanism `llm-service` still supports (bypasses RAG entirely), independent of n8n, by calling `llm-service` directly and asking the model to echo back what it was given:
+**(b) context 주입 테스트** — n8n을 거치지 않고 llm-service에 `context`를 직접 넣어, RAG 대신 그 값이 프롬프트에 들어가는지 확인합니다.
 
 ```bash
 curl -X POST http://localhost:8001/chat -H 'Content-Type: application/json' \
   -d '{"message":"컨텍스트에 있는 문장을 그대로 반복해줘.","history":[],"context":"TEST-CONTEXT-12345"}'
 ```
 
-(Host port `8001` — see the port-mapping comment in `../docker-compose.yml`; the internal call n8n makes above still uses `llm-service:8000`.)
+답변에 `TEST-CONTEXT-12345`가 들어 있으면 정상입니다.
 
-Expect the reply to contain `TEST-CONTEXT-12345`, confirming an explicitly-supplied `context` still overrides RAG and reaches the prompt sent to Ollama.
+## backend와 연결
 
-## Not in scope here
+이 스택은 backend와 별개 Compose 프로젝트라 자동으로 연결되지 않습니다. backend의 `chat-bot-service`에서 호출하려면 `backend/.env`의 `N8N_WEBHOOK_URL`을 이 n8n으로 지정하세요(`backend/.env.example` 참고, 기본값 `http://host.docker.internal:5678/webhook/chat`).
 
-Deploying n8n anywhere (this is a local-only Docker Compose instance — the in-cluster deployment at `gitops/langchain/base/n8n/` is a separate manifest, not driven by this compose file), and pointing `backend/.env`'s `N8N_WEBHOOK_URL` at this instance to test the full `chat-bot-service` → n8n chain (you can do that manually — `N8N_WEBHOOK_URL=http://localhost:5678/webhook/chat` — but it isn't wired up automatically, to keep this stack independent of the `backend/` one, same as `llm-service`/`ollama`).
+`N8N_TIMEOUT_MS`(기본 30초)가 워크플로의 llm-service 호출 타임아웃(120초)보다 짧습니다. CPU 전용 로컬 Ollama는 응답이 30초를 넘을 수 있으니, 그럴 때는 `N8N_TIMEOUT_MS`를 늘리세요.

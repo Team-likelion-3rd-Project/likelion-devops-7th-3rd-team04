@@ -1,37 +1,31 @@
 #!/usr/bin/env python3
-"""One-time (idempotent) RAG ingestion: embeds `app/corpus.py`'s documents
-with the self-hosted Ollama embedding model and writes them into the S3
-Vectors index via `put_vectors`. Re-running is safe — `key` is stable per
-document, so this upserts rather than duplicates.
+"""RAG 인덱스 적재: app/corpus.py의 문서를 Ollama 임베딩 모델로 벡터화해 S3 Vectors
+인덱스에 put_vectors로 씁니다. 문서마다 key가 고정이라 다시 실행해도 중복 없이 덮어씁니다.
 
-Needs AWS credentials able to reach the real S3 Vectors bucket/index
-(infra/terraform/modules/ai_data) — and, since this writes, the
-`s3vectors:PutVectors` IAM permission specifically (a separate Terraform
-change from the read-only `GetVectors`/`QueryVectors` the chatbot role has
-today — see the plan doc's Terraform dependency notes).
+S3 Vectors 버킷/인덱스에 접근 가능한 AWS 자격 증명과, 쓰기 작업이므로
+`s3vectors:PutVectors` 권한이 필요합니다.
 
-Usage:
-  # Locally, with your own AWS credentials on the environment:
+사용법:
+  # 로컬 (AWS 자격 증명을 환경변수로 준비한 상태에서)
   cd langchain_rag/llm-service
-  source /mnt/d/Desktop/AWS/aws-mfa.sh <profile> <otp>   # or any AWS_* creds
   python -m scripts.ingest
 
-  # In-cluster, using the llm-service pod's own EKS Pod Identity:
-  kubectl exec -n langchain deploy/llm-service -- python -m scripts.ingest
+  # docker compose로 띄운 llm-service 컨테이너 안에서
+  docker compose -f langchain_rag/docker-compose.yml exec llm-service python -m scripts.ingest
 """
 
 import asyncio
 import logging
 
+from app import config, retrieval
 from app.corpus import DOCUMENTS
-from app.retrieval import VECTOR_BUCKET_NAME, VECTOR_INDEX_NAME, embed, s3vectors_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
-    if s3vectors_client is None or not VECTOR_INDEX_NAME:
+    if not retrieval.is_configured():
         raise SystemExit(
             "VECTOR_BUCKET_NAME and VECTOR_INDEX_NAME must be set (see .env.example) "
             "before ingestion can run."
@@ -39,24 +33,28 @@ async def main() -> None:
 
     vectors = []
     for doc in DOCUMENTS:
-        vector = await embed(doc["text"])
+        vector = await retrieval.embed(doc["text"])
         vectors.append(
             {
                 "key": doc["id"],
                 "data": {"float32": vector},
-                # The text itself rides along as metadata so query_context()
-                # can return it directly without a second lookup.
+                # 원문을 metadata에 같이 실어 query_context()가 추가 조회 없이 바로 돌려줄 수 있게 합니다.
                 "metadata": {"text": doc["text"], **doc["metadata"]},
             }
         )
         logger.info("embedded %s (%d dims)", doc["id"], len(vector))
 
-    s3vectors_client.put_vectors(
-        vectorBucketName=VECTOR_BUCKET_NAME,
-        indexName=VECTOR_INDEX_NAME,
+    retrieval.s3vectors_client.put_vectors(
+        vectorBucketName=config.VECTOR_BUCKET_NAME,
+        indexName=config.VECTOR_INDEX_NAME,
         vectors=vectors,
     )
-    logger.info("put_vectors: %d documents indexed into %s/%s", len(vectors), VECTOR_BUCKET_NAME, VECTOR_INDEX_NAME)
+    logger.info(
+        "put_vectors: %d documents indexed into %s/%s",
+        len(vectors),
+        config.VECTOR_BUCKET_NAME,
+        config.VECTOR_INDEX_NAME,
+    )
 
 
 if __name__ == "__main__":
