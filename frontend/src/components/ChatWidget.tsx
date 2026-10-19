@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { sendChatMessage } from '../api/gateway'
+import { sendChatMessage, type ChatAction } from '../api/gateway'
+import ChatActionCard from './chat/ChatActionCard'
 import './ChatWidget.css'
 
 type Tab = 'faq' | 'chat'
@@ -9,6 +10,8 @@ type ChatMessage = {
   role: 'user' | 'bot'
   text: string
   time: string
+  /** 챗봇이 제안한 다음 동작(예약 딥링크·결제·취소·로그인 안내). 답변 아래 카드로 보여준다. */
+  action?: ChatAction | null
 }
 
 const formatTime = () =>
@@ -83,6 +86,9 @@ function ChatWidget() {
     setOpenFaqId((current) => (current === topicId ? null : topicId))
   }
 
+  // 정정 전의 낡은 값으로 진행하지 않도록 가장 최근 봇 메시지의 카드만 누를 수 있게 한다.
+  const latestBotMessageId = messages.reduce((latest, m) => (m.role === 'bot' ? m.id : latest), -1)
+
   // 대화형 방식: 정해진 답이 없는 자유 질문이라 챗봇 API에 그대로 위임하고, 응답이 오는 동안 타이핑
   // 인디케이터를 보여준다. 로그인 상태면 authorizedFetch가 토큰을 실어 보내 대화가 세션에 이어진다.
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -95,9 +101,9 @@ function ChatWidget() {
     setIsTyping(true)
 
     try {
-      const { reply } = await sendChatMessage(text)
+      const { reply, action } = await sendChatMessage(text)
       if (!isMountedRef.current) return
-      appendMessage({ role: 'bot', text: reply })
+      appendMessage({ role: 'bot', text: reply, action })
     } catch (err) {
       if (!isMountedRef.current) return
       const message = err instanceof Error ? err.message : ''
@@ -182,6 +188,9 @@ function ChatWidget() {
                   )}
                   <div className="chat-widget-message-body">
                     <span className="chat-widget-bubble">{message.text}</span>
+                    {message.action && (
+                      <ChatActionCard action={message.action} active={message.id === latestBotMessageId} />
+                    )}
                     <span className="chat-widget-time">{message.time}</span>
                   </div>
                 </li>

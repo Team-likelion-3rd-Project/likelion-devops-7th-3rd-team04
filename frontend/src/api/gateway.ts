@@ -334,11 +334,27 @@ export async function fetchReservationFacilities(reservationId: number): Promise
   return data.facilities
 }
 
-// proto의 SendMessageResponse 메시지와 1:1 대응되는 응답 형태
+// 챗봇이 답변에 붙여 주는 "다음 동작" 제안(api-gateway ChatBotController의 ChatActionDto와 동일).
+// 서버는 아무것도 실행하지 않는다 — 실제 예약·결제·취소는 사용자가 카드에서 눌러 기존 API로 한다.
+// - BOOK: 예약 화면 딥링크 재료(hotel은 data/hotels.ts의 slug). 필수 값(hotel/checkIn/checkOut)은 항상 채워져 온다.
+// - PAY / CANCEL: 대상 예약은 fetchMyBookings로 직접 조회한다(서버·LLM은 예약 ID를 주지 않는다).
+// - LOGIN_REQUIRED: 비로그인 사용자가 예약·결제·취소 의도를 보였을 때.
+export interface ChatAction {
+  type: 'BOOK' | 'PAY' | 'CANCEL' | 'LOGIN_REQUIRED'
+  hotel: string | null
+  roomName: string | null
+  checkIn: string | null
+  checkOut: string | null
+  adults: number | null
+  children: number | null
+}
+
+// proto의 SendMessageResponse 메시지와 대응되는 응답 형태
 export interface ChatBotMessageResponse {
   sessionId: string
   reply: string
   createdAt: string
+  action: ChatAction | null
 }
 
 // api-gateway(POST /api/chat-bots/messages) -> chat-bot-service(gRPC)로 챗봇 응답을 요청한다.
