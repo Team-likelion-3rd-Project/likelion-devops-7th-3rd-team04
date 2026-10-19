@@ -30,6 +30,12 @@ apiServer:
 {% for san in [node_ip, node_name, k8s_control_plane_endpoint] | unique %}
     - "{{ san }}"
 {% endfor %}
+{% if k8s_service_account_issuer is defined %}
+  # IRSA: IAM 이 이 발급자 URL 의 문서 · keys.json 으로 SA 토큰을 검증한다 (AWS 만 지정)
+  extraArgs:
+    - name: service-account-issuer
+      value: "{{ k8s_service_account_issuer }}"
+{% endif %}
 networking:
   podSubnet: "{{ pod_subnet }}"
   serviceSubnet: "{{ service_subnet }}"

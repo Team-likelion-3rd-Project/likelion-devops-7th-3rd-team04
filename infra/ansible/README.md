@@ -818,6 +818,7 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | join 정보 | `.secrets/join.env` (로컬) | Parameter Store `/team04-hotel/prod/kubeadm/*` |
 | Calico 노드 IP 감지 / MTU | `tailscale0` / 1230 | `NodeInternalIP` / 8951 (VPC 점보 프레임 9001 − VXLAN 50) |
 | Felix mark 대역 변경 | 함 (Tailscale fwmark 충돌) | 안 함 |
+| kube-apiserver `--service-account-issuer` (`k8s_service_account_issuer`) | 미설정 (kubeadm 기본값) | 10-global OIDC 버킷 URL (IRSA). CP-a 가 init 직후 SA 서명 공개키를 `keys.json` 으로 업로드 |
 | 클러스터 서비스 설치 | Ansible(`ingress.yml`) · GitLab CI(`deploy-dev`) | GitOps pull 배포 agent (`gitops_sync` role 이 CP-a 부트스트랩 마지막에 설치, 워커 Ready 대기 후 첫 실행) |
 | Traefik | `ingress.yml` 수동 실행 (`roles/traefik`), control plane 1대 고정, `externalTrafficPolicy: Local` | gitops `envs/prod/traefik` — 워커에 2개, `externalTrafficPolicy: Cluster`, trustedIPs = Main VPC CIDR + Pod CIDR, `/ping` 을 `web` 에 노출(`80-main-edge` 헬스체크) |
 | Ingress 대상 | api-gateway (`/api`, `/api-docs`) | 테스트 백엔드 whoami (gitops `envs/prod/whoami`, `/whoami`, 그 외 경로는 Traefik 404). api-gateway 는 LDP-79 이후 |
@@ -830,11 +831,15 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | `certificate-key` (SecureString) | Terraform (랜덤) | CP-a 가 인증서를 `kubeadm-certs` Secret 으로 올릴 때 암호화 키, CP-b · c 가 내려받을 때 |
 | `ca-cert-hash` (String) | Terraform 이 `pending` 으로 생성 → CP-a 가 init 후 기록 | CP-b · c · 워커가 이 값이 바뀔 때까지 기다린 뒤 join |
 
+CP-a 는 init 후 10-global OIDC 버킷의 `keys.json` 도 덮어씁니다 (CP Role 은 이 객체 하나만 PutObject).
+
 - `ca-cert-hash` 가 이미 기록돼 있으면 CP-a 도 init 대신 join 합니다. CP-a 만 교체됐을 때 클러스터를 새로 만들지 않게 하려는 것입니다.
 - **CP 교체:** CP 는 AZ 별 ASG(1대 고정) 라 사라지면 새로 뜨고 join 합니다. CP 3대의 systemd timer `team04-cp-reconcile.timer`(1분) 가 사라진 CP 의 etcd 멤버를 지우고, init 2시간 후 삭제되는 `kubeadm-certs` Secret 을 같은 certificate-key 로 다시 올립니다. 동작 · 확인 방법 · 범위 밖(2대 이상 동시 장애, etcd 백업)은 [Terraform README](../terraform/README.md) 6절.
 - **join token 갱신:** CP 마다 systemd timer `team04-renew-join-token.timer` 가 `kubeadm token create` → `join-token` 파라미터 덮어쓰기. 즉시 갱신하려면 CP 에서 `sudo systemctl start team04-renew-join-token.service`. Terraform 은 이 파라미터 값 변경을 무시합니다.
 - **워커 교체 · 스케일 인:** 종료 전 drain 은 aws-node-termination-handler(NTH), 종료된 워커의 Node 삭제는 aws-cloud-controller-manager(CCM) 가 합니다. 둘 다 CP-a 부트스트랩의 `aws_node_lifecycle` role 이 CP 에 hostNetwork 로 설치합니다 (차트에 hostNetwork 값이 없어 Helm post-renderer 로 추가). 동작 · 확인 방법은 [Terraform README](../terraform/README.md) 6절.
 - **배포 agent:** CronJob `gitops-sync`(1분, CP 노드)가 gitops 레포 대상 브랜치(`gitops_sync_branch`, 기본 `main`)의 SHA 가 바뀌면 `envs/prod/*/chart.yaml` 을 order 순으로 `helm upgrade --install --atomic` 합니다. 부트스트랩 Job 이 실패해도 CP 부트스트랩은 실패시키지 않습니다(CP 교체 방지). 결과는 `cloud-init-output.log` 의 "부트스트랩 결과" 와 ConfigMap `gitops-sync-state`. 첫 실행(Traefik · whoami 설치)은 NTH 설치 직후부터 적용 완료까지 약 45초 (2026-10-19 실측), 이후 변경은 push 후 1분 안팎에 반영. 동작 · 운영 · 작업 브랜치 검증은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md).
+- **클러스터 값:** public gitops 레포에 둘 수 없는 값(계정 ID)은 CP-a 가 STS 로 조회해 ConfigMap `gitops-sync/gitops-sync-cluster-values` 로 만듭니다 (`gitops_sync_cluster_values`). agent 는 `chart.yaml` 에 `clusterValues: true` 인 앱(pod-identity-webhook 의 IRSA Role ARN)에만 넘깁니다.
+- **IRSA:** kube-apiserver 발급자를 10-global OIDC 버킷 URL 로 두고(join CP 는 `kubeadm-config` 에서 같은 값을 받음), CP-a 가 init 직후 발급자 문서의 issuer 를 확인한 뒤 `/openid/v1/jwks` 를 `keys.json` 으로 올립니다. 업로드는 `ca-cert-hash` 기록 전이라, 실패하면 교체된 CP-a 가 다시 init 합니다. webhook · ESO 는 gitops 앱, Role 은 Terraform 70 `irsa.tf` ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "IRSA · 비밀값").
 - 클러스터 확인 (SSM 접속 후): `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide`
 - Ingress 확인 (워커에 SSM 접속 후): `curl -i http://$(hostname -I | awk '{print $1}'):30080/whoami` → whoami 200 (`/` 는 Traefik 404 가 정상). 워커 30080 인바운드는 ALB SG 에서만 열려 있어(M2) **다른 노드에서는 연결되지 않습니다.** 노드 자신의 IP 로 확인합니다 (Traefik 파드가 다른 워커에 있어도 kube-proxy 가 넘겨 줍니다).
 

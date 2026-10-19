@@ -165,7 +165,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
 | **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
 
-`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, 배포 agent 의 Traefik · whoami 설치 완료까지 약 7분 – 8분** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
+`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, 배포 agent 의 Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
 
 `70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분 – 8분** 입니다. `run --all apply` 는 `80` 을 공백 없이 바로 시작하므로 **명령이 끝난 뒤 1분 – 2분 더 지나야 부트스트랩이 끝납니다** (배포 agent 전환 후 실측: 명령 9분 42초, 전체 시작부터 ALB `/whoami` 200 까지 11분 37초 — 전환 전 약 11분 30초와 같음). 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 3분 20초 – 4분.
 

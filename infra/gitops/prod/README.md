@@ -14,9 +14,38 @@
 
 ```
 infra/gitops/prod/          (= gitops 레포 envs/prod/)
-├── traefik/   chart.yaml · values.yaml          Ingress Controller (워커 NodePort 30080)
-└── whoami/    chart.yaml · values.yaml · chart/  수직 경로 검증용 테스트 백엔드 (/whoami)
+├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080)
+├── cert-manager/          chart.yaml · values.yaml          15  webhook TLS 인증서 발급 · caBundle 주입
+├── pod-identity-webhook/  chart.yaml · values.yaml          20  IRSA 주입 (ns/SA → Role 매핑)
+├── whoami/                chart.yaml · values.yaml · chart/ 20  수직 경로 검증용 테스트 백엔드 (/whoami)
+├── external-secrets/      chart.yaml · values.yaml          30  External Secrets Operator
+└── cluster-secret-store/  chart.yaml · chart/               40  ClusterSecretStore aws-secrets-manager
 ```
+
+## IRSA · 비밀값
+
+kubeadm 클러스터라 EKS 의 IRSA 를 직접 구성했습니다.
+
+```
+Terraform 10-global  OIDC 버킷(발급자 문서) · IAM OIDC 공급자
+Ansible (CP-a init)  kube-apiserver --service-account-issuer = OIDC 버킷 URL, keys.json(SA 서명 공개키) 업로드
+Terraform 70         IRSA Role (irsa.tf, 신뢰 정책 sub · aud StringEquals)
+pod-identity-webhook ns/SA → Role 매핑(values.yaml) 의 파드에 AWS_ROLE_ARN · 웹 ID 토큰 주입
+```
+
+- **IRSA 를 쓰는 앱을 추가할 때**: Terraform 70 `irsa.tf` 의 `irsa_roles` 에 Role(ns · SA) 을, `pod-identity-webhook/values.yaml` 에 같은 ns/SA 매핑을 추가합니다. SA 에 `eks.amazonaws.com/role-arn` annotation 은 달지 않습니다 (ARN 에 계정 ID 가 들어감).
+- **비밀값**: 앱은 `ExternalSecret` 에서 `ClusterSecretStore` `aws-secrets-manager` 를 참조해 Secrets Manager 값(`team04-hotel/prod/*`)을 받습니다. 읽을 수 있는 Secret 은 ESO Role 정책(70 `irsa.tf`)과 Secret 리소스 정책(41-main-data)이 제한합니다.
+- webhook 은 `failurePolicy: Fail` 입니다. webhook 이 준비되기 전에 만든 파드가 자격 증명 없이 남지 않고, 생성이 거부된 뒤 다시 만들어집니다. 노드 · 네트워크 · 인증서 · 배포 agent 네임스페이스는 호출하지 않습니다 (`values.yaml` namespaceSelector).
+
+## 클러스터 값 (`clusterValues`)
+
+public 레포에 둘 수 없는 클러스터 값(계정 ID 등)은 Ansible 이 CP-a 부트스트랩 때 ConfigMap `gitops-sync/gitops-sync-cluster-values` 로 만듭니다 (`group_vars/aws_control_plane.yml` 의 `gitops_sync_cluster_values`). `chart.yaml` 에 `clusterValues: true` 인 앱에만 agent 가 앱 `values.yaml` 다음에 `-f` 로 넘깁니다 (모르는 키를 거부하는 차트 schema 가 있어 모든 앱에 넘기지 않음).
+
+| 키 | 값 |
+|---|---|
+| `global.awsAccountId` | AWS 계정 ID (CP Role 로 STS 조회) |
+
+values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.awsAccountId }}` 로 씁니다 (예: `pod-identity-webhook` 매핑의 `RoleARN`). gitops 레포 `validate.sh` 는 더미 값(`000000000000`)으로 렌더링합니다. 비밀값은 넣지 않습니다.
 
 ## 앱 정의 (`<앱>/chart.yaml`)
 
@@ -31,8 +60,9 @@ infra/gitops/prod/          (= gitops 레포 envs/prod/)
 | `path` | git · local | 차트 경로. git 은 레포 루트 기준, local 은 앱 폴더 기준(기본 `chart`) |
 | `revision` | git | 커밋 SHA 40자 (브랜치 이름 금지) |
 | `namespace` · `release` | ✅ | 설치할 네임스페이스(없으면 만듦) · 릴리스 이름 |
-| `order` | | 적용 순서, 작은 값부터 (기본 50). 예: Traefik 10 → whoami 20 → backend 30 |
+| `order` | | 적용 순서, 작은 값부터 (기본 50). 같으면 폴더 이름 순 |
 | `enabled` | | `false` 면 배포 · 렌더링 검증에서 뺌 (기본 `true`) |
+| `clusterValues` | | `true` 면 클러스터 값(아래)을 `-f` 로 더 넘김 (기본 `false`) |
 
 ## 배포 agent (ArgoCD 도입 전)
 
@@ -81,5 +111,6 @@ k -n gitops-sync patch configmap gitops-sync-config --type merge -p '{"data":{"B
 
 ## ArgoCD 전환
 
+- 클러스터 값(`clusterValues`)은 ApplicationSet cluster generator 의 클러스터 Secret 값을 helm parameters 로 넘깁니다.
 - 앱 폴더 하나 = Application 하나입니다. `type: helm` → `chart` · `repoURL` · `targetRevision: version`, `type: git` → `repoURL` · `path` · `targetRevision: revision` + values 는 gitops 레포 `$values`, `type: local` → gitops 레포 `path`. `order` 는 sync-wave 로 옮깁니다.
 - 전환일은 재생성으로 처리합니다. Ansible 에서 `gitops_sync` 대신 ArgoCD 를 설치하면 CronJob 은 생기지 않습니다.

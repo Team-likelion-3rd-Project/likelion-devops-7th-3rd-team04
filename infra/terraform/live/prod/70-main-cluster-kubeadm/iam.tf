@@ -72,7 +72,7 @@ data "aws_iam_policy_document" "node_bootstrap" {
   }
 }
 
-# CP: 공통 + certificate-key 조회, CA cert hash 기록, join token 갱신
+# CP: 공통 + certificate-key 조회, CA cert hash 기록, join token 갱신, IRSA keys.json 업로드
 data "aws_iam_policy_document" "cp_bootstrap" {
   source_policy_documents = [data.aws_iam_policy_document.node_bootstrap.json]
 
@@ -89,6 +89,13 @@ data "aws_iam_policy_document" "cp_bootstrap" {
       aws_ssm_parameter.ca_cert_hash.arn,
       aws_ssm_parameter.join_token.arn,
     ]
+  }
+
+  # CP-a 가 init 후 SA 서명 공개키(JWKS)를 올린다 (irsa.tf). 발급자 문서는 10-global 이 관리하므로 keys.json 만
+  statement {
+    sid       = "PutOidcKeys"
+    actions   = ["s3:PutObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.oidc_bucket_name}/keys.json"]
   }
 }
 

@@ -37,6 +37,18 @@ data:
   BRANCH: {{ gitops_sync_branch | to_json }}
   APPS_PATH: {{ gitops_sync_apps_path | to_json }}
   HELM_TIMEOUT: {{ gitops_sync_helm_timeout | to_json }}
+  CLUSTER_VALUES: /opt/gitops-sync-cluster/values.yaml
+---
+# chart.yaml 에 clusterValues: true 인 앱에만 넘기는 values. public gitops 레포에 둘 수 없는 클러스터 값 (계정 ID 등)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitops-sync-cluster-values
+  namespace: {{ gitops_sync_namespace }}
+data:
+  # JSON(YAML 의 부분집합) 으로 쓴다. to_yaml 은 숫자 문자열(계정 ID)을 따옴표 없이 써서 Helm 이 숫자로 읽는다
+  values.yaml: |
+    {{ gitops_sync_cluster_values | to_nice_json(indent=2) | indent(4) }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -113,12 +125,18 @@ spec:
                 - name: script
                   mountPath: /opt/gitops-sync
                   readOnly: true
+                - name: cluster-values
+                  mountPath: /opt/gitops-sync-cluster
+                  readOnly: true
                 - name: tmp
                   mountPath: /tmp
           volumes:
             - name: script
               configMap:
                 name: gitops-sync-script
+            - name: cluster-values
+              configMap:
+                name: gitops-sync-cluster-values
             - name: tmp
               emptyDir:
                 sizeLimit: 1Gi
