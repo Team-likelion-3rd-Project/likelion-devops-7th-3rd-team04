@@ -5,7 +5,9 @@
 #   ns/SA → Role 매핑                        pod-identity-webhook ConfigMap (infra/gitops/prod/pod-identity-webhook)
 #
 # 신뢰 정책은 sub(네임스페이스 · ServiceAccount) 와 aud 를 정확히 비교해 다른 SA 의 위임을 거부한다.
-# 41-main-data 의 Secret 리소스 정책이 Role 이름으로 ESO 를 허용하므로 이름을 바꾸면 41 의 external_secrets_role_name 도 바꾼다.
+# 리소스 정책이 Role 이름으로 허용하므로 이름(키)을 바꾸면 그쪽 변수도 바꾼다.
+#   external-secrets  41-main-data external_secrets_role_name (Secret 리소스 정책)
+#   booking-service   43-messaging booking_role_name (큐 정책)
 
 data "aws_caller_identity" "current" {}
 
@@ -20,6 +22,12 @@ locals {
       description     = "External Secrets Operator (Secrets Manager read)"
       namespace       = "external-secrets"
       service_account = "external-secrets"
+    }
+    # SA 는 backend 차트가 서비스별로 만든다 (default SA 에 매핑하면 backend 파드 전부가 큐 권한을 받는다)
+    booking-service = {
+      description     = "booking-service (payment result queue receive)"
+      namespace       = "backend"
+      service_account = "booking-service"
     }
   }
 }
@@ -73,4 +81,19 @@ resource "aws_iam_role_policy" "external_secrets" {
   name   = "secrets-read"
   role   = aws_iam_role.irsa["external-secrets"].id
   policy = data.aws_iam_policy_document.external_secrets.json
+}
+
+# booking-service: 43-messaging 결제 결과 큐 수신 · 삭제만 (payment-result.consumer.ts). DLQ 는 관리자만 다룬다
+data "aws_iam_policy_document" "booking_service" {
+  statement {
+    sid       = "ConsumePaymentResult"
+    actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage"]
+    resources = ["arn:${data.aws_partition.current.partition}:sqs:${var.region}:${data.aws_caller_identity.current.account_id}:${var.queue_names.payment_result}"]
+  }
+}
+
+resource "aws_iam_role_policy" "booking_service" {
+  name   = "payment-result-consume"
+  role   = aws_iam_role.irsa["booking-service"].id
+  policy = data.aws_iam_policy_document.booking_service.json
 }

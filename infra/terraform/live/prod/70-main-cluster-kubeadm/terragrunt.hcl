@@ -53,6 +53,18 @@ dependency "main_data" {
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
+dependency "messaging" {
+  config_path = "../43-messaging"
+
+  mock_outputs = {
+    queue_names = {
+      payment_result     = "payment-result.fifo"
+      payment_result_dlq = "payment-result-dlq.fifo"
+    }
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
+}
+
 inputs = {
   oidc_issuer_url  = dependency.global.outputs.oidc_issuer_url
   oidc_bucket_name = dependency.global.outputs.oidc_bucket_name
@@ -60,4 +72,5 @@ inputs = {
   main_network = dependency.network.outputs.main
   sg_ids       = dependency.security.outputs.sg_ids
   secret_names = dependency.main_data.outputs.secret_names
+  queue_names  = dependency.messaging.outputs.queue_names
 }

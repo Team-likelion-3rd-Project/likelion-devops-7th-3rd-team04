@@ -33,6 +33,11 @@ variable "secret_names" {
   type        = map(string)
 }
 
+variable "queue_names" {
+  description = "43-messaging 의 queue_names (payment_result, payment_result_dlq). booking-service Role 이 받는 큐"
+  type        = map(string)
+}
+
 variable "main_network" {
   description = "20-network 의 main output (vpc_id, vpc_cidr, subnet_ids, subnet_ids_by_az)"
   type = object({
