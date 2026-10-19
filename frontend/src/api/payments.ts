@@ -1,4 +1,5 @@
-import { ApiError, authorizedFetch, parseJsonResponse } from './gateway'
+import { ApiError, authorizedFetch, fetchMyBookings as fetchMyGatewayBookings, parseJsonResponse } from './gateway'
+import type { Booking } from './gateway'
 import { fetchMyBookings } from './bookings'
 
 // proto의 Payment 메시지 / gateway PaymentDto와 1:1 대응
@@ -150,6 +151,53 @@ export async function confirmPayment(
     body: JSON.stringify(payload),
   })
   return parsePaymentResponse<ConfirmPaymentResponse>(res)
+}
+
+// ─── 결제 버튼 막기 (이중 결제 예방) ─────────────────────────────────────────────────────────────
+// 승인을 요청하고 결과를 기다리는 중(CONFIRMING)이면 이미 돈이 빠졌을 수 있어 다시 결제하지 못하게 막는다.
+// backend는 승인 요청 후 10분이 지나도 확정되지 않으면 REQUESTED로 내려 재결제를 허용한다 (LDP-67).
+// 결제 마감 시각(paymentDueAt)이 지나면 결제 준비 API가 PAYMENT_DUE_EXPIRED로 거절하므로 버튼도 미리 막는다.
+export type PaymentBlockReason = 'CONFIRMING' | 'DUE_EXPIRED' | 'NOT_PAYABLE'
+
+interface PayableBooking {
+  status: string
+  paymentDueAt?: string
+  lastPaymentAttemptStatus?: string
+}
+
+export function paymentBlockReason(booking: PayableBooking, now = Date.now()): PaymentBlockReason | null {
+  if (booking.status !== 'PENDING_PAYMENT') return 'NOT_PAYABLE'
+  if (booking.lastPaymentAttemptStatus === 'CONFIRMING') return 'CONFIRMING'
+  const dueAt = booking.paymentDueAt ? Date.parse(booking.paymentDueAt) : NaN
+  if (!Number.isNaN(dueAt) && now > dueAt) return 'DUE_EXPIRED'
+  return null
+}
+
+export const PAYMENT_BLOCK_MESSAGE: Record<PaymentBlockReason, string> = {
+  CONFIRMING: '결제 승인을 확인하고 있습니다. 결과가 나올 때까지 다시 결제할 수 없어요. 잠시 후 내 예약에서 확인해주세요.',
+  DUE_EXPIRED: PAYMENT_ERROR_MESSAGE.PAYMENT_DUE_EXPIRED,
+  NOT_PAYABLE: PAYMENT_ERROR_MESSAGE.INVALID_RESERVATION_STATUS,
+}
+
+// "10월 19일 14:30까지" 형태의 결제 마감 안내. 마감 시각이 없거나 잘못된 값이면 null.
+export function formatPaymentDue(paymentDueAt?: string): string | null {
+  const dueAt = paymentDueAt ? new Date(paymentDueAt) : null
+  if (!dueAt || Number.isNaN(dueAt.getTime())) return null
+  const time = `${String(dueAt.getHours()).padStart(2, '0')}:${String(dueAt.getMinutes()).padStart(2, '0')}`
+  return `${dueAt.getMonth() + 1}월 ${dueAt.getDate()}일 ${time}까지`
+}
+
+// 결제하기를 누른 순간의 최신 예약 상태. 화면이 들고 있는 예약 정보는 오래됐을 수 있어서
+// (다른 탭에서 승인을 요청했거나 화면을 오래 켜 둔 경우) 결제 준비 직전에 한 번 더 확인한다.
+// 목록에 없거나 조회에 실패하면 null — 이때는 서버의 결제 준비 검증에 맡긴다.
+export async function fetchLatestBooking(reservationId: number): Promise<Booking | null> {
+  if (IS_PAYMENT_FAKE) return null
+  try {
+    const bookings = await fetchMyGatewayBookings()
+    return bookings.find((b) => b.reservationId === reservationId) ?? null
+  } catch {
+    return null
+  }
 }
 
 // 결과 다시 확인 (1초 간격으로 호출).

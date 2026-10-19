@@ -241,10 +241,23 @@
   font-weight: 600;
   transition: opacity 0.2s;
 
-  &:hover,
+  &:hover:not(:disabled),
   &:focus-visible {
     opacity: 0.85;
   }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+/* 결제 버튼을 막은 이유 (승인 확인 중·결제 기한 만료) */
+.reservation-complete-block {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
 }
 
 .reservation-complete-secondary {

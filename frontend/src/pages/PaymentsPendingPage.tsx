@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { fetchMyBookings, isUnauthorized, refreshAccessToken, type Booking } from '../api/gateway'
 import { toImageDataUrl } from '../api/hotels'
+import { PAYMENT_BLOCK_MESSAGE, formatPaymentDue, paymentBlockReason } from '../api/payments'
 import PaymentModal from '../components/reservation/PaymentModal'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { formatDate, fetchRoomLookup, type RoomWithHotel } from './reservationHistoryUtils'
@@ -94,6 +95,11 @@ function PaymentsPendingPage() {
 
   const pendingBookings = bookings?.filter((booking) => booking.status === 'PENDING_PAYMENT') ?? null
 
+  // 결제창이 결제 직전에 다시 조회한 예약으로 목록을 갱신한다 (결제 대기가 아니게 됐으면 목록에서 빠진다)
+  const handleBookingChange = (latest: Booking) => {
+    setBookings((prev) => prev?.map((b) => (b.reservationId === latest.reservationId ? latest : b)) ?? prev)
+  }
+
   return (
     <section className="mypage-page">
       <div className="mypage-content">
@@ -125,6 +131,8 @@ function PaymentsPendingPage() {
                 const checkOut = parseDateISO(booking.checkOutDate)
                 const nights = checkIn && checkOut ? diffDays(checkOut, checkIn) : null
                 const thumbnail = roomInfo?.room.images[0]
+                const paymentDue = formatPaymentDue(booking.paymentDueAt)
+                const paymentBlock = paymentBlockReason(booking)
 
                 return (
                   <li className="reservation-card" key={booking.reservationId}>
@@ -158,6 +166,8 @@ function PaymentsPendingPage() {
                             {formatDate(booking.checkInDate)} ~ {formatDate(booking.checkOutDate)}
                             {nights != null && ` · ${nights}박`} · {booking.guestCount}명
                           </p>
+                          {paymentDue && <p className="reservation-card-meta">결제 기한 {paymentDue}</p>}
+                          {paymentBlock && <p className="mypage-hint">{PAYMENT_BLOCK_MESSAGE[paymentBlock]}</p>}
                         </div>
 
                         <span className="reservation-card-amount">{booking.totalAmount.toLocaleString()}원</span>
@@ -170,8 +180,13 @@ function PaymentsPendingPage() {
                           >
                             상세보기
                           </button>
-                          <button type="button" className="mypage-submit" onClick={() => setPayingBooking(booking)}>
-                            결제하기
+                          <button
+                            type="button"
+                            className="mypage-submit"
+                            onClick={() => setPayingBooking(booking)}
+                            disabled={paymentBlock !== null}
+                          >
+                            {paymentBlock === 'CONFIRMING' ? '결제 확인 중' : '결제하기'}
                           </button>
                         </div>
                       </div>
@@ -194,6 +209,7 @@ function PaymentsPendingPage() {
             amount: payingBooking.totalAmount,
           }}
           onClose={() => setPayingBooking(null)}
+          onBookingChange={handleBookingChange}
         />
       )}
     </section>

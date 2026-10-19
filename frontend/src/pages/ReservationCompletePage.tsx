@@ -7,6 +7,7 @@ import type { Room } from '../api/hotels'
 import { fetchMyBookings, fetchReservationFacilities } from '../api/bookings'
 import type { Booking, ReservationFacility } from '../api/bookings'
 import { isUnauthorized, refreshAccessToken } from '../api/gateway'
+import { PAYMENT_BLOCK_MESSAGE, formatPaymentDue, paymentBlockReason } from '../api/payments'
 import { customerAuth } from '../api/tokenStore'
 import ReservationSteps from '../components/reservation/ReservationSteps'
 import { sumGuests } from '../components/reservation/guestTypes'
@@ -161,6 +162,11 @@ function ReservationCompletePage() {
   const greetingName = user ? `${user.name}님, ` : ''
   const greetingHotel = hotel ? `${hotel.name} ` : ''
 
+  // 결제 대기 예약만 결제 기한·결제 가능 여부를 보여준다 (승인 확인 중·기한 만료면 결제 버튼을 막는다)
+  const isPendingPayment = booking?.status === 'PENDING_PAYMENT'
+  const paymentDue = booking && isPendingPayment ? formatPaymentDue(booking.paymentDueAt) : null
+  const paymentBlock = booking && isPendingPayment ? paymentBlockReason(booking) : null
+
   return (
     <section className="reservation-complete-page">
       <div className="reservation-page-header">
@@ -256,13 +262,20 @@ function ReservationCompletePage() {
                   <span className="reservation-complete-label">예약 상태</span>
                   <span className="reservation-complete-value">{booking.status}</span>
                 </div>
+
+                {paymentDue && (
+                  <div className="reservation-complete-row">
+                    <span className="reservation-complete-label">결제 기한</span>
+                    <span className="reservation-complete-value">{paymentDue}</span>
+                  </div>
+                )}
               </div>
 
               <div className="reservation-complete-notice">
                 <p className="reservation-complete-notice-title">이용 안내</p>
                 <ul>
                   <li>예약 확인 및 취소는 마이페이지의 예약 내역에서 하실 수 있습니다.</li>
-                  <li>현재 결제 연동 전이라, 별도 결제 없이 예약만 생성된 상태입니다.</li>
+                  {isPendingPayment && <li>결제 기한 안에 결제를 마쳐야 예약이 확정되며, 기한이 지나면 예약이 만료됩니다.</li>}
                   {selectedOptionLabels.length > 0 && (
                     <li>선택하신 옵션은 체크인 시 프런트에서 이용권으로 교환해 드립니다.</li>
                   )}
@@ -288,13 +301,15 @@ function ReservationCompletePage() {
               </div>
 
               <div className="reservation-complete-actions">
+                {paymentBlock && <p className="reservation-complete-block">{PAYMENT_BLOCK_MESSAGE[paymentBlock]}</p>}
                 {booking.status === 'PENDING_PAYMENT' && (
                   <button
                     type="button"
                     className="reservation-complete-primary"
                     onClick={() => setShowPaymentModal(true)}
+                    disabled={paymentBlock !== null}
                   >
-                    결제하기
+                    {paymentBlock === 'CONFIRMING' ? '결제 확인 중' : '결제하기'}
                   </button>
                 )}
                 <Link
@@ -327,6 +342,7 @@ function ReservationCompletePage() {
                 amount: booking.totalAmount,
               }}
               onClose={() => setShowPaymentModal(false)}
+              onBookingChange={setBooking}
             />
           )}
         </>
