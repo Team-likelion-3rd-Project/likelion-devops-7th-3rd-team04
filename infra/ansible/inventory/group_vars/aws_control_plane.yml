@@ -27,21 +27,7 @@ aws_ccm_chart_version: "0.0.9"
 aws_ccm_image_tag: "v1.33.4"
 aws_nth_chart_version: "0.27.6"   # NTH v1.25.6
 
-# ── Ingress Controller (CP-a 만 설치). 버전 · NodePort 는 control_plane.yml ──
-# 워커는 ASG 라 교체 · 확장된다. 어느 워커 NodePort 로 들어와도 응답하도록 워커에 2개 띄우고 Cluster 정책을 쓴다
-# (앞단 ALB 가 출발지라 Local 로 클라이언트 IP 를 보존할 이유가 없다)
-traefik_replicas: 2
-traefik_on_control_plane: false
-traefik_external_traffic_policy: Cluster
-# ALB 가 붙인 X-Forwarded-For(클라이언트 IP) 유지. Traefik 이 보는 출발지는 Cluster 정책 SNAT 로
-# 워커 IP(VPC CIDR) 또는 다른 워커의 vxlan.calico IP(pod_subnet) 다
-traefik_trusted_ips:
-  - "{{ vpc_cidr }}"
-  - "{{ pod_subnet }}"
-# 80-main-edge ALB Target Group 헬스체크 경로 (/ping)
-traefik_ping_on_web: true
-
-# 수직 경로 검증용 테스트 백엔드 (api-gateway 는 ECR · 배포 파이프라인 이후)
-whoami_namespace: whoami
-whoami_image: "traefik/whoami:v1.12.0"
-whoami_replicas: 2
+# ── GitOps pull 배포 agent (CP-a 만 설치, gitops_sync role) ──
+# Traefik · whoami 등 클러스터 서비스의 원본은 gitops 레포 envs/prod (모노레포 infra/gitops/prod)
+# 대상 브랜치. 작업 브랜치 검증은 이 값이 아니라 ConfigMap gitops-sync-config 의 BRANCH 를 바꾼다 — 머지 시 main
+gitops_sync_branch: main

@@ -164,9 +164,9 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
 | **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
 
-`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, CP-a 의 Traefik · whoami 설치 완료까지 약 7분 – 8분** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
+`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, 배포 agent 의 Traefik · whoami 설치 완료까지 약 7분 – 8분** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
 
-`70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분 – 8분** 입니다. `run --all apply` 는 `80` 을 공백 없이 바로 시작하므로 **명령이 끝난 뒤 1분 – 2분 더 지나야 부트스트랩이 끝납니다** (전체 시작부터 whoami 응답까지 약 11분 30초). 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 4분.
+`70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분 – 8분** 입니다. `run --all apply` 는 `80` 을 공백 없이 바로 시작하므로 **명령이 끝난 뒤 1분 – 2분 더 지나야 부트스트랩이 끝납니다** (배포 agent 전환 후 실측: 명령 9분 42초, 전체 시작부터 ALB `/whoami` 200 까지 11분 37초 — 전환 전 약 11분 30초와 같음). 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 3분 20초 – 4분.
 
 ---
 
@@ -186,7 +186,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 
 ## 6. `70-main-cluster-kubeadm` 부트스트랩 확인
 
-CP 3대와 워커는 apply 가 끝난 뒤 user-data 가 각각 [`aws-control-plane.yml`](../ansible/aws-control-plane.yml), [`aws-worker.yml`](../ansible/aws-worker.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 13절). CP-a 는 워커가 Ready 가 되면 Traefik · whoami 까지 설치합니다.
+CP 3대와 워커는 apply 가 끝난 뒤 user-data 가 각각 [`aws-control-plane.yml`](../ansible/aws-control-plane.yml), [`aws-worker.yml`](../ansible/aws-worker.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 13절). CP-a 는 마지막에 GitOps pull 배포 agent 를 설치하고, agent 가 워커 Ready 후 gitops 레포에서 Traefik · whoami 를 설치합니다 ([`infra/gitops/prod`](../gitops/prod/README.md)).
 **apply 가 성공해도 부트스트랩은 그 뒤 몇 분 더 걸리고, 실패해도 apply 결과에 나타나지 않습니다.**
 
 ```bash
@@ -271,7 +271,7 @@ sudo crictl exec "$(sudo crictl ps --name '^etcd$' -q)" \
 ## 7. `80-main-edge` 동작 확인
 
 `인터넷 → ALB → 워커 NodePort 30080 → Traefik → 파드` 경로입니다. 워커 ASG 를 Target Group 에 연결하므로 ASG 가 새로 띄운 워커도 자동 등록됩니다.
-Target Group 헬스체크는 Traefik `/ping` 입니다. **Traefik 은 CP-a 부트스트랩이 설치하므로 `70` apply 직후 `80` 을 apply 하면 부트스트랩이 끝날 때까지 타깃이 unhealthy 로 보입니다.**
+Target Group 헬스체크는 Traefik `/ping` 입니다. **Traefik 은 CP-a 부트스트랩 마지막에 배포 agent 가 설치하므로 `70` apply 직후 `80` 을 apply 하면 부트스트랩이 끝날 때까지 타깃이 unhealthy 로 보입니다.**
 
 도메인 · 인증서 유무(`10-global` output)에 따라 리스너가 달라집니다.
 

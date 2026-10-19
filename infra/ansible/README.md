@@ -14,7 +14,7 @@
 | `k8s-cicd.yml` | `[control_plane]` (1대) | GitLab Agent(agentk) 설치 → `backend` 네임스페이스 / CI 배포 RBAC → 레지스트리 pull Secret · `backend-secrets` — [12절](#12-cicd-kas--registry--agent--파이프라인) |
 | `registry-trust.yml` | `[control_plane]`, `[workers]` | containerd `certs.d` 설정 (사설 CA 를 쓸 때 레지스트리 CA 신뢰) — [12-7](#12-7-사설-ca-를-쓸-때-선택) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) → api-gateway Ingress(`/api`) — [11절](#11-ingress-controller-traefik) |
-| `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행. CP-a 는 마지막에 Traefik · whoami 까지 — [13절](#13-aws-main-클러스터-user-data-전용) |
+| `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행. CP-a 는 마지막에 GitOps pull 배포 agent 설치 (Traefik · whoami 는 agent 가 설치) — [13절](#13-aws-main-클러스터-user-data-전용) |
 | `aws-worker.yml` | AWS 워커 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** 워커 Launch Template user-data 가 실행 → `kubeadm join` — [13절](#13-aws-main-클러스터-user-data-전용) |
 
 - OS: Ubuntu 22.04 / Kubernetes v1.33 / containerd / Calico v3.30 (tigera-operator)
@@ -49,13 +49,13 @@ infra/ansible/
 │       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
 │       ├── payment.yml        # 결제 노드: 이미지 버전, 결제 DB / ElasticMQ 큐, 클러스터 NodePort
 │       ├── aws.yml                # AWS 노드 공통: Tailscale 끔, kubelet cloud-provider, CA cert hash 대기
-│       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신 · CP reconcile 주기, CCM · NTH 버전, Traefik 배치, whoami
+│       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신 · CP reconcile 주기, CCM · NTH 버전, gitops agent 대상 브랜치
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,
 │                              # docker, firewall, db_stack, db_seed,
 │                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
-│                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle, whoami
+│                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle, gitops_sync
 │                              # gitlab_bootstrap, gitlab_agent, backend_namespace, payment_stack
 └── .secrets/                  # (자동 생성, gitignore) join.env, admin.conf, gitlab-runner.env,
                                # gitlab-k8s.env, github-mirror.env, payment-node.env
@@ -764,8 +764,9 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 
 `aws-control-plane.yml`, `aws-worker.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대와 워커 ASG 인스턴스의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
 
-- **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/whoami` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다 (Traefik 배치는 `roles/traefik/defaults`).
-- `inventory/aws.ini` 는 CP · 워커 group_vars 가 섞이지 않게 `localhost` 대신 별칭(`aws-cp`, `aws-worker`)을 쓰고, `aws-cp` 를 `control_plane` 그룹에도 넣어 Traefik 버전 · NodePort 를 온프레미스와 같이 씁니다.
+- **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/gitops_sync` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다.
+- **Ansible 은 노드 작업 · Calico · CCM · NTH · 배포 agent 설치까지만 합니다.** 클러스터 서비스(Traefik · whoami, 이후 backend 등)는 CP-a 가 설치하는 GitOps pull 배포 agent 가 gitops 레포 `envs/prod`(원본: 모노레포 [`infra/gitops/prod`](../gitops/prod/README.md))에서 설치합니다. user-data 는 첫 부팅 때만 돌아서, Ansible 이 설치하면 변경이 다음 재생성까지 반영되지 않기 때문입니다. NTH 는 CCM 과 같은 role · post-renderer 를 써서 ArgoCD 전환 때 함께 옮깁니다.
+- `inventory/aws.ini` 는 CP · 워커 group_vars 가 섞이지 않게 `localhost` 대신 별칭(`aws-cp`, `aws-worker`)을 쓰고, `aws-cp` 를 `control_plane` 그룹에도 넣어 helm 버전을 온프레미스와 같이 씁니다.
 - S3 에는 커밋 대상 파일만 올라갑니다. `.env`, `.secrets/`, `inventory/hosts.ini` 는 올라가지 않습니다.
 
 | 항목 | 온프레미스 (`control-plane.yml`) | AWS (`aws-control-plane.yml`) |
@@ -781,10 +782,9 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | join 정보 | `.secrets/join.env` (로컬) | Parameter Store `/team04-hotel/prod/kubeadm/*` |
 | Calico 노드 IP 감지 / MTU | `tailscale0` / 1230 | `NodeInternalIP` / 8951 (VPC 점보 프레임 9001 − VXLAN 50) |
 | Felix mark 대역 변경 | 함 (Tailscale fwmark 충돌) | 안 함 |
-| Traefik | `ingress.yml` 수동 실행, control plane 1대 고정, `externalTrafficPolicy: Local` | CP-a 부트스트랩 마지막 단계(워커 Ready 대기 후), 워커에 2개, `externalTrafficPolicy: Cluster` (어느 워커 NodePort 로 와도 응답, 앞단 ALB) |
-| Traefik `forwardedHeaders.trustedIPs` | 미설정 (11절) | Main VPC CIDR + `pod_subnet` — ALB 가 붙인 `X-Forwarded-For`(클라이언트 IP) 유지. Cluster 정책 SNAT 로 출발지가 워커 IP 또는 다른 워커의 `vxlan.calico` IP |
-| Traefik `/ping` | `traefik` 엔트리포인트(비공개)만 | `web` 엔트리포인트(NodePort 30080)에도 노출 — `80-main-edge` Target Group 헬스체크 |
-| Ingress 대상 | api-gateway (`/api`, `/api-docs`) | 테스트 백엔드 whoami (`/whoami`, 그 외 경로는 Traefik 404). api-gateway 는 ECR · 배포 파이프라인 이후 |
+| 클러스터 서비스 설치 | Ansible(`ingress.yml`) · GitLab CI(`deploy-dev`) | GitOps pull 배포 agent (`gitops_sync` role 이 CP-a 부트스트랩 마지막에 설치, 워커 Ready 대기 후 첫 실행) |
+| Traefik | `ingress.yml` 수동 실행 (`roles/traefik`), control plane 1대 고정, `externalTrafficPolicy: Local` | gitops `envs/prod/traefik` — 워커에 2개, `externalTrafficPolicy: Cluster`, trustedIPs = Main VPC CIDR + Pod CIDR, `/ping` 을 `web` 에 노출(`80-main-edge` 헬스체크) |
+| Ingress 대상 | api-gateway (`/api`, `/api-docs`) | 테스트 백엔드 whoami (gitops `envs/prod/whoami`, `/whoami`, 그 외 경로는 Traefik 404). api-gateway 는 LDP-79 이후 |
 
 **Parameter Store** (`/team04-hotel/prod/kubeadm/`)
 
@@ -798,6 +798,7 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 - **CP 교체:** CP 는 AZ 별 ASG(1대 고정) 라 사라지면 새로 뜨고 join 합니다. CP 3대의 systemd timer `team04-cp-reconcile.timer`(1분) 가 사라진 CP 의 etcd 멤버를 지우고, init 2시간 후 삭제되는 `kubeadm-certs` Secret 을 같은 certificate-key 로 다시 올립니다. 동작 · 확인 방법 · 범위 밖(2대 이상 동시 장애, etcd 백업)은 [Terraform README](../terraform/README.md) 6절.
 - **join token 갱신:** CP 마다 systemd timer `team04-renew-join-token.timer` 가 `kubeadm token create` → `join-token` 파라미터 덮어쓰기. 즉시 갱신하려면 CP 에서 `sudo systemctl start team04-renew-join-token.service`. Terraform 은 이 파라미터 값 변경을 무시합니다.
 - **워커 교체 · 스케일 인:** 종료 전 drain 은 aws-node-termination-handler(NTH), 종료된 워커의 Node 삭제는 aws-cloud-controller-manager(CCM) 가 합니다. 둘 다 CP-a 부트스트랩의 `aws_node_lifecycle` role 이 CP 에 hostNetwork 로 설치합니다 (차트에 hostNetwork 값이 없어 Helm post-renderer 로 추가). 동작 · 확인 방법은 [Terraform README](../terraform/README.md) 6절.
+- **배포 agent:** CronJob `gitops-sync`(1분, CP 노드)가 gitops 레포 대상 브랜치(`gitops_sync_branch`, 기본 `main`)의 SHA 가 바뀌면 `envs/prod/*/chart.yaml` 을 order 순으로 `helm upgrade --install --atomic` 합니다. 부트스트랩 Job 이 실패해도 CP 부트스트랩은 실패시키지 않습니다(CP 교체 방지). 결과는 `cloud-init-output.log` 의 "부트스트랩 결과" 와 ConfigMap `gitops-sync-state`. 첫 실행(Traefik · whoami 설치)은 NTH 설치 직후부터 적용 완료까지 약 45초 (2026-10-19 실측), 이후 변경은 push 후 1분 안팎에 반영. 동작 · 운영 · 작업 브랜치 검증은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md).
 - 클러스터 확인 (SSM 접속 후): `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide`
 - Ingress 확인 (워커에 SSM 접속 후): `curl -i http://$(hostname -I | awk '{print $1}'):30080/whoami` → whoami 200 (`/` 는 Traefik 404 가 정상). 워커 30080 인바운드는 ALB SG 에서만 열려 있어(M2) **다른 노드에서는 연결되지 않습니다.** 노드 자신의 IP 로 확인합니다 (Traefik 파드가 다른 워커에 있어도 kube-proxy 가 넘겨 줍니다).
 
