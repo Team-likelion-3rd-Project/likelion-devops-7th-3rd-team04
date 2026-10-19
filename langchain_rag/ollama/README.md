@@ -1,61 +1,34 @@
-# langchain_rag/ollama/ — self-hosted Ollama node
+# langchain_rag/ollama — 로컬 LLM 노드
 
-A custom Ollama image with the chat model **baked in at build time**, so
-starting the container never needs a runtime `ollama pull`. This matters most
-once this image runs on the EKS GPU node group (`infra/terraform/modules/eks`
-— `g4dn.xlarge`, scaled to 0 by default): a cold node scale-up shouldn't also
-have to download several GB of model weights before it can serve a request.
+채팅 모델과 임베딩 모델을 **빌드할 때 미리 받아 둔** Ollama 이미지입니다. 컨테이너를 띄울 때 `ollama pull`을 하지 않으므로, 기동할 때마다 수 GB짜리 모델을 내려받지 않습니다.
 
-EKS deployment (ECR push, ArgoCD `Application`, GPU scheduling) now lives at
-`gitops/langchain/base/ollama/` — this directory only produces the image and
-lets it be run/tested locally. See `../llm-service/README.md` for the local
-test harness.
+> 현재 llm-service의 LLM·임베딩 백엔드입니다. dev/prod 모두 GCP Vertex AI로 옮길 예정이며, 이는 별도 작업입니다.
 
-## Model choice
+## 모델
 
-Default chat model: **`qwen2.5:7b-instruct`**.
+| 용도 | 기본값 | 빌드 인자 |
+|---|---|---|
+| 채팅 | `qwen2.5:7b-instruct` — 한국어 지원이 무난하고 Apache-2.0 라이선스 | `OLLAMA_MODEL` |
+| 임베딩 (RAG) | `nomic-embed-text` — 768차원, S3 Vectors 인덱스 차원과 맞아야 함 | `OLLAMA_EMBED_MODEL` |
 
-- Fits comfortably on a single T4 (16GB VRAM) at Q4 quantization, with
-  headroom for context.
-- Reasonable Korean support, which matters for this Korean-language
-  hotel-booking chatbot.
-- Apache-2.0 licensed.
+모델을 바꾸면 llm-service의 같은 이름 환경변수도 맞춰야 합니다.
 
-This is a starting point, not a fixed decision — swap it via the
-`OLLAMA_MODEL` build arg (see below) if the team picks a different model
-(e.g. an EXAONE or Llama variant) later.
-
-Default embedding model (for RAG retrieval, see `../llm-service/app/retrieval.py`):
-**`nomic-embed-text`** — self-hosted (no Bedrock/OpenAI dependency), outputs
-768-dim vectors. `infra/terraform/modules/ai_data`'s `vector_dimension` must
-match this (separate Terraform branch — see the RAG section of
-`../llm-service/README.md`). Override via `OLLAMA_EMBED_MODEL` build arg if
-that ever changes.
-
-## Building
+## 빌드
 
 ```bash
 docker build -t local/ollama-hotel .
-```
 
-To use a different (e.g. smaller, for fast local CPU-only testing) model:
-
-```bash
+# CPU 전용 로컬에서 빠르게 테스트하려면 작은 모델로
 docker build --build-arg OLLAMA_MODEL=qwen2.5:0.5b-instruct -t local/ollama-hotel .
 ```
 
-## Running standalone
+## 단독 실행
 
 ```bash
 docker run --rm -p 11434:11434 local/ollama-hotel
-curl localhost:11434/api/tags   # model should already be listed, no pull needed
+curl localhost:11434/api/tags   # pull 없이 모델이 바로 보여야 함
 ```
 
-GPU passthrough is optional — with no NVIDIA container runtime available
-(e.g. this repo's WSL2 dev environment typically has none configured),
-Ollama falls back to CPU. That's fine for exercising the HTTP contract; it's
-just slow. For anything performance-sensitive, test against the real GPU
-node instead.
+NVIDIA 컨테이너 런타임이 없으면 CPU로 동작합니다. HTTP 계약 확인에는 충분하지만 느립니다.
 
-Normally you won't run this alone — see `../docker-compose.yml`,
-which wires it up together with the FastAPI orchestration service.
+보통은 단독으로 띄우지 않고 `../docker-compose.yml`로 llm-service와 함께 띄웁니다.

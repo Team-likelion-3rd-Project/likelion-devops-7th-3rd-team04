@@ -1,36 +1,24 @@
-# Self-hosted Ollama node with the model pre-baked into the image.
-#
-# Rationale: the eventual deployment target is the EKS GPU node group
-# (infra/terraform/modules/eks — g4dn.xlarge, 1x NVIDIA T4, 16GB VRAM),
-# which is scaled to 0 by default and only spins a node up on demand.
-# Pulling multi-GB model weights at pod startup would make every cold
-# scale-up slow, so the model is pulled once at *build* time and shipped
-# as part of the image instead. See ../README.md and ./README.md for more.
-#
-# Deploying this image (ECR push, Helm/ArgoCD, GPU scheduling/autoscaling)
-# is out of scope here — see CLAUDE.md's "Chatbot / AI subsystem" section.
+# 채팅/임베딩 모델을 빌드 시점에 미리 받아 둔 Ollama 이미지.
+# 컨테이너 기동 때 수 GB짜리 모델을 내려받지 않도록 pull을 이미지 레이어에 포함합니다.
+# 자세한 내용은 ./README.md 참고.
 
 ARG OLLAMA_VERSION=0.3.14
 FROM ollama/ollama:${OLLAMA_VERSION}
 
-# Model tag to bake in. Override at build time for local/CPU-only testing
-# with something smaller, e.g.:
+# 미리 받아 둘 채팅 모델. CPU 전용 로컬 테스트에는 작은 모델로 바꿀 수 있습니다:
 #   docker build --build-arg OLLAMA_MODEL=qwen2.5:0.5b-instruct -t local/ollama-hotel .
 ARG OLLAMA_MODEL=qwen2.5:7b-instruct
 
-# Embedding model for RAG (S3 Vectors retrieval, see llm-service/app/retrieval.py).
-# nomic-embed-text outputs 768-dim vectors — infra/terraform/modules/ai_data's
-# vector_dimension must match (separate Terraform branch). Same ollama instance
-# serves both this and the chat model above; callers pick one via the `model`
-# field on each request.
+# RAG용 임베딩 모델(llm-service/app/retrieval.py). nomic-embed-text는 768차원이라
+# S3 Vectors 인덱스 차원과 맞아야 합니다. 같은 Ollama가 두 모델을 모두 서빙하며,
+# 호출자가 요청의 `model` 필드로 고릅니다.
 ARG OLLAMA_EMBED_MODEL=nomic-embed-text
 ENV OLLAMA_MODEL=${OLLAMA_MODEL} \
     OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL} \
     OLLAMA_HOST=0.0.0.0:11434
 
-# Start the server just long enough to pull both models into this layer, then
-# stop it — the image ships with the models already present on disk, so the
-# real `ollama serve` at container start does no network pulling.
+# 두 모델을 이 레이어에 받기 위해 잠시 서버를 띄웠다가 종료합니다 — 이미지에 모델이
+# 이미 들어 있으므로 실제 컨테이너 기동 시의 `ollama serve`는 네트워크에서 받지 않습니다.
 RUN ollama serve & \
     OLLAMA_PID=$! && \
     sleep 3 && \

@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## chat-orchestration\n\nImplements the `N8N_WEBHOOK_URL` contract `backend/apps/chat-bot-service/src/n8n/n8n.client.ts` calls.\n\nRAG retrieval is no longer done here — llm-service does its own S3 Vectors lookup (`langchain_rag/llm-service/app/retrieval.py`) whenever it's called without a `context` field, which is exactly what this workflow now sends. There used to be a \"Mock RAG (placeholder)\" node here standing in for that; it's gone now that the real thing exists on the llm-service side.\n\nSee `langchain_rag/n8n/README.md` for how to run and test this locally.",
+        "content": "## chat-orchestration\n\n`backend/apps/chat-bot-service/src/n8n/n8n.client.ts`가 호출하는 `N8N_WEBHOOK_URL` 계약을 구현합니다.\n\nRAG 검색은 여기서 하지 않습니다 — `context` 없이 호출하면 llm-service가 직접 S3 Vectors를 검색합니다(`langchain_rag/llm-service/app/retrieval.py`).\n\n로컬 실행·테스트 방법은 `langchain_rag/n8n/README.md`를 참고하세요.",
         "height": 300,
         "width": 380,
         "color": 5
@@ -46,7 +46,7 @@
         "specifyBody": "json",
         "jsonBody": "={{ { message: $json.message, history: $json.history } }}",
         "options": {
-          "timeout": 25000
+          "timeout": 120000
         }
       },
       "id": "073d3cb7-efb4-4f34-999d-b9a4df03e984",
