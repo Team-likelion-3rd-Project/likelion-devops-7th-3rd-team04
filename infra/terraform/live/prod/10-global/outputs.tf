@@ -39,7 +39,6 @@ output "oidc_bucket_name" {
   value       = aws_s3_bucket.oidc.id
 }
 
-output "oidc_provider_arn" {
-  description = "IRSA Role 신뢰 정책의 Federated principal"
-  value       = aws_iam_openid_connect_provider.irsa.arn
-}
+# 계정 ID 가 로그에 찍히지 않도록 OIDC 공급자 ARN 은 output 하지 않는다.
+# IRSA Role 신뢰 정책의 Federated principal 은 사용하는 스택에서 만든다:
+#   arn:aws:iam::<data.aws_caller_identity 의 account_id>:oidc-provider/<oidc_issuer_url 에서 https:// 를 뗀 값>

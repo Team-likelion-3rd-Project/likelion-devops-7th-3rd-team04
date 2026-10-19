@@ -160,6 +160,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
 | `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 – 20초 | 14초 – 15초 |
+| `41-main-data` | RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
 | `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
 | **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
@@ -181,6 +182,25 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | S3 | `force_destroy = true` |
 
 🔒 스택의 리소스에는 `prevent_destroy = true` 를 겁니다.
+
+### 비밀값
+
+DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다.**
+
+- `ephemeral "aws_secretsmanager_random_password"` 로 만들고, write-only 속성(`password_wo`, `auth_token_wo`, `secret_string_wo`)으로 리소스와 Secret 에 같은 값을 넣습니다. `random_password` 리소스는 값이 state 에 저장되므로 쓰지 않습니다.
+- write-only 값은 **생성 시와 `*_wo_version` 이 바뀔 때만** 전달됩니다. 그래서 비밀값을 쓰는 리소스와 그 Secret 은 같은 스택에 두고 같은 version 변수를 씁니다. 스택 사이로 output 할 수 없습니다.
+- Secret 은 고정 이름(`team04-hotel/prod/<이름>`)으로 만듭니다. 재생성 후에도 ESO 가 같은 이름으로 읽습니다.
+- Secret 리소스 정책으로 `GetSecretValue` 를 ESO Role 과 **그 스택을 apply 한 주체**만 허용합니다. 다른 IAM 사용자 · Role 로 apply 하면 정책의 관리자도 그 주체로 바뀝니다.
+- 값을 바꾸려면(회전) 해당 스택의 version 변수(`41-main-data` 는 `credentials_version`)를 올려 apply 합니다.
+
+```bash
+# 값 확인 (관리자만 가능)
+AWS_PROFILE=team04 aws secretsmanager get-secret-value --secret-id team04-hotel/prod/main-db --query SecretString --output text
+
+# state 에 비밀값이 없는지 점검. 값이 null · "" 이거나 true(sensitive_values 의 민감 표시)면 정상, 실제 문자열이 나오면 안 됨
+cd live/prod/41-main-data
+AWS_PROFILE=team04 terragrunt show -json | jq '[.. | objects | to_entries[] | select(.key | test("password|auth_token|secret_string")) | {(.key): .value}]'
+```
 
 ---
 
