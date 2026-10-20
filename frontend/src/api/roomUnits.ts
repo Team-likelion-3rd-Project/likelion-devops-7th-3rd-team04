@@ -84,11 +84,20 @@ const ROOM_UNIT_ERROR_MESSAGE: Record<string, string> = {
   ROOM_UNIT_NOT_ASSIGNABLE: '배정할 수 없는 호실입니다. 같은 객실 종류의 사용 가능한 호실을 골라 주세요.',
   ROOM_UNIT_ASSIGNMENT_CONFLICT: '이 호실은 겹치는 기간에 다른 예약이 배정되어 있습니다.',
   INVALID_RESERVATION_STATUS: '취소·만료·결제 실패된 예약은 호실을 배정할 수 없습니다.',
+  ROOM_UNIT_BUSY: '다른 직원이 같은 호실을 배정하는 중입니다. 잠시 후 다시 시도해 주세요.',
+}
+
+// 서버 message를 그대로 보여주되 뒤에 안내를 덧붙이는 코드 (기간 오류는 서버가 구체적인 이유를 알려준다)
+const ROOM_UNIT_ERROR_SUFFIX: Record<string, string> = {
+  INVALID_DATE_RANGE: '조회 기간은 최대 31일입니다. 시작일·기간을 다시 골라 주세요.',
 }
 
 export function roomUnitErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof RoomUnitApiError && err.code && ROOM_UNIT_ERROR_MESSAGE[err.code]) {
     return ROOM_UNIT_ERROR_MESSAGE[err.code]
+  }
+  if (err instanceof RoomUnitApiError && err.code && ROOM_UNIT_ERROR_SUFFIX[err.code]) {
+    return [err.message, ROOM_UNIT_ERROR_SUFFIX[err.code]].filter(Boolean).join(' ')
   }
   return err instanceof Error && err.message ? err.message : fallback
 }

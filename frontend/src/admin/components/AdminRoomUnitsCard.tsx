@@ -15,15 +15,24 @@ interface AdminRoomUnitsCardProps {
   roomId: string
 }
 
-const ROOM_NUMBER_MAX_LENGTH = 10
+// 서버(LDP-89 room-unit.dto)와 같은 규칙: 방 번호는 영문·숫자·하이픈 1~20자, 층은 -10~200
+const ROOM_NUMBER_MAX_LENGTH = 20
+const ROOM_NUMBER_PATTERN = /^[0-9A-Za-z-]{1,20}$/
+const FLOOR_MIN = -10
+const FLOOR_MAX = 200
 
-// 폼 값(문자열) → 요청 바디. 방 번호는 필수, 층은 비우면 보내지 않는다.
+// 폼 값(문자열) → 요청 바디. 방 번호는 필수, 층은 비우면 보내지 않는다. 규칙에 안 맞으면 안내 문구를 돌려준다.
 function toRoomUnitInput(roomNumber: string, floor: string): RoomUnitInput | string {
   const trimmed = roomNumber.trim()
   if (!trimmed) return '방 번호를 입력해주세요.'
+  if (!ROOM_NUMBER_PATTERN.test(trimmed)) {
+    return '방 번호는 영문·숫자·하이픈(-)만 20자까지 쓸 수 있습니다. (예: 201, B101, 3-01)'
+  }
   if (floor.trim() === '') return { roomNumber: trimmed }
   const floorNum = Number(floor)
-  if (!Number.isInteger(floorNum)) return '층은 정수로 입력해주세요.'
+  if (!Number.isInteger(floorNum) || floorNum < FLOOR_MIN || floorNum > FLOOR_MAX) {
+    return `층은 ${FLOOR_MIN}~${FLOOR_MAX} 사이의 정수로 입력해주세요.`
+  }
   return { roomNumber: trimmed, floor: floorNum }
 }
 
@@ -179,7 +188,14 @@ function AdminRoomUnitsCard({ hotelId, roomId }: AdminRoomUnitsCardProps) {
               </label>
               <label className="admin-form-row">
                 <span>층 (선택)</span>
-                <input type="number" value={newFloor} onChange={(e) => setNewFloor(e.target.value)} placeholder="예: 2" />
+                <input
+                  type="number"
+                  min={FLOOR_MIN}
+                  max={FLOOR_MAX}
+                  value={newFloor}
+                  onChange={(e) => setNewFloor(e.target.value)}
+                  placeholder="예: 2"
+                />
               </label>
               <div className="admin-form-actions">
                 <button type="submit" className="admin-btn is-primary" disabled={isCreating}>
@@ -231,6 +247,8 @@ function AdminRoomUnitsCard({ hotelId, roomId }: AdminRoomUnitsCardProps) {
                             <input
                               className="admin-unit-input"
                               type="number"
+                              min={FLOOR_MIN}
+                              max={FLOOR_MAX}
                               value={editFloor}
                               onChange={(e) => setEditFloor(e.target.value)}
                               aria-label="층"
