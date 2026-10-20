@@ -8,7 +8,7 @@ import { AdminModule } from './admin/admin.module';
 import { User } from './user/entities/user.entity';
 import { DeletedUser } from './user/entities/deleted-user.entity';
 import { Admin } from './admin/entities/admin.entity';
-import { HealthModule } from '@app/common';
+import { HealthModule, mariaDbSslOptions } from '@app/common';
 
 // 루트 모듈은 DB 커넥션 설정과 도메인 모듈(UserModule/AdminModule) 조립만 담당합니다.
 // 실제 고객/관리자 도메인 로직은 각 모듈 안에 캡슐화되어 있습니다.
@@ -33,6 +33,8 @@ import { HealthModule } from '@app/common';
         username: configService.get<string>('DB_USERNAME', 'root'),
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_DATABASE'),
+        // 운영 RDS는 TLS 접속만 허용 — DB_SSL=true + DB_SSL_CA_PATH로 켠다 (LDP-101, 비우면 평문)
+        ssl: mariaDbSslOptions('DB', (key) => configService.get<string>(key)),
         // 🟢 nest-cli.json이 webpack: true로 번들링하므로, dist에는 개별 *.entity.js 파일이
         //    존재하지 않아 글롭(glob) 경로로는 엔티티를 찾지 못합니다. 클래스를 직접 등록합니다.
         // users/deleted_user는 고객 도메인, admins는 관리자 도메인 소유지만, 같은 서비스가
