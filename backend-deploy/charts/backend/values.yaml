@@ -141,7 +141,6 @@ services:
     healthPort: 3104
     replicas: 1
     env:
-      BOOKING_SERVICE_HOST: booking-service:3003
       PG_MOCK_SERVICE_URL: http://pg-mock-service:3007
     secretEnv:
       - PAYMENT_DB_HOST

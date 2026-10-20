@@ -337,7 +337,6 @@ services:
       - .env
     environment:
       - NODE_ENV=development
-      - BOOKING_SERVICE_HOST=booking-service:3003
       - PG_MOCK_SERVICE_URL=http://pg-mock-service:3007
       # 결제 결과 이벤트 큐 (LDP-26). .env에 값이 없으면 로컬 ElasticMQ를 씁니다.
       - SQS_ENDPOINT=${SQS_ENDPOINT-http://elasticmq:9324}
@@ -345,8 +344,6 @@ services:
       - PAYMENT_RESULT_QUEUE_URL=${PAYMENT_RESULT_QUEUE_URL:-http://elasticmq:9324/000000000000/payment-result.fifo}
     # 결제 DB 접속 정보(PAYMENT_DB_*)는 .env(env_file)에서 옵니다.
     depends_on:
-      booking-service:
-        condition: service_started
       pg-mock-service:
         condition: service_started
       payment-db-migration:
