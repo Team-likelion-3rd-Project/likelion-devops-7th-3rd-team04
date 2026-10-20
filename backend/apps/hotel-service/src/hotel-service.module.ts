@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { HotelServiceController } from './hotel-service.controller';
 import { HotelServiceService } from './hotel-service.service';
 import { RoomService } from './room.service';
+import { RoomImageStorage } from './room-image.storage';
 import { FacilityService } from './facility.service';
 import { Hotel } from './entities/hotel.entity';
 import { RoomType } from './entities/room-type.entity';
@@ -64,6 +65,11 @@ import { HealthModule, mariaDbSslOptions } from '@app/common';
     ]),
   ],
   controllers: [HotelServiceController],
-  providers: [HotelServiceService, RoomService, FacilityService],
+  providers: [
+    HotelServiceService,
+    RoomService,
+    RoomImageStorage,
+    FacilityService,
+  ],
 })
 export class HotelServiceModule {}

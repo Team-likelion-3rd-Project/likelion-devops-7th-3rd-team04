@@ -31,6 +31,12 @@ service HotelService {
   // (hotelId/roomId 조합이 존재하지 않으면 에러)
   rpc DeleteRoom (DeleteRoomRequest) returns (DeleteRoomResponse);
 
+  // 관리자 전용: 객실 사진을 저장소(MinIO·S3)에 직접 올릴 Presigned URL을 발급합니다 (LDP-88).
+  // 브라우저가 uploadUrl로 파일을 PUT한 뒤, 받은 objectKey를 UpdateRoom의 images에 넣습니다.
+  // 경로에 객실 id가 들어가서(room-types/{roomId}/...) 새 객실은 CreateRoom으로 먼저 등록한 뒤 사진을 올립니다.
+  // (hotelId/roomId 조합이 존재하지 않거나, JPG·PNG·WEBP가 아니거나, 5MB를 넘으면 에러)
+  rpc CreateRoomImageUploadUrl (CreateRoomImageUploadUrlRequest) returns (RoomImageUploadUrl);
+
   // 특정 객실의 지정 기간 예약 가능 여부를 조회합니다. (hotelId/roomId 조합이 존재하지 않으면 에러)
   rpc GetRoomAvailability (GetRoomAvailabilityRequest) returns (RoomAvailabilityResponse);
 
@@ -118,27 +124,47 @@ message RoomSearchResponse {
 }
 
 message CreateRoomRequest {
+  // 예전 images. 사진 경로에 객실 id가 필요해서 등록 후 UpdateRoom으로 붙인다 (LDP-88)
+  reserved 5;
+  reserved "images";
   int32 hotelId = 1;
   string name = 2;
   int32 capacity = 3;
   string description = 4;
-  // 객실 이미지 목록 (배열 순서대로 sortOrder가 매겨짐, 0번째가 대표 이미지)
-  repeated RoomImageInput images = 5;
   int32 totalCount = 6; // 객실 타입별 보유 수량. 안 보내면(0) 1개
 }
 
-// 객실 이미지. Base64로 인코딩된 이미지 데이터를 DB 컬럼에 직접 저장한다.
+// 객실 이미지. 사진 파일은 저장소(MinIO·S3)에 있고 DB에는 경로(objectKey)만 저장한다 (LDP-88).
+// 버킷이 비공개라 imageUrl(보기용 Presigned URL, 1시간 뒤 만료)로 화면에 표시한다.
 message RoomImage {
+  reserved 3; // 예전 imageBase64 (DB에 사진 자체를 넣던 방식)
+  reserved "imageBase64";
   int32 imageId = 1;
   string mimeType = 2;
-  string imageBase64 = 3;
   int32 sortOrder = 4;
+  string imageUrl = 5;
+  string objectKey = 6; // 객실 수정 때 기존 사진을 유지하려면 이 값을 그대로 다시 보낸다
 }
 
-// 객실 이미지 등록/수정 입력용 (imageId/sortOrder는 서버가 채운다)
+// 객실 이미지 등록/수정 입력용. CreateRoomImageUploadUrl로 저장소에 먼저 올린 사진의 경로를 보낸다.
+// (imageId/sortOrder는 서버가 채우고, mimeType은 저장소에 올라간 파일에서 읽는다)
 message RoomImageInput {
-  string mimeType = 1;
-  string imageBase64 = 2;
+  reserved 1, 2; // 예전 mimeType, imageBase64
+  reserved "mimeType", "imageBase64";
+  string objectKey = 3;
+}
+
+message CreateRoomImageUploadUrlRequest {
+  int32 hotelId = 1;
+  string mimeType = 2; // image/jpeg, image/png, image/webp
+  int32 size = 3; // 파일 크기(byte), 5MB 이하
+  int32 roomId = 4; // 사진을 붙일 객실(객실 종류). 경로 room-types/{roomId}/에 올라간다
+}
+
+message RoomImageUploadUrl {
+  string uploadUrl = 1; // 이 주소로 파일을 PUT (Content-Type·크기는 요청할 때 보낸 값과 같아야 함)
+  string objectKey = 2; // 객실 수정의 images에 넣을 사진 경로
+  int32 expiresIn = 3; // uploadUrl 유효 시간(초)
 }
 
 message Room {

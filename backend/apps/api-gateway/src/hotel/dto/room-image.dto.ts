@@ -1,17 +1,14 @@
-import { IsString } from 'class-validator';
+import { IsString, Matches } from 'class-validator';
 
 export class RoomImageDto {
   /**
-   * 이미지 MIME 타입
-   * @example "image/jpeg"
+   * 저장소에 올린 사진 경로. POST /api/hotels/{hotelId}/rooms/{roomId}/images/upload-url 로 받은 objectKey를 그대로 보냅니다.
+   * 기존 사진을 유지하려면 객실 조회 응답의 images[].objectKey를 다시 보냅니다.
+   * @example "room-types/12/0f3c8a52-6c2e-4b8f-9d1a-2f7e5b3c9a10.jpg"
    */
   @IsString()
-  mimeType: string;
-
-  /**
-   * Base64로 인코딩된 이미지 데이터 (data: 접두사를 제외한 순수 Base64 문자열)
-   * @example "/9j/4AAQSkZJRgABAQAAAQABAAD..."
-   */
-  @IsString()
-  imageBase64: string;
+  @Matches(/^room-types\/\d+\/[\w.-]+$/, {
+    message: '객실 사진 경로가 아닙니다.',
+  })
+  objectKey: string;
 }

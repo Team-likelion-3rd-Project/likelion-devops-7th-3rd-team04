@@ -5,8 +5,9 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
-// 객실별 이미지 목록. Base64로 인코딩된 이미지 데이터를 DB 컬럼에 직접 저장한다
-// (별도 오브젝트 스토리지(S3 등) 인프라가 아직 없어 임시로 채택한 방식).
+// 객실별 이미지 목록. 사진 파일은 저장소(dev MinIO · prod S3)에 두고, DB에는 경로(object_key)만 저장한다
+// (LDP-88, V10 — 그 전에는 image_base64 컬럼에 사진 자체를 넣었다). 버킷이 비공개라 화면에는
+// object_key로 만든 Presigned URL을 내려준다 (RoomImageStorage).
 // sortOrder가 0인 이미지가 대표(썸네일) 이미지다.
 @Entity('room_images')
 export class RoomImage {
@@ -20,9 +21,9 @@ export class RoomImage {
   @Column({ name: 'mime_type' })
   mimeType!: string;
 
-  // data: 접두사를 제외한 순수 Base64 문자열
-  @Column({ name: 'image_base64', type: 'longtext' })
-  imageBase64!: string;
+  // 저장소 안 경로 (예: room-types/12/0f3c....jpg). 주소(엔드포인트)는 환경마다 달라서 넣지 않는다.
+  @Column({ name: 'object_key', length: 512 })
+  objectKey!: string;
 
   @Column({ name: 'sort_order', default: 0 })
   sortOrder!: number;

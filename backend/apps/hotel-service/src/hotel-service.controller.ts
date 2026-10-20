@@ -81,7 +81,6 @@ export class HotelServiceController {
     capacity: number;
     totalCount?: number;
     description: string;
-    images?: RoomImageInput[];
   }) {
     return this.roomService.createRoom(data);
   }
@@ -104,6 +103,23 @@ export class HotelServiceController {
   @GrpcMethod('HotelService', 'DeleteRoom')
   async deleteRoom(data: { hotelId: number; roomId: number }) {
     return this.roomService.deleteRoom(data.hotelId, data.roomId);
+  }
+
+  // proto의 HotelService / CreateRoomImageUploadUrl 메서드와 매핑: 객실 사진 업로드 URL 발급
+  // (관리자 전용, api-gateway에서 권한 검증)
+  @GrpcMethod('HotelService', 'CreateRoomImageUploadUrl')
+  async createRoomImageUploadUrl(data: {
+    hotelId: number;
+    roomId: number;
+    mimeType: string;
+    size: number;
+  }) {
+    return this.roomService.createRoomImageUploadUrl(
+      data.hotelId,
+      data.roomId,
+      data.mimeType,
+      data.size,
+    );
   }
 
   // proto의 HotelService / GetRoomAvailability 메서드와 매핑: 특정 기간 객실 예약 가능 여부 조회
