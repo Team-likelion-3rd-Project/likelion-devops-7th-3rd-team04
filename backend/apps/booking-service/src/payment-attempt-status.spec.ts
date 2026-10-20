@@ -1,5 +1,5 @@
 import { of, throwError } from 'rxjs';
-import { DataSource, IsNull, Repository } from 'typeorm';
+import { DataSource, IsNull, Not, Repository } from 'typeorm';
 import { parseApiRpcError } from '@app/common';
 import { BookingServiceService } from './booking-service.service';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
@@ -18,6 +18,9 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
   const attemptUpdate = jest.fn();
   const attemptCount = jest.fn();
   const approvePayment = jest.fn();
+  // 트랜잭션 안(manager)에서 찾는 "승인 확인 중인 다른 시도" (LDP-85)
+  const confirmingFindOne = jest.fn();
+  const attemptSave = jest.fn();
   let service: BookingServiceService;
 
   const MINUTE = 60_000;
@@ -44,6 +47,21 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     attemptUpdate.mockResolvedValue({ affected: 1 });
+    confirmingFindOne.mockResolvedValue(null);
+    attemptSave.mockImplementation((data: Partial<PaymentAttempt>) =>
+      Promise.resolve({ attemptId: '9', ...data }),
+    );
+    const manager = {
+      findOne: (entity: unknown, options: unknown): Promise<unknown> =>
+        entity === Reservation
+          ? (reservationFindOne(options) as Promise<unknown>)
+          : (confirmingFindOne(options) as Promise<unknown>),
+      update: (_entity: unknown, where: unknown, set: unknown) =>
+        attemptUpdate(where, set) as Promise<unknown>,
+      count: attemptCount,
+      create: (_entity: unknown, data: unknown) => data,
+      save: attemptSave,
+    };
     service = new BookingServiceService(
       {
         find: reservationFind,
@@ -56,7 +74,10 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
         update: attemptUpdate,
         count: attemptCount,
       } as unknown as Repository<PaymentAttempt>,
-      {} as DataSource,
+      {
+        transaction: (work: (m: typeof manager) => Promise<unknown>) =>
+          work(manager),
+      } as unknown as DataSource,
       {} as ReservationFacilityService,
       { getService: () => ({}) } as never,
       { getService: () => ({ approvePayment }) } as never,
@@ -94,6 +115,22 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
       ).toBe('REQUESTED');
     });
 
+    it('최신 시도가 아니어도 승인 확인 중인 시도가 있으면 CONFIRMING (LDP-85)', async () => {
+      reservationFind.mockResolvedValue([reservation]);
+      // attemptId 내림차순: 최신(결제 준비만 함) → 이전(승인 확인 중)
+      attemptFind.mockResolvedValue([
+        attempt({ attemptId: '4', confirmRequestedAt: null }),
+        attempt({
+          attemptId: '3',
+          confirmRequestedAt: new Date(Date.now() - 1 * MINUTE),
+        }),
+      ]);
+
+      const [booking] = await service.getBookingsByUserId(10);
+
+      expect(booking.lastPaymentAttemptStatus).toBe('CONFIRMING');
+    });
+
     it('결과가 확정되면 승인 요청 시각과 관계없이 SUCCEEDED / FAILED', async () => {
       const recent = new Date(Date.now() - 1 * MINUTE);
       expect(
@@ -108,6 +145,46 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
           confirmRequestedAt: recent,
         }),
       ).toBe('FAILED');
+    });
+  });
+
+  // LDP-85: 승인 확인 중(CONFIRMING)인 시도가 있으면 새 결제를 시작하지 못한다
+  describe('preparePayment', () => {
+    const prepare = () =>
+      service.preparePayment(1, 10).catch((e: unknown) => e);
+
+    beforeEach(() => {
+      reservationFindOne.mockResolvedValue(reservation);
+      attemptCount.mockResolvedValue(1);
+    });
+
+    it('이전 시도가 승인 확인 중이면 409 PAYMENT_CONFIRMING (재시도 가능), 새 시도를 만들지 않는다', async () => {
+      confirmingFindOne.mockResolvedValue(
+        attempt({ confirmRequestedAt: new Date(Date.now() - 1 * MINUTE) }),
+      );
+
+      const error = await prepare();
+
+      expect(parseApiRpcError(error)).toMatchObject({
+        status: 409,
+        code: 'PAYMENT_CONFIRMING',
+        retryable: true,
+      });
+      expect(attemptSave).not.toHaveBeenCalled();
+      // 응답의 CONFIRMING과 같은 기준: 아직 REQUESTED + 승인 요청 시각이 10분 안
+      expect(confirmingFindOne).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          reservationId: 1,
+          status: PaymentAttemptStatus.REQUESTED,
+        }) as unknown,
+      });
+    });
+
+    it('승인 확인 중인 시도가 없으면 새 결제 시도와 주문번호를 만든다', async () => {
+      const result = await prepare();
+
+      expect(result).toMatchObject({ amount: 100000 });
+      expect(attemptSave).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -156,6 +233,35 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
         expect.objectContaining({ attemptId: '3' }),
         { confirmRequestedAt: anyDate },
       );
+    });
+
+    it('다른 시도가 승인 확인 중이면 409 PAYMENT_CONFIRMING — 승인 요청을 보내지 않는다 (이중 승인 방지)', async () => {
+      confirmingFindOne.mockResolvedValue(
+        attempt({
+          attemptId: '2',
+          pgOrderId: 'rsv1-old',
+          confirmRequestedAt: new Date(Date.now() - 1 * MINUTE),
+        }),
+      );
+
+      const error = await confirm().catch((e: unknown) => e);
+
+      expect(parseApiRpcError(error)?.code).toBe('PAYMENT_CONFIRMING');
+      expect(approvePayment).not.toHaveBeenCalled();
+      expect(attemptUpdate).not.toHaveBeenCalledWith(expect.anything(), {
+        confirmRequestedAt: anyDate,
+      });
+    });
+
+    it('같은 시도의 승인 재호출은 막지 않는다 (확인 대상에서 자기 시도는 뺀다)', async () => {
+      approvePayment.mockReturnValue(of({ result: 'UNKNOWN', message: '' }));
+
+      await confirm();
+
+      expect(confirmingFindOne).toHaveBeenCalledWith({
+        where: expect.objectContaining({ attemptId: Not('3') }) as unknown,
+      });
+      expect(approvePayment).toHaveBeenCalledTimes(1);
     });
 
     it('금액이 다르면 승인 요청을 보내지 않으므로 승인 요청 시각도 남기지 않는다', async () => {
