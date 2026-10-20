@@ -30,32 +30,6 @@ export class PgMockClient {
 
   constructor(private readonly httpService: HttpService) {}
 
-  // 실제 PG의 "결제창 생성 → 결제 승인(confirm)" 두 단계를 동기로 이어서 호출합니다.
-  // (동기로 처리하는 이유는 payment-service.service.ts의 requestPayment 주석 참고)
-  async createAndApprove(params: {
-    orderId: string;
-    amount: number;
-    orderName: string;
-    paymentMethod: string;
-  }): Promise<PgMockPaymentResult> {
-    const baseUrl = process.env.PG_MOCK_SERVICE_URL || DEFAULT_BASE_URL;
-
-    const created = await this.post<PgMockPaymentResult>(
-      `${baseUrl}/payments`,
-      params,
-    ).catch((error: unknown) => {
-      this.logError('PG 결제 요청 생성 실패', error);
-      throw new RpcException('PG 결제 요청 생성에 실패했습니다.');
-    });
-
-    return this.post<PgMockPaymentResult>(
-      `${baseUrl}/payments/${created.paymentKey}/approve`,
-    ).catch((error: unknown) => {
-      this.logError('PG 결제 승인 실패', error);
-      throw new RpcException('결제 승인에 실패했습니다.');
-    });
-  }
-
   // 새 결제 흐름(위키 API 명세 5.9)의 MOCK 모드 승인. 토스 승인 API와 같은 결과 형태(PgConfirmResult)로
   // 돌려줘서 payment-service가 PG 종류와 상관없이 같은 로직을 쓰게 합니다.
   // pg-mock은 결제창이 없어서 "결제 생성 → 승인"을 이어서 호출합니다 (프론트가 보낸 mock_ paymentKey는

@@ -6,7 +6,6 @@ describe('PaymentServiceController', () => {
   let controller: PaymentServiceController;
 
   const getHelloMock = jest.fn();
-  const requestPaymentMock = jest.fn();
   const handlePaymentWebhookMock = jest.fn();
 
   beforeEach(async () => {
@@ -17,7 +16,6 @@ describe('PaymentServiceController', () => {
           provide: PaymentServiceService,
           useValue: {
             getHello: getHelloMock,
-            requestPayment: requestPaymentMock,
             handlePaymentWebhook: handlePaymentWebhookMock,
           },
         },
@@ -35,29 +33,18 @@ describe('PaymentServiceController', () => {
     });
   });
 
-  it('requestPayment는 서비스의 requestPayment에 위임한다', async () => {
-    const data = { reservationId: 1, userId: 2, paymentMethod: 'CARD' };
-    requestPaymentMock.mockResolvedValue({ paymentId: 1 });
-
-    await controller.requestPayment(data);
-
-    expect(requestPaymentMock).toHaveBeenCalledWith(data);
-  });
-
-  it('handlePaymentWebhook은 서비스에 위임하고 빈 객체를 반환한다', async () => {
+  it('handlePaymentWebhook은 서비스에 위임하고 빈 객체를 반환한다', () => {
     const data = {
       eventType: 'PAYMENT.APPROVED',
       paymentKey: 'pgmock_1',
-      orderId: '1',
+      orderId: 'rsv1-9f2c4a7e1b3d',
       amount: 50000,
       paymentMethod: 'CARD',
       approvalNumber: '12345678',
       status: 'DONE',
       occurredAt: '2026-08-18T02:00:05.000Z',
     };
-    handlePaymentWebhookMock.mockResolvedValue(undefined);
-
-    const result = await controller.handlePaymentWebhook(data);
+    const result = controller.handlePaymentWebhook(data);
 
     expect(handlePaymentWebhookMock).toHaveBeenCalledWith(data);
     expect(result).toEqual({});

@@ -116,33 +116,4 @@ describe('BookingServiceService', () => {
       expect(result.status).toBe(ReservationStatus.CANCELLED);
     });
   });
-
-  describe('confirmBooking', () => {
-    it('PENDING_PAYMENT 상태면 RESERVED로 전환한다', async () => {
-      findOneMock.mockResolvedValue({ ...pendingReservation });
-      saveMock.mockResolvedValue({
-        ...pendingReservation,
-        status: ReservationStatus.RESERVED,
-      });
-
-      const result = await service.confirmBooking(1);
-
-      expect(result.status).toBe(ReservationStatus.RESERVED);
-    });
-
-    it('PENDING_PAYMENT 상태가 아니면 RpcException을 던진다', async () => {
-      findOneMock.mockResolvedValue({
-        ...pendingReservation,
-        status: ReservationStatus.RESERVED,
-      });
-
-      await expect(service.confirmBooking(1)).rejects.toThrow(RpcException);
-    });
-
-    it('존재하지 않는 예약이면 RpcException을 던진다', async () => {
-      findOneMock.mockResolvedValue(null);
-
-      await expect(service.confirmBooking(1)).rejects.toThrow(RpcException);
-    });
-  });
 });

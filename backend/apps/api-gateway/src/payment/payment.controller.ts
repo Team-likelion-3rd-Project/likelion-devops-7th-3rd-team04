@@ -3,9 +3,7 @@ import {
   BadGatewayException,
   BadRequestException,
   Body,
-  ConflictException,
   Controller,
-  ForbiddenException,
   Get,
   HttpCode,
   Inject,
@@ -35,7 +33,6 @@ import {
   CurrentUser,
   AuthenticatedUser,
 } from '@app/common';
-import { CreatePaymentRequestDto } from './dto/create-payment-request.dto';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 
 const DEFAULT_MOCK_PG_SECRET = 'mock-pg-secret';
@@ -67,11 +64,6 @@ interface PaymentWebhookRequest {
 // proto의 PaymentService 스펙과 1:1 대응되는 TS 인터페이스
 interface PaymentService {
   getHello(data: Record<string, never>): Observable<{ message: string }>;
-  requestPayment(data: {
-    reservationId: number;
-    userId: number;
-    paymentMethod: string;
-  }): Observable<PaymentDto>;
   handlePaymentWebhook(
     data: PaymentWebhookRequest,
   ): Observable<Record<string, never>>;
@@ -118,59 +110,6 @@ export class PaymentController implements OnModuleInit {
   })
   getHello(): Observable<{ message: string }> {
     return this.paymentService.getHello({});
-  }
-
-  /**
-   * POST http://localhost:3000/api/payments
-   * 로그인한 사용자 본인 명의의 예약에 대해 결제를 요청합니다. payment-service가 예약 금액을
-   * 조회·검증하고 PG(mock)에 결제 승인을 동기로 요청한 뒤, 성공 시 결제내역을 저장합니다.
-   */
-  @Post()
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({
-    summary: '결제 요청',
-    description:
-      '유효한 액세스 토큰을 가진 사용자 본인 명의의 예약에 대해서만 결제를 요청할 수 있습니다. ' +
-      'gRPC를 통해 payment-service가 예약 금액/소유자/상태를 검증하고, PG(mock)에 결제 생성+승인을 ' +
-      '동기로 요청한 뒤 결제내역을 저장합니다.',
-  })
-  @ApiResponse({ status: 201, description: '결제 성공' })
-  @ApiResponse({ status: 403, description: '본인의 예약이 아님' })
-  @ApiResponse({ status: 404, description: '존재하지 않는 예약' })
-  @ApiResponse({
-    status: 409,
-    description: '이미 결제되었거나 결제할 수 없는 예약 상태',
-  })
-  @ApiResponse({ status: 502, description: 'PG 서버 호출/승인 실패' })
-  async requestPayment(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: CreatePaymentRequestDto,
-  ): Promise<PaymentDto> {
-    return firstValueFrom(
-      this.paymentService.requestPayment({
-        reservationId: dto.reservationId,
-        paymentMethod: dto.paymentMethod,
-        userId: user.userId,
-      }),
-    ).catch((err: unknown) => {
-      const grpcErr = err as GrpcErrorLike;
-      const message =
-        grpcErr.details || grpcErr.message || '결제 요청에 실패했습니다.';
-      if (message.includes('존재하지 않는 예약')) {
-        throw new NotFoundException(message);
-      }
-      if (message.includes('본인의 예약만')) {
-        throw new ForbiddenException(message);
-      }
-      if (
-        message.includes('이미 결제') ||
-        message.includes('결제할 수 없는 예약 상태')
-      ) {
-        throw new ConflictException(message);
-      }
-      throw new BadGatewayException(message);
-    });
   }
 
   /**
@@ -229,7 +168,8 @@ export class PaymentController implements OnModuleInit {
   @ApiBearerAuth()
   @ApiOperation({
     summary: '내 결제 목록 조회',
-    description: '유효한 액세스 토큰을 가진 사용자 본인의 결제 목록을 조회합니다.',
+    description:
+      '유효한 액세스 토큰을 가진 사용자 본인의 결제 목록을 조회합니다.',
   })
   @ApiResponse({ status: 200, description: '내 결제 목록 조회 성공' })
   async getMyPayments(
@@ -271,10 +211,15 @@ export class PaymentController implements OnModuleInit {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   @ApiBearerAuth()
-  @ApiParam({ name: 'paymentId', description: '조회할 결제 PK ID', type: Number })
+  @ApiParam({
+    name: 'paymentId',
+    description: '조회할 결제 PK ID',
+    type: Number,
+  })
   @ApiOperation({
     summary: '결제 상세 조회 (관리자 전용)',
-    description: '관리자 권한을 가진 사용자만 호출할 수 있습니다. paymentId로 결제 상세 정보를 조회합니다.',
+    description:
+      '관리자 권한을 가진 사용자만 호출할 수 있습니다. paymentId로 결제 상세 정보를 조회합니다.',
   })
   @ApiResponse({ status: 200, description: '결제 상세 조회 성공' })
   @ApiResponse({ status: 403, description: '관리자 권한이 없음' })

@@ -5,17 +5,9 @@ package payment;
 service PaymentService {
   rpc GetHello (Empty) returns (HelloResponse);
 
-  // 유저 측 결제 요청. booking-service에서 예약을 조회해 금액/소유자/상태를 검증한 뒤,
-  // PG(pg-mock-service)에 결제 생성+승인을 동기로 요청한다. 실제 PG의 confirm API 호출 방식
-  // (서버-투-서버, 동기)을 그대로 따른다 — 승인 응답을 그 자리에서 받아 결제내역을 즉시
-  // paid 상태로 저장한다. 실패 시(예약 없음/본인 아님/이미 결제됨/PG 승인 실패) gRPC 에러.
-  rpc RequestPayment (RequestPaymentRequest) returns (Payment);
-
-  // PG(pg-mock-service)가 승인/취소 결과를 비동기로 통보하는 웹훅을 처리한다. RequestPayment가
-  // 이미 동기로 승인까지 끝내므로 이 RPC는 보조 역할만 한다: (1) 동기 흐름이 응답 수신 단계에서
-  // 실패했지만 PG는 실제 승인했던 경우의 구제(결제내역 뒤늦게 생성), (2) PG 측에서 발생한 취소를
-  // 반영(결제내역을 refunded로 변경). 서명 검증은 원본 요청 바디에 직접 접근 가능한 api-gateway가
-  // 수행하고, 여기 도달하는 시점엔 이미 검증이 끝난 상태다.
+  // PG 웹훅 수신 (api-gateway가 pg-mock 서명을 검증한 뒤 호출). 지금은 기록(로그)만 한다 (LDP-102).
+  // 옛 결제 방식(RequestPayment)과 그 웹훅 구제 경로는 결제 → 메인 직접 호출이라 제거했다.
+  // 결과 불명 결제는 대사 배치(PG 조회 → Outbox → SQS)가 확정한다.
   rpc HandlePaymentWebhook (PaymentWebhookRequest) returns (Empty);
 
   // 단건 결제 상세 조회 (관리자 전용, 권한 검증은 api-gateway에서 수행)
@@ -61,7 +53,7 @@ message ApprovePaymentResponse {
 message PaymentWebhookRequest {
   string eventType = 1; // 'PAYMENT.APPROVED' | 'PAYMENT.CANCELED'
   string paymentKey = 2;
-  string orderId = 3; // reservationId를 문자열로 인코딩한 값
+  string orderId = 3; // PG 주문번호
   int32 amount = 4;
   string paymentMethod = 5;
   string approvalNumber = 6;
@@ -73,12 +65,6 @@ message Empty {}
 
 message HelloResponse {
   string message = 1;
-}
-
-message RequestPaymentRequest {
-  int32 reservationId = 1;
-  int32 userId = 2; // 본인 확인용 (api-gateway가 JWT에서 추출해 넘긴다)
-  string paymentMethod = 3;
 }
 
 message GetPaymentByIdRequest {

@@ -2,13 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
-import { ClientsModule } from '@nestjs/microservices';
-import {
-  createSqsClient,
-  getGrpcOptions,
-  HealthModule,
-  SQS_CLIENT,
-} from '@app/common';
+import { createSqsClient, HealthModule, SQS_CLIENT } from '@app/common';
 import { PaymentServiceController } from './payment-service.controller';
 import { PaymentServiceService } from './payment-service.service';
 import { Payment } from './entities/payment.entity';
@@ -55,18 +49,6 @@ import { OutboxPublisherService } from './outbox/outbox-publisher.service';
 
     // 4. PG HTTP 호출용 (pg-mock-service, 토스페이먼츠 API)
     HttpModule,
-
-    // 5. booking-service gRPC 클라이언트 등록 (결제 요청 시 예약 금액/소유자/상태 검증)
-    ClientsModule.register([
-      {
-        name: 'BOOKING_SERVICE',
-        ...getGrpcOptions(
-          'booking',
-          'booking.proto',
-          process.env.BOOKING_SERVICE_HOST || 'localhost:3003',
-        ),
-      },
-    ]),
   ],
   controllers: [PaymentServiceController],
   providers: [

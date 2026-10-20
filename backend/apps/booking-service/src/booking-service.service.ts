@@ -400,24 +400,6 @@ export class BookingServiceService implements OnModuleInit {
     return this.toGrpcResponse(saved);
   }
 
-  // 결제 승인 완료 후 payment-service가 호출: PENDING_PAYMENT -> RESERVED로 전환한다.
-  // PENDING_PAYMENT 상태가 아니면(이미 확정됐거나 취소된 예약에 뒤늦게 도달한 콜백 등) 에러.
-  async confirmBooking(reservationId: number): Promise<BookingGrpcResponse> {
-    const reservation = await this.reservationRepository.findOne({
-      where: { reservationId },
-    });
-    if (!reservation) {
-      throw new RpcException('존재하지 않는 예약입니다.');
-    }
-    if (reservation.status !== ReservationStatus.PENDING_PAYMENT) {
-      throw new RpcException('결제 대기 상태의 예약이 아닙니다.');
-    }
-
-    reservation.status = ReservationStatus.RESERVED;
-    const saved = await this.reservationRepository.save(reservation);
-    return this.toGrpcResponse(saved);
-  }
-
   // 결제 준비 (위키 API 명세 5.8). "결제하기"를 누를 때마다 새 결제 시도(payment_attempts)를 기록하고
   // 토스 결제창에 넘길 주문번호·금액을 돌려준다.
   //  - 시도마다 새 주문번호(pg_order_id)를 써서, 재결제해도 토스 주문번호가 이전 시도와 충돌하지 않는다.

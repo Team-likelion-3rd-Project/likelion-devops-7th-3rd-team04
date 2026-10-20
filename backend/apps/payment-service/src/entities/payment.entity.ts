@@ -38,8 +38,8 @@ export class Payment {
   @Column({ name: 'reservation_id' })
   reservationId!: number;
 
-  // 결제 소유자. booking-service를 거치지 않고도 /me, /{userId} 조회를 처리할 수 있도록
-  // 결제 생성 시점(requestPayment) / 웹훅 구제 시점에 booking-service에서 조회한 값을 저장해둔다.
+  // 결제 소유자. booking-service를 거치지 않고도 /me, /{userId} 조회를 처리할 수 있도록 저장해둔다.
+  // 결제 승인 요청(ApprovePayment) 때 booking-service가 넘겨준 값이다 (결제 → 메인 조회 없음, LDP-102).
   @Column({ name: 'user_id' })
   userId!: number;
 
