@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { getHotels } from '../data/hotelStore'
 import type { Hotel } from '../data/hotels'
-import { fetchRoom, toImageDataUrl } from '../api/hotels'
+import { fetchRoom } from '../api/hotels'
 import type { Room } from '../api/hotels'
 import { fetchMyBookings, fetchReservationFacilities } from '../api/bookings'
 import type { Booking, ReservationFacility } from '../api/bookings'
@@ -223,7 +223,7 @@ function ReservationCompletePage() {
             <div className="reservation-complete-main">
               <div className="reservation-complete-room">
                 {thumbnail ? (
-                  <img className="reservation-complete-room-thumb" src={toImageDataUrl(thumbnail)} alt={room?.name} />
+                  <img className="reservation-complete-room-thumb" src={thumbnail.imageUrl} alt={room?.name} />
                 ) : (
                   <div className="reservation-complete-room-thumb is-placeholder" aria-hidden="true" />
                 )}

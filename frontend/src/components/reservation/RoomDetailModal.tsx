@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import type { Room } from '../../api/hotels'
-import { toImageDataUrl } from '../../api/hotels'
+import RoomImageCarousel from '../RoomImageCarousel'
 import './RoomDetailModal.css'
 
 interface RoomDetailModalProps {
@@ -37,16 +37,7 @@ function RoomDetailModal({ room, onClose }: RoomDetailModalProps) {
         </h2>
 
         {room.images.length > 0 ? (
-          <div className="room-detail-modal-gallery">
-            {room.images.map((image, index) => (
-              <img
-                key={image.imageId}
-                className="room-detail-modal-gallery-item"
-                src={toImageDataUrl(image)}
-                alt={`${room.name} 사진 ${index + 1}`}
-              />
-            ))}
-          </div>
+          <RoomImageCarousel images={room.images} roomName={room.name} />
         ) : (
           <div className="room-detail-modal-image" aria-hidden="true" />
         )}

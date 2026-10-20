@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link, useOutletContext, useParams } from 'react-router-dom'
 import type { HotelOutletContext } from '../layouts/HotelLayout'
-import { fetchRoom, toImageDataUrl } from '../api/hotels'
+import { fetchRoom } from '../api/hotels'
 import type { Room } from '../api/hotels'
 import PlaceholderPage from '../components/PlaceholderPage'
+import RoomImageCarousel from '../components/RoomImageCarousel'
 import './RoomDetailPage.css'
 
 type Status = 'loading' | 'success' | 'error'
@@ -66,16 +67,7 @@ function RoomDetailPage() {
         <article className="room-detail">
           <h1 className="room-detail-title">{room.name}</h1>
           {room.images.length > 0 ? (
-            <div className="room-detail-gallery">
-              {room.images.map((image, index) => (
-                <img
-                  key={image.imageId}
-                  className="room-detail-gallery-item"
-                  src={toImageDataUrl(image)}
-                  alt={`${room.name} 사진 ${index + 1}`}
-                />
-              ))}
-            </div>
+            <RoomImageCarousel images={room.images} roomName={room.name} />
           ) : (
             <div className="room-detail-image" aria-hidden="true" />
           )}

@@ -5,7 +5,8 @@ const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 export interface RoomImage {
   imageId: number
   mimeType: string
-  imageBase64: string
+  imageUrl: string // 사진 보기용 Presigned URL (1시간 뒤 만료, LDP-88)
+  objectKey: string
   sortOrder: number
 }
 
@@ -32,11 +33,6 @@ export interface RoomSearchResult {
 
 interface RoomSearchResponse {
   results: RoomSearchResult[]
-}
-
-// DB에는 Base64 원문만 저장되어 있어, <img src>에 바로 쓸 수 있는 data URL로 변환한다.
-export function toImageDataUrl(image: RoomImage): string {
-  return `data:${image.mimeType};base64,${image.imageBase64}`
 }
 
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {

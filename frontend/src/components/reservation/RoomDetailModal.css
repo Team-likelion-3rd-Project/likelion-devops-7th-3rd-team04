@@ -56,23 +56,6 @@
   background: var(--accent-bg);
 }
 
-.room-detail-modal-gallery {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  scroll-snap-type: x mandatory;
-  padding-bottom: 4px;
-}
-
-.room-detail-modal-gallery-item {
-  flex: 0 0 min(360px, 80%);
-  aspect-ratio: 16 / 9;
-  border-radius: 12px;
-  object-fit: cover;
-  scroll-snap-align: start;
-  background: var(--accent-bg);
-}
-
 .room-detail-modal-capacity {
   margin: 20px 0 0;
   font-size: 13px;

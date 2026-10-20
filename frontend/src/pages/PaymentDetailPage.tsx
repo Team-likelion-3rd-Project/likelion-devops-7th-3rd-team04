@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { fetchMyBookings, isUnauthorized, refreshAccessToken, type Booking } from '../api/gateway'
-import { toImageDataUrl, type Room } from '../api/hotels'
+import type { Room } from '../api/hotels'
 import type { Hotel } from '../data/hotels'
 import { fetchMyPayments, type Payment } from '../api/payments'
 import { CalendarIcon } from '../components/reservation/icons'
@@ -174,7 +174,7 @@ function PaymentDetailPage() {
               {(thumbnail || roomInfo) && (
                 <div className="reservation-detail-room">
                   {thumbnail ? (
-                    <img className="reservation-detail-room-thumb" src={toImageDataUrl(thumbnail)} alt={roomInfo?.room.name} />
+                    <img className="reservation-detail-room-thumb" src={thumbnail.imageUrl} alt={roomInfo?.room.name} />
                   ) : (
                     <div className="reservation-detail-room-thumb is-placeholder" aria-hidden="true" />
                   )}
