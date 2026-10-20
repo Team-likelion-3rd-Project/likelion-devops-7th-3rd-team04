@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { to: '/admin', label: '대시보드', end: true },
   { to: '/admin/users', label: '유저 관리', end: false },
   { to: '/admin/hotels', label: '호텔 관리', end: false },
+  { to: '/admin/room-assignments', label: '호실 배정', end: false },
 ]
 
 // 고객 프론트(RootLayout: Header/Footer/MobileDock)와는 완전히 분리된 관리자 전용 레이아웃.
