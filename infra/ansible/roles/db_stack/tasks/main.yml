@@ -36,6 +36,14 @@
     - "{{ db_data_dir }}/valkey"
     - "{{ db_data_dir }}/minio"
 
+- name: DynamoDB Local 데이터 디렉토리 (컨테이너 실행 사용자 소유)
+  ansible.builtin.file:
+    path: "{{ db_data_dir }}/dynamodb"
+    state: directory
+    owner: "{{ dynamodb_uid }}"
+    group: "{{ dynamodb_uid }}"
+    mode: "0750"
+
 - name: MariaDB 튜닝 설정
   ansible.builtin.template:
     src: mariadb-tuning.cnf.j2
@@ -65,6 +73,13 @@
     dest: "{{ db_base_dir }}/minio/app-policy.json"
     mode: "0644"
   register: minio_policy_file
+
+- name: MinIO RAG 계정 정책 (minio_rag_bucket 에만 읽기/쓰기)
+  ansible.builtin.template:
+    src: minio-rag-policy.json.j2
+    dest: "{{ db_base_dir }}/minio/rag-policy.json"
+    mode: "0644"
+  register: minio_rag_policy_file
 
 - name: reconcile 용 client 자격증명 (명령행에 비밀번호 노출 방지)
   ansible.builtin.template:
@@ -222,6 +237,51 @@
   changed_when: false
   when: minio_app_login.rc != 0
 
+# ── RAG 인덱스 버킷 · 전용 계정 (llm-service VECTOR_STORE=object) ─────
+# 앱 계정과 같은 방식. 객실 이미지 버킷과 권한을 나누려고 계정·정책을 따로 둠
+- name: MinIO RAG 버킷 생성
+  ansible.builtin.command: docker exec minio mcli mb --ignore-existing local/{{ minio_rag_bucket }}
+  register: minio_rag_mb
+  changed_when: "'created' in minio_rag_mb.stdout"
+
+- name: MinIO RAG 버킷 private 고정
+  ansible.builtin.command: docker exec minio mcli anonymous set none local/{{ minio_rag_bucket }}
+  changed_when: false
+
+- name: MinIO RAG 정책 확인
+  ansible.builtin.command: docker exec minio mcli admin policy info local {{ minio_rag_policy }}
+  register: minio_rag_policy_info
+  changed_when: false
+  failed_when: false
+
+- name: MinIO RAG 정책 생성 / 갱신
+  ansible.builtin.command: >-
+    docker exec minio mcli admin policy create local {{ minio_rag_policy }} /etc/minio/ansible/rag-policy.json
+  when: minio_rag_policy_info.rc != 0 or minio_rag_policy_file.changed
+  changed_when: true
+
+- name: MinIO RAG 계정 접속 검사
+  ansible.builtin.command: docker exec minio mcli ls rag/{{ minio_rag_bucket }}
+  register: minio_rag_login
+  changed_when: false
+  failed_when: false
+
+- name: MinIO RAG 계정 재설정
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - docker exec minio mcli admin user add local {{ minio_rag_access_key }} {{ minio_rag_secret_key }}
+    - docker exec minio mcli admin policy attach local {{ minio_rag_policy }} --user {{ minio_rag_access_key }}
+  when: minio_rag_login.rc != 0
+  register: minio_rag_reconcile
+  failed_when: minio_rag_reconcile.rc != 0 and 'already' not in minio_rag_reconcile.stderr
+  changed_when: minio_rag_reconcile.rc == 0
+  no_log: true
+
+- name: MinIO RAG 계정 접속 재검사
+  ansible.builtin.command: docker exec minio mcli ls rag/{{ minio_rag_bucket }}
+  changed_when: false
+  when: minio_rag_login.rc != 0
+
 - name: 접속 정보
   ansible.builtin.debug:
     msg:
@@ -229,4 +289,6 @@
       - "Valkey  : {{ ts_ip }}:{{ valkey_port }}"
       - "MinIO   : http://{{ ts_ip }}:{{ minio_api_port }}  (bucket={{ minio_bucket }}, region={{ minio_region }})"
       - "Console : http://{{ ts_ip }}:{{ minio_console_port }}  (MINIO_ROOT_USER 로 로그인)"
+      - "RAG     : bucket={{ minio_rag_bucket }} (MINIO_RAG_ACCESS_KEY) → llm-service VECTOR_OBJECT_ENDPOINT=http://{{ ts_ip }}:{{ minio_api_port }}"
+      - "DynamoDB: http://{{ ts_ip }}:{{ dynamodb_port }}  → chat-bot-service DYNAMODB_ENDPOINT"
       - "backend 연결 시 DB_HOST={{ ts_ip }}, S3_ENDPOINT=http://{{ ts_ip }}:{{ minio_api_port }}"

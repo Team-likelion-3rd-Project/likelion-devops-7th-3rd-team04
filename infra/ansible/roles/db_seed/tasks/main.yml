@@ -1,7 +1,8 @@
 ---
 # dev DB 시딩 — backend/scripts/seed.ts (관리자 계정, 호텔·객실, 편의시설, 객실 재고 30일)
 # 앱이 모두 synchronize: false 라 테이블은 클러스터의 main-db-migration hook(Flyway)만 만듭니다.
-# 그래서 순서는 db.yml → deploy-dev(스키마 생성) → db.yml --tags seed. 스키마가 없으면 건너뜁니다.
+# 그래서 순서는 db.yml → deploy-dev(스키마 생성) → db.yml --tags seed. 스키마가 없으면 MariaDB 시딩은 건너뜁니다.
+# 같은 이미지로 DynamoDB Local 테이블(chat-bot-service 대화 이력, scripts/dynamodb-init.ts)도 만듭니다 — 스키마와 무관하게 실행.
 # seed.ts 는 멱등 — 이미 있는 데이터는 건너뛰므로 여러 번 실행해도 안전 (README 7-5)
 
 - name: 메인 DB 스키마 확인 (Flyway 적용 여부)
@@ -21,7 +22,8 @@
   when: seed_schema.stdout | trim | int < db_seed_required_tables | length
 
 - name: 시딩
-  when: seed_schema.stdout | trim | int == db_seed_required_tables | length
+  vars:
+    seed_schema_ready: "{{ seed_schema.stdout | trim | int == db_seed_required_tables | length }}"
   block:
     # 소스가 바뀐 경우에만 다시 올리고 빌드 — 이미지 태그 = 로컬 backend 소스 해시
     - name: 시딩 소스 해시 (로컬)
@@ -91,6 +93,20 @@
           delegate_to: localhost
           become: false
 
+    # 로컬 backend/docker-compose.yml 의 dynamodb-init 과 같은 명령. 이미 있는 테이블은 건너뜀(멱등)
+    - name: DynamoDB Local 테이블 생성 (ChatSessions / ChatMessages)
+      ansible.builtin.command: >-
+        docker run --rm --network host
+        -e DYNAMODB_ENDPOINT=http://127.0.0.1:{{ dynamodb_port }} -e DYNAMODB_REGION={{ minio_region }}
+        {{ db_seed_image }}
+        npx ts-node --transpile-only -r tsconfig-paths/register scripts/dynamodb-init.ts
+      register: dynamodb_init
+      changed_when: "'테이블 생성 완료' in dynamodb_init.stdout"
+
+    - name: DynamoDB Local 테이블 결과
+      ansible.builtin.debug:
+        msg: "{{ dynamodb_init.stdout_lines }}"
+
     - name: 시딩 환경변수 파일
       ansible.builtin.template:
         src: seed.env.j2
@@ -103,15 +119,17 @@
         msg: >-
           backend/.env 의 SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD 가 비어 있어 관리자 계정 생성은 건너뜁니다
           (호텔·객실 등 나머지는 시딩).
-      when: seed_admin_email | length == 0 or seed_admin_password | length == 0
+      when: seed_schema_ready | bool and (seed_admin_email | length == 0 or seed_admin_password | length == 0)
 
     - name: 시딩 실행
       ansible.builtin.command: >-
         docker run --rm --network host --env-file {{ db_seed_dir }}/seed.env {{ db_seed_image }}
       register: seed_run
       changed_when: "'생성 완료' in seed_run.stdout"
+      when: seed_schema_ready | bool
 
     - name: 시딩 결과
+      when: seed_schema_ready | bool
       ansible.builtin.debug:
         msg: "{{ seed_run.stdout_lines | select('search', '^\\[seed\\]') | list }}"
 

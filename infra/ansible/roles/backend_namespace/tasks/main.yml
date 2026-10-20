@@ -30,6 +30,34 @@
   changed_when: "'configured' in pull_secret_apply.stdout or 'created' in pull_secret_apply.stdout"
   no_log: true
 
+- name: 챗봇 AI 스택 값 확인 (infra/ansible/.env)
+  ansible.builtin.assert:
+    that:
+      - gcp_sa_key_file | length > 0
+      - lookup('env', 'MINIO_RAG_ACCESS_KEY') | length > 0
+      - lookup('env', 'MINIO_RAG_SECRET_KEY') | length > 0
+      - lookup('env', 'N8N_INIT_OWNER_PASSWORD') | length >= 8
+      - db_ts_ip | length > 0
+    fail_msg: >-
+      GCP_SA_KEY_FILE / MINIO_RAG_ACCESS_KEY / MINIO_RAG_SECRET_KEY / N8N_INIT_OWNER_PASSWORD(8자 이상) / DB_TS_IP 가
+      비어 있습니다. infra/ansible/.env 를 채우고 다시 source 하세요 (README 15절).
+    quiet: true
+  no_log: true
+
+- name: 서비스 계정 키 파일 확인
+  ansible.builtin.stat:
+    path: "{{ gcp_sa_key_path }}"
+  register: gcp_sa_key_stat
+  delegate_to: localhost
+  become: false
+
+- name: 서비스 계정 키 파일 없음 안내
+  ansible.builtin.fail:
+    msg: >-
+      GCP_SA_KEY_FILE({{ gcp_sa_key_path }}) 이 없습니다. infra/gcp-terraform/README 의 "키 발급" 으로
+      llm-service-dev 서비스 계정 키를 만들고 경로를 지정하세요.
+  when: not gcp_sa_key_stat.stat.exists
+
 - name: backend-secrets 값 계산
   # backend/.env 에서 차트가 쓰는 key 만 고르고, DB/Redis 주소는 DB 노드 Tailscale IP(DB_TS_IP)로 덮어씀
   # (backend/.env 의 *_HOST 는 로컬 docker compose 용 컨테이너 이름일 수 있음)
@@ -43,7 +71,7 @@
       {%- for key in backend_secret_optional_keys if backend_env[key] | default('') | length > 0 -%}
         {%- set _ = data.update({key: backend_env[key]}) -%}
       {%- endfor -%}
-      {{ data | combine(backend_secret_host_overrides if db_ts_ip | length > 0 else {}) }}
+      {{ data | combine(backend_secret_host_overrides if db_ts_ip | length > 0 else {}) | combine(backend_secret_extra) }}
   no_log: true
 
 - name: backend-secrets 필수값 확인
