@@ -1,0 +1,48 @@
+---
+# operator / Installation 이 관리하지 않는 클러스터 필수 애드온을 control plane 에 배치.
+# 워커는 팀원 PC 라 꺼질 수 있음 (Typha · calico-kube-controllers · calico-apiserver 는 calico role 의 Installation 에서 처리)
+#   tigera-operator : CP 고정 (업스트림 매니페스트는 모든 taint 를 허용해 꺼진 워커에 묶일 수 있음)
+#   coredns         : CP 우선 (기존 hostname anti-affinity 와 합쳐 1개는 CP, 1개는 워커)
+# kubeadm upgrade 는 coredns Deployment 를 다시 만들므로 upgrade 뒤 이 role 을 다시 실행 (--tags addon_placement)
+
+- name: tigera-operator nodeSelector 조회
+  ansible.builtin.command: >-
+    kubectl -n tigera-operator get deployment tigera-operator
+    -o 'jsonpath={.spec.template.spec.nodeSelector}'
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: operator_node_selector
+  changed_when: false
+
+- name: tigera-operator 를 control plane 에 고정
+  ansible.builtin.command: >-
+    kubectl -n tigera-operator patch deployment tigera-operator --type merge
+    -p '{{ {"spec": {"template": {"spec": {"nodeSelector": {"kubernetes.io/os": "linux", "node-role.kubernetes.io/control-plane": ""}}}}} | to_json }}'
+  environment: *kubeconfig
+  when: "'node-role.kubernetes.io/control-plane' not in operator_node_selector.stdout"
+  changed_when: true
+
+- name: coredns nodeAffinity 조회
+  ansible.builtin.command: >-
+    kubectl -n kube-system get deployment coredns
+    -o 'jsonpath={.spec.template.spec.affinity.nodeAffinity}'
+  environment: *kubeconfig
+  register: coredns_node_affinity
+  changed_when: false
+
+- name: coredns 를 control plane 우선 배치
+  # merge patch 라 affinity 아래의 기존 podAntiAffinity 는 유지됨
+  ansible.builtin.command: >-
+    kubectl -n kube-system patch deployment coredns --type merge
+    -p '{{ {"spec": {"template": {"spec": {"affinity": {"nodeAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [{"weight": 100, "preference": {"matchExpressions": [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists"}]}}]}}}}}} | to_json }}'
+  environment: *kubeconfig
+  when: "'node-role.kubernetes.io/control-plane' not in coredns_node_affinity.stdout"
+  changed_when: true
+
+- name: tigera-operator · coredns 롤아웃 대기
+  ansible.builtin.command: "kubectl -n {{ item.ns }} rollout status deployment/{{ item.name }} --timeout=180s"
+  environment: *kubeconfig
+  loop:
+    - {ns: tigera-operator, name: tigera-operator}
+    - {ns: kube-system, name: coredns}
+  changed_when: false

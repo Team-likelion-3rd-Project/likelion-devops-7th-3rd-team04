@@ -15,9 +15,68 @@ spec:
         encapsulation: VXLAN
         natOutgoing: Enabled
         nodeSelector: all()
+{% if addons_on_control_plane %}
+  # Typha 가 꺼진 워커에 묶이면 모든 노드의 Felix 가 동기화를 잃어 새 Pod 의 트래픽이 DROP 됨.
+  # operator 기본값은 모든 taint 를 허용해서 NotReady · cordon 노드에도 남거나 다시 스케줄됨.
+  # replica 는 노드 수에 따라 operator 가 늘리고 hostNetwork(5473) 라 노드당 1개뿐 → CP 고정이 아니라 CP 우선 배치
+  typhaDeployment:
+    spec:
+      template:
+        spec:
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: Exists
+          # 기본 tolerations 를 대체: cordon(unschedulable) 은 허용하지 않고, 꺼진 노드에서는 일정 시간 뒤 축출
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+            - key: CriticalAddonsOnly
+              operator: Exists
+            - key: node.kubernetes.io/not-ready
+              operator: Exists
+              effect: NoExecute
+              tolerationSeconds: {{ addon_eviction_seconds }}
+            - key: node.kubernetes.io/unreachable
+              operator: Exists
+              effect: NoExecute
+              tolerationSeconds: {{ addon_eviction_seconds }}
+  calicoKubeControllersDeployment:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+            - key: CriticalAddonsOnly
+              operator: Exists
+{% endif %}
 ---
 apiVersion: operator.tigera.io/v1
 kind: APIServer
 metadata:
   name: default
+{% if addons_on_control_plane %}
+# 꺼진 워커에 묶이면 projectcalico.org 집계 API 가 응답하지 않아 namespace 삭제가 멈추고 kubectl / helm discovery 가 경고를 냄
+spec:
+  apiServerDeployment:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+{% else %}
 spec: {}
+{% endif %}
