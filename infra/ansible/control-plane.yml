@@ -12,6 +12,11 @@
       when: use_tailscale
     - kubernetes
     - control_plane
-    - calico
+    - role: calico
+      tags: [calico]
+    # 기존 클러스터에 배치만 다시 적용: --tags calico,addon_placement
+    - role: addon_placement
+      when: addons_on_control_plane
+      tags: [addon_placement]
     - role: join_info
       tags: [join_info]
