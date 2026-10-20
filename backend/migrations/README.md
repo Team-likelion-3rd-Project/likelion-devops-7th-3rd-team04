@@ -29,6 +29,7 @@ payment-service의 마이그레이션 규칙과 동일합니다.
 | V6 | users/deleted_user/admins/credentials/admin_credentials 기준선 (synchronize가 만들던 구조 그대로) | user-service, auth-service |
 | V7 | payment_attempts.confirm_requested_at(승인 요청 시각) 추가 — "승인 확인 중"(CONFIRMING)과 "결제 준비만 함" 구분 | booking-service |
 | V8 | rooms.total_count(객실 타입별 보유 수량), room_availabilities.booked_count(날짜별 예약 수) 추가, is_available은 "관리자 판매 중지" 의미로만 (V7은 LDP-67) | hotel-service |
+| V9 | 객실 종류·호실 분리: `rooms` → `room_types`(`room_type_id`), 객실 종류 컬럼 `room_type_id`로 이름 변경, 실제 호실 `rooms` 생성, 예약 칸(`room_id` 배정 호실, `linked_reservation_id`, `created_by_admin_*`, `cancelled_by_admin_id`, `cancel_reason`), 보유 수량 CHECK `>= 0` (LDP-86, ERD #161·#162) | hotel-service, booking-service |
 
 payment_due_at을 실제로 채우는 로직(예약 생성 시 +30분 설정), payment_attempts/
 payment_result_inbox를 실제로 쓰는 로직(토스 승인 연동, SQS 수신)은 스키마만 다루는 이

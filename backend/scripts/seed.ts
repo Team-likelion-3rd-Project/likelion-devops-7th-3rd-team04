@@ -1,10 +1,14 @@
 import 'reflect-metadata';
-import { Between, DataSource } from 'typeorm';
+import { Between, DataSource, In } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { Admin } from '../apps/user-service/src/admin/entities/admin.entity';
 import { AdminCredential } from '../apps/auth-service/src/entities/admin-credential.entity';
 import { Hotel } from '../apps/hotel-service/src/entities/hotel.entity';
-import { Room } from '../apps/hotel-service/src/entities/room.entity';
+import { RoomType } from '../apps/hotel-service/src/entities/room-type.entity';
+import {
+  RoomUnit,
+  RoomUnitStatus,
+} from '../apps/hotel-service/src/entities/room-unit.entity';
 import { RoomAvailability } from '../apps/hotel-service/src/entities/room-availability.entity';
 import { Facility } from '../apps/hotel-service/src/entities/facility.entity';
 
@@ -45,7 +49,7 @@ const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME ?? '관리자';
 
 interface HotelSeed {
   hotel: Pick<Hotel, 'name' | 'address' | 'phoneNumber' | 'description'>;
-  rooms: Pick<Room, 'name' | 'capacity' | 'totalCount' | 'description'>[];
+  rooms: Pick<RoomType, 'name' | 'capacity' | 'totalCount' | 'description'>[];
 }
 
 // 객실 설명에 소개 문구 + 침실/침대 구성 + 최대 인원 + 제공 어메니티를 한 항목씩 줄바꿈해서 정리한다.
@@ -327,7 +331,15 @@ async function createDataSourceWithRetry(
     username: DB_USERNAME,
     password: DB_PASSWORD,
     database: DB_DATABASE,
-    entities: [Admin, AdminCredential, Hotel, Room, RoomAvailability, Facility],
+    entities: [
+      Admin,
+      AdminCredential,
+      Hotel,
+      RoomType,
+      RoomUnit,
+      RoomAvailability,
+      Facility,
+    ],
     synchronize: false,
   });
 
@@ -383,7 +395,7 @@ async function seedAdmin(dataSource: DataSource): Promise<void> {
 
 async function seedHotelsAndRooms(dataSource: DataSource): Promise<void> {
   const hotelRepository = dataSource.getRepository(Hotel);
-  const roomRepository = dataSource.getRepository(Room);
+  const roomRepository = dataSource.getRepository(RoomType);
 
   const hotelCount = await hotelRepository.count();
   if (hotelCount > 0) {
@@ -413,7 +425,7 @@ async function seedHotelsAndRooms(dataSource: DataSource): Promise<void> {
 // 같은 것) 중 아직 1인 것만 위 표의 보유 수량으로 맞춘다 — 관리자가 직접 바꾼 값(1이 아닌 값)은 건드리지 않는다.
 async function syncSeedRoomTotalCounts(dataSource: DataSource): Promise<void> {
   const hotelRepository = dataSource.getRepository(Hotel);
-  const roomRepository = dataSource.getRepository(Room);
+  const roomRepository = dataSource.getRepository(RoomType);
 
   for (const seed of HOTEL_SEEDS) {
     const hotel = await hotelRepository.findOne({
@@ -436,6 +448,78 @@ async function syncSeedRoomTotalCounts(dataSource: DataSource): Promise<void> {
   }
 }
 
+// 실제 호실(rooms, V9 · LDP-86)을 객실 종류별 보유 수량만큼 만든다. 지점별 20개, 전체 60개.
+// 방 번호: 지점 안에서 객실 종류마다 층을 하나씩(위 표 순서대로 2층부터), 번호 = 층 × 100 + 순번 (예: 201~210).
+// 이미 있는 방 번호는 건너뛰어서 여러 번 실행해도 안전하다.
+// 다 만든 뒤 보유 수량(total_count)을 ACTIVE 호실 수로 맞춘다 — 보유 수량 = 사용 가능한 호실 수 (LDP-82).
+// 시드 객실 종류(호텔 이름 + 객실 종류 이름이 같은 것)만 다루고, 관리자가 만든 객실 종류는 건드리지 않는다.
+const FIRST_SEED_FLOOR = 2;
+
+async function seedRoomUnits(dataSource: DataSource): Promise<void> {
+  const hotelRepository = dataSource.getRepository(Hotel);
+  const roomTypeRepository = dataSource.getRepository(RoomType);
+  const roomUnitRepository = dataSource.getRepository(RoomUnit);
+
+  for (const seed of HOTEL_SEEDS) {
+    const hotel = await hotelRepository.findOne({
+      where: { name: seed.hotel.name },
+    });
+    if (!hotel) {
+      continue;
+    }
+
+    for (const [index, roomSeed] of seed.rooms.entries()) {
+      const roomType = await roomTypeRepository.findOne({
+        where: { hotelId: hotel.hotelId, name: roomSeed.name },
+      });
+      if (!roomType) {
+        continue;
+      }
+
+      const floor = FIRST_SEED_FLOOR + index;
+      const roomNumbers = Array.from(
+        { length: roomSeed.totalCount },
+        (_, i) => String(floor * 100 + i + 1),
+      );
+      const existing = await roomUnitRepository.find({
+        select: { roomNumber: true },
+        where: { hotelId: hotel.hotelId, roomNumber: In(roomNumbers) },
+      });
+      const existingNumbers = new Set(existing.map((unit) => unit.roomNumber));
+      const missing = roomNumbers.filter(
+        (number) => !existingNumbers.has(number),
+      );
+      if (missing.length > 0) {
+        await roomUnitRepository.insert(
+          missing.map((roomNumber) => ({
+            roomId: roomType.roomId,
+            hotelId: hotel.hotelId,
+            roomNumber,
+            floor,
+            status: RoomUnitStatus.ACTIVE,
+          })),
+        );
+        console.log(
+          `[seed] 호실 ${missing.length}개 생성: ${seed.hotel.name} ${roomSeed.name} (${missing[0]}~${missing[missing.length - 1]})`,
+        );
+      }
+
+      const activeCount = await roomUnitRepository.count({
+        where: { roomId: roomType.roomId, status: RoomUnitStatus.ACTIVE },
+      });
+      if (activeCount > 0 && roomType.totalCount !== activeCount) {
+        await roomTypeRepository.update(
+          { roomId: roomType.roomId },
+          { totalCount: activeCount },
+        );
+        console.log(
+          `[seed] 보유 수량을 ACTIVE 호실 수로 맞춤: ${seed.hotel.name} ${roomSeed.name} ${roomType.totalCount} → ${activeCount}`,
+        );
+      }
+    }
+  }
+}
+
 // 로컬 타임존 기준 YYYY-MM-DD 문자열로 변환 (date 컬럼용).
 // toISOString()은 UTC로 변환하면서 날짜가 하루 밀릴 수 있어 사용하지 않습니다.
 function formatDate(date: Date): string {
@@ -446,7 +530,7 @@ function formatDate(date: Date): string {
 }
 
 async function seedRoomAvailabilities(dataSource: DataSource): Promise<void> {
-  const roomRepository = dataSource.getRepository(Room);
+  const roomRepository = dataSource.getRepository(RoomType);
   const availabilityRepository = dataSource.getRepository(RoomAvailability);
 
   const rooms = await roomRepository.find();
@@ -536,6 +620,7 @@ async function main(): Promise<void> {
   try {
     await seedAdmin(dataSource);
     await seedHotelsAndRooms(dataSource);
+    await seedRoomUnits(dataSource);
     await seedFacilities(dataSource);
     await seedRoomAvailabilities(dataSource);
     console.log('[seed] 시딩 완료');

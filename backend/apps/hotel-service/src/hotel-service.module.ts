@@ -6,7 +6,8 @@ import { HotelServiceService } from './hotel-service.service';
 import { RoomService } from './room.service';
 import { FacilityService } from './facility.service';
 import { Hotel } from './entities/hotel.entity';
-import { Room } from './entities/room.entity';
+import { RoomType } from './entities/room-type.entity';
+import { RoomUnit } from './entities/room-unit.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
 import { Facility } from './entities/facility.entity';
@@ -35,7 +36,14 @@ import { HealthModule } from '@app/common';
         database: configService.get<string>('DB_DATABASE'),
         // 🟢 nest-cli.json이 webpack: true로 번들링하므로, dist에는 개별 *.entity.js 파일이
         //    존재하지 않아 글롭(glob) 경로로는 엔티티를 찾지 못합니다. 클래스를 직접 등록합니다.
-        entities: [Hotel, Room, RoomAvailability, RoomImage, Facility],
+        entities: [
+          Hotel,
+          RoomType,
+          RoomUnit,
+          RoomAvailability,
+          RoomImage,
+          Facility,
+        ],
         // 테이블 구조는 Flyway(backend/migrations)만 바꿉니다. true로 두면 TypeORM이
         // 재기동 때마다 엔티티에 맞춰 테이블을 고치면서 Flyway가 만든 FK를 지워버립니다.
         synchronize: false,
@@ -46,7 +54,8 @@ import { HealthModule } from '@app/common';
     // 3. 엔티티 리포지토리 등록
     TypeOrmModule.forFeature([
       Hotel,
-      Room,
+      RoomType,
+      RoomUnit,
       RoomAvailability,
       RoomImage,
       Facility,

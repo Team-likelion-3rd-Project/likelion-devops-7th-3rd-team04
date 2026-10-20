@@ -9,7 +9,8 @@ import {
   MoreThanOrEqual,
   Repository,
 } from 'typeorm';
-import { Room } from './entities/room.entity';
+import { RoomType } from './entities/room-type.entity';
+import { RoomUnit } from './entities/room-unit.entity';
 import { Hotel } from './entities/hotel.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
@@ -94,7 +95,10 @@ export interface RoomAvailabilityGrpcResponse {
 @Injectable()
 export class RoomService {
   constructor(
-    @InjectRepository(Room) private readonly roomRepository: Repository<Room>,
+    @InjectRepository(RoomType)
+    private readonly roomRepository: Repository<RoomType>,
+    @InjectRepository(RoomUnit)
+    private readonly roomUnitRepository: Repository<RoomUnit>,
     @InjectRepository(Hotel)
     private readonly hotelRepository: Repository<Hotel>,
     @InjectRepository(RoomAvailability)
@@ -301,10 +305,10 @@ export class RoomService {
     return this.toGrpcResponse(saved, images);
   }
 
-  // 객실 삭제. hotelId/roomId 조합이 존재하지 않으면 RpcException.
-  // rooms/room_images/room_availabilities는 DB 레벨 FK/CASCADE가 없으므로(서비스 간 DB 분리 원칙과
-  // 동일하게 이 서비스 내부에서도 관계를 걸지 않음), replaceRoomImages와 동일하게 자식 테이블을
-  // 먼저 지운 뒤 부모(rooms) row를 지운다.
+  // 객실(객실 종류) 삭제. hotelId/roomId 조합이 존재하지 않으면 RpcException.
+  // 이미지·날짜별 재고를 먼저 지운 뒤 객실 종류를 지운다 (DB에도 CASCADE FK가 있지만 명시적으로 정리).
+  // 호실(rooms)이 남아 있으면 삭제하지 않는다 — 호실에 배정된 예약이 엉키지 않도록 DB도 RESTRICT FK로 막는다 (V9).
+  // 호실은 삭제 대신 점검(OUT_OF_SERVICE) 처리한다.
   async deleteRoom(
     hotelId: number,
     roomId: number,
@@ -314,6 +318,14 @@ export class RoomService {
     });
     if (!room) {
       throw new RpcException('존재하지 않는 객실입니다.');
+    }
+    const unitCount = await this.roomUnitRepository.count({
+      where: { roomId },
+    });
+    if (unitCount > 0) {
+      throw new RpcException(
+        `호실이 ${unitCount}개 남아 있는 객실 종류는 삭제할 수 없습니다.`,
+      );
     }
 
     await this.roomImageRepository.delete({ roomId });
@@ -417,7 +429,7 @@ export class RoomService {
     endDate: string,
   ): Promise<{ totalAmount: number }> {
     return this.dataSource.transaction(async (manager) => {
-      const room = await manager.findOne(Room, { where: { roomId } });
+      const room = await manager.findOne(RoomType, { where: { roomId } });
       if (!room) {
         throw new RpcException('존재하지 않는 객실입니다.');
       }
@@ -464,7 +476,10 @@ export class RoomService {
     return { success: true };
   }
 
-  private toGrpcResponse(room: Room, images: RoomImage[]): RoomGrpcResponse {
+  private toGrpcResponse(
+    room: RoomType,
+    images: RoomImage[],
+  ): RoomGrpcResponse {
     return {
       roomId: room.roomId,
       hotelId: room.hotelId,
