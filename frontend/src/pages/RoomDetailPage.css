@@ -36,24 +36,6 @@
   background: var(--accent-bg);
 }
 
-.room-detail-gallery {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  scroll-snap-type: x mandatory;
-  /* 스크롤바가 레이아웃을 밀지 않도록 + 끝 이미지도 여유 있게 스냅되도록 */
-  padding-bottom: 4px;
-}
-
-.room-detail-gallery-item {
-  flex: 0 0 min(360px, 70%);
-  aspect-ratio: 16 / 9;
-  border-radius: 12px;
-  object-fit: cover;
-  scroll-snap-align: start;
-  background: var(--accent-bg);
-}
-
 .room-detail-body {
   padding-top: 24px;
   max-width: 720px;

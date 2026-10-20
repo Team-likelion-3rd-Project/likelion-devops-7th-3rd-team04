@@ -5,17 +5,17 @@ import {
   deleteAdminRoom,
   fetchAdminRoomAvailability,
   fetchAdminRoomById,
-  readImageFileAsInput,
-  toAdminImageDataUrl,
+  readImageFileForPreview,
+  ROOM_IMAGE_TYPES,
   updateAdminRoom,
+  uploadAdminRoomImage,
 } from '../../api/adminApi'
-import type { AdminRoom, AdminRoomAvailabilityDay, AdminRoomImage, AdminRoomImageInput } from '../../api/adminApi'
+import type { AdminRoom, AdminRoomAvailabilityDay, AdminRoomImage, PendingRoomImage } from '../../api/adminApi'
 import './AdminPages.css'
 
 const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토']
 
-// 이미지 하나당 허용하는 최대 용량. 오브젝트 스토리지 없이 DB에 Base64로 직접 저장하는 구조라
-// 너무 큰 파일이 들어가지 않도록 클라이언트에서 먼저 막는다.
+// 이미지 하나당 허용하는 최대 용량. 서버(업로드 URL 발급)도 5MB를 넘으면 거절하지만, 올리기 전에 화면에서 먼저 막는다.
 const MAX_IMAGE_SIZE_MB = 5
 
 // toISOString()은 UTC로 변환하므로 UTC보다 앞선 시간대(KST 등)에서는 자정 근처 날짜가
@@ -93,7 +93,7 @@ function AdminRoomDetailPage() {
   // 서버 PUT은 images를 항상 전체 교체하므로, 저장 시 이 둘을 합쳐서 그대로 다시 보내야
   // 이름/정원만 고쳐도 기존 이미지가 사라지지 않는다.
   const [existingImages, setExistingImages] = useState<AdminRoomImage[]>([])
-  const [newImages, setNewImages] = useState<AdminRoomImageInput[]>([])
+  const [newImages, setNewImages] = useState<PendingRoomImage[]>([])
   const [imageError, setImageError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [formError, setFormError] = useState('')
@@ -146,12 +146,17 @@ function AdminRoomDetailPage() {
     setIsEditing(true)
   }
 
-  // 선택한 이미지 파일들을 즉시 Base64로 변환해 "새로 추가한 이미지" 목록에 더한다.
+  // 선택한 이미지 파일들을 미리보기와 함께 "새로 추가한 이미지" 목록에 더한다. 저장소에는 저장할 때 올린다.
   const handleImageFilesSelected = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     e.target.value = '' // 같은 파일을 다시 선택해도 onChange가 발생하도록 초기화
     if (files.length === 0) return
 
+    const unsupported = files.find((file) => !ROOM_IMAGE_TYPES.includes(file.type))
+    if (unsupported) {
+      setImageError(`${unsupported.name}은(는) 올릴 수 없는 형식입니다. (JPG·PNG·WEBP만 가능)`)
+      return
+    }
     const oversized = files.find((file) => file.size > MAX_IMAGE_SIZE_MB * 1024 * 1024)
     if (oversized) {
       setImageError(`${oversized.name}의 용량이 너무 큽니다. (최대 ${MAX_IMAGE_SIZE_MB}MB)`)
@@ -159,7 +164,7 @@ function AdminRoomDetailPage() {
     }
 
     try {
-      const converted = await Promise.all(files.map(readImageFileAsInput))
+      const converted = await Promise.all(files.map(readImageFileForPreview))
       setNewImages((prev) => [...prev, ...converted])
       setImageError('')
     } catch {
@@ -185,15 +190,15 @@ function AdminRoomDetailPage() {
       return
     }
 
-    // 기존 유지 이미지 + 새로 추가한 이미지를 순서대로 합쳐서 보낸다 (첫 번째가 대표 이미지).
-    const combinedImages: AdminRoomImageInput[] = [
-      ...existingImages.map(({ mimeType, imageBase64 }) => ({ mimeType, imageBase64 })),
-      ...newImages,
-    ]
-
     setIsSaving(true)
     setFormError('')
     try {
+      // 새 사진을 저장소에 먼저 올린 뒤, 기존 유지 사진 + 새 사진 경로를 순서대로 합쳐서 보낸다 (첫 번째가 대표 이미지).
+      const uploadedKeys = await Promise.all(newImages.map(({ file }) => uploadAdminRoomImage(hotelId, roomId, file)))
+      const combinedImages = [
+        ...existingImages.map(({ objectKey }) => ({ objectKey })),
+        ...uploadedKeys.map((objectKey) => ({ objectKey })),
+      ]
       const updated = await updateAdminRoom(hotelId, roomId, {
         name: name.trim(),
         capacity: capacityNum,
@@ -330,14 +335,14 @@ function AdminRoomDetailPage() {
               </label>
               <label className="admin-form-row">
                 <span>이미지</span>
-                <input type="file" accept="image/*" multiple onChange={handleImageFilesSelected} />
+                <input type="file" accept={ROOM_IMAGE_TYPES.join(',')} multiple onChange={handleImageFilesSelected} />
               </label>
 
               {(existingImages.length > 0 || newImages.length > 0) && (
                 <div className="admin-image-preview-grid">
                   {existingImages.map((image, index) => (
                     <div className="admin-image-preview" key={`existing-${image.imageId}`}>
-                      <img src={toAdminImageDataUrl(image)} alt={`기존 이미지 ${index + 1}`} />
+                      <img src={image.imageUrl} alt={`기존 이미지 ${index + 1}`} />
                       {index === 0 && <span className="admin-image-preview-badge">대표</span>}
                       <button
                         type="button"
@@ -351,7 +356,7 @@ function AdminRoomDetailPage() {
                   ))}
                   {newImages.map((image, index) => (
                     <div className="admin-image-preview" key={`new-${index}`}>
-                      <img src={toAdminImageDataUrl(image)} alt={`새 이미지 ${index + 1}`} />
+                      <img src={image.previewUrl} alt={`새 이미지 ${index + 1}`} />
                       {existingImages.length === 0 && index === 0 && (
                         <span className="admin-image-preview-badge">대표</span>
                       )}
@@ -397,7 +402,7 @@ function AdminRoomDetailPage() {
                 <div className="admin-image-preview-grid" style={{ marginTop: 16 }}>
                   {room.images.map((image, index) => (
                     <div className="admin-image-preview" key={image.imageId}>
-                      <img src={toAdminImageDataUrl(image)} alt={`${room.name} 이미지 ${index + 1}`} />
+                      <img src={image.imageUrl} alt={`${room.name} 이미지 ${index + 1}`} />
                       {index === 0 && <span className="admin-image-preview-badge">대표</span>}
                     </div>
                   ))}

@@ -9,7 +9,7 @@ import {
   type Booking,
   type ReservationFacility,
 } from '../api/gateway'
-import { toImageDataUrl, type Room } from '../api/hotels'
+import type { Room } from '../api/hotels'
 import { PAYMENT_BLOCK_MESSAGE, formatPaymentDue, paymentBlockReason } from '../api/payments'
 import type { Hotel } from '../data/hotels'
 import { CalendarIcon, PersonIcon, PinIcon } from '../components/reservation/icons'
@@ -225,7 +225,7 @@ function ReservationDetailPage() {
                 {thumbnail ? (
                   <img
                     className="reservation-detail-room-thumb"
-                    src={toImageDataUrl(thumbnail)}
+                    src={thumbnail.imageUrl}
                     alt={roomInfo?.room.name}
                   />
                 ) : (

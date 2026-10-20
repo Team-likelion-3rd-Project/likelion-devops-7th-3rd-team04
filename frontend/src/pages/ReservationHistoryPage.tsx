@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchMyBookings, isUnauthorized, refreshAccessToken, type Booking } from '../api/gateway'
-import { toImageDataUrl } from '../api/hotels'
 import { diffDays, parseDateISO } from '../utils/date'
 import { STATUS_LABEL, formatDate, fetchRoomLookup, type RoomWithHotel } from './reservationHistoryUtils'
 import { currentLoginState } from '../utils/loginRedirect'
@@ -133,7 +132,7 @@ function ReservationHistoryPage() {
                         {thumbnail ? (
                           <img
                             className="reservation-card-thumb"
-                            src={toImageDataUrl(thumbnail)}
+                            src={thumbnail.imageUrl}
                             alt={roomInfo?.room.name}
                           />
                         ) : (
