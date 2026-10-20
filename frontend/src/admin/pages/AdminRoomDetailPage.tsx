@@ -11,6 +11,7 @@ import {
   uploadAdminRoomImage,
 } from '../../api/adminApi'
 import type { AdminRoom, AdminRoomAvailabilityDay, AdminRoomImage, PendingRoomImage } from '../../api/adminApi'
+import AdminRoomUnitsCard from '../components/AdminRoomUnitsCard'
 import './AdminPages.css'
 
 const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토']
@@ -412,6 +413,8 @@ function AdminRoomDetailPage() {
           )}
         </div>
       )}
+
+      {!roomError && room && hotelId && roomId && <AdminRoomUnitsCard hotelId={hotelId} roomId={roomId} />}
 
       {!roomError && room && (
         <div className="admin-card">
