@@ -28,6 +28,9 @@ spec:
         {{- include "backend.labels" $ctx | nindent 8 }}
     spec:
       {{- include "backend.imagePullSecrets" $ | trim | nindent 6 }}
+      {{- if $.Values.serviceAccounts.create }}
+      serviceAccountName: {{ $name }}
+      {{- end }}
       terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
       {{- with $.Values.podSecurityContext }}
       securityContext:
@@ -55,7 +58,7 @@ spec:
           env:
             {{- range $key := keys $env | sortAlpha }}
             - name: {{ $key }}
-              value: {{ get $env $key | toString | quote }}
+              value: {{ tpl (get $env $key | toString) $ | quote }}
             {{- end }}
             {{- range $key := $svc.secretEnv }}
             - name: {{ $key }}

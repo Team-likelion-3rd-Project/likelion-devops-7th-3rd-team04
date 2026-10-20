@@ -814,6 +814,7 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | CP 대수 | 1대 (`kubeadm init`) | 3대 (AZ 별 ASG) — CP-a `kubeadm init --upload-certs`, CP-b · c `kubeadm join --control-plane`. 교체된 CP 는 모두 join |
 | 워커 join | 사람이 `.env` 에 `K8S_*` 를 넣고 `worker-join.yml` 실행 | ASG 인스턴스가 기동 시 `aws-worker.yml` 자동 실행 (`worker_join` role 재사용) |
 | kubelet `cloud-provider` (`kubelet_cloud_provider`) | 미설정 (kubeadm 설정에 들어가지 않음) | `external` — aws-cloud-controller-manager 가 노드 초기화 (providerID, uninitialized taint 제거) |
+| 이미지 pull 자격 증명 | GitLab Deploy Token Secret(`imagePullSecrets`) | 워커 kubelet 의 ecr-credential-provider(`aws_ecr_credential_provider` role, `kubelet_image_credential_provider_*`)가 워커 Role 로 ECR 토큰 발급 — `team04-hotel/*` 저장소만 pull. CP 는 설치 안 함 |
 | 워커 join 재시도 (`kubeadm_join_retries`) | 0 (1회 실행) | 3 — 실패 시 `kubeadm reset` 후 30초 간격. CP-b · c 의 etcd 멤버 추가 중 apiserver 타임아웃 대비 |
 | join 정보 | `.secrets/join.env` (로컬) | Parameter Store `/team04-hotel/prod/kubeadm/*` |
 | Calico 노드 IP 감지 / MTU | `tailscale0` / 1230 | `NodeInternalIP` / 8951 (VPC 점보 프레임 9001 − VXLAN 50) |
@@ -821,7 +822,7 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | kube-apiserver `--service-account-issuer` (`k8s_service_account_issuer`) | 미설정 (kubeadm 기본값) | 10-global OIDC 버킷 URL (IRSA). CP-a 가 init 직후 SA 서명 공개키를 `keys.json` 으로 업로드 |
 | 클러스터 서비스 설치 | Ansible(`ingress.yml`) · GitLab CI(`deploy-dev`) | GitOps pull 배포 agent (`gitops_sync` role 이 CP-a 부트스트랩 마지막에 설치, 워커 Ready 대기 후 첫 실행) |
 | Traefik | `ingress.yml` 수동 실행 (`roles/traefik`), control plane 1대 고정, `externalTrafficPolicy: Local` | gitops `envs/prod/traefik` — 워커에 2개, `externalTrafficPolicy: Cluster`, trustedIPs = Main VPC CIDR + Pod CIDR, `/ping` 을 `web` 에 노출(`80-main-edge` 헬스체크) |
-| Ingress 대상 | api-gateway (`/api`, `/api-docs`) | 테스트 백엔드 whoami (gitops `envs/prod/whoami`, `/whoami`, 그 외 경로는 Traefik 404). api-gateway 는 LDP-79 이후 |
+| Ingress 대상 | api-gateway (`/api`, `/api-docs`) | api-gateway (`/api`, gitops `envs/prod/backend`) + 테스트 백엔드 whoami (`/whoami`). 그 외 경로는 Traefik 404 |
 
 **Parameter Store** (`/team04-hotel/prod/kubeadm/`)
 

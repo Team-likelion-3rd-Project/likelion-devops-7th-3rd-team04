@@ -3,6 +3,11 @@
 #
 #   team04-hotel/prod/main-db     : {engine, host, port, dbname, username, password}  → DB_HOST · DB_PORT · DB_DATABASE · DB_USERNAME · DB_PASSWORD
 #   team04-hotel/prod/main-valkey : {host, port, password}                            → REDIS_HOST · REDIS_PORT · REDIS_PASSWORD
+#   team04-hotel/prod/backend-app : {jwt_access_secret, jwt_refresh_secret, mock_pg_secret} → JWT_ACCESS_SECRET · JWT_REFRESH_SECRET · MOCK_PG_SECRET
+#
+# backend-app 은 DB · Valkey 와 상관없는 앱 서명 키다. 매일 재생성 때 새로 만들어지므로 그날 발급한 토큰은 다음 재생성 후 무효가 된다.
+# MOCK_PG_SECRET 은 prod 에서 쓰지 않는 pg-mock 웹훅(api-gateway /api/payments/webhook)의 HMAC 키다.
+# 비우면 앱이 공개된 기본값으로 검증하므로 무작위 값을 넣어 위조 요청을 막는다.
 #
 # 값은 secret_string_wo 라 state 에 남지 않는다. DB · Valkey 와 같은 실행에서 같은 ephemeral 값을 넣는다.
 # DB · Valkey 가 교체되면(새 비밀번호로 생성) Secret 값도 같은 실행에서 다시 넣도록 replace_triggered_by 를 건다.
@@ -17,7 +22,20 @@ locals {
       name        = "${local.secret_prefix}/main-valkey"
       description = "Main ElastiCache Valkey connection (AUTH token)"
     }
+    backend_app = {
+      name        = "${local.secret_prefix}/backend-app"
+      description = "Backend app signing keys (JWT, mock PG webhook HMAC)"
+    }
   }
+}
+
+# HMAC 키라 길이만 충분하면 된다 (HS256 은 32바이트 이상 권장)
+ephemeral "aws_secretsmanager_random_password" "backend_app" {
+  for_each = toset(["jwt_access_secret", "jwt_refresh_secret", "mock_pg_secret"])
+
+  password_length            = 64
+  exclude_punctuation        = true
+  require_each_included_type = true
 }
 
 resource "aws_secretsmanager_secret" "this" {
@@ -61,6 +79,15 @@ resource "aws_secretsmanager_secret_version" "main_valkey" {
   lifecycle {
     replace_triggered_by = [aws_elasticache_replication_group.main.id]
   }
+}
+
+resource "aws_secretsmanager_secret_version" "backend_app" {
+  secret_id = aws_secretsmanager_secret.this["backend_app"].id
+
+  secret_string_wo = jsonencode({
+    for k, p in ephemeral.aws_secretsmanager_random_password.backend_app : k => p.random_password
+  })
+  secret_string_wo_version = var.credentials_version
 }
 
 # 값 조회(GetSecretValue)는 ESO Role 과 관리자(이 스택을 apply 하는 주체)만 허용한다.

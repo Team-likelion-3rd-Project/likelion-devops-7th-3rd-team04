@@ -65,7 +65,7 @@ resource "aws_iam_role" "irsa" {
   assume_role_policy = data.aws_iam_policy_document.irsa_assume[each.key].json
 }
 
-# ESO: 41-main-data 의 접속 정보 Secret 값 조회만. Secret ARN 끝의 무작위 6자는 ?????? 로 맞춘다
+# ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키) 값 조회만. Secret ARN 끝의 무작위 6자는 ?????? 로 맞춘다
 data "aws_iam_policy_document" "external_secrets" {
   statement {
     sid     = "GetAppSecrets"

@@ -14,6 +14,11 @@ use_tailscale: false
 # (aws_node_lifecycle role). 온프레미스는 정의하지 않는다 (kubeadm 템플릿에 들어가지 않음)
 kubelet_cloud_provider: external
 
+# 워커 kubelet 이 ECR 이미지를 노드 Role 로 pull 한다 (imagePullSecret 없음). 플러그인 설치는 aws_ecr_credential_provider role,
+# kubelet 플래그는 worker_join 템플릿. CP 는 앱 파드가 뜨지 않아 쓰지 않는다. 온프레미스는 정의하지 않는다
+kubelet_image_credential_provider_config: /etc/kubernetes/image-credential-provider-config.yaml
+kubelet_image_credential_provider_bin_dir: /usr/local/lib/kubelet/credential-provider
+
 # 70 스택이 CA cert hash 파라미터를 만들 때 넣는 값 (Parameter Store 는 빈 값을 허용하지 않는다)
 kubeadm_ca_cert_hash_pending: pending
 
