@@ -44,6 +44,16 @@ service BookingService {
   // 결제 승인 (위키 API 명세 5.9). 시도·금액을 대조한 뒤 payment-service의 ApprovePayment를 호출하고
   // 결과(APPROVED/FAILED/UNKNOWN/PROCESSING)를 돌려준다. 같은 orderId로 다시 호출하면 처음 결과를 돌려준다.
   rpc ConfirmPayment (ConfirmPaymentRequest) returns (ConfirmPaymentResponse);
+
+  // ── 호실 배정 (관리자, LDP-89). 예약은 객실 종류 재고만 잡고, 실제 호실은 직원이 나중에 배정한다.
+  // 실패는 api-error 형식의 RpcException (ROOM_UNIT_* / INVALID_RESERVATION_STATUS 등).
+
+  // 예약에 호실 배정·변경·해제 (roomUnitId 0 = 해제). 같은 호실·겹치는 기간에 다른 배정이 있으면 409.
+  rpc AssignRoomUnit (AssignRoomUnitRequest) returns (Booking);
+  // 기간·지점의 배정 현황용 예약 목록 (결제 대기·예약 확정만). 배정 안 된 예약은 roomUnitId 0.
+  rpc ListUnitAssignments (ListUnitAssignmentsRequest) returns (UnitAssignmentListResponse);
+  // 호실의 미래 배정 수 (체크아웃이 오늘 이후인 결제 대기·예약 확정). 호실 점검 전 확인용.
+  rpc CountFutureUnitAssignments (CountFutureUnitAssignmentsRequest) returns (CountFutureUnitAssignmentsResponse);
 }
 
 message Empty {}
@@ -93,6 +103,8 @@ message Booking {
   int32 hotelId = 11; // 스냅샷 컬럼. 이 컬럼 추가 이전에 생성된 예약은 0으로 내려온다.
   string paymentDueAt = 12; // 결제 마감 시각(ISO 8601). 없으면 빈 문자열
   string lastPaymentAttemptStatus = 13; // 가장 최근 결제 시도 상태 REQUESTED/CONFIRMING/SUCCEEDED/FAILED. 시도 없으면 빈 문자열 (CONFIRMING = 승인 요청 후 결과 확인 중, LDP-67)
+  int32 roomUnitId = 14; // 배정된 호실 (LDP-89). 배정 전 0
+  string roomNumber = 15; // 배정된 방 번호. 배정 전 빈 문자열
 }
 
 message PreparePaymentRequest {
@@ -155,4 +167,38 @@ message HotelBookingStats {
   int32 newReservationsToday = 4; // 오늘 생성 + 결제 확정(RESERVED)된 예약 건수. PENDING_PAYMENT는 제외.
   int32 cancellationsToday = 5; // 오늘 취소(CANCELLED)된 예약 건수.
   int32 revenueToday = 6;
+}
+
+message AssignRoomUnitRequest {
+  int32 reservationId = 1;
+  int32 roomUnitId = 2; // 0이면 배정 해제
+}
+
+message ListUnitAssignmentsRequest {
+  int32 hotelId = 1;
+  string startDate = 2; // 포함
+  string endDate = 3; // 포함
+  int32 roomId = 4; // 객실 종류. 0이면 전체
+}
+
+message UnitAssignment {
+  int32 reservationId = 1;
+  int32 roomId = 2; // 객실 종류
+  int32 roomUnitId = 3; // 배정 전 0
+  string checkInDate = 4;
+  string checkOutDate = 5;
+  string status = 6;
+  int32 userId = 7;
+}
+
+message UnitAssignmentListResponse {
+  repeated UnitAssignment assignments = 1;
+}
+
+message CountFutureUnitAssignmentsRequest {
+  int32 roomUnitId = 1;
+}
+
+message CountFutureUnitAssignmentsResponse {
+  int32 count = 1;
 }

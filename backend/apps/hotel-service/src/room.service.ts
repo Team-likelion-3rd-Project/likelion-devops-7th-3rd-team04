@@ -23,12 +23,6 @@ function addDays(dateStr: string, offset: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-// 오늘 날짜 'YYYY-MM-DD' (UTC). 한국 시간 새벽에는 하루 전 날짜가 되지만, "오늘 이후 예약" 확인에
-// 쓰는 값이라 하루 더 넓게 보는 쪽이라 안전하다.
-function todayUtc(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 // 시작일~종료일(둘 다 포함)의 날짜 수
 function countDays(startDate: string, endDate: string): number {
   const dayMs = 24 * 60 * 60 * 1000;
@@ -128,8 +122,9 @@ export class RoomService {
       hotelId: data.hotelId,
       name: data.name,
       capacity: data.capacity,
-      // proto3는 값을 안 보내면 0이 온다 → 보유 수량을 안 정했으면 1개
-      totalCount: data.totalCount || 1,
+      // 보유 수량 = ACTIVE 호실 수 (LDP-89). 새 객실 종류는 호실을 추가하기 전까지 0이라 예약을 받지 않는다.
+      // 요청의 totalCount는 무시한다 (예전 화면이 보내도 오류 없이 넘어가게).
+      totalCount: 0,
       description: data.description,
     });
     const saved = await this.roomRepository.save(room);
@@ -282,20 +277,8 @@ export class RoomService {
       throw new RpcException('존재하지 않는 객실입니다.');
     }
 
-    // 보유 수량은 보냈을 때만 바꾼다 (proto3에서 안 보내면 0). 오늘 이후 이미 예약된 수보다 적게는 못 줄인다
-    // — 줄이면 이미 받은 예약이 보유 수량을 넘게 된다.
-    if (data.totalCount && data.totalCount !== room.totalCount) {
-      const maxBooked = await this.roomAvailabilityRepository.maximum(
-        'bookedCount',
-        { roomId, date: MoreThanOrEqual(todayUtc()) },
-      );
-      if ((maxBooked ?? 0) > data.totalCount) {
-        throw new RpcException(
-          `이미 예약된 수(최대 ${maxBooked}개)보다 보유 수량을 적게 줄일 수 없습니다.`,
-        );
-      }
-      room.totalCount = data.totalCount;
-    }
+    // 보유 수량(totalCount)은 여기서 바꾸지 않는다 — ACTIVE 호실 수로 자동 계산된다 (LDP-89, 호실 추가·점검).
+    // 예전 화면이 totalCount를 보내도 오류 없이 무시한다.
 
     room.name = data.name;
     room.capacity = data.capacity;
@@ -423,13 +406,18 @@ export class RoomService {
   // 같은 트랜잭션에서 날짜별 booked_count를 1씩 올린다.
   // 행을 비관적 락(pessimistic_write)으로 잠그고 확인하므로, 같은 객실 타입·같은 날짜에 동시에 예약이
   // 들어와도 한 요청씩 차례로 처리된다 → 성공 건수가 남은 방 수를 넘지 않는다.
+  // 객실 종류 행은 공유 락(pessimistic_read)으로 읽는다 — 예약끼리는 서로 막지 않고, 호실 점검으로 보유 수량이
+  // 줄어드는 작업(RoomUnitService.setStatus, 객실 종류 행 배타 락)과만 차례를 지켜 오버부킹을 막는다 (LDP-89).
   async reserveRoomAvailability(
     roomId: number,
     startDate: string,
     endDate: string,
   ): Promise<{ totalAmount: number }> {
     return this.dataSource.transaction(async (manager) => {
-      const room = await manager.findOne(RoomType, { where: { roomId } });
+      const room = await manager.findOne(RoomType, {
+        where: { roomId },
+        lock: { mode: 'pessimistic_read' },
+      });
       if (!room) {
         throw new RpcException('존재하지 않는 객실입니다.');
       }

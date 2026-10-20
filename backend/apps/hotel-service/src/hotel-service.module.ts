@@ -5,6 +5,7 @@ import { HotelServiceController } from './hotel-service.controller';
 import { HotelServiceService } from './hotel-service.service';
 import { RoomService } from './room.service';
 import { FacilityService } from './facility.service';
+import { RoomUnitService } from './room-unit.service';
 import { Hotel } from './entities/hotel.entity';
 import { RoomType } from './entities/room-type.entity';
 import { RoomUnit } from './entities/room-unit.entity';
@@ -64,6 +65,11 @@ import { HealthModule, mariaDbSslOptions } from '@app/common';
     ]),
   ],
   controllers: [HotelServiceController],
-  providers: [HotelServiceService, RoomService, FacilityService],
+  providers: [
+    HotelServiceService,
+    RoomService,
+    FacilityService,
+    RoomUnitService,
+  ],
 })
 export class HotelServiceModule {}

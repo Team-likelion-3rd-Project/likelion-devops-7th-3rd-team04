@@ -54,7 +54,7 @@ interface RoomDto {
   hotelId: number;
   name: string;
   capacity: number;
-  totalCount: number; // 객실 타입별 보유 수량 (같은 날짜에 이 수만큼 예약 가능)
+  totalCount: number; // 객실 타입별 보유 수량 = ACTIVE 호실 수 (같은 날짜에 이 수만큼 예약 가능, LDP-89)
   description: string;
   images: RoomImageDto[];
 }
@@ -290,7 +290,10 @@ export class HotelController implements OnModuleInit {
     example: 1,
   })
   @ApiResponse({ status: 200, description: '예약 가능 객실 검색 성공' })
-  @ApiResponse({ status: 400, description: 'checkOut이 checkIn보다 빠르거나 같음' })
+  @ApiResponse({
+    status: 400,
+    description: 'checkOut이 checkIn보다 빠르거나 같음',
+  })
   @ApiResponse({ status: 404, description: '존재하지 않는 호텔' })
   async searchRooms(
     @Param('hotelId', ParseIntPipe) hotelId: number,

@@ -3,6 +3,7 @@ import { GrpcMethod } from '@nestjs/microservices';
 import { HotelServiceService } from './hotel-service.service';
 import { RoomImageInput, RoomService } from './room.service';
 import { FacilityService } from './facility.service';
+import { RoomUnitService } from './room-unit.service';
 
 @Controller()
 export class HotelServiceController {
@@ -10,6 +11,7 @@ export class HotelServiceController {
     private readonly hotelServiceService: HotelServiceService,
     private readonly roomService: RoomService,
     private readonly facilityService: FacilityService,
+    private readonly roomUnitService: RoomUnitService,
   ) {}
 
   // proto의 HotelService / GetHello 메서드와 매핑
@@ -180,6 +182,64 @@ export class HotelServiceController {
       data.hotelId,
     );
     return { facilities };
+  }
+
+  // ── 호실 관리 (관리자, LDP-89) ─────────────────────────────────────────────
+
+  // proto의 HotelService / ListRoomUnits: 호실 목록 (roomId 0 = 지점 전체, status 빈 값 = 모든 상태)
+  @GrpcMethod('HotelService', 'ListRoomUnits')
+  async listRoomUnits(data: {
+    hotelId: number;
+    roomId: number;
+    status: string;
+  }) {
+    const units = await this.roomUnitService.listUnits(
+      data.hotelId,
+      data.roomId,
+      data.status,
+    );
+    return { units };
+  }
+
+  // proto의 HotelService / GetRoomUnitsByIds: 호실 ID로 조회 (booking-service가 사용)
+  @GrpcMethod('HotelService', 'GetRoomUnitsByIds')
+  async getRoomUnitsByIds(data: { roomUnitIds?: number[] }) {
+    const units = await this.roomUnitService.getUnitsByIds(
+      data.roomUnitIds ?? [],
+    );
+    return { units };
+  }
+
+  // proto의 HotelService / CreateRoomUnit: 호실 추가 (보유 수량 +1)
+  @GrpcMethod('HotelService', 'CreateRoomUnit')
+  async createRoomUnit(data: {
+    hotelId: number;
+    roomId: number;
+    roomNumber: string;
+    floor: number;
+  }) {
+    return this.roomUnitService.createUnit(data);
+  }
+
+  // proto의 HotelService / UpdateRoomUnit: 호실 방 번호·층 수정
+  @GrpcMethod('HotelService', 'UpdateRoomUnit')
+  async updateRoomUnit(data: {
+    hotelId: number;
+    roomUnitId: number;
+    roomNumber: string;
+    floor: number;
+  }) {
+    return this.roomUnitService.updateUnit(data);
+  }
+
+  // proto의 HotelService / SetRoomUnitStatus: 점검 처리·해제 (보유 수량 갱신, 오버부킹 검사)
+  @GrpcMethod('HotelService', 'SetRoomUnitStatus')
+  async setRoomUnitStatus(data: {
+    hotelId: number;
+    roomUnitId: number;
+    status: string;
+  }) {
+    return this.roomUnitService.setStatus(data);
   }
 
   // DB 연결 확인 엔드포인트 (GET /db-check)

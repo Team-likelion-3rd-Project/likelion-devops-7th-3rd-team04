@@ -30,8 +30,9 @@ export class CreateRoomDto {
   capacity: number;
 
   /**
-   * 객실 타입별 보유 수량 (같은 날짜에 이 수만큼 예약 가능). 생략하면 1
-   * @example 10
+   * (무시됨, LDP-89) 보유 수량은 ACTIVE 호실 수로 자동 계산된다 — 호실 추가·점검 API로 바꾼다.
+   * 기존 화면이 보내도 400이 나지 않도록 필드만 남겨 둔다.
+   * @deprecated
    */
   @IsOptional()
   @IsInt()

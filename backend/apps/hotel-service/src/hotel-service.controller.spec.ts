@@ -6,6 +6,7 @@ import { HotelServiceController } from './hotel-service.controller';
 import { HotelServiceService } from './hotel-service.service';
 import { RoomService } from './room.service';
 import { FacilityService } from './facility.service';
+import { RoomUnitService } from './room-unit.service';
 import { Hotel } from './entities/hotel.entity';
 import { RoomType } from './entities/room-type.entity';
 import { RoomUnit } from './entities/room-unit.entity';
@@ -96,6 +97,7 @@ describe('HotelServiceController', () => {
         HotelServiceService,
         RoomService,
         { provide: FacilityService, useValue: {} },
+        { provide: RoomUnitService, useValue: {} },
         { provide: DataSource, useValue: dataSource },
         { provide: getRepositoryToken(Hotel), useValue: hotelRepository },
         { provide: getRepositoryToken(RoomType), useValue: roomRepository },
@@ -819,42 +821,22 @@ describe('HotelServiceController', () => {
     });
   });
 
-  describe('updateRoom 보유 수량(totalCount)', () => {
-    const update = (totalCount?: number) =>
-      hotelServiceController.updateRoom({
+  describe('updateRoom 보유 수량(totalCount) — LDP-89', () => {
+    it('보유 수량은 호실 수로 자동 계산되므로, 요청의 totalCount는 무시한다', async () => {
+      roomRepository.findOne.mockResolvedValue({ ...room, totalCount: 5 });
+      roomRepository.save.mockImplementation((r) => Promise.resolve(r));
+
+      const result = await hotelServiceController.updateRoom({
         hotelId: 1,
         roomId: 1,
         name: '디럭스 더블룸',
         capacity: 2,
-        totalCount,
+        totalCount: 99,
         description: '',
       });
 
-    beforeEach(() => {
-      roomRepository.findOne.mockResolvedValue({ ...room, totalCount: 5 });
-      roomRepository.save.mockImplementation((r) => Promise.resolve(r));
-    });
-
-    it('보유 수량을 보내면 바꾼다', async () => {
-      roomAvailabilityRepository.maximum.mockResolvedValue(2);
-
-      const result = await update(10);
-
-      expect(result.totalCount).toBe(10);
-    });
-
-    it('보유 수량을 안 보내면(0) 기존 값을 유지한다', async () => {
-      const result = await update(0);
-
       expect(result.totalCount).toBe(5);
       expect(roomAvailabilityRepository.maximum).not.toHaveBeenCalled();
-    });
-
-    it('오늘 이후 이미 예약된 수보다 적게 줄이려 하면 거절한다', async () => {
-      roomAvailabilityRepository.maximum.mockResolvedValue(4);
-
-      await expect(update(3)).rejects.toThrow(RpcException);
-      expect(roomRepository.save).not.toHaveBeenCalled();
     });
   });
 });
