@@ -13,6 +13,7 @@ import { BookingServiceController } from './booking-service.controller';
 import { BookingServiceService } from './booking-service.service';
 import { ReservationFacilityService } from './reservation-facility.service';
 import { RoomAssignmentService } from './room-assignment.service';
+import { AdminBookingService } from './admin-booking.service';
 import { PaymentResultConsumer } from './payment-result/payment-result.consumer';
 import { Reservation } from './entities/reservation.entity';
 import { ReservationFacility } from './entities/reservation-facility.entity';
@@ -95,6 +96,8 @@ import { PaymentResultInbox } from './entities/payment-result-inbox.entity';
     ReservationFacilityService,
     // 예약 호실 배정·배정 현황 (LDP-89)
     RoomAssignmentService,
+    // 관리자 대리 예약·직원 취소·투숙 연장 (LDP-90)
+    AdminBookingService,
     // 결제 결과 이벤트 수신 (SQS FIFO / ElasticMQ -> payment_result_inbox, LDP-26)
     PaymentResultConsumer,
     { provide: SQS_CLIENT, useFactory: createSqsClient },

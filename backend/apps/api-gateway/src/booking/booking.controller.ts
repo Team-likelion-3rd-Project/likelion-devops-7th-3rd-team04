@@ -41,7 +41,7 @@ import { AssignRoomUnitDto } from './dto/assign-room-unit.dto';
 // proto의 Booking 메시지와 1:1 대응되는 응답 형태. 편의시설(수영장/라운지) 이용 여부/인원수는
 // 여기 담기지 않는다 — reservation_facilities가 유일한 소스이며, GET /api/bookings/:reservationId/facilities로
 // 별도 조회한다.
-interface BookingDto {
+export interface BookingDto {
   reservationId: number;
   userId: number;
   roomId: number;
@@ -55,6 +55,12 @@ interface BookingDto {
   lastPaymentAttemptStatus: string; // 최근 결제 시도 상태 REQUESTED/CONFIRMING/SUCCEEDED/FAILED. 없으면 빈 문자열 (CONFIRMING = 승인 요청 후 결과 확인 중 → 결제 버튼 막기)
   roomUnitId: number | null; // 배정된 호실 ID. 배정 전 null (gRPC에서는 0, LDP-89)
   roomNumber: string; // 배정된 방 번호. 배정 전 빈 문자열
+  linkedReservationId: number | null; // 연장 예약이면 원래 예약 번호 (LDP-90)
+  createdByAdminId: number | null; // 대리 예약을 만든 직원. 손님 본인 예약이면 null
+  createdByAdminName: string; // 만든 직원 이름. 없으면 빈 문자열
+  cancelledByAdminId: number | null; // 취소한 직원. 손님 취소·자동 만료·미취소면 null
+  cancelReason: string; // 직원 취소 사유. 없으면 빈 문자열
+  createdAt: string; // 예약 생성 일시 (ISO 8601)
 }
 
 // proto의 PreparePaymentResponse와 1:1 대응 (위키 API 명세 5.8)
@@ -153,12 +159,18 @@ function toPaymentHttpError(err: unknown, fallbackMessage: string): Error {
   });
 }
 
-// gRPC는 "배정 안 됨"을 0으로 보내므로 응답에서는 null로 바꿔 준다 (LDP-89)
-function toBooking(booking: BookingDto): BookingDto {
+// gRPC는 "없음"을 0으로 보내므로 응답에서는 null로 바꿔 준다 (LDP-89 호실, LDP-90 직원·연장)
+export function toBooking(booking: BookingDto): BookingDto {
   return {
     ...booking,
     roomUnitId: booking.roomUnitId || null,
     roomNumber: booking.roomNumber ?? '',
+    linkedReservationId: booking.linkedReservationId || null,
+    createdByAdminId: booking.createdByAdminId || null,
+    createdByAdminName: booking.createdByAdminName ?? '',
+    cancelledByAdminId: booking.cancelledByAdminId || null,
+    cancelReason: booking.cancelReason ?? '',
+    createdAt: booking.createdAt ?? '',
   };
 }
 

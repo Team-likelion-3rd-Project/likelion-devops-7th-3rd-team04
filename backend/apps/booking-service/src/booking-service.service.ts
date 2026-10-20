@@ -26,7 +26,7 @@ import {
 import { ReservationFacilityService } from './reservation-facility.service';
 
 // 결제 마감: 예약 생성 후 이 시간 안에 결제가 끝나야 한다 (ERD 상태 모델, 위키 API 명세 5.1)
-const PAYMENT_DUE_MINUTES = 30;
+export const PAYMENT_DUE_MINUTES = 30;
 // 예약 1건당 결제 시도(결제 준비 호출) 최대 횟수 (10/13 프론트 합의, 위키 API 명세 5.8)
 const MAX_PAYMENT_ATTEMPTS = 5;
 // 승인을 요청한 뒤 결과가 이 시간 안에 확정되지 않으면 CONFIRMING 대신 REQUESTED로 내려 재결제를 허용한다 (LDP-67).
@@ -147,6 +147,26 @@ function addDays(dateStr: string, offset: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+// 취소할 수 있는(재고를 잡고 있는) 예약 상태
+const ACTIVE_RESERVATION_STATUSES = [
+  ReservationStatus.PENDING_PAYMENT,
+  ReservationStatus.RESERVED,
+];
+
+// 관리자 기능(대리 예약·연장)이 createBooking에 함께 넘기는 값 (LDP-90). 넘기면 실패도 api-error 형식으로 낸다.
+export interface AdminBookingOptions {
+  createdByAdminId: number;
+  createdByAdminName: string;
+  paymentDueAt: Date;
+  linkedReservationId?: number;
+}
+
+// 직원 취소 때 함께 기록하는 값 (LDP-90). 손님 취소는 비어 있다.
+export interface CancelRecord {
+  cancelledByAdminId?: number;
+  cancelReason?: string;
+}
+
 // 서버 기준 오늘 날짜를 'YYYY-MM-DD'로 반환한다 (UTC 기준 — addDays/dayBefore와 동일한 원칙).
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -175,6 +195,12 @@ export interface BookingGrpcResponse {
   lastPaymentAttemptStatus: string; // REQUESTED/CONFIRMING/SUCCEEDED/FAILED, 시도 없으면 빈 문자열
   roomUnitId: number; // 배정된 호실 (LDP-89), 배정 전 0
   roomNumber: string; // 배정된 방 번호, 배정 전 빈 문자열
+  linkedReservationId: number; // 연장 예약이면 원래 예약 (LDP-90), 아니면 0
+  createdByAdminId: number; // 대리 예약을 만든 직원, 없으면 0
+  createdByAdminName: string;
+  cancelledByAdminId: number; // 취소한 직원, 없으면 0
+  cancelReason: string;
+  createdAt: string; // ISO 8601
 }
 
 // 호텔 상세 페이지의 "호텔별 지표" 섹션이 사용하는 응답. hotelId 스냅샷 컬럼 덕분에
@@ -227,18 +253,37 @@ export class BookingServiceService implements OnModuleInit {
   // (guestCount)와 무관하게 시설별로 실제 이용하는 인원만큼만 청구한다. 계산된 금액은
   // reservation_facilities에 시설별로 한 행씩 기록되어 나중에 예약 상세에서 조회할 수 있다
   // ([[facilities-reservation-facilities-design]] 메모리 참고).
-  async createBooking(data: {
-    userId: number;
-    roomId: number;
-    hotelId: number;
-    checkInDate: string;
-    checkOutDate: string;
-    guestCount: number;
-    poolGuestCount?: number;
-    loungeGuestCount?: number;
-  }): Promise<BookingGrpcResponse> {
+  //
+  // admin(LDP-90)을 넘기면 관리자 대리 예약·연장 예약이다 — 만든 직원·연결 예약·결제 마감을 함께 저장하고,
+  // 실패는 api-error 형식(ROOM_NOT_AVAILABLE 등)으로 낸다. 손님 예약(5.2)의 에러 형식은 그대로 둔다.
+  async createBooking(
+    data: {
+      userId: number;
+      roomId: number;
+      hotelId: number;
+      checkInDate: string;
+      checkOutDate: string;
+      guestCount: number;
+      poolGuestCount?: number;
+      loungeGuestCount?: number;
+    },
+    admin?: AdminBookingOptions,
+  ): Promise<BookingGrpcResponse> {
+    // 손님 예약은 기존 형식(메시지만), 관리자 예약은 api-error 형식
+    const fail = (
+      status: number,
+      code: string,
+      message: string,
+      retryable = false,
+    ) =>
+      admin
+        ? apiRpcException({ status, code, message, retryable })
+        : new RpcException(message);
+
     if (data.checkInDate >= data.checkOutDate) {
-      throw new RpcException(
+      throw fail(
+        400,
+        'INVALID_BOOKING_DATES',
         '체크아웃 날짜는 체크인 날짜보다 이후여야 합니다.',
       );
     }
@@ -251,8 +296,19 @@ export class BookingServiceService implements OnModuleInit {
         startDate: data.checkInDate,
         endDate: lastNightDate,
       }),
-    ).catch((err) => {
-      throw new RpcException(
+    ).catch((err: { code?: number; details?: string; message?: string }) => {
+      // gRPC 14 UNAVAILABLE = hotel-service에 연결 못 함 (재고 판단 전)
+      if (admin && err?.code === 14) {
+        throw fail(
+          503,
+          'HOTEL_SERVICE_UNAVAILABLE',
+          '객실 재고를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+          true,
+        );
+      }
+      throw fail(
+        409,
+        'ROOM_NOT_AVAILABLE',
         err?.details || err?.message || '예약 가능한 객실이 아닙니다.',
       );
     });
@@ -274,13 +330,20 @@ export class BookingServiceService implements OnModuleInit {
       const { facilities } = await firstValueFrom(
         this.hotelService.getFacilities({ hotelId: data.hotelId }),
       ).catch(() => {
-        throw new RpcException('편의시설 정보를 확인할 수 없습니다.');
+        throw fail(
+          503,
+          'HOTEL_SERVICE_UNAVAILABLE',
+          '편의시설 정보를 확인할 수 없습니다.',
+          true,
+        );
       });
 
       for (const selection of facilitySelections) {
         const facility = facilities.find((f) => f.name === selection.name);
         if (!facility) {
-          throw new RpcException(
+          throw fail(
+            409,
+            'FACILITY_NOT_AVAILABLE',
             `해당 호텔에 등록되지 않은 편의시설입니다: ${selection.name}`,
           );
         }
@@ -305,7 +368,12 @@ export class BookingServiceService implements OnModuleInit {
       totalAmount,
       status: ReservationStatus.PENDING_PAYMENT,
       // 이 시각까지 결제가 끝나지 않으면 결제할 수 없고, 만료 배치가 EXPIRED로 돌린다
-      paymentDueAt: new Date(Date.now() + PAYMENT_DUE_MINUTES * 60 * 1000),
+      paymentDueAt:
+        admin?.paymentDueAt ??
+        new Date(Date.now() + PAYMENT_DUE_MINUTES * 60 * 1000),
+      linkedReservationId: admin?.linkedReservationId ?? null,
+      createdByAdminId: admin?.createdByAdminId ?? null,
+      createdByAdminName: admin?.createdByAdminName ?? null,
     });
     const saved = await this.reservationRepository.save(reservation);
 
@@ -388,27 +456,63 @@ export class BookingServiceService implements OnModuleInit {
       throw new RpcException('이미 취소되었거나 완료된 예약입니다.');
     }
 
-    // 조건부 UPDATE: 확인한 뒤 그 사이 상태가 바뀌었으면(결제 실패·만료 처리, 동시 취소 등) 취소하지 않는다
-    const { affected } = await this.reservationRepository.update(
-      {
-        reservationId,
-        status: In([
-          ReservationStatus.PENDING_PAYMENT,
-          ReservationStatus.RESERVED,
-        ]),
-      },
-      { status: ReservationStatus.CANCELLED },
-    );
-    if (!affected) {
+    if (!(await this.cancelReservation(reservation))) {
       throw new RpcException('이미 취소되었거나 완료된 예약입니다.');
     }
-    reservation.status = ReservationStatus.CANCELLED;
-    const saved = reservation;
+    // 원래 예약을 취소하면 연결된 연장 예약도 함께 취소한다 (LDP-90). 연장 예약만 취소하면 원래 예약은 유지
+    if (!reservation.linkedReservationId) {
+      await this.cancelLinkedExtensions(reservationId);
+    }
+
+    return this.toGrpcResponse(reservation);
+  }
+
+  // 예약 1건 취소 공통 — 손님 취소·직원 취소·연쇄 취소가 함께 쓴다 (LDP-90).
+  // 조건부 UPDATE: 확인한 뒤 그 사이 상태가 바뀌었으면(결제 실패·만료 처리, 동시 취소 등) 취소하지 않고 false.
+  // 취소를 확정한 뒤 재고 반환·환불을 요청한다 (둘 다 실패해도 취소는 유지하고 로그만 남김).
+  async cancelReservation(
+    reservation: Reservation,
+    record: CancelRecord = {},
+  ): Promise<boolean> {
+    const { affected } = await this.reservationRepository.update(
+      {
+        reservationId: reservation.reservationId,
+        status: In(ACTIVE_RESERVATION_STATUSES),
+      },
+      { status: ReservationStatus.CANCELLED, ...record },
+    );
+    if (!affected) {
+      return false;
+    }
+    Object.assign(reservation, record, {
+      status: ReservationStatus.CANCELLED,
+    });
 
     await this.releaseRoomAvailability(reservation, '취소');
+    await this.requestRefund(reservation.reservationId);
+    return true;
+  }
 
-    // 환불 요청 (LDP-28). 결과(REFUNDED / REFUND_FAILED)는 결제 결과 이벤트로도 들어와 inbox에 기록된다.
-    // 결제가 없으면 결제 서비스가 NO_PAYMENT로 아무것도 하지 않는다.
+  // 원래 예약에 연결된 연장 예약(결제 대기·예약 확정)을 함께 취소한다 — 각각 재고 반환·환불 (LDP-90).
+  // 연장의 연장도 원래 예약을 가리키므로(linkedReservationId) 한 번에 모두 취소된다.
+  async cancelLinkedExtensions(
+    reservationId: number,
+    record: CancelRecord = {},
+  ): Promise<void> {
+    const extensions = await this.reservationRepository.find({
+      where: {
+        linkedReservationId: reservationId,
+        status: In(ACTIVE_RESERVATION_STATUSES),
+      },
+    });
+    for (const extension of extensions) {
+      await this.cancelReservation(extension, record);
+    }
+  }
+
+  // 환불 요청 (LDP-28). 결과(REFUNDED / REFUND_FAILED)는 결제 결과 이벤트로도 들어와 inbox에 기록된다.
+  // 결제가 없으면 결제 서비스가 NO_PAYMENT로 아무것도 하지 않는다.
+  private async requestRefund(reservationId: number): Promise<void> {
     try {
       const refund = await firstValueFrom(
         this.paymentService.refundPayment({
@@ -427,8 +531,6 @@ export class BookingServiceService implements OnModuleInit {
         error instanceof Error ? error.stack : String(error),
       );
     }
-
-    return this.toGrpcResponse(saved);
   }
 
   // 결제 준비 (위키 API 명세 5.8). "결제하기"를 누를 때마다 새 결제 시도(payment_attempts)를 기록하고
@@ -1026,6 +1128,14 @@ export class BookingServiceService implements OnModuleInit {
       lastPaymentAttemptStatus: lastPaymentAttemptStatus ?? '',
       roomUnitId: reservation.roomUnitId ?? 0,
       roomNumber: '',
+      linkedReservationId: reservation.linkedReservationId ?? 0,
+      createdByAdminId: reservation.createdByAdminId ?? 0,
+      createdByAdminName: reservation.createdByAdminName ?? '',
+      cancelledByAdminId: reservation.cancelledByAdminId ?? 0,
+      cancelReason: reservation.cancelReason ?? '',
+      createdAt: reservation.createdAt
+        ? reservation.createdAt.toISOString()
+        : '',
     };
   }
 
