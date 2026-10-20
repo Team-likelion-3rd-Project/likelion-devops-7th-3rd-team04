@@ -6,13 +6,14 @@
 #    계정 ID 는 배포 agent 가 넘기는 {{ .Values.global.awsAccountId }} 로 씁니다 (imageRegistry · services.*.env 는 차트가 tpl 로 렌더링).
 #
 # global.imageTag 는 릴리스 때 GitLab main 파이프라인이 ECR push 후 여는 PR 로 갱신됩니다 — 사람이 리뷰 · 승인 후 merge.
+# 태그는 main 커밋 SHA 전체(40자)이고 chart.yaml 의 revision 과 같은 값입니다.
 
 global:
   # Terraform 11-registry: <account>.dkr.ecr.us-east-1.amazonaws.com / team04-hotel/<서비스>
   imageRegistry: "{{ .Values.global.awsAccountId }}.dkr.ecr.us-east-1.amazonaws.com"
   imageRepositoryPrefix: team04-hotel/
   # 커밋 SHA (latest 금지 — 차트가 렌더링을 거부, ECR 도 IMMUTABLE)
-  imageTag: "00000000"   # TODO: 첫 배포 이미지 태그 (GitLab 이 PR 로 갱신)
+  imageTag: "00000000"   # 자리표시 — 릴리스 때 GitLab release:gitops-pr 가 main 커밋 SHA(40자)로 바꿔 PR 을 만든다
   # 워커 kubelet 이 노드 Role 로 ECR pull (ecr-credential-provider, Ansible aws_ecr_credential_provider) → imagePullSecret 불필요
   imagePullSecrets: []
   secretName: backend-secrets

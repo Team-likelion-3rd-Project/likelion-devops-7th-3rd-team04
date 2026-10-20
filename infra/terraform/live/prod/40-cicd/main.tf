@@ -33,6 +33,8 @@ locals {
   secret_names = {
     tailscale = "${local.secret_prefix}/ci-runner-tailscale"
     gitlab    = "${local.secret_prefix}/ci-runner-gitlab"
+    # release:gitops-pr job 이 gitops 레포 PR 을 만들 때 쓰는 GitHub App (부트스트랩은 읽지 않음)
+    github_app = "${local.secret_prefix}/github-app"
   }
 }
 

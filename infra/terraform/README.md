@@ -128,6 +128,7 @@ terragrunt output -raw api_url
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
 - `run --all apply` 는 🔒 `10-global` · `11-registry` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
 - `10-global` · `11-registry` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
+- `10-global` 의 GitHub OIDC 공급자(`token.actions.githubusercontent.com`)는 URL 이 고정이라 **계정에 하나뿐인 공용 리소스**입니다 (공유 계정의 다른 팀도 같은 공급자를 씀). 지우거나 audience 를 바꾸지 않습니다 (`prevent_destroy`). 다른 팀이 먼저 만들었으면 `create_github_oidc_provider = false` 로 기존 공급자를 씁니다.
 - `12-secrets` 는 `exclude`(all) 로 `run --all` 의 plan · apply · destroy 모두에서 빠집니다. 값(ephemeral 변수)이 있어야 plan 이 되므로 **값을 등록할 때만 스택 디렉터리에서 직접 apply** 합니다 (5절 "외부에서 발급한 비밀값"). 대기열 확인: `terragrunt list --queue-construct-as=apply`
 - **`TG_PROVIDER_CACHE=1` 을 켭니다.** 끄면 스택마다 캐시 디렉터리에 AWS provider 를 따로 받아 스택당 약 760MB 를 쓰고 첫 실행이 오래 걸립니다. 켜면 provider 를 한 번만 받아 공유합니다 (`run --all plan` 캐시가 찬 상태 약 1분).
 - **provider 버전은 모든 스택이 같게 맞춥니다.** lock 파일이 스택마다 있어서 처음 init 한 시점의 버전이 따로 고정됩니다. 버전을 올릴 때는 한 스택만 올리지 않고 전체를 한 번에 올린 뒤, 🔒 스택이 No changes 인지 확인합니다.
@@ -205,6 +206,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 |---|---|---|---|
 | `team04-hotel/prod/ci-runner-tailscale` | `{oauth_client_secret}` | Tailscale 콘솔 OAuth client (`tag:ci-runner`) → `infra/ansible/.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET` | `40-cicd` Runner Role |
 | `team04-hotel/prod/ci-runner-gitlab` | `{url, token}` | `gitlab.yml --tags runner_token` 이 만든 `infra/ansible/.secrets/aws-ci-runner.env` ([Ansible README](../ansible/README.md) 13절) | `40-cicd` Runner Role |
+| `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**(`~/.config/team04-hotel/github-app.pem`)에 두고 등록 후 지우거나 비밀번호 관리자로 옮김 | `40-cicd` Runner Role (`release:gitops-pr` job) |
 
 처음 등록 · 값 교체 (온프레미스 GitLab 재생성으로 토큰이 바뀐 경우 등):
 
@@ -213,13 +215,17 @@ cd infra/terraform/live/prod/12-secrets
 # 값을 화면에 출력하지 않고 환경변수로만 넘긴다
 set -a; source ../../../../ansible/.env; source ../../../../ansible/.secrets/aws-ci-runner.env; set +a
 export TF_VAR_ci_runner_tailscale_oauth_client_secret="$TS_CI_RUNNER_OAUTH_CLIENT_SECRET" \
-       TF_VAR_ci_runner_gitlab_url="$GITLAB_URL" TF_VAR_ci_runner_gitlab_token="$GITLAB_RUNNER_TOKEN"
-# 교체할 때는 variables.tf 의 ci_runner_credentials_version 을 올린 뒤 (write-only 값은 version 이 바뀔 때만 전달)
+       TF_VAR_ci_runner_gitlab_url="$GITLAB_URL" TF_VAR_ci_runner_gitlab_token="$GITLAB_RUNNER_TOKEN" \
+       TF_VAR_github_app_id=<App ID> TF_VAR_github_app_installation_id=<Installation ID> \
+       TF_VAR_github_app_private_key="$(cat ~/.config/team04-hotel/github-app.pem)"   # 개인 키는 레포 밖
+# 변수는 모두 필요하다 (값을 바꾸지 않는 Secret 도 plan 에 값이 있어야 함). 실제로 다시 보내는 것은 version 이 바뀐 Secret 만
+# 교체할 때는 variables.tf 의 해당 version(ci_runner_credentials_version · github_app_credentials_version)을 올린 뒤
 AWS_PROFILE=team04 terragrunt apply
 ```
 
 - 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-`)이 다르면 변수 검증에서 막힙니다.
 - Secret 리소스 정책은 `GetSecretValue` 를 Runner Role(`team04-hotel-ci-runner`)과 apply 한 주체만 허용합니다.
+- GitHub App 개인 키(`.pem`)는 GitHub 에서 다시 받을 수 없습니다. 분실하면 새 키를 만들고 `github_app_credentials_version` 을 올려 다시 등록합니다.
 - 이미 떠 있는 Runner 는 부팅 때 값을 읽었으므로, 교체 후에는 Runner 를 다시 만듭니다 (`40-cicd` apply 또는 ASG 인스턴스 종료).
 
 ```bash

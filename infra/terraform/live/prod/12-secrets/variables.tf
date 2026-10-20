@@ -65,3 +65,45 @@ variable "ci_runner_gitlab_token" {
     error_message = "TF_VAR_ci_runner_gitlab_token 이 비었거나 glrt- 로 시작하지 않습니다."
   }
 }
+
+# ── GitHub App (gitops 릴리스 PR). App ID · Installation ID 는 App 설정 화면, 개인 키는 레포 밖 파일에서 넘긴다 (Terraform README 5절) ──
+
+variable "github_app_credentials_version" {
+  description = "GitHub App Secret 값을 다시 넣을 때 올리는 번호 (개인 키 교체 등)"
+  type        = number
+  default     = 1
+}
+
+variable "github_app_id" {
+  description = "GitHub App ID (숫자). 비밀은 아니지만 개인 키와 함께 한 Secret 으로 둔다"
+  type        = string
+  ephemeral   = true
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_app_id))
+    error_message = "TF_VAR_github_app_id 가 비었거나 숫자가 아닙니다."
+  }
+}
+
+variable "github_app_installation_id" {
+  description = "gitops 레포에 설치된 GitHub App 의 Installation ID (숫자)"
+  type        = string
+  ephemeral   = true
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_app_installation_id))
+    error_message = "TF_VAR_github_app_installation_id 가 비었거나 숫자가 아닙니다."
+  }
+}
+
+variable "github_app_private_key" {
+  description = "GitHub App 개인 키 (PEM 전체)"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = startswith(var.github_app_private_key, "-----BEGIN")
+    error_message = "TF_VAR_github_app_private_key 가 비었거나 PEM 형식이 아닙니다."
+  }
+}

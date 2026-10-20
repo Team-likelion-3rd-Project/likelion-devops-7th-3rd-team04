@@ -113,6 +113,55 @@ k -n gitops-sync patch configmap gitops-sync-config --type merge -p '{"data":{"B
 k -n gitops-sync patch configmap gitops-sync-config --type merge -p '{"data":{"BRANCH":"main"}}'   # 복구
 ```
 
+## 릴리스
+
+```
+develop ──릴리스 PR (merge commit, release-source check · 승인)──▶ main
+   │                                                            │ GitHub → GitLab 미러
+   │                                                            ▼
+   │                         GitLab main 파이프라인 (AWS Runner, 보호 브랜치 · tags aws)
+   │                           compile · helm-lint → release:prepare → release:build ×10 → release:gitops-pr
+   │                           ECR team04-hotel/<서비스>:<main SHA> (arm64)      gitops 레포 PR release/<main SHA>
+   │                                                                                    │ validate · 승인 (사람)
+   ▼                                                                                    ▼ merge
+(다음 개발)                         메인 클러스터 배포 agent (1분)  ·  결제 서버: GitHub Actions → Parameter Store → pull agent
+```
+
+| 단계 | 누가 · 무엇으로 | 할 수 있는 것 |
+|---|---|---|
+| 릴리스 PR merge | 사람 (모노레포 main ruleset: 승인 · `release-source` check) | main 갱신 |
+| 이미지 빌드 · ECR push | GitLab main 파이프라인 — AWS Runner Role | `team04-hotel/*` push 만 (ECR 저장소 정책이 다른 주체의 push 거부) |
+| gitops 릴리스 PR 생성 | `release:gitops-pr` — GitHub App(`team04-hotel-release-bot`, gitops 레포에만 설치) | 브랜치 push · PR 생성까지. main merge 는 ruleset 이 막음 |
+| 운영 반영 | 사람이 gitops PR 승인 · merge | 메인: 배포 agent / 결제: Parameter Store 동기화(GitHub OIDC Role, 파라미터 하나) |
+
+- 이미지 태그 = **main 커밋 SHA 40자**, backend `chart.yaml` 의 `revision` 과 같은 값입니다. ECR 은 IMMUTABLE 이라 같은 태그로 다시 push 할 수 없습니다.
+- Runner 에는 Parameter Store 쓰기 권한이 없습니다. 결제 서버 태그는 gitops PR 이 승인 · merge 된 뒤에만 바뀝니다.
+- GitLab 미러의 main 은 보호 브랜치여야 AWS Runner(protected)가 job 을 받습니다.
+
+### 절차 (runbook)
+
+1. **준비**: develop 이 dev 에 배포 · 검증된 상태인지 확인합니다. 결제 쪽 계약(payment.proto · SQS 메시지 · 결제 마이그레이션)이 바뀌었으면 결제 서버를 먼저 반영할 계획을 세웁니다.
+2. **릴리스 PR**: GitHub 에서 `develop → main` PR 을 엽니다 (제목 예: `release: v1.0.0`). `release-source` check 와 승인 후 **merge commit** 으로 합칩니다.
+3. **파이프라인**: GitLab `team04/hotel` → Pipelines 의 main 파이프라인이 `release:gitops-pr` 까지 끝나는지 확인합니다. 소요 시간은 첫 릴리스 때 실측해 여기에 적습니다.
+4. **gitops PR**: gitops 레포에 `chore(prod): backend · payment → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
+5. **반영 확인**
+   - 메인: CP 에서 `k -n gitops-sync get configmap gitops-sync-state -o yaml` 의 `applied_sha` 가 gitops merge 커밋인지, `k -n backend get pods` 가 새 이미지로 Running 인지 (위 "확인 · 운영")
+   - 결제: gitops 레포 Actions 의 Parameter Store 동기화 workflow 성공 → 결제 서버 pull agent 반영 (결제 단계에서 구성)
+6. **태그**: 모노레포 main 의 merge 커밋에 버전 태그를 붙입니다 (`git tag v1.0.0 <SHA> && git push origin v1.0.0`, 리허설은 `v1.0.0-rc.1`).
+
+### 긴급 수정 (hotfix)
+
+`main` 에서 `hotfix/<이름>` 브랜치를 만들어 수정 → `hotfix/<이름> → main` PR(merge commit) → 위 3 – 6 과 같습니다. 같은 브랜치로 `→ develop` PR(squash)도 열어 develop 에 반영합니다.
+
+### 실패했을 때
+
+| 상황 | 하는 일 |
+|---|---|
+| `release:build` 일부 실패 | 해당 job 을 재시도합니다. 이미 push 된 이미지는 `release:prepare` 가 건너뛰게 표시합니다 (IMMUTABLE 충돌 없음) |
+| `release:gitops-pr` 실패 · 재시도 | 같은 SHA 의 PR 이 열려 있으면 만들지 않고 끝납니다 |
+| 운영에서 문제 발견 | gitops 레포에서 그 릴리스 PR 을 revert 하는 PR → 승인 · merge (이전 이미지 · revision 으로 돌아감) |
+| main 에 잘못 merge 됨 | gitops PR 을 merge 하지 않으면 운영은 바뀌지 않습니다. 모노레포는 revert PR(develop) → 다음 릴리스 |
+
 ## ArgoCD 전환
 
 - 클러스터 값(`clusterValues`)은 ApplicationSet cluster generator 의 클러스터 Secret 값을 helm parameters 로 넘깁니다.

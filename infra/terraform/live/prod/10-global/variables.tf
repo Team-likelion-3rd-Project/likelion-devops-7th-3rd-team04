@@ -61,3 +61,17 @@ variable "oidc_bucket_name" {
   type        = string
   default     = "team04-hotel-oidc"
 }
+
+# ── GitHub OIDC (gitops → Parameter Store, github-oidc.tf) ──
+
+variable "create_github_oidc_provider" {
+  description = "GitHub OIDC 공급자(token.actions.githubusercontent.com)를 이 스택에서 만든다. 계정에 하나만 존재할 수 있어, 다른 팀이 먼저 만들었으면 false 로 두고 기존 공급자를 쓴다"
+  type        = bool
+  default     = true
+}
+
+variable "gitops_repository" {
+  description = "결제 서버 이미지 태그를 Parameter Store 에 쓰는 GitHub 레포 (owner/name). 이 레포의 main 실행만 Role 을 받는다"
+  type        = string
+  default     = "Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops"
+}
