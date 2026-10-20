@@ -161,6 +161,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
 | `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 – 20초 | 14초 – 15초 |
 | `41-main-data` | RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
+| `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 38초 | 2분 10초 |
 | `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
 | **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
