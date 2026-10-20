@@ -30,7 +30,7 @@ output "valkey_port" {
 }
 
 output "secret_names" {
-  description = "접속 정보 Secret 이름 (main_db, main_valkey). ESO ExternalSecret 의 remoteRef.key"
+  description = "Secret 이름 (main_db, main_valkey, backend_app). ESO ExternalSecret 의 remoteRef.key"
   value       = { for k, s in aws_secretsmanager_secret.this : k => s.name }
 }
 

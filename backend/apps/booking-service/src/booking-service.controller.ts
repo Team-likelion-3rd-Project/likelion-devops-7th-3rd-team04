@@ -2,12 +2,14 @@ import { Controller } from '@nestjs/common';
 import { GrpcMethod } from '@nestjs/microservices';
 import { BookingServiceService } from './booking-service.service';
 import { ReservationFacilityService } from './reservation-facility.service';
+import { RoomAssignmentService } from './room-assignment.service';
 
 @Controller()
 export class BookingServiceController {
   constructor(
     private readonly bookingServiceService: BookingServiceService,
     private readonly reservationFacilityService: ReservationFacilityService,
+    private readonly roomAssignmentService: RoomAssignmentService,
   ) {}
 
   @GrpcMethod('BookingService', 'GetHello')
@@ -102,5 +104,35 @@ export class BookingServiceController {
       data.hotelId,
       data.date || undefined,
     );
+  }
+
+  // 예약 호실 배정·변경·해제 (roomUnitId 0 = 해제, LDP-89). 관리자 API(PUT /bookings/:id/room-unit)에서 호출
+  @GrpcMethod('BookingService', 'AssignRoomUnit')
+  async assignRoomUnit(data: { reservationId: number; roomUnitId: number }) {
+    return this.roomAssignmentService.assign(
+      data.reservationId,
+      data.roomUnitId,
+    );
+  }
+
+  // 호실 배정 현황용 예약 목록 (기간·지점, 결제 대기·예약 확정만, LDP-89)
+  @GrpcMethod('BookingService', 'ListUnitAssignments')
+  async listUnitAssignments(data: {
+    hotelId: number;
+    startDate: string;
+    endDate: string;
+    roomId?: number;
+  }) {
+    const assignments = await this.roomAssignmentService.listAssignments(data);
+    return { assignments };
+  }
+
+  // 호실에 남은 미래 배정 수 — 호실을 점검(OUT_OF_SERVICE)으로 바꾸기 전 확인용 (LDP-89)
+  @GrpcMethod('BookingService', 'CountFutureUnitAssignments')
+  async countFutureUnitAssignments(data: { roomUnitId: number }) {
+    const count = await this.roomAssignmentService.countFutureAssignments(
+      data.roomUnitId,
+    );
+    return { count };
   }
 }

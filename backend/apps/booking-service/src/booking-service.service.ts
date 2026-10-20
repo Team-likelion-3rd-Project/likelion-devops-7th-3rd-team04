@@ -3,7 +3,16 @@ import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
-import { DataSource, In, IsNull, QueryFailedError, Repository } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  In,
+  IsNull,
+  MoreThan,
+  Not,
+  QueryFailedError,
+  Repository,
+} from 'typeorm';
 import { apiRpcException, PaymentResultEvent } from '@app/common';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
 import {
@@ -90,6 +99,23 @@ interface HotelGrpcService {
   }): Observable<{ facilities: FacilityGrpcResponse[] }>;
 }
 
+// libs/common/src/proto/hotel.proto의 RoomUnit 메시지와 1:1 대응 (LDP-89 호실)
+export interface RoomUnitGrpcResponse {
+  roomUnitId: number;
+  roomId: number;
+  roomName: string;
+  hotelId: number;
+  roomNumber: string;
+  floor: number;
+  status: string;
+}
+
+interface HotelGrpcService {
+  getRoomUnitsByIds(data: {
+    roomUnitIds: number[];
+  }): Observable<{ units?: RoomUnitGrpcResponse[] }>;
+}
+
 // libs/common/src/proto/payment.proto의 PaymentService / RefundPayment, ApprovePayment와 1:1 대응
 interface PaymentGrpcService {
   refundPayment(data: {
@@ -147,6 +173,8 @@ export interface BookingGrpcResponse {
   status: string;
   paymentDueAt: string; // ISO 8601, 없으면 빈 문자열
   lastPaymentAttemptStatus: string; // REQUESTED/CONFIRMING/SUCCEEDED/FAILED, 시도 없으면 빈 문자열
+  roomUnitId: number; // 배정된 호실 (LDP-89), 배정 전 0
+  roomNumber: string; // 배정된 방 번호, 배정 전 빈 문자열
 }
 
 // 호텔 상세 페이지의 "호텔별 지표" 섹션이 사용하는 응답. hotelId 스냅샷 컬럼 덕분에
@@ -323,7 +351,10 @@ export class BookingServiceService implements OnModuleInit {
     if (!reservation) {
       throw new RpcException('존재하지 않는 예약입니다.');
     }
-    return this.toGrpcResponse(reservation);
+    const [response] = await this.attachRoomNumbers([
+      this.toGrpcResponse(reservation),
+    ]);
+    return response;
   }
 
   // 본인 예약 취소. reservationId가 존재하지 않으면, 혹은 요청자가 예약자 본인이 아니면 RpcException.
@@ -406,6 +437,8 @@ export class BookingServiceService implements OnModuleInit {
   //  - 멱등 키(idempotency_key)도 시도마다 새로 만들어 payment-service 승인 호출에 쓴다 (프론트는 모름).
   //  - 금액은 예약에 저장된 금액(totalAmount)만 쓴다 — 승인 때 프론트가 보낸 금액과 대조해 위변조를 거른다.
   // 예약 행을 잠그고(비관적 락) 시도 횟수를 세서, "결제하기"를 동시에 여러 번 눌러도 5회를 넘지 않게 한다.
+  // 이전 시도가 승인 확인 중(CONFIRMING)이면 거절한다 (LDP-85) — 돈이 빠졌을 수도 있는데 새 결제를 시작하면
+  // 이중 승인이 날 수 있다. 화면도 막고 있지만(PR #145) API를 직접 불러도 막히게 서버에서 확인한다.
   async preparePayment(
     reservationId: number,
     userId: number,
@@ -416,6 +449,9 @@ export class BookingServiceService implements OnModuleInit {
         lock: { mode: 'pessimistic_write' },
       });
       this.assertPayableReservation(reservation, userId);
+      if (await this.findConfirmingAttempt(manager, reservationId)) {
+        throw this.paymentConfirming();
+      }
 
       const attemptCount = await manager.count(PaymentAttempt, {
         where: { reservationId },
@@ -516,14 +552,32 @@ export class BookingServiceService implements OnModuleInit {
 
     // 승인 요청 시각을 먼저 남긴다 — 이 뒤로는 "돈이 빠졌을 수도 있는" 시도라서, 결과가 확정될 때까지
     // 예약 응답에 CONFIRMING으로 나간다. 같은 orderId로 다시 호출해도 처음 시각을 유지한다.
-    await this.paymentAttemptRepository.update(
-      {
-        attemptId: attempt.attemptId,
-        status: PaymentAttemptStatus.REQUESTED,
-        confirmRequestedAt: IsNull(),
-      },
-      { confirmRequestedAt: new Date() },
-    );
+    // 결제 준비와 같은 예약 행 잠금 안에서 확인·기록해서, 다른 시도가 승인 확인 중이면 이 시도의 승인을 막는다
+    // (LDP-85: 결제 준비를 여러 번 받아 둔 뒤 차례로 승인을 보내 이중 승인이 나는 경우). 같은 시도의 재호출은 허용.
+    await this.dataSource.transaction(async (manager) => {
+      await manager.findOne(Reservation, {
+        where: { reservationId: data.reservationId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (
+        await this.findConfirmingAttempt(
+          manager,
+          data.reservationId,
+          attempt.attemptId,
+        )
+      ) {
+        throw this.paymentConfirming();
+      }
+      await manager.update(
+        PaymentAttempt,
+        {
+          attemptId: attempt.attemptId,
+          status: PaymentAttemptStatus.REQUESTED,
+          confirmRequestedAt: IsNull(),
+        },
+        { confirmRequestedAt: new Date() },
+      );
+    });
 
     const approved = await firstValueFrom(
       this.paymentService.approvePayment({
@@ -855,6 +909,35 @@ export class BookingServiceService implements OnModuleInit {
     });
   }
 
+  // 승인 확인 중(CONFIRMING)인 시도 — 응답의 CONFIRMING(attemptStatusForResponse)과 같은 기준:
+  // 아직 REQUESTED인데 승인 요청 후 CONFIRMING_MINUTES 안. exceptAttemptId는 결과 확인에서 뺄 시도(승인 재호출 중인 시도).
+  private findConfirmingAttempt(
+    manager: EntityManager,
+    reservationId: number,
+    exceptAttemptId?: string,
+  ): Promise<PaymentAttempt | null> {
+    return manager.findOne(PaymentAttempt, {
+      where: {
+        reservationId,
+        status: PaymentAttemptStatus.REQUESTED,
+        confirmRequestedAt: MoreThan(
+          new Date(Date.now() - CONFIRMING_MINUTES * 60_000),
+        ),
+        ...(exceptAttemptId ? { attemptId: Not(exceptAttemptId) } : {}),
+      },
+    });
+  }
+
+  private paymentConfirming(): RpcException {
+    return apiRpcException({
+      status: 409,
+      code: 'PAYMENT_CONFIRMING',
+      message:
+        '이전 결제의 승인 결과를 확인하고 있습니다. 잠시 후 예약 내역에서 결제 상태를 확인해 주세요.',
+      retryable: true,
+    });
+  }
+
   private notOwner(): RpcException {
     return apiRpcException({
       status: 403,
@@ -866,6 +949,8 @@ export class BookingServiceService implements OnModuleInit {
 
   // 목록 응답에 예약별 "가장 최근 결제 시도 상태"를 붙인다 (위키 API 명세 5.1 lastPaymentAttemptStatus).
   // 예약마다 따로 조회하지 않도록 한 번에 가져와서 예약별 최신 시도만 고른다.
+  // 단, 승인 확인 중(CONFIRMING)인 시도가 하나라도 있으면 최신 시도가 아니어도 CONFIRMING으로 내린다 (LDP-85) —
+  // 결제 준비를 두 번 받아 둔 뒤 앞 시도만 승인을 보낸 경우, 최신 시도(REQUESTED)를 보여 주면 결제 버튼이 열린다.
   private async toGrpcResponsesWithLastAttempt(
     reservations: Reservation[],
   ): Promise<BookingGrpcResponse[]> {
@@ -879,17 +964,17 @@ export class BookingServiceService implements OnModuleInit {
     const now = Date.now();
     const lastStatus = new Map<number, string>();
     for (const attempt of attempts) {
-      if (!lastStatus.has(attempt.reservationId)) {
-        lastStatus.set(
-          attempt.reservationId,
-          this.attemptStatusForResponse(attempt, now),
-        );
+      const status = this.attemptStatusForResponse(attempt, now);
+      if (!lastStatus.has(attempt.reservationId) || status === 'CONFIRMING') {
+        lastStatus.set(attempt.reservationId, status);
       }
     }
-    return reservations.map((reservation) =>
-      this.toGrpcResponse(
-        reservation,
-        lastStatus.get(reservation.reservationId),
+    return this.attachRoomNumbers(
+      reservations.map((reservation) =>
+        this.toGrpcResponse(
+          reservation,
+          lastStatus.get(reservation.reservationId),
+        ),
       ),
     );
   }
@@ -939,7 +1024,41 @@ export class BookingServiceService implements OnModuleInit {
         ? reservation.paymentDueAt.toISOString()
         : '',
       lastPaymentAttemptStatus: lastPaymentAttemptStatus ?? '',
+      roomUnitId: reservation.roomUnitId ?? 0,
+      roomNumber: '',
     };
+  }
+
+  // 배정된 호실의 방 번호를 채운다 (LDP-89). 호실은 hotel-service 소유라 배정된 예약이 있을 때만 한 번에 조회한다.
+  // 조회에 실패해도 예약 조회 자체는 실패시키지 않는다 (방 번호만 비어 있음).
+  async attachRoomNumbers(
+    responses: BookingGrpcResponse[],
+  ): Promise<BookingGrpcResponse[]> {
+    const unitIds = [
+      ...new Set(responses.map((r) => r.roomUnitId).filter((id) => id > 0)),
+    ];
+    if (unitIds.length === 0) {
+      return responses;
+    }
+    try {
+      const { units } = await firstValueFrom(
+        this.hotelService.getRoomUnitsByIds({ roomUnitIds: unitIds }),
+      );
+      const numberById = new Map(
+        (units ?? []).map((unit) => [unit.roomUnitId, unit.roomNumber]),
+      );
+      return responses.map((r) => ({
+        ...r,
+        roomNumber: numberById.get(r.roomUnitId) ?? '',
+      }));
+    } catch (error) {
+      this.logger.warn(
+        `배정 호실 방 번호 조회 실패 — 방 번호 없이 응답합니다: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return responses;
+    }
   }
 
   // 관리자 호텔 상세 페이지의 "호텔별 지표" 섹션용 집계. hotelId 스냅샷 컬럼 덕분에 이 서비스의

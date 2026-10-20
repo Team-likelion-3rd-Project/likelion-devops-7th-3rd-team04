@@ -102,7 +102,7 @@ function withAuthHeaders(init: RequestInit | undefined, token: string | null): R
   }
 }
 
-async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
+export async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   const res = await fetch(`${BASE_URL}${path}`, withAuthHeaders(init, adminAuth.getAccessToken()))
 
   if (res.status !== 401) {
@@ -120,7 +120,7 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
 }
 
 // POST/PUT 등 JSON body를 실어 보내는 관리자 API 공용 헬퍼.
-function authedJsonFetch(path: string, method: 'POST' | 'PUT', body: unknown): Promise<Response> {
+export function authedJsonFetch(path: string, method: 'POST' | 'PUT', body: unknown): Promise<Response> {
   return authedFetch(path, {
     method,
     headers: { 'Content-Type': 'application/json' },

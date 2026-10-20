@@ -49,7 +49,7 @@ spec:
             {{- end }}
             # $(VAR) 는 위에서 정의한 env 를 참조 (k8s 변수 치환)
             - name: FLYWAY_URL
-              value: "jdbc:mariadb://$({{ $prefix }}_HOST):$({{ $prefix }}_PORT)/$({{ $prefix }}_DATABASE)"
+              value: "jdbc:mariadb://$({{ $prefix }}_HOST):$({{ $prefix }}_PORT)/$({{ $prefix }}_DATABASE){{ with $m.db.jdbcParams }}?{{ . }}{{ end }}"
             - name: FLYWAY_USER
               value: "$({{ $prefix }}_USERNAME)"
             - name: FLYWAY_PASSWORD
@@ -61,6 +61,16 @@ spec:
           {{- with $.Values.containerSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $m.db.caConfigMap }}
+          volumeMounts:
+            - name: db-ca
+              mountPath: /flyway/certs
+              readOnly: true
+      volumes:
+        - name: db-ca
+          configMap:
+            name: {{ $m.db.caConfigMap }}
           {{- end }}
 {{- end }}
 {{- end }}

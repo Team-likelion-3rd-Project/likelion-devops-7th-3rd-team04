@@ -6,6 +6,7 @@ import { HotelServiceService } from './hotel-service.service';
 import { RoomService } from './room.service';
 import { RoomImageStorage } from './room-image.storage';
 import { FacilityService } from './facility.service';
+import { RoomUnitService } from './room-unit.service';
 import { Hotel } from './entities/hotel.entity';
 import { RoomType } from './entities/room-type.entity';
 import { RoomUnit } from './entities/room-unit.entity';
@@ -70,6 +71,7 @@ import { HealthModule, mariaDbSslOptions } from '@app/common';
     RoomService,
     RoomImageStorage,
     FacilityService,
+    RoomUnitService,
   ],
 })
 export class HotelServiceModule {}

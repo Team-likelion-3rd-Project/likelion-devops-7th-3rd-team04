@@ -216,6 +216,70 @@ build:
         --label "org.opencontainers.image.source=$CI_PROJECT_URL" \
         "$@"
 
+# ── AWS Runner 검증 (Terraform 40-cicd, infra/ansible README 13절) ──────────
+# GitLab 에서 Run pipeline 으로 변수 AWS_RUNNER_CHECK=true 를 넣었을 때만 생긴다 (같은 파이프라인의 다른 job 은 평소대로 돈다).
+#   보호 브랜치  : AWS Runner(protected, tags aws · ecr) 가 실행. push 는 check 결과를 보고 ▶ 로 실행
+#   그 외 브랜치 : job 은 생기지만 받을 Runner 가 없어 pending 으로 남아야 정상 (확인 후 취소)
+# 계정 ID · ECR 토큰은 레포 · CI 변수에 두지 않는다. Runner Role(IMDS) 로 조회하고 로그에서는 가린다
+.aws-runner-check:
+  tags: [aws]
+  interruptible: false
+
+aws-runner:check:
+  extends: .aws-runner-check
+  stage: build
+  image:
+    name: amazon/aws-cli:2.31.0
+    entrypoint: [""]
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" && $AWS_RUNNER_CHECK == "true"
+  script:
+    # 자격 증명 = Runner Role
+    - aws sts get-caller-identity --query Arn --output text | sed -E 's/[0-9]{12}/<account>/' | tee /tmp/arn
+    - grep -q 'assumed-role/team04-hotel-ci-runner/' /tmp/arn
+    # 아래 세 명령은 실패(거부)가 기대값이다. Runner 는 pipefail 로 실행하므로 aws 의 종료 코드는 무시하고 출력만 검사한다
+    # 허용 밖 저장소 push 거부. 프로젝트 저장소의 없는 이름은 RepositoryNotFound — 권한은 있고 저장소만 없다
+    - '{ aws ecr initiate-layer-upload --region us-east-1 --repository-name ldp98-outside/check 2>&1 || true; } | grep -q AccessDenied'
+    - '{ aws ecr initiate-layer-upload --region us-east-1 --repository-name team04-hotel/ldp98-nonexistent 2>&1 || true; } | grep -q RepositoryNotFound'
+    # 다른 Secret 조회 거부 (41-main-data 가 내려가 있어도 IAM 이 먼저 거부)
+    - '{ aws secretsmanager get-secret-value --region us-east-1 --secret-id team04-hotel/prod/main-db 2>&1 || true; } | grep -q AccessDenied'
+    # 다음 job 에 ECR 주소만 넘긴다 (토큰 아님, 로그에 찍지 않음)
+    - echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com" > ecr.env
+    - echo "OK — Runner Role, 밖 저장소 · 다른 Secret 거부 확인"
+  artifacts:
+    reports:
+      dotenv: ecr.env
+    # push 는 수동(▶)이라 늦게 눌러도 주소를 받을 수 있게 하루 둔다
+    expire_in: 1 day
+
+aws-runner:push:
+  extends: .aws-runner-check
+  stage: build
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  needs: [aws-runner:check]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" && $AWS_RUNNER_CHECK == "true"
+      when: manual
+  script:
+    - 'test -n "$ECR_REGISTRY" || { echo "ECR_REGISTRY 가 비었습니다 — aws-runner:check 의 dotenv 아티팩트(1일 보관)를 확인하세요"; exit 1; }'
+    # ECR 인증은 kaniko 내장 ecr-login 헬퍼가 Runner Role 로 그때그때 받는다 (토큰을 파일 · 변수에 두지 않음)
+    - mkdir -p /kaniko/.docker
+    - printf '{"credHelpers":{"%s":"ecr-login"}}' "$ECR_REGISTRY" > /kaniko/.docker/config.json
+    # Runner 가 arm64 라 운영 워커(t4g)에서 그대로 쓰는 이미지가 된다. ECR 은 IMMUTABLE — 같은 커밋은 한 번만 push 된다.
+    # kaniko 로그의 ECR 주소(계정 ID)는 가린다. 파이프 대신 파일(/kaniko 아래 — 디버그 이미지에 /tmp 가 없음)로 받아 kaniko 종료 코드를 그대로 남긴다
+    - >-
+      if /kaniko/executor
+      --context "$CI_PROJECT_DIR/backend/migrations"
+      --dockerfile "$CI_PROJECT_DIR/backend/migrations/Dockerfile"
+      --destination "$ECR_REGISTRY/team04-hotel/main-migrations:$CI_COMMIT_SHORT_SHA"
+      --label "org.opencontainers.image.revision=$CI_COMMIT_SHA"
+      > /kaniko/push.log 2>&1; then rc=0; else rc=$?; fi;
+      sed -E 's/[0-9]{12}/<account>/g' /kaniko/push.log;
+      exit $rc
+
 # ── image-test: 후보 이미지 smoke test ─────────────────────────
 smoke:db-create:
   extends: .rules-develop

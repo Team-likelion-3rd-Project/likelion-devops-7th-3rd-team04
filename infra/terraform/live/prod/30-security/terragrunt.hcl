@@ -10,10 +10,14 @@ dependency "network" {
     main = {
       vpc_id = "vpc-00000000000000000"
     }
+    deployment = {
+      vpc_id = "vpc-00000000000000001"
+    }
   }
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
 inputs = {
-  main_vpc_id = dependency.network.outputs.main.vpc_id
+  main_vpc_id       = dependency.network.outputs.main.vpc_id
+  deployment_vpc_id = dependency.network.outputs.deployment.vpc_id
 }
