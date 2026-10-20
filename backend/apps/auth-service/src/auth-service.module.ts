@@ -3,7 +3,12 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ClientsModule } from '@nestjs/microservices';
 import { JwtModule } from '@nestjs/jwt';
-import { getGrpcOptions, RedisModule, HealthModule } from '@app/common';
+import {
+  getGrpcOptions,
+  RedisModule,
+  HealthModule,
+  mariaDbSslOptions,
+} from '@app/common';
 import { AuthServiceController } from './auth-service.controller';
 import { AuthServiceService } from './auth-service.service';
 import { Credential } from './entities/credential.entity';
@@ -30,6 +35,8 @@ import { AdminCredential } from './entities/admin-credential.entity';
         username: configService.get<string>('DB_USERNAME', 'root'),
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_DATABASE'),
+        // 운영 RDS는 TLS 접속만 허용 — DB_SSL=true + DB_SSL_CA_PATH로 켠다 (LDP-101, 비우면 평문)
+        ssl: mariaDbSslOptions('DB', (key) => configService.get<string>(key)),
         // 🟢 nest-cli.json이 webpack: true로 번들링하므로, dist에는 개별 *.entity.js 파일이
         //    존재하지 않아 글롭(glob) 경로로는 엔티티를 찾지 못합니다. 클래스를 직접 등록합니다.
         // Credential은 고객 자격증명, AdminCredential은 관리자 자격증명 (완전히 분리된 테이블)

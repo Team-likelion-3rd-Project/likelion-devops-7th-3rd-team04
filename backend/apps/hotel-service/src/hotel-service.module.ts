@@ -11,7 +11,7 @@ import { RoomUnit } from './entities/room-unit.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
 import { Facility } from './entities/facility.entity';
-import { HealthModule } from '@app/common';
+import { HealthModule, mariaDbSslOptions } from '@app/common';
 
 @Module({
   imports: [
@@ -34,6 +34,8 @@ import { HealthModule } from '@app/common';
         username: configService.get<string>('DB_USERNAME', 'root'),
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_DATABASE'),
+        // 운영 RDS는 TLS 접속만 허용 — DB_SSL=true + DB_SSL_CA_PATH로 켠다 (LDP-101, 비우면 평문)
+        ssl: mariaDbSslOptions('DB', (key) => configService.get<string>(key)),
         // 🟢 nest-cli.json이 webpack: true로 번들링하므로, dist에는 개별 *.entity.js 파일이
         //    존재하지 않아 글롭(glob) 경로로는 엔티티를 찾지 못합니다. 클래스를 직접 등록합니다.
         entities: [
