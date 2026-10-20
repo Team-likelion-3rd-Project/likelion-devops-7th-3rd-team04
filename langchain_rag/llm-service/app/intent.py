@@ -14,10 +14,9 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_ollama import ChatOllama
 from pydantic import BaseModel
 
-from . import config
+from . import config, llm
 from .corpus import HOTELS
 from .schemas import BookAction, ChatAction, ChatMessage, Intent, SimpleAction
 
@@ -49,13 +48,6 @@ class IntentResult(BaseModel):
 
 
 NO_INTENT = IntentResult()
-
-_llm = ChatOllama(
-    base_url=config.OLLAMA_BASE_URL,
-    model=config.OLLAMA_MODEL,
-    format="json",
-    temperature=0,
-)
 
 
 def _system_prompt(today: date) -> str:
@@ -155,7 +147,7 @@ async def classify(message: str, history: list[ChatMessage]) -> IntentResult:
     """의도 분류 + 슬롯 추출. LLM 호출이나 파싱이 실패하면 의도 없음으로 처리합니다."""
     today = datetime.now(KST).date()
     try:
-        result = await _llm.ainvoke(
+        result = await llm.chat_model(json_mode=True).ainvoke(
             [SystemMessage(content=_system_prompt(today)), HumanMessage(content=_transcript(message, history))]
         )
         raw = json.loads(result.content)

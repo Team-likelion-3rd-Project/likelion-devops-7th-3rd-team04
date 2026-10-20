@@ -1,66 +1,46 @@
-"""RAG 검색: Ollama 임베딩 모델로 질문을 벡터화하고 S3 Vectors 인덱스를 조회합니다.
+"""RAG 검색: 질문을 임베딩(app/llm.py)하고 벡터 스토어(app/vector_store.py)에서 가까운 문서를 찾습니다.
 쓰기 쪽(인덱스 채우기)은 scripts/ingest.py가 담당합니다.
 
-boto3 `s3vectors` 클라이언트 API (boto3==1.43.73 기준 확인 — AWS가 API를 바꾸면 여기부터 확인):
-  - put_vectors(vectorBucketName, indexName, vectors=[
-        {"key": str, "data": {"float32": [float, ...]}, "metadata": {...}},
-    ])
-  - query_vectors(vectorBucketName, indexName, topK, queryVector={"float32": [...]},
-        returnMetadata=True, returnDistance=True)
-    -> {"vectors": [{"key", "distance", "metadata"}], "distanceMetric", "nextToken"}
-
-검색은 best-effort입니다. 설정이 없거나(VECTOR_BUCKET_NAME 미설정) 조회가 실패해도
-(네트워크, IAM, throttling 등) 예외 대신 None을 돌려줍니다 — RAG를 못 쓰더라도 500을
-내지 않고 근거 없이라도 답변을 이어가기 위함입니다.
+검색은 best-effort입니다. 스토어가 설정되지 않았거나 조회가 실패해도(네트워크, 권한, throttling 등)
+예외 대신 None을 돌려줍니다 — RAG를 못 쓰더라도 500을 내지 않고 근거 없이라도 답변을 이어가기 위함입니다.
 """
 
 import asyncio
 import logging
+from functools import cache
 
-import boto3
-from langchain_ollama import OllamaEmbeddings
-
-from . import config
+from . import config, llm
+from .vector_store import VectorStore, create_store
 
 logger = logging.getLogger(__name__)
 
-_embeddings = OllamaEmbeddings(base_url=config.OLLAMA_BASE_URL, model=config.OLLAMA_EMBED_MODEL)
 
-# VECTOR_BUCKET_NAME이 없으면(AWS 없는 로컬 개발) None — 호출부는 이를 "RAG 사용 안 함"으로 취급합니다.
-s3vectors_client = (
-    boto3.client("s3vectors", region_name=config.AWS_REGION) if config.VECTOR_BUCKET_NAME else None
-)
+@cache
+def store() -> VectorStore:
+    return create_store()
 
 
 def is_configured() -> bool:
-    return s3vectors_client is not None and bool(config.VECTOR_INDEX_NAME)
+    return store().is_configured()
 
 
-async def embed(text: str) -> list[float]:
-    return await _embeddings.aembed_query(text)
+async def embed_query(text: str) -> list[float]:
+    return await llm.embeddings().aembed_query(text)
+
+
+async def embed_documents(texts: list[str]) -> list[list[float]]:
+    # Vertex 임베딩은 질문(RETRIEVAL_QUERY)과 문서(RETRIEVAL_DOCUMENT)를 구분해 임베딩합니다.
+    return await llm.embeddings().aembed_documents(texts)
 
 
 async def query_context(message: str, top_k: int = config.RAG_TOP_K) -> str | None:
-    """질문과 가장 가까운 top_k개 문서의 `metadata.text`를 하나의 context 문자열로 합칩니다.
-    예외를 던지지 않습니다."""
-    if not is_configured():
-        return None
-
+    """질문과 가장 가까운 top_k개 문서의 원문을 하나의 context 문자열로 합칩니다. 예외를 던지지 않습니다."""
     try:
-        vector = await embed(message)
-        response = await asyncio.to_thread(
-            s3vectors_client.query_vectors,
-            vectorBucketName=config.VECTOR_BUCKET_NAME,
-            indexName=config.VECTOR_INDEX_NAME,
-            topK=top_k,
-            queryVector={"float32": vector},
-            returnMetadata=True,
-            returnDistance=True,
-        )
+        if not is_configured():
+            return None
+        vector = await embed_query(message)
+        texts = await asyncio.to_thread(store().query, vector, top_k)
     except Exception:
-        logger.exception("S3 Vectors 검색 실패 — RAG context 없이 계속합니다")
+        logger.exception("RAG 검색 실패 — context 없이 계속합니다")
         return None
-
-    matches = response.get("vectors", [])
-    texts = [m["metadata"]["text"] for m in matches if m.get("metadata", {}).get("text")]
     return "\n---\n".join(texts) if texts else None

@@ -14,6 +14,13 @@ Webhook (POST /webhook/chat)
 
 RAG 검색과 예약·결제·취소 의도 분류는 워크플로에서 하지 않습니다. 둘 다 llm-service가 합니다(`../llm-service/README.md`의 "RAG 검색", "예약·결제·취소 액션" 참고). `authenticated`는 답변 문구에만 쓰이고, 액션 검증과 비로그인 차단은 chat-bot-service가 합니다.
 
+## 온프레미스 dev 클러스터
+
+backend Helm 차트(`backend-deploy/charts/backend/templates/n8n.yaml`)로 배포합니다. initContainer 가 워크플로를 import 하고, 본 컨테이너의 postStart 가 `activate-workflow.js` 로 활성화합니다(로컬 `n8n-init` 과 같은 두 단계).
+
+- 차트는 저장소 밖 파일을 읽을 수 없어 `workflows/chat-orchestration.json` · `scripts/activate-workflow.js` 의 **사본**을 `backend-deploy/charts/backend/files/n8n/` 에 둡니다. 여기 원본을 고치면 사본도 복사해 함께 커밋하세요 — CI `helm-lint` 가 둘이 다르면 실패합니다.
+- 이미지 버전은 `2.35.3` 으로 고정합니다(`../docker-compose.yml`, 차트 `n8n.image.tag`, CI `N8N_VERSION` 이 같은 값). 올릴 때는 셋을 함께 바꾸고 활성화 스크립트가 그 버전에서 동작하는지 확인하세요.
+
 ## 로컬 실행
 
 ```bash

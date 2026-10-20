@@ -1,4 +1,4 @@
-"""LangChain 대화 체인: 의도 분류 → 시스템 프롬프트 + 대화 이력 + Ollama 호출.
+"""LangChain 대화 체인: 의도 분류 → 시스템 프롬프트 + 대화 이력 + LLM 호출(app/llm.py).
 
 한 턴의 처리 순서:
   1. intent.py로 예약·결제·취소 의도와 예약 슬롯을 뽑음 (짧은 JSON 호출)
@@ -8,9 +8,8 @@
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_ollama import ChatOllama
 
-from . import config, intent, retrieval
+from . import intent, llm, retrieval
 from .schemas import ChatMessage
 
 SYSTEM_PROMPT = (
@@ -20,8 +19,6 @@ SYSTEM_PROMPT = (
     "the service shows buttons for those actions when appropriate."
 )
 
-_llm = ChatOllama(base_url=config.OLLAMA_BASE_URL, model=config.OLLAMA_MODEL)
-
 _prompt = ChatPromptTemplate.from_messages(
     [
         ("system", "{system}"),
@@ -30,7 +27,9 @@ _prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-_chain = _prompt | _llm
+
+def _chain():
+    return _prompt | llm.chat_model()
 
 
 def _to_langchain_messages(history: list[ChatMessage]) -> list[HumanMessage | AIMessage]:
@@ -58,7 +57,7 @@ async def generate_reply(
     hint = intent.reply_hint(intent_result, authenticated)
     system = SYSTEM_PROMPT if hint is None else f"{SYSTEM_PROMPT}\n\n{hint}"
 
-    result = await _chain.ainvoke(
+    result = await _chain().ainvoke(
         {
             "system": system,
             "message": prompt_message,
