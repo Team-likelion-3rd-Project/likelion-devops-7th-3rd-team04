@@ -7,7 +7,8 @@ import { HotelServiceService } from './hotel-service.service';
 import { RoomService } from './room.service';
 import { FacilityService } from './facility.service';
 import { Hotel } from './entities/hotel.entity';
-import { Room } from './entities/room.entity';
+import { RoomType } from './entities/room-type.entity';
+import { RoomUnit } from './entities/room-unit.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
 
@@ -21,6 +22,7 @@ describe('HotelServiceController', () => {
     create: jest.Mock;
     delete: jest.Mock;
   };
+  let roomUnitRepository: { count: jest.Mock };
   let roomAvailabilityRepository: {
     find: jest.Mock;
     delete: jest.Mock;
@@ -62,6 +64,7 @@ describe('HotelServiceController', () => {
       create: jest.fn(),
       delete: jest.fn().mockResolvedValue(undefined),
     };
+    roomUnitRepository = { count: jest.fn().mockResolvedValue(0) };
     roomAvailabilityRepository = {
       find: jest.fn(),
       delete: jest.fn().mockResolvedValue(undefined),
@@ -95,7 +98,11 @@ describe('HotelServiceController', () => {
         { provide: FacilityService, useValue: {} },
         { provide: DataSource, useValue: dataSource },
         { provide: getRepositoryToken(Hotel), useValue: hotelRepository },
-        { provide: getRepositoryToken(Room), useValue: roomRepository },
+        { provide: getRepositoryToken(RoomType), useValue: roomRepository },
+        {
+          provide: getRepositoryToken(RoomUnit),
+          useValue: roomUnitRepository,
+        },
         {
           provide: getRepositoryToken(RoomAvailability),
           useValue: roomAvailabilityRepository,
@@ -533,6 +540,17 @@ describe('HotelServiceController', () => {
       expect(roomRepository.delete).not.toHaveBeenCalled();
       expect(roomImageRepository.delete).not.toHaveBeenCalled();
       expect(roomAvailabilityRepository.delete).not.toHaveBeenCalled();
+    });
+
+    it('호실이 남아 있는 객실 종류는 삭제하지 않는다 (V9)', async () => {
+      roomRepository.findOne.mockResolvedValue(room);
+      roomUnitRepository.count.mockResolvedValue(3);
+
+      await expect(
+        hotelServiceController.deleteRoom({ hotelId: 1, roomId: 1 }),
+      ).rejects.toThrow(RpcException);
+      expect(roomRepository.delete).not.toHaveBeenCalled();
+      expect(roomImageRepository.delete).not.toHaveBeenCalled();
     });
   });
 

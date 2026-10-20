@@ -13,7 +13,8 @@ export class RoomImage {
   @PrimaryGeneratedColumn()
   imageId!: number;
 
-  @Column({ name: 'room_id' })
+  // 객실 종류 (room_types.room_type_id). 속성 이름은 API(roomId)와 맞춰 그대로 둔다 (V9에서 컬럼 이름만 변경)
+  @Column({ name: 'room_type_id' })
   roomId!: number;
 
   @Column({ name: 'mime_type' })
