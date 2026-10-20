@@ -30,7 +30,7 @@
   # OAuth client secret 을 auth key 로 직접 사용 (태그 지정 필수)
   ansible.builtin.command: >-
     tailscale up
-    --auth-key={{ ts_oauth_secret }}?ephemeral=false&preauthorized=true
+    --auth-key={{ ts_oauth_secret }}?ephemeral={{ ts_ephemeral | bool | lower }}&preauthorized=true
     --advertise-tags={{ ts_tags }}
     --hostname={{ node_name }}
   when: >-

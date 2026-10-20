@@ -1,6 +1,6 @@
 # Ansible(gitlab_runner_token role)이 생성 — gitlab-rails runner 로 실행됩니다.
 # 같은 description 의 instance runner 가 있으면 재사용하고, 없으면 새로 만든 뒤 인증 토큰(glrt-...)을 출력합니다.
-description = {{ gitlab_runner_description | to_json }}
+description = {{ runner.description | to_json }}
 
 settings = ApplicationSetting.current_without_cache
 settings.update!(signup_enabled: false) if settings.signup_enabled  # 외부 회원가입 차단
@@ -14,8 +14,9 @@ if runner.nil?
     params: {
       runner_type: 'instance_type',
       description: description,
-      tag_list: {{ gitlab_runner_tags | to_json }},
-      run_untagged: {{ gitlab_runner_run_untagged | bool | to_json }},
+      tag_list: {{ runner.tags | to_json }},
+      run_untagged: {{ runner.run_untagged | bool | to_json }},
+      access_level: {{ runner.access_level | default('not_protected') | to_json }},
       maintenance_note: 'Ansible(gitlab.yml) 자동 생성'
     }
   ).execute
