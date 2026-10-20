@@ -36,6 +36,7 @@ import {
 } from '@app/common';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
+import { AssignRoomUnitDto } from './dto/assign-room-unit.dto';
 
 // proto의 Booking 메시지와 1:1 대응되는 응답 형태. 편의시설(수영장/라운지) 이용 여부/인원수는
 // 여기 담기지 않는다 — reservation_facilities가 유일한 소스이며, GET /api/bookings/:reservationId/facilities로
@@ -52,6 +53,8 @@ interface BookingDto {
   status: string;
   paymentDueAt: string; // 결제 마감 시각(ISO 8601). 없으면 빈 문자열
   lastPaymentAttemptStatus: string; // 최근 결제 시도 상태 REQUESTED/CONFIRMING/SUCCEEDED/FAILED. 없으면 빈 문자열 (CONFIRMING = 승인 요청 후 결과 확인 중 → 결제 버튼 막기)
+  roomUnitId: number | null; // 배정된 호실 ID. 배정 전 null (gRPC에서는 0, LDP-89)
+  roomNumber: string; // 배정된 방 번호. 배정 전 빈 문자열
 }
 
 // proto의 PreparePaymentResponse와 1:1 대응 (위키 API 명세 5.8)
@@ -129,6 +132,10 @@ interface BookingService {
     orderId: string;
     amount: number;
   }): Observable<ConfirmPaymentResultDto>;
+  assignRoomUnit(data: {
+    reservationId: number;
+    roomUnitId: number;
+  }): Observable<BookingDto>;
 }
 
 // 결제 API(5.8, 5.9)의 실패를 위키 API 명세 5.10 형식({ statusCode, error, code, message, retryable })으로 바꾼다.
@@ -144,6 +151,21 @@ function toPaymentHttpError(err: unknown, fallbackMessage: string): Error {
     message: fallbackMessage,
     retryable: true,
   });
+}
+
+// gRPC는 "배정 안 됨"을 0으로 보내므로 응답에서는 null로 바꿔 준다 (LDP-89)
+function toBooking(booking: BookingDto): BookingDto {
+  return {
+    ...booking,
+    roomUnitId: booking.roomUnitId || null,
+    roomNumber: booking.roomNumber ?? '',
+  };
+}
+
+function toBookings({ bookings = [] }: { bookings?: BookingDto[] }): {
+  bookings: BookingDto[];
+} {
+  return { bookings: bookings.map(toBooking) };
 }
 
 @ApiTags('BookingService')
@@ -200,7 +222,9 @@ export class BookingController implements OnModuleInit {
     description: '관리자 권한이 없음',
   })
   async getBookings(): Promise<{ bookings: BookingDto[] }> {
-    return firstValueFrom(this.bookingService.getBookings({}));
+    return toBookings(
+      await firstValueFrom(this.bookingService.getBookings({})),
+    );
   }
 
   /**
@@ -222,8 +246,10 @@ export class BookingController implements OnModuleInit {
   async getMyBookings(
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<{ bookings: BookingDto[] }> {
-    return firstValueFrom(
-      this.bookingService.getBookingsByUserId({ userId: user.userId }),
+    return toBookings(
+      await firstValueFrom(
+        this.bookingService.getBookingsByUserId({ userId: user.userId }),
+      ),
     );
   }
 
@@ -276,7 +302,9 @@ export class BookingController implements OnModuleInit {
   async getBookingsByUserId(
     @Param('userId', ParseIntPipe) userId: number,
   ): Promise<{ bookings: BookingDto[] }> {
-    return firstValueFrom(this.bookingService.getBookingsByUserId({ userId }));
+    return toBookings(
+      await firstValueFrom(this.bookingService.getBookingsByUserId({ userId })),
+    );
   }
 
   /**
@@ -306,7 +334,7 @@ export class BookingController implements OnModuleInit {
     @Param('reservationId', ParseIntPipe) reservationId: number,
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<BookingDto> {
-    return firstValueFrom(
+    const booking = await firstValueFrom(
       this.bookingService.cancelBooking({ reservationId, userId: user.userId }),
     ).catch((err) => {
       const message =
@@ -319,6 +347,7 @@ export class BookingController implements OnModuleInit {
       }
       throw new NotFoundException(message);
     });
+    return toBooking(booking);
   }
 
   /**
@@ -354,13 +383,70 @@ export class BookingController implements OnModuleInit {
         'checkOutDate는 checkInDate보다 이후여야 합니다.',
       );
     }
-    return firstValueFrom(
+    const booking = await firstValueFrom(
       this.bookingService.createBooking({ userId: user.userId, ...dto }),
     ).catch((err) => {
       throw new NotFoundException(
         err?.details || err?.message || '예약 가능한 객실이 아닙니다.',
       );
     });
+    return toBooking(booking);
+  }
+
+  /**
+   * PUT http://localhost:3000/api/bookings/{reservationId}/room-unit
+   * 관리자 전용. 예약에 호실을 배정·변경·해제합니다 (LDP-89). 예약은 객실 종류의 재고만 잡고 호실은 직원이 배정한다.
+   */
+  @Put(':reservationId/room-unit')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth()
+  @ApiParam({
+    name: 'reservationId',
+    description: '호실을 배정할 예약 PK ID',
+    type: Number,
+  })
+  @ApiOperation({
+    summary: '예약 호실 배정·변경·해제 (관리자 전용)',
+    description:
+      '결제 대기·예약 확정 예약에, 같은 객실 종류의 ACTIVE 호실을 배정합니다. ' +
+      '같은 호실·겹치는 기간에 다른 배정이 있으면 거절합니다. roomUnitId를 null로 보내면 배정을 해제합니다.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '배정 후 예약 (roomUnitId·roomNumber 포함)',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'RESERVATION_NOT_FOUND / ROOM_UNIT_NOT_FOUND',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'INVALID_RESERVATION_STATUS / ROOM_UNIT_NOT_ASSIGNABLE / ROOM_UNIT_ASSIGNMENT_CONFLICT / ROOM_UNIT_BUSY',
+  })
+  async assignRoomUnit(
+    @Param('reservationId', ParseIntPipe) reservationId: number,
+    @Body() dto: AssignRoomUnitDto,
+  ): Promise<BookingDto> {
+    const booking = await firstValueFrom(
+      this.bookingService.assignRoomUnit({
+        reservationId,
+        roomUnitId: dto.roomUnitId ?? 0,
+      }),
+    ).catch((err) => {
+      const payload = parseApiRpcError(err);
+      throw toHttpException(
+        payload ?? {
+          status: 503,
+          code: 'BOOKING_SERVICE_UNAVAILABLE',
+          message:
+            '호실 배정을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+          retryable: true,
+        },
+      );
+    });
+    return toBooking(booking);
   }
 
   /**

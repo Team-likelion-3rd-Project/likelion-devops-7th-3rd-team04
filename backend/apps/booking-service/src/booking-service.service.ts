@@ -90,6 +90,23 @@ interface HotelGrpcService {
   }): Observable<{ facilities: FacilityGrpcResponse[] }>;
 }
 
+// libs/common/src/proto/hotel.proto의 RoomUnit 메시지와 1:1 대응 (LDP-89 호실)
+export interface RoomUnitGrpcResponse {
+  roomUnitId: number;
+  roomId: number;
+  roomName: string;
+  hotelId: number;
+  roomNumber: string;
+  floor: number;
+  status: string;
+}
+
+interface HotelGrpcService {
+  getRoomUnitsByIds(data: {
+    roomUnitIds: number[];
+  }): Observable<{ units?: RoomUnitGrpcResponse[] }>;
+}
+
 // libs/common/src/proto/payment.proto의 PaymentService / RefundPayment, ApprovePayment와 1:1 대응
 interface PaymentGrpcService {
   refundPayment(data: {
@@ -147,6 +164,8 @@ export interface BookingGrpcResponse {
   status: string;
   paymentDueAt: string; // ISO 8601, 없으면 빈 문자열
   lastPaymentAttemptStatus: string; // REQUESTED/CONFIRMING/SUCCEEDED/FAILED, 시도 없으면 빈 문자열
+  roomUnitId: number; // 배정된 호실 (LDP-89), 배정 전 0
+  roomNumber: string; // 배정된 방 번호, 배정 전 빈 문자열
 }
 
 // 호텔 상세 페이지의 "호텔별 지표" 섹션이 사용하는 응답. hotelId 스냅샷 컬럼 덕분에
@@ -323,7 +342,10 @@ export class BookingServiceService implements OnModuleInit {
     if (!reservation) {
       throw new RpcException('존재하지 않는 예약입니다.');
     }
-    return this.toGrpcResponse(reservation);
+    const [response] = await this.attachRoomNumbers([
+      this.toGrpcResponse(reservation),
+    ]);
+    return response;
   }
 
   // 본인 예약 취소. reservationId가 존재하지 않으면, 혹은 요청자가 예약자 본인이 아니면 RpcException.
@@ -886,10 +908,12 @@ export class BookingServiceService implements OnModuleInit {
         );
       }
     }
-    return reservations.map((reservation) =>
-      this.toGrpcResponse(
-        reservation,
-        lastStatus.get(reservation.reservationId),
+    return this.attachRoomNumbers(
+      reservations.map((reservation) =>
+        this.toGrpcResponse(
+          reservation,
+          lastStatus.get(reservation.reservationId),
+        ),
       ),
     );
   }
@@ -939,7 +963,41 @@ export class BookingServiceService implements OnModuleInit {
         ? reservation.paymentDueAt.toISOString()
         : '',
       lastPaymentAttemptStatus: lastPaymentAttemptStatus ?? '',
+      roomUnitId: reservation.roomUnitId ?? 0,
+      roomNumber: '',
     };
+  }
+
+  // 배정된 호실의 방 번호를 채운다 (LDP-89). 호실은 hotel-service 소유라 배정된 예약이 있을 때만 한 번에 조회한다.
+  // 조회에 실패해도 예약 조회 자체는 실패시키지 않는다 (방 번호만 비어 있음).
+  async attachRoomNumbers(
+    responses: BookingGrpcResponse[],
+  ): Promise<BookingGrpcResponse[]> {
+    const unitIds = [
+      ...new Set(responses.map((r) => r.roomUnitId).filter((id) => id > 0)),
+    ];
+    if (unitIds.length === 0) {
+      return responses;
+    }
+    try {
+      const { units } = await firstValueFrom(
+        this.hotelService.getRoomUnitsByIds({ roomUnitIds: unitIds }),
+      );
+      const numberById = new Map(
+        (units ?? []).map((unit) => [unit.roomUnitId, unit.roomNumber]),
+      );
+      return responses.map((r) => ({
+        ...r,
+        roomNumber: numberById.get(r.roomUnitId) ?? '',
+      }));
+    } catch (error) {
+      this.logger.warn(
+        `배정 호실 방 번호 조회 실패 — 방 번호 없이 응답합니다: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return responses;
+    }
   }
 
   // 관리자 호텔 상세 페이지의 "호텔별 지표" 섹션용 집계. hotelId 스냅샷 컬럼 덕분에 이 서비스의
