@@ -1,7 +1,7 @@
 apiVersion: v2
 name: backend
-description: 호텔 예약 backend(NestJS 마이크로서비스 8개) 배포 차트 — 환경별 값은 dev = GitLab team04/infra/backend-gitops 의 envs/dev/values.yaml, prod = GitHub 별도 prod gitops 레포
+description: 호텔 예약 backend(NestJS 마이크로서비스 8개 + 챗봇 AI llm-service · n8n) 배포 차트 — 환경별 값은 dev = GitLab team04/infra/backend-gitops 의 envs/dev/values.yaml, prod = GitHub 별도 prod gitops 레포
 type: application
 # 차트 구조가 바뀔 때만 올립니다. 이미지 버전은 values 의 global.imageTag(커밋 SHA)로 관리
-version: 0.3.0
+version: 0.4.0
 appVersion: "0.1.0"

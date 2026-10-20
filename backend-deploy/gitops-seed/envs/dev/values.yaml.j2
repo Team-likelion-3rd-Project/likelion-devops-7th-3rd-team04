@@ -40,6 +40,24 @@ services:
   # 결제 노드에서 운영 — 클러스터에는 배포하지 않음
   payment-service:
     enabled: false
+  # 대화 이력은 DB 노드의 DynamoDB Local (db.yml). 주소는 Ansible(k8s-cicd.yml)이 backend-secrets 에 넣음
+  chat-bot-service:
+    secretEnv: [DYNAMODB_ENDPOINT]
+  # 챗봇 AI: Vertex AI(GCP 서비스 계정 키) + RAG 인덱스는 DB 노드 MinIO 의 rag-index 버킷 (infra/ansible README 15절)
+  # 인덱스는 배포 후 1회 적재: kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
+  llm-service:
+    enabled: true
+    env:
+      VECTOR_STORE: object
+      VECTOR_OBJECT_BUCKET: rag-index
+    secretEnv:
+      - GCP_SA_KEY_JSON
+      - VECTOR_OBJECT_ENDPOINT
+      - VECTOR_OBJECT_ACCESS_KEY
+      - VECTOR_OBJECT_SECRET_KEY
+
+n8n:
+  enabled: true
 
 # 결제 DB 마이그레이션(Flyway)은 결제 노드가 payment-service 갱신 직전에 실행 — 결제 DB 를 클러스터에 노출하지 않음
 migrations:

@@ -162,8 +162,12 @@ services:
     replicas: 1
     env:
       DYNAMODB_REGION: ap-northeast-2
-      # 기동 시 필수값(getRequiredEnv). n8n 이 없는 환경에서는 호출만 실패하고 기동은 됨
-      N8N_WEBHOOK_URL: http://n8n.langchain.svc.cluster.local:5678/webhook/chat
+      # 기동 시 필수값(getRequiredEnv). 같은 릴리스의 n8n(아래 n8n 블록). n8n 이 꺼져 있으면 호출만 실패하고 기동은 됨
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/chat
+      # n8n → llm-service 는 턴마다 Vertex AI 를 2번(의도 분류 + 답변) 부름
+      N8N_TIMEOUT_MS: "60000"
+    # prod(AWS DynamoDB)는 Pod Identity 로 인증해 비어 있음. dev(온프레미스)는 DB 노드의 DynamoDB Local
+    # 주소(DYNAMODB_ENDPOINT)를 Secret 에서 읽도록 gitops envs/dev 에서 지정
     secretEnv: []
     resources: {}
     hpa:
@@ -214,6 +218,56 @@ services:
     resources: {}
     hpa:
       enabled: false
+
+  # 챗봇 AI 응답 서비스 (langchain_rag/llm-service — FastAPI + LangChain). n8n 워크플로가 호출
+  # 기본은 꺼 둠 — prod 는 GCP 키 · S3 Vectors 준비 후 prod gitops 에서 켬. dev 는 gitops envs/dev 에서 켜고
+  # VECTOR_STORE=object(MinIO) 와 Secret key 를 지정 (infra/ansible README 15절)
+  llm-service:
+    enabled: false
+    image:
+      repository: llm-service
+      tag: ""
+    port: 8000
+    healthPort: 8000
+    replicas: 1
+    env:
+      LLM_PROVIDER: vertex
+      GCP_PROJECT_ID: likelion-devops-7th-3rd-team4
+      # 임베딩 리전 / 채팅 리전 — Gemini 는 서울 리전 429(용량 부족)가 잦아 global 엔드포인트 사용
+      GCP_LOCATION: asia-northeast3
+      VERTEX_CHAT_LOCATION: global
+      VERTEX_CHAT_MODEL: gemini-2.5-flash
+      VERTEX_EMBED_MODEL: text-multilingual-embedding-002
+      VECTOR_STORE: s3vectors
+    secretEnv:
+      - GCP_SA_KEY_JSON
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 768Mi
+    hpa:
+      enabled: false
+
+# 챗봇 오케스트레이션 워크플로 (n8n) — templates/n8n.yaml. chat-bot-service → n8n → llm-service
+# 워크플로 JSON · 활성화 스크립트는 files/n8n/ (langchain_rag/n8n 의 사본 — CI helm-lint 가 원본과 같은지 검사)
+# 이미지는 Docker Hub n8nio/n8n:<tag> 를 CI(push job)가 레지스트리로 미러링한 것. tag 는 CI 의 N8N_VERSION 과 같아야 함
+n8n:
+  enabled: false
+  image:
+    repository: n8n
+    tag: "2.35.3"
+  # 워크플로 활성화(REST API)용 로컬 owner 계정. 비밀번호는 Secret 의 N8N_INIT_OWNER_PASSWORD
+  ownerEmail: admin@example.com
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
 
 # api-gateway 외부 노출 (dev: Traefik NodePort 30080, prod: ALB)
 ingress:
