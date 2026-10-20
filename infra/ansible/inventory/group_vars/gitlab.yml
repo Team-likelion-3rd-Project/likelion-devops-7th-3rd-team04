@@ -31,9 +31,21 @@ gitlab_puma_workers: 2
 gitlab_sidekiq_concurrency: 10
 
 # ── Runner 자동 발급 (gitlab_runner_token role) ──────────────
-gitlab_runner_description: "gitlab-runner"   # instance runner 식별자 (같은 이름이면 재사용)
-gitlab_runner_tags: [docker]
-gitlab_runner_run_untagged: true
+# instance runner 마다 접속 정보를 .secrets/<env_file> 로 저장. description 이 식별자 (같은 이름이면 재사용, 설정은 생성 때만 반영)
+#   access_level: not_protected(모든 브랜치) | ref_protected(보호 브랜치 · 태그 Job 만)
+gitlab_runners:
+  # 온프레미스 Runner 노드 (gitlab-runner.yml)
+  - description: gitlab-runner
+    tags: [docker]
+    run_untagged: true
+    access_level: not_protected
+    env_file: gitlab-runner.env
+  # AWS Runner (Terraform 40-cicd). 토큰은 12-secrets apply 로 Secrets Manager 에 등록 (README 13절)
+  - description: aws-ci-runner
+    tags: [aws, ecr]
+    run_untagged: false
+    access_level: ref_protected
+    env_file: aws-ci-runner.env
 
 # ── CI/CD 부트스트랩 (gitlab_bootstrap role, gitlab.yml --tags bootstrap) ──
 # ci_access 제약: 권한을 받을 프로젝트(team04/hotel)는 agent 설정 프로젝트와 같은 최상위 그룹 안에 있어야 함

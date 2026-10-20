@@ -34,6 +34,8 @@ addon_eviction_seconds: 120
 # ── 비밀값: 환경변수에서만 읽음 (코드에 값 금지) ──────────────
 ts_oauth_secret: "{{ lookup('env', 'TS_OAUTH_CLIENT_SECRET') }}"
 ts_tags: "{{ lookup('env', 'TS_TAGS') | default('tag:k8s-node', true) }}"
+# true 면 오프라인이 된 노드를 Tailscale 이 자동 삭제 (재생성마다 새로 뜨는 AWS Runner). 온프레미스 노드는 false
+ts_ephemeral: false
 
 k8s_api_endpoint: "{{ lookup('env', 'K8S_API_ENDPOINT') }}"
 k8s_join_token: "{{ lookup('env', 'K8S_JOIN_TOKEN') }}"

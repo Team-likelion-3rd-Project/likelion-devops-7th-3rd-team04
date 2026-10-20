@@ -27,6 +27,7 @@ infra/terraform/
         ├── root.hcl                 # 공통 설정 (backend · provider 생성, state key 계산)
         ├── 10-global/               🔒
         ├── 11-registry/             🔒
+        ├── 12-secrets/              🔒 외부에서 발급한 비밀값 (값 등록 때만 직접 apply)
         ├── 20-network/              🔁
         ├── 21-observability-base/   🔁
         ├── 30-security/             🔁
@@ -115,7 +116,7 @@ cd infra/terraform/live/prod
 
 terragrunt run --all plan        # 인프라가 내려가 있어도 실행 가능 (mock_outputs)
 terragrunt run --all apply       # 의존 순서대로 생성. 같은 단계 스택은 병렬
-terragrunt run --all destroy     # 역순 삭제. 10-global · 11-registry 는 제외
+terragrunt run --all destroy     # 역순 삭제. 10-global · 11-registry 는 제외 (12-secrets 는 run --all 대상 아님)
 
 # 스택 하나만
 cd 80-main-edge
@@ -127,6 +128,7 @@ terragrunt output -raw api_url
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
 - `run --all apply` 는 🔒 `10-global` · `11-registry` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
 - `10-global` · `11-registry` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
+- `12-secrets` 는 `exclude`(all) 로 `run --all` 의 plan · apply · destroy 모두에서 빠집니다. 값(ephemeral 변수)이 있어야 plan 이 되므로 **값을 등록할 때만 스택 디렉터리에서 직접 apply** 합니다 (5절 "외부에서 발급한 비밀값"). 대기열 확인: `terragrunt list --queue-construct-as=apply`
 - **`TG_PROVIDER_CACHE=1` 을 켭니다.** 끄면 스택마다 캐시 디렉터리에 AWS provider 를 따로 받아 스택당 약 760MB 를 쓰고 첫 실행이 오래 걸립니다. 켜면 provider 를 한 번만 받아 공유합니다 (`run --all plan` 캐시가 찬 상태 약 1분).
 - **provider 버전은 모든 스택이 같게 맞춥니다.** lock 파일이 스택마다 있어서 처음 init 한 시점의 버전이 따로 고정됩니다. 버전을 올릴 때는 한 스택만 올리지 않고 전체를 한 번에 올린 뒤, 🔒 스택이 No changes 인지 확인합니다.
   ```bash
@@ -135,7 +137,7 @@ terragrunt output -raw api_url
 
 ```
 bootstrap                                  🔒 최초 1회 (terraform)
-10-global   11-registry                    🔒 최초 1회, 이후 변경 시에만
+10-global   11-registry   12-secrets       🔒 최초 1회, 이후 변경 시에만 (12-secrets 는 직접 apply)
 ─────────────────────── 매일 재생성 ───────────────────────
 20-network   21-observability-base
 30-security
@@ -148,8 +150,8 @@ bootstrap                                  🔒 최초 1회 (terraform)
 ```
 
 - `10-global` 은 도메인 없이 apply 할 수 있습니다. 도메인 구매 후 절차는 구매 계정(운영 계정 / 다른 계정)에 따라 다르며 [`dns.tf`](live/prod/10-global/dns.tf) 상단 주석을 따릅니다.
-- `bootstrap`, `10-global`, `11-registry` 는 **destroy 하지 않습니다.**
-  Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라집니다.
+- `bootstrap`, `10-global`, `11-registry`, `12-secrets` 는 **destroy 하지 않습니다.**
+  Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 합니다.
 
 ### 스택별 소요 시간
 
@@ -160,6 +162,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
 | `30-security` | `enable_control_plane = true` (SG 6개, 규칙 26개) | 14초 – 20초 | 14초 – 15초 |
+| `40-cicd` | GitLab Runner t4g.medium 1대 + Ansible 묶음 업로드 (부트스트랩 별도: 시작부터 GitLab 등록까지 약 3분 30초 – 4분) | 54초 – 58초 | 1분 25초 |
 | `41-main-data` | RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
 | `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 38초 | 2분 10초 |
 | `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
@@ -193,6 +196,31 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 - Secret 은 고정 이름(`team04-hotel/prod/<이름>`)으로 만듭니다. 재생성 후에도 ESO 가 같은 이름으로 읽습니다.
 - Secret 리소스 정책으로 `GetSecretValue` 를 ESO Role 과 **그 스택을 apply 한 주체**만 허용합니다. 다른 IAM 사용자 · Role 로 apply 하면 정책의 관리자도 그 주체로 바뀝니다.
 - 값을 바꾸려면(회전) 해당 스택의 version 변수(`41-main-data` 는 `credentials_version`)를 올려 apply 합니다.
+
+### 외부에서 발급한 비밀값 (`12-secrets`)
+
+사람이 외부 서비스에서 발급하는 값(Tailscale OAuth client, GitLab Runner 토큰 등)은 🔒 `12-secrets` 에 고정 이름 Secret 으로 둡니다. 값은 **ephemeral 변수 → `secret_string_wo`** 로 넣어 state · plan 에 남지 않습니다.
+
+| Secret | 값 | 출처 | 읽는 쪽 |
+|---|---|---|---|
+| `team04-hotel/prod/ci-runner-tailscale` | `{oauth_client_secret}` | Tailscale 콘솔 OAuth client (`tag:ci-runner`) → `infra/ansible/.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET` | `40-cicd` Runner Role |
+| `team04-hotel/prod/ci-runner-gitlab` | `{url, token}` | `gitlab.yml --tags runner_token` 이 만든 `infra/ansible/.secrets/aws-ci-runner.env` ([Ansible README](../ansible/README.md) 13절) | `40-cicd` Runner Role |
+
+처음 등록 · 값 교체 (온프레미스 GitLab 재생성으로 토큰이 바뀐 경우 등):
+
+```bash
+cd infra/terraform/live/prod/12-secrets
+# 값을 화면에 출력하지 않고 환경변수로만 넘긴다
+set -a; source ../../../../ansible/.env; source ../../../../ansible/.secrets/aws-ci-runner.env; set +a
+export TF_VAR_ci_runner_tailscale_oauth_client_secret="$TS_CI_RUNNER_OAUTH_CLIENT_SECRET" \
+       TF_VAR_ci_runner_gitlab_url="$GITLAB_URL" TF_VAR_ci_runner_gitlab_token="$GITLAB_RUNNER_TOKEN"
+# 교체할 때는 variables.tf 의 ci_runner_credentials_version 을 올린 뒤 (write-only 값은 version 이 바뀔 때만 전달)
+AWS_PROFILE=team04 terragrunt apply
+```
+
+- 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-`)이 다르면 변수 검증에서 막힙니다.
+- Secret 리소스 정책은 `GetSecretValue` 를 Runner Role(`team04-hotel-ci-runner`)과 apply 한 주체만 허용합니다.
+- 이미 떠 있는 Runner 는 부팅 때 값을 읽었으므로, 교체 후에는 Runner 를 다시 만듭니다 (`40-cicd` apply 또는 ASG 인스턴스 종료).
 
 ```bash
 # 값 확인 (관리자만 가능)
