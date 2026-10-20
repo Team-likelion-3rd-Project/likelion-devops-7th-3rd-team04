@@ -16,3 +16,4 @@ export * from './health/health.module';
 export * from './health/health.controller';
 export * from './grpc/api-error';
 export * from './sqs/sqs';
+export * from './db/mariadb-ssl';

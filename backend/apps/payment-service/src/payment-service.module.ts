@@ -2,7 +2,12 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
-import { createSqsClient, HealthModule, SQS_CLIENT } from '@app/common';
+import {
+  createSqsClient,
+  HealthModule,
+  mariaDbSslOptions,
+  SQS_CLIENT,
+} from '@app/common';
 import { PaymentServiceController } from './payment-service.controller';
 import { PaymentServiceService } from './payment-service.service';
 import { Payment } from './entities/payment.entity';
@@ -34,6 +39,10 @@ import { OutboxPublisherService } from './outbox/outbox-publisher.service';
         username: configService.getOrThrow<string>('PAYMENT_DB_USERNAME'),
         password: configService.getOrThrow<string>('PAYMENT_DB_PASSWORD'),
         database: configService.getOrThrow<string>('PAYMENT_DB_DATABASE'),
+        // 운영 결제 RDS는 TLS 접속만 허용 — PAYMENT_DB_SSL=true + PAYMENT_DB_SSL_CA_PATH로 켠다 (LDP-101, 비우면 평문)
+        ssl: mariaDbSslOptions('PAYMENT_DB', (key) =>
+          configService.get<string>(key),
+        ),
         // 🟢 nest-cli.json이 webpack: true로 번들링하므로, dist에는 개별 *.entity.js 파일이
         //    존재하지 않아 글롭(glob) 경로로는 엔티티를 찾지 못합니다. 클래스를 직접 등록합니다.
         entities: [Payment, PaymentOutbox, PgWebhookInbox],

@@ -7,6 +7,7 @@ import { Hotel } from '../apps/hotel-service/src/entities/hotel.entity';
 import { Room } from '../apps/hotel-service/src/entities/room.entity';
 import { RoomAvailability } from '../apps/hotel-service/src/entities/room-availability.entity';
 import { Facility } from '../apps/hotel-service/src/entities/facility.entity';
+import { mariaDbSslOptions } from '../libs/common/src/db/mariadb-ssl';
 
 // docker compose 기동 시(db-seed 서비스, scripts/Dockerfile.seed) 1회 실행되는 시딩 스크립트입니다.
 // NestFactory 대신 TypeORM DataSource를 직접 열어 admins/admin_credentials/hotels/rooms/facilities에
@@ -327,6 +328,8 @@ async function createDataSourceWithRetry(
     username: DB_USERNAME,
     password: DB_PASSWORD,
     database: DB_DATABASE,
+    // 운영 RDS는 TLS 접속만 허용 — DB_SSL=true + DB_SSL_CA_PATH로 켠다 (LDP-101, 비우면 평문)
+    ssl: mariaDbSslOptions('DB'),
     entities: [Admin, AdminCredential, Hotel, Room, RoomAvailability, Facility],
     synchronize: false,
   });
