@@ -16,6 +16,7 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
 {{/*
 이미지 참조 (dict "root" $ "image" <image 값>)
 <global.imageRegistry>/<global.imageRepositoryPrefix><repository>:<tag | global.imageTag>
+imageRegistry 는 tpl 로 렌더링 (prod: <계정 ID 템플릿>.dkr.ecr...)
 태그가 비었거나 latest 면 렌더링을 중단 — 커밋 SHA 태그만 허용
 */}}
 {{- define "backend.image" -}}
@@ -28,8 +29,9 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
 {{- fail "latest 태그는 사용할 수 없습니다 — 커밋 SHA 를 쓰세요" -}}
 {{- end -}}
 {{- $repo := printf "%s%s" ($g.imageRepositoryPrefix | default "") .image.repository -}}
-{{- if $g.imageRegistry -}}
-{{- printf "%s/%s:%s" $g.imageRegistry $repo $tag -}}
+{{- $registry := tpl ($g.imageRegistry | default "") .root -}}
+{{- if $registry -}}
+{{- printf "%s/%s:%s" $registry $repo $tag -}}
 {{- else -}}
 {{- printf "%s:%s" $repo $tag -}}
 {{- end -}}

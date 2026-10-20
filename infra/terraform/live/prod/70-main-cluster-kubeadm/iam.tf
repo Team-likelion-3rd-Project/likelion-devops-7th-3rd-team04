@@ -1,5 +1,5 @@
 # 노드 Instance Profile. SSM 접속 권한, 부트스트랩(Ansible 묶음 S3 조회, join 정보 Parameter Store) 권한,
-# 노드 수명주기(CCM · NTH, 부트스트랩 실패 보고, CP reconcile) 권한을 둔다.
+# 노드 수명주기(CCM · NTH, 부트스트랩 실패 보고, CP reconcile) 권한, 워커 kubelet 의 ECR pull 권한을 둔다.
 # 파드의 AWS 권한은 노드 Role 이 아니라 IRSA 로 준다 (CP 에 hostNetwork 로 뜨는 CCM · NTH 만 예외).
 
 locals {
@@ -176,4 +176,30 @@ resource "aws_iam_role_policy" "worker_health" {
   name   = "health"
   role   = aws_iam_role.node["worker"].id
   policy = data.aws_iam_policy_document.worker_health.json
+}
+
+# 워커 kubelet 의 ecr-credential-provider(Ansible aws_ecr_credential_provider) 가 이 Role 로 ECR 토큰을 받는다.
+# pull 은 11-registry 의 프로젝트 저장소(<project>/*)만. CP 는 앱 파드가 뜨지 않아 주지 않는다
+data "aws_iam_policy_document" "worker_ecr_pull" {
+  # 토큰 발급은 리소스 지정이 안 된다. 토큰만으로는 저장소 권한이 없으면 pull 할 수 없다
+  statement {
+    sid       = "GetEcrToken"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "PullProjectImages"
+    actions = [
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+    ]
+    resources = ["arn:${data.aws_partition.current.partition}:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/${var.project}/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "worker_ecr_pull" {
+  name   = "ecr-pull"
+  role   = aws_iam_role.node["worker"].id
+  policy = data.aws_iam_policy_document.worker_ecr_pull.json
 }

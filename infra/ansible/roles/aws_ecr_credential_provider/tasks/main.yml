@@ -1,0 +1,30 @@
+---
+# kubelet image credential provider (ECR). kubeadm join 전에 설치해야 kubelet 이 처음부터 플러그인을 읽는다.
+# kubelet 플래그는 worker_join 의 kubeadm 템플릿이 kubelet_image_credential_provider_* (group_vars/aws.yml) 로 넣는다
+- name: 플러그인 디렉터리
+  ansible.builtin.file:
+    path: "{{ kubelet_image_credential_provider_bin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: ecr-credential-provider 다운로드 (sha256 검증)
+  vars:
+    ecr_credential_provider_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] }}"
+    ecr_credential_provider_build: "{{ ecr_credential_provider_eks_version }}/{{ ecr_credential_provider_build_date }}"
+  ansible.builtin.get_url:
+    url: "https://amazon-eks.s3.us-west-2.amazonaws.com/{{ ecr_credential_provider_build }}/bin/linux/{{ ecr_credential_provider_arch }}/ecr-credential-provider"
+    dest: "{{ kubelet_image_credential_provider_bin_dir }}/ecr-credential-provider"
+    checksum: "sha256:{{ ecr_credential_provider_sha256[ecr_credential_provider_arch] }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: CredentialProviderConfig
+  ansible.builtin.template:
+    src: image-credential-provider-config.yaml.j2
+    dest: "{{ kubelet_image_credential_provider_config }}"
+    owner: root
+    group: root
+    mode: "0644"

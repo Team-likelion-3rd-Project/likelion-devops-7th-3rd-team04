@@ -1,5 +1,6 @@
-# 서비스별 ECR 리포지토리와 배포할 이미지 태그(Parameter Store).
-# CI 가 이미지를 push 한 뒤 Parameter Store 의 태그를 갱신하고, 배포 쪽은 이 값을 읽는다.
+# 서비스별 ECR 리포지토리와 결제 서버가 읽는 이미지 태그(Parameter Store).
+# 이미지 태그의 원본은 gitops 레포(envs/prod)다. gitops merge 후 GitHub Actions 가 결제 서버용 태그를
+# Parameter Store 에 갱신하고, 결제 서버 pull agent 가 이 값을 읽는다. 메인 클러스터는 gitops 레포 값을 직접 쓴다.
 
 resource "aws_ecr_repository" "service" {
   for_each = var.services
@@ -50,7 +51,7 @@ resource "aws_ecr_lifecycle_policy" "service" {
   })
 }
 
-# 값은 CI 가 갱신하므로 Terraform 은 처음 만들 때만 넣고 이후 변경은 무시한다
+# 값은 gitops merge 후 GitHub Actions 가 갱신하므로 Terraform 은 처음 만들 때만 넣고 이후 변경은 무시한다
 resource "aws_ssm_parameter" "image_tag" {
   for_each = var.services
 

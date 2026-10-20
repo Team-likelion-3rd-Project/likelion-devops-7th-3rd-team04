@@ -16,3 +16,9 @@ nodeRegistration:
     - name: cloud-provider
       value: "{{ kubelet_cloud_provider }}"
 {% endif %}
+{% if kubelet_image_credential_provider_config is defined %}
+    - name: image-credential-provider-config
+      value: "{{ kubelet_image_credential_provider_config }}"
+    - name: image-credential-provider-bin-dir
+      value: "{{ kubelet_image_credential_provider_bin_dir }}"
+{% endif %}

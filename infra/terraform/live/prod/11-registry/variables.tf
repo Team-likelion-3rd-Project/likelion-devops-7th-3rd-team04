@@ -17,7 +17,7 @@ variable "region" {
 }
 
 variable "services" {
-  description = "ECR 리포지토리를 만들 서비스 목록 (backend/apps 디렉터리 이름)"
+  description = "ECR 리포지토리를 만들 이미지 목록 (backend/apps 디렉터리 이름 + DB 마이그레이션). .gitlab-ci.yml IMAGES 와 같다"
   type        = set(string)
   default = [
     "api-gateway",
@@ -28,6 +28,9 @@ variable "services" {
     "payment-service",
     "pg-mock-service",
     "user-service",
+    # Flyway 마이그레이션 (메인: backend 차트 hook Job, 결제: 결제 서버)
+    "main-migrations",
+    "payment-migrations",
   ]
 }
 

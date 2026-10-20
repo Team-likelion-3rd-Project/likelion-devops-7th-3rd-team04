@@ -10,7 +10,7 @@
   - 이후: 모노레포 릴리스 PR(develop → main) merge 때 GitLab main 파이프라인이 gitops 레포에 PR 을 엽니다(values 복사 + 이미지 태그 + chart revision). 사람이 gitops 레포에 직접 PR 을 여는 것은 비상 경로뿐입니다.
 - gitops 레포에만 있는 값을 만들지 않습니다. 두 곳이 다르면 이 폴더 기준으로 맞춥니다.
 - public 레포로 그대로 복사되므로 **비밀값을 넣지 않습니다** (AWS Secrets Manager → External Secrets).
-- 아직 옮기지 않은 앱(`backend`, `payment`)은 gitops 레포 쪽이 기준입니다 (LDP-79 에서 이관).
+- 아직 옮기지 않은 `payment`(결제 서버 이미지 태그, 앱 정의 아님)는 gitops 레포 쪽이 기준입니다 (결제 단계에서 이관).
 
 ```
 infra/gitops/prod/          (= gitops 레포 envs/prod/)
@@ -19,7 +19,9 @@ infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── pod-identity-webhook/  chart.yaml · values.yaml          20  IRSA 주입 (ns/SA → Role 매핑)
 ├── whoami/                chart.yaml · values.yaml · chart/ 20  수직 경로 검증용 테스트 백엔드 (/whoami)
 ├── external-secrets/      chart.yaml · values.yaml          30  External Secrets Operator
-└── cluster-secret-store/  chart.yaml · chart/               40  ClusterSecretStore aws-secrets-manager
+├── cluster-secret-store/  chart.yaml · chart/               40  ClusterSecretStore aws-secrets-manager
+├── backend-secrets/       chart.yaml · chart/               45  backend Secret(ExternalSecret) · RDS CA ConfigMap
+└── backend/               chart.yaml · values.yaml          50  backend (모노레포 backend-deploy/charts/backend, 커밋 SHA 고정)
 ```
 
 ## IRSA · 비밀값
@@ -35,6 +37,8 @@ pod-identity-webhook ns/SA → Role 매핑(values.yaml) 의 파드에 AWS_ROLE_A
 
 - **IRSA 를 쓰는 앱을 추가할 때**: Terraform 70 `irsa.tf` 의 `irsa_roles` 에 Role(ns · SA) 을, `pod-identity-webhook/values.yaml` 에 같은 ns/SA 매핑을 추가합니다. SA 에 `eks.amazonaws.com/role-arn` annotation 은 달지 않습니다 (ARN 에 계정 ID 가 들어감).
 - **비밀값**: 앱은 `ExternalSecret` 에서 `ClusterSecretStore` `aws-secrets-manager` 를 참조해 Secrets Manager 값(`team04-hotel/prod/*`)을 받습니다. 읽을 수 있는 Secret 은 ESO Role 정책(70 `irsa.tf`)과 Secret 리소스 정책(41-main-data)이 제한합니다.
+- **backend Secret**: `backend-secrets` 앱이 Secret `backend-secrets` 를 만듭니다 (`chart/values.yaml` 의 `data` = Secret key ← Secrets Manager 이름 · 속성). backend 차트의 Flyway hook Job 은 차트의 일반 리소스보다 먼저 돌기 때문에 Secret 을 backend 릴리스 밖에 둡니다. 서비스가 새 `secretEnv` 를 쓰면 여기와 Terraform 41-main-data Secret 에 같이 추가합니다.
+- **backend IRSA**: backend 차트가 서비스마다 같은 이름의 ServiceAccount 를 만듭니다 (`serviceAccounts.create: true`). 매핑은 `backend/<서비스 이름>` 으로 추가합니다.
 - webhook 은 `failurePolicy: Fail` 입니다. webhook 이 준비되기 전에 만든 파드가 자격 증명 없이 남지 않고, 생성이 거부된 뒤 다시 만들어집니다. 노드 · 네트워크 · 인증서 · 배포 agent 네임스페이스는 호출하지 않습니다 (`values.yaml` namespaceSelector).
 
 ## 클러스터 값 (`clusterValues`)
@@ -45,7 +49,7 @@ public 레포에 둘 수 없는 클러스터 값(계정 ID 등)은 Ansible 이 C
 |---|---|
 | `global.awsAccountId` | AWS 계정 ID (CP Role 로 STS 조회) |
 
-values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.awsAccountId }}` 로 씁니다 (예: `pod-identity-webhook` 매핑의 `RoleARN`). gitops 레포 `validate.sh` 는 더미 값(`000000000000`)으로 렌더링합니다. 비밀값은 넣지 않습니다.
+values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.awsAccountId }}` 로 씁니다 (예: `pod-identity-webhook` 매핑의 `RoleARN`, backend 의 `global.imageRegistry` · `services.*.env`). gitops 레포 `validate.sh` 는 더미 값(`000000000000`)으로 렌더링합니다. 비밀값은 넣지 않습니다.
 
 ## 앱 정의 (`<앱>/chart.yaml`)
 

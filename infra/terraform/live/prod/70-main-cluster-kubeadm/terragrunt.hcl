@@ -48,6 +48,7 @@ dependency "main_data" {
     secret_names = {
       main_db     = "team04-hotel/prod/main-db"
       main_valkey = "team04-hotel/prod/main-valkey"
+      backend_app = "team04-hotel/prod/backend-app"
     }
   }
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]

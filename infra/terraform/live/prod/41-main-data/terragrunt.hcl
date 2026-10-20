@@ -31,4 +31,8 @@ dependency "security" {
 inputs = {
   db_subnet_ids = dependency.network.outputs.main.subnet_ids.db
   sg_ids        = dependency.security.outputs.sg_ids
+
+  # TODO(rc.3 게이트): 백엔드 TypeORM 에 TLS 옵션이 들어오면 지운다(기본값 true).
+  # 그 전까지는 앱이 TLS 없이 접속하므로 끈다. Flyway 는 이미 TLS(verify-full)로 접속한다
+  db_require_secure_transport = false
 }

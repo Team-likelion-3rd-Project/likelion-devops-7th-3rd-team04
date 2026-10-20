@@ -10,4 +10,6 @@
     - common
     - containerd
     - kubernetes
+    # kubeadm join(kubelet 시작) 전에 설치
+    - aws_ecr_credential_provider
     - aws_worker
