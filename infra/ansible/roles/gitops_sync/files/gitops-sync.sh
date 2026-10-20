@@ -5,11 +5,11 @@
 #   2) 가져오기: gitops 레포 그 SHA 와 각 앱 차트(helm pull · git fetch). 실패하면 기록하지 않고 종료 → 다음 실행이 재시도
 #   3) 적용: order 순 helm upgrade --install --atomic. 실패하면 failed_sha 기록 → 브랜치가 바뀔 때까지 재시도 안 함
 #
-# 앱 = APPS_PATH 아래 chart.yaml 이 있는 폴더. 앞 앱이 적용된 뒤 뒤 앱이 실패해도 앞 앱은 새 버전으로 남는다.
+# 앱 = APPS_PATH 아래 chart.yaml 이 있는 폴더. clusterValues: true 면 CLUSTER_VALUES(Ansible 이 만든 클러스터 값)도 -f 로 넘긴다. 앞 앱이 적용된 뒤 뒤 앱이 실패해도 앞 앱은 새 버전으로 남는다.
 # 폴더를 지워도 릴리스는 삭제하지 않는다 (helm uninstall 은 사람이 한다)
 set -Eeuo pipefail
 
-: "${REPO_URL:?}" "${BRANCH:?}" "${APPS_PATH:?}" "${HELM_TIMEOUT:?}" "${POD_NAMESPACE:?}"
+: "${REPO_URL:?}" "${BRANCH:?}" "${APPS_PATH:?}" "${HELM_TIMEOUT:?}" "${POD_NAMESPACE:?}" "${CLUSTER_VALUES:?}"
 STATE_CM=gitops-sync-state
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -120,6 +120,8 @@ for dir in "${apps[@]}"; do
   [[ -n "$namespace" && -n "$release" ]] || apply_fail "$app" "chart.yaml 에 namespace · release 가 필요합니다"
   values=()
   [[ -f "$dir/values.yaml" ]] && values=(-f "$dir/values.yaml")
+  # 클러스터 값(계정 ID 등)은 쓰는 앱만 받는다. 모르는 키를 거부하는 차트 schema 가 있다
+  [[ "$(yq '.clusterValues' "$def")" == "true" ]] && values+=(-f "$CLUSTER_VALUES")
 
   log "helm upgrade --install $release ($app, -n $namespace)"
   if ! helm upgrade --install "$release" "${chart_ref[$app]}" -n "$namespace" --create-namespace \

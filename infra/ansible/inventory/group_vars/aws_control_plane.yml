@@ -4,6 +4,8 @@
 # user-data 가 aws.yml 의 값 외에 넘기는 extra vars
 #   k8s_cp_role                 init (CP-a) | join (CP-b · c)
 #   nth_queue_url               NTH 가 받는 SQS 큐 URL (70 node-lifecycle.tf)
+#   k8s_service_account_issuer  kube-apiserver --service-account-issuer = 10-global OIDC 버킷 URL (IRSA, 70 irsa.tf)
+#   oidc_bucket_name            CP-a 가 init 후 keys.json 을 올리는 버킷
 
 # VPC 점보 프레임 MTU(9001) - VXLAN 오버헤드(50)
 calico_mtu: 8951
@@ -31,3 +33,9 @@ aws_nth_chart_version: "0.27.6"   # NTH v1.25.6
 # Traefik · whoami 등 클러스터 서비스의 원본은 gitops 레포 envs/prod (모노레포 infra/gitops/prod)
 # 대상 브랜치. 작업 브랜치 검증은 이 값이 아니라 ConfigMap gitops-sync-config 의 BRANCH 를 바꾼다 — 머지 시 main
 gitops_sync_branch: main
+
+# public gitops 레포에 두지 않는 클러스터 값. chart.yaml 에 clusterValues: true 인 앱에만 넘긴다 (roles/gitops_sync).
+# 계정 ID 는 IRSA Role ARN 에 쓴다 (pod-identity-webhook). aws_account_id 는 aws-control-plane.yml 이 STS 로 조회
+gitops_sync_cluster_values:
+  global:
+    awsAccountId: "{{ aws_account_id }}"

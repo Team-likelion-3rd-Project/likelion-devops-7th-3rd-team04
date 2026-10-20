@@ -20,8 +20,10 @@ resource "aws_launch_template" "cp" {
     playbook          = "aws-control-plane.yml"
     report_asg_health = true
     extra_vars = jsonencode(merge(local.node_extra_vars, {
-      k8s_cp_role   = each.key == "a" ? "init" : "join"
-      nth_queue_url = aws_sqs_queue.nth.url
+      k8s_cp_role                = each.key == "a" ? "init" : "join"
+      nth_queue_url              = aws_sqs_queue.nth.url
+      k8s_service_account_issuer = var.oidc_issuer_url
+      oidc_bucket_name           = var.oidc_bucket_name
     }))
   })))
 

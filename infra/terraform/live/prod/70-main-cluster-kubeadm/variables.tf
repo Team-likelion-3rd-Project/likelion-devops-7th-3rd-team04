@@ -18,6 +18,21 @@ variable "region" {
 
 # ── 다른 스택 output (terragrunt.hcl 의 dependency 가 넣는다) ──
 
+variable "oidc_issuer_url" {
+  description = "10-global 의 oidc_issuer_url (kube-apiserver --service-account-issuer, IRSA 신뢰 정책의 OIDC 공급자)"
+  type        = string
+}
+
+variable "oidc_bucket_name" {
+  description = "10-global 의 oidc_bucket_name (CP-a 가 init 후 keys.json 을 올리는 버킷)"
+  type        = string
+}
+
+variable "secret_names" {
+  description = "41-main-data 의 secret_names (main_db, main_valkey). ESO Role 이 읽을 수 있는 Secret"
+  type        = map(string)
+}
+
 variable "main_network" {
   description = "20-network 의 main output (vpc_id, vpc_cidr, subnet_ids, subnet_ids_by_az)"
   type = object({

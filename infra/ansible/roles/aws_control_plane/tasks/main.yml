@@ -43,6 +43,26 @@
       ansible.builtin.include_role:
         name: control_plane
 
+    # IRSA: 클러스터마다 SA 서명키가 새로 생기므로 init 때마다 공개키(keys.json)를 10-global OIDC 버킷에 올린다.
+    # CA cert hash 기록 전에 한다. 실패하면 CP-a 가 교체되고, hash 가 pending 이라 새 CP-a 가 다시 init 한다
+    - name: SA 토큰 발급자 확인 (OIDC 버킷 URL 과 같아야 IAM 이 토큰을 검증)
+      ansible.builtin.command: kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw /.well-known/openid-configuration
+      register: sa_issuer
+      changed_when: false
+      failed_when: (sa_issuer.stdout | from_json).issuer != k8s_service_account_issuer
+
+    # JWKS 의 kid 는 kube-apiserver 가 토큰에 넣는 값과 같다. Ansible 변수로 받지 않고 파이프로 넘긴다
+    # (변수를 템플릿에 넣으면 JSON 문자열이 dict 로 바뀌어 Python repr 로 올라간다)
+    - name: SA 서명 공개키(JWKS) 를 keys.json 으로 업로드
+      ansible.builtin.shell: >-
+        set -o pipefail &&
+        kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw /openid/v1/jwks
+        | aws s3 cp - s3://{{ oidc_bucket_name }}/keys.json --region {{ aws_region }}
+        --content-type application/json --only-show-errors
+      args:
+        executable: /bin/bash
+      changed_when: true
+
     - name: CA 인증서 해시 계산
       ansible.builtin.shell: >-
         set -o pipefail &&

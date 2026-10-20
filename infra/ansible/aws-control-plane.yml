@@ -42,5 +42,15 @@
       delay: 10
       changed_when: false
 
+    # gitops_sync_cluster_values (group_vars/aws_control_plane.yml). CP Role 자격 증명으로 조회해 Terraform · Git 에 두지 않는다
+    - name: 계정 ID 조회
+      ansible.builtin.command: aws sts get-caller-identity --region {{ aws_region }} --query Account --output text
+      register: caller_account
+      changed_when: false
+
+    - name: 계정 ID fact 등록
+      ansible.builtin.set_fact:
+        aws_account_id: "{{ caller_account.stdout | trim }}"
+
   roles:
     - gitops_sync
