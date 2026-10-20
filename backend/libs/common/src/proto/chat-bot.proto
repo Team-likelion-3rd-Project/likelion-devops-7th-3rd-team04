@@ -24,6 +24,20 @@ message SendMessageResponse {
   string sessionId = 1; // 비로그인 응답에서는 빈 문자열
   string reply = 2;
   string createdAt = 3;
+  ChatAction action = 4; // 답변에 붙는 액션 카드. 없으면 설정하지 않음(수신 측에서 null)
+}
+
+// 챗봇이 제안하는 다음 동작. 실행은 프론트가 사용자 JWT로 기존 API를 호출해서 합니다.
+// 문자열 ""·숫자 0은 "값 없음"입니다. 예약 ID·금액·URL은 담지 않습니다
+// (결제·취소 대상은 프론트가 본인 예약을 직접 조회).
+message ChatAction {
+  string type = 1;      // BOOK | PAY | CANCEL | LOGIN_REQUIRED
+  string hotel = 2;     // BOOK 전용: frontend data/hotels.ts의 slug (seoul | busan | jeju)
+  string roomName = 3;  // BOOK 전용: 객실 타입 이름(프론트가 실제 객실과 대조)
+  string checkIn = 4;   // BOOK 전용: YYYY-MM-DD
+  string checkOut = 5;  // BOOK 전용: YYYY-MM-DD
+  int32 adults = 6;     // BOOK 전용
+  int32 children = 7;   // BOOK 전용
 }
 
 message GetHistoryRequest {

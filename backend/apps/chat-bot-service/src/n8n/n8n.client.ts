@@ -15,6 +15,9 @@ export interface N8nChatRequest {
 
 export interface N8nChatResponse {
   reply: string;
+  // LLM이 만든 값이라 타입을 믿지 않습니다 — chat-action.ts의 sanitizeChatAction으로만 꺼내 씁니다.
+  intent?: unknown;
+  action?: unknown;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;

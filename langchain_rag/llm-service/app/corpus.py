@@ -39,8 +39,8 @@ class _Hotel(TypedDict):
     rooms: list[_Room]
 
 
-# --- seed.ts의 HOTEL_SEEDS와 동일하게 유지 ---
-_HOTELS: list[_Hotel] = [
+# --- seed.ts의 HOTEL_SEEDS와 동일하게 유지 (app/intent.py도 지점·객실명 목록으로 사용) ---
+HOTELS: list[_Hotel] = [
     {
         "slug": "seoul",
         "name": "서울점",
@@ -257,8 +257,8 @@ _POLICY_DOCUMENTS: list[Document] = [
     {
         "id": "policy-cancellation",
         "text": (
-            "취소/환불 정책: 체크인 3일 전까지 취소 시 전액 환불됩니다. "
-            "그 이후 취소는 1박 요금이 위약금으로 부과되며, 노쇼(No-show)는 환불되지 않습니다."
+            "취소/환불 정책: 결제 전(결제 대기) 예약은 취소 즉시 예약이 해제되며, "
+            "결제를 완료한 예약은 취소 시 결제 금액 전액이 환불됩니다. 취소는 마이페이지의 예약 상세나 챗봇에서 할 수 있습니다."
         ),
         "metadata": {"source": "policy", "topic": "cancellation"},
     },
@@ -273,8 +273,8 @@ _POLICY_DOCUMENTS: list[Document] = [
 ]
 
 DOCUMENTS: list[Document] = [
-    *(_hotel_document(hotel) for hotel in _HOTELS),
-    *(_room_document(hotel, room) for hotel in _HOTELS for room in hotel["rooms"]),
+    *(_hotel_document(hotel) for hotel in HOTELS),
+    *(_room_document(hotel, room) for hotel in HOTELS for room in hotel["rooms"]),
     _facility_document(),
     *_POLICY_DOCUMENTS,
 ]

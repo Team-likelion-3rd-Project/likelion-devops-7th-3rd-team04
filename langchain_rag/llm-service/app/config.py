@@ -12,3 +12,6 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 VECTOR_BUCKET_NAME = os.getenv("VECTOR_BUCKET_NAME")
 VECTOR_INDEX_NAME = os.getenv("VECTOR_INDEX_NAME")
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
+
+# 의도 분류(app/intent.py)에 넣을 최근 대화 이력 메시지 수.
+INTENT_HISTORY_MESSAGES = int(os.getenv("INTENT_HISTORY_MESSAGES", "10"))

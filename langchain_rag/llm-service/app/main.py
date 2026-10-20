@@ -19,5 +19,10 @@ async def health() -> dict[str, str]:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    reply = await generate_reply(request.message, request.history, request.context)
-    return ChatResponse(reply=reply)
+    reply, intent_result = await generate_reply(
+        request.message, request.history, request.context, request.authenticated
+    )
+    # 비로그인이면 액션은 내보내지 않습니다(intent만 전달 — chat-bot-service가 로그인 안내로 바꿈).
+    # 실제 차단은 chat-bot-service가 하며, 여기는 이중 방어입니다.
+    action = intent_result.action if request.authenticated else None
+    return ChatResponse(reply=reply, intent=intent_result.intent, action=action)

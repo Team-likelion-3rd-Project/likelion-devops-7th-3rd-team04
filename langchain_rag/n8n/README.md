@@ -1,18 +1,18 @@
 # langchain_rag/n8n — 오케스트레이션 워크플로
 
 `backend/apps/chat-bot-service/src/n8n/n8n.client.ts`가 호출하는 `N8N_WEBHOOK_URL` 계약을 구현합니다.
-요청은 `{sessionId?, userId?, message, history}`, 응답은 `{reply}`입니다.
+요청은 `{sessionId?, userId?, message, history}`, 응답은 `{reply, intent, action}`입니다.
 
 `workflows/chat-orchestration.json`의 노드 구성:
 
 ```
 Webhook (POST /webhook/chat)
-  → Map to llm-service contract   (Code: USER/ASSISTANT → user/assistant, sessionId/userId 제거)
+  → Map to llm-service contract   (Code: USER/ASSISTANT → user/assistant, sessionId/userId 제거, authenticated = !!userId)
   → Call llm-service               (HTTP Request: POST llm-service:8000/chat, 타임아웃 120초)
-  → Respond to Webhook             ({ reply })
+  → Respond to Webhook             ({ reply, intent, action })
 ```
 
-RAG 검색은 워크플로에서 하지 않습니다. `context` 없이 호출하면 llm-service가 직접 S3 Vectors를 검색합니다(`../llm-service/README.md`의 "RAG 검색" 참고).
+RAG 검색과 예약·결제·취소 의도 분류는 워크플로에서 하지 않습니다. 둘 다 llm-service가 합니다(`../llm-service/README.md`의 "RAG 검색", "예약·결제·취소 액션" 참고). `authenticated`는 답변 문구에만 쓰이고, 액션 검증과 비로그인 차단은 chat-bot-service가 합니다.
 
 ## 로컬 실행
 

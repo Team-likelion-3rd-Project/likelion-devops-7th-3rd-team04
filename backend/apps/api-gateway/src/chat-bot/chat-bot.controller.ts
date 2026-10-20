@@ -33,15 +33,63 @@ interface ChatBotService {
   sendMessage(data: {
     userId: number;
     message: string;
-  }): Observable<SendMessageResponseDto>;
+  }): Observable<SendMessageGrpcResponse>;
   getHistory(data: { userId: number }): Observable<GetHistoryResponseDto>;
 }
 
-// proto의 SendMessageResponse 메시지와 1:1 대응되는 응답 형태
+// proto의 ChatAction 메시지. ""·0은 "값 없음"이라는 proto3 약속을 그대로 따릅니다.
+interface ChatActionGrpc {
+  type: string;
+  hotel: string;
+  roomName: string;
+  checkIn: string;
+  checkOut: string;
+  adults: number;
+  children: number;
+}
+
+// proto의 SendMessageResponse. proto-loader defaults:true라 action을 설정하지 않으면 null로 옵니다.
+interface SendMessageGrpcResponse {
+  sessionId: string;
+  reply: string;
+  createdAt: string;
+  action?: ChatActionGrpc | null;
+}
+
+// 클라이언트에 내려가는 액션 카드. 값 없음은 null로 바꿔 프론트가 proto 약속을 몰라도 되게 합니다.
+// 검증은 chat-bot-service(sanitizeChatAction)가 끝낸 상태라 여기서는 형태만 바꿉니다.
+interface ChatActionDto {
+  type: 'BOOK' | 'PAY' | 'CANCEL' | 'LOGIN_REQUIRED';
+  hotel: string | null;
+  roomName: string | null;
+  checkIn: string | null;
+  checkOut: string | null;
+  adults: number | null;
+  children: number | null;
+}
+
 interface SendMessageResponseDto {
   sessionId: string;
   reply: string;
   createdAt: string;
+  action: ChatActionDto | null;
+}
+
+function toChatActionDto(
+  action: ChatActionGrpc | null | undefined,
+): ChatActionDto | null {
+  if (!action?.type) {
+    return null;
+  }
+  return {
+    type: action.type as ChatActionDto['type'],
+    hotel: action.hotel || null,
+    roomName: action.roomName || null,
+    checkIn: action.checkIn || null,
+    checkOut: action.checkOut || null,
+    adults: action.adults || null,
+    children: action.type === 'BOOK' ? action.children : null,
+  };
 }
 
 // proto의 ChatMessage 메시지와 1:1 대응되는 응답 형태
@@ -108,12 +156,16 @@ export class ChatBotController implements OnModuleInit {
       'n8n AI workflow에 메시지를 위임해 응답을 받습니다. Bearer 토큰을 함께 보내면 대화 ' +
       '이력이 세션에 저장되어 다음 메시지의 context로 이어지고, 토큰 없이 호출하면 ' +
       '이력을 남기지 않는 1회성 질문으로 처리됩니다(Bearer 토큰은 선택 사항). ' +
-      'IP당 분당 10회로 rate limit이 걸려 있습니다.',
+      'IP당 분당 10회로 rate limit이 걸려 있습니다. ' +
+      '응답의 action은 챗봇이 제안하는 다음 동작(액션 카드)으로, 서버는 아무것도 실행하지 않습니다 — ' +
+      'BOOK(예약 화면 딥링크 재료: hotel/roomName/checkIn/checkOut/adults/children), ' +
+      'PAY·CANCEL(대상 예약은 클라이언트가 GET /api/bookings/me로 직접 조회), ' +
+      'LOGIN_REQUIRED(비로그인 사용자가 예약·결제·취소 의도를 보임). 제안이 없으면 null입니다.',
   })
   @ApiResponse({
     status: 201,
     description:
-      '챗봇 응답 생성 성공. sessionId는 비로그인 호출인 경우 빈 문자열입니다.',
+      '챗봇 응답 생성 성공. sessionId는 비로그인 호출인 경우 빈 문자열이고, action은 없으면 null입니다.',
   })
   @ApiResponse({
     status: 429,
@@ -127,7 +179,7 @@ export class ChatBotController implements OnModuleInit {
     @Body() dto: SendMessageDto,
     @OptionalCurrentUser() user: AuthenticatedUser | null,
   ): Promise<SendMessageResponseDto> {
-    return firstValueFrom(
+    const { sessionId, reply, createdAt, action } = await firstValueFrom(
       this.chatBotService.sendMessage({
         userId: user?.userId ?? 0,
         message: dto.message,
@@ -137,6 +189,7 @@ export class ChatBotController implements OnModuleInit {
         err?.details || err?.message || '챗봇 응답 생성에 실패했습니다.',
       );
     });
+    return { sessionId, reply, createdAt, action: toChatActionDto(action) };
   }
 
   /**

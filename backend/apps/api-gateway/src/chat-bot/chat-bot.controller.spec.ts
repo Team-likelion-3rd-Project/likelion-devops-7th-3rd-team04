@@ -67,8 +67,79 @@ describe('ChatBotController', () => {
         userId: 0,
         message: '안녕',
       });
-      expect(result).toEqual(sendMessageResponse);
+      expect(result).toEqual({ ...sendMessageResponse, action: null });
     });
+
+    it('returns action null when gRPC sends a null action (proto defaults)', async () => {
+      sendMessageMock.mockReturnValue(
+        of({ ...sendMessageResponse, action: null }),
+      );
+
+      const result = await controller.sendMessage({ message: '안녕' }, user);
+
+      expect(result.action).toBeNull();
+    });
+
+    it('maps a BOOK action, turning proto empty values into null', async () => {
+      sendMessageMock.mockReturnValue(
+        of({
+          ...sendMessageResponse,
+          action: {
+            type: 'BOOK',
+            hotel: 'busan',
+            roomName: '',
+            checkIn: '2026-12-01',
+            checkOut: '2026-12-03',
+            adults: 2,
+            children: 0,
+          },
+        }),
+      );
+
+      const result = await controller.sendMessage({ message: '예약' }, user);
+
+      expect(result.action).toEqual({
+        type: 'BOOK',
+        hotel: 'busan',
+        roomName: null,
+        checkIn: '2026-12-01',
+        checkOut: '2026-12-03',
+        adults: 2,
+        children: 0,
+      });
+    });
+
+    it.each(['PAY', 'CANCEL', 'LOGIN_REQUIRED'])(
+      'maps a %s action to type only',
+      async (type) => {
+        sendMessageMock.mockReturnValue(
+          of({
+            ...sendMessageResponse,
+            action: {
+              type,
+              hotel: '',
+              roomName: '',
+              checkIn: '',
+              checkOut: '',
+              adults: 0,
+              children: 0,
+            },
+          }),
+        );
+
+        const result = await controller.sendMessage({ message: '...' }, user);
+
+        expect(result.action).toEqual({
+          type,
+          hotel: null,
+          roomName: null,
+          checkIn: null,
+          checkOut: null,
+          adults: null,
+          children: null,
+        });
+      },
+    );
 
     it('passes the authenticated userId for a logged-in caller', async () => {
       await controller.sendMessage({ message: '안녕' }, user);

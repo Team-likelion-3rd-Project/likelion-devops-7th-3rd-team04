@@ -1,28 +1,30 @@
-"""LangChain 대화 체인: 시스템 프롬프트 + 대화 이력 + Ollama 호출.
+"""LangChain 대화 체인: 의도 분류 → 시스템 프롬프트 + 대화 이력 + Ollama 호출.
 
 한 턴의 처리 순서:
-  1. 호출자가 `context`를 넘겼으면 그대로 사용 (테스트용 override)
-  2. 없으면 retrieval.py로 S3 Vectors RAG 검색
-  3. 검색 결과가 없거나 실패하면 근거 없이(ungrounded) 답변
+  1. intent.py로 예약·결제·취소 의도와 예약 슬롯을 뽑음 (짧은 JSON 호출)
+  2. 호출자가 `context`를 넘겼으면 그대로 사용 (테스트용 override), 없으면 retrieval.py로 RAG 검색
+  3. 의도에 맞는 지시(되묻기/버튼 안내/로그인 안내)를 시스템 프롬프트에 붙여 답변 생성
 """
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_ollama import ChatOllama
 
-from . import config, retrieval
+from . import config, intent, retrieval
 from .schemas import ChatMessage
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant for a hotel booking service. "
-    "Answer concisely and in the same language the user writes in."
+    "Answer concisely and in the same language the user writes in. "
+    "You cannot create, pay for or cancel reservations yourself and must never claim that you did; "
+    "the service shows buttons for those actions when appropriate."
 )
 
 _llm = ChatOllama(base_url=config.OLLAMA_BASE_URL, model=config.OLLAMA_MODEL)
 
 _prompt = ChatPromptTemplate.from_messages(
     [
-        ("system", SYSTEM_PROMPT),
+        ("system", "{system}"),
         MessagesPlaceholder("history"),
         ("human", "{message}"),
     ]
@@ -42,13 +44,25 @@ def _to_langchain_messages(history: list[ChatMessage]) -> list[HumanMessage | AI
 
 
 async def generate_reply(
-    message: str, history: list[ChatMessage], context: str | None = None
-) -> str:
+    message: str,
+    history: list[ChatMessage],
+    context: str | None = None,
+    authenticated: bool = False,
+) -> tuple[str, intent.IntentResult]:
+    intent_result = await intent.classify(message, history)
+
     if context is None:
         context = await retrieval.query_context(message)
     prompt_message = message if context is None else f"{message}\n\nContext:\n{context}"
 
+    hint = intent.reply_hint(intent_result, authenticated)
+    system = SYSTEM_PROMPT if hint is None else f"{SYSTEM_PROMPT}\n\n{hint}"
+
     result = await _chain.ainvoke(
-        {"message": prompt_message, "history": _to_langchain_messages(history)}
+        {
+            "system": system,
+            "message": prompt_message,
+            "history": _to_langchain_messages(history),
+        }
     )
-    return result.content
+    return result.content, intent_result

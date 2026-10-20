@@ -1,0 +1,127 @@
+/* 챗봇 답변 아래 액션 카드 (ChatActionCard.tsx). 색은 ChatWidget.css와 같은 전역 토큰을 쓴다. */
+.chat-action-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 13px;
+  line-height: 1.45;
+
+  &.is-inactive {
+    color: var(--text);
+    background: var(--code-bg);
+    opacity: 0.75;
+  }
+
+  button {
+    align-self: flex-start;
+    padding: 7px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+  }
+}
+
+.chat-action-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.chat-action-meta,
+.chat-action-error,
+.chat-action-done {
+  margin: 0;
+}
+
+.chat-action-meta {
+  color: var(--text);
+}
+
+.chat-action-error {
+  color: #e5484d;
+}
+
+.chat-action-done {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.chat-action-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+
+  dt {
+    color: var(--text);
+  }
+
+  dd {
+    margin: 0;
+    font-weight: 600;
+  }
+}
+
+.chat-action-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-action-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--code-bg);
+}
+
+.chat-action-item-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.chat-action-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-action-primary {
+  border: none;
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.chat-action-secondary {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.chat-action-danger {
+  border: none;
+  background: #e5484d;
+  color: #fff;
+}
