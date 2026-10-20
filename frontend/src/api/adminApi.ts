@@ -23,16 +23,23 @@ export interface AdminHotel {
   description: string
 }
 
-// api-gateway의 RoomImageDto(요청 바디)와 1:1 대응. imageBase64는 data: 접두사를 뺀 순수 Base64.
+// api-gateway의 RoomImageDto(요청 바디)와 1:1 대응. 저장소(MinIO·S3)에 먼저 올린 사진의 경로다 (LDP-88).
 export interface AdminRoomImageInput {
-  mimeType: string
-  imageBase64: string
+  objectKey: string
 }
 
 // proto의 RoomImage / RoomDto.images 응답과 1:1 대응
 export interface AdminRoomImage extends AdminRoomImageInput {
   imageId: number
+  mimeType: string
+  imageUrl: string // 사진 보기용 Presigned URL (1시간 뒤 만료)
   sortOrder: number
+}
+
+// 화면에서 골랐지만 아직 저장소에 올리지 않은 사진. 저장할 때 uploadAdminRoomImage로 올린다.
+export interface PendingRoomImage {
+  file: File
+  previewUrl: string // 미리보기용 data URL
 }
 
 // api-gateway의 /api/hotels/:hotelId/rooms 응답(RoomDto)과 1:1 대응
@@ -45,21 +52,14 @@ export interface AdminRoom {
   images: AdminRoomImage[]
 }
 
-// DB에는 Base64 원문만 저장되어 있어, <img src>에 바로 쓸 수 있는 data URL로 변환한다.
-export function toAdminImageDataUrl(image: AdminRoomImageInput): string {
-  return `data:${image.mimeType};base64,${image.imageBase64}`
-}
+// 객실 사진으로 올릴 수 있는 형식 (hotel-service RoomImageStorage와 같은 목록)
+export const ROOM_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 
-// <input type="file">로 선택한 이미지를 서버에 보낼 {mimeType, imageBase64} 형태로 변환한다.
-export function readImageFileAsInput(file: File): Promise<AdminRoomImageInput> {
+// <input type="file">로 선택한 이미지를 미리보기와 함께 보관한다. 저장소에는 저장 버튼을 누를 때 올린다.
+export function readImageFileForPreview(file: File): Promise<PendingRoomImage> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = () => {
-      const result = reader.result as string
-      // readAsDataURL 결과는 "data:image/png;base64,AAAA..." 형태라 콤마 뒤 순수 Base64만 잘라 쓴다.
-      const base64 = result.slice(result.indexOf(',') + 1)
-      resolve({ mimeType: file.type || 'application/octet-stream', imageBase64: base64 })
-    }
+    reader.onload = () => resolve({ file, previewUrl: reader.result as string })
     reader.onerror = () => reject(reader.error ?? new Error('이미지를 읽지 못했습니다.'))
     reader.readAsDataURL(file)
   })
@@ -211,9 +211,10 @@ export interface AdminRoomInput {
 }
 
 // POST /api/hotels/:hotelId/rooms (관리자 전용) - 신규 객실 등록
+// 사진은 저장 경로에 객실 id가 들어가서 등록할 때는 보내지 않는다. 등록 후 uploadAdminRoomImage → updateAdminRoom으로 붙인다.
 export async function createAdminRoom(
   hotelId: string | number,
-  input: AdminRoomInput,
+  input: Omit<AdminRoomInput, 'images'>,
 ): Promise<AdminRoom> {
   const res = await authedJsonFetch(`/api/hotels/${hotelId}/rooms`, 'POST', input)
   return parseJson<AdminRoom>(res)
@@ -227,6 +228,31 @@ export async function updateAdminRoom(
 ): Promise<AdminRoom> {
   const res = await authedJsonFetch(`/api/hotels/${hotelId}/rooms/${roomId}`, 'PUT', input)
   return parseJson<AdminRoom>(res)
+}
+
+// 객실 사진 1장을 저장소(MinIO·S3)에 올리고, 객실 수정의 images에 넣을 objectKey를 돌려준다 (LDP-88).
+// 1) POST /api/hotels/:hotelId/rooms/:roomId/images/upload-url (관리자 전용)로 업로드 URL을 받고
+// 2) 그 주소로 파일을 직접 PUT한다. 형식·크기가 서명에 들어가 있어 요청할 때 보낸 값과 같아야 한다.
+export async function uploadAdminRoomImage(
+  hotelId: string | number,
+  roomId: string | number,
+  file: File,
+): Promise<string> {
+  const res = await authedJsonFetch(`/api/hotels/${hotelId}/rooms/${roomId}/images/upload-url`, 'POST', {
+    mimeType: file.type,
+    size: file.size,
+  })
+  const { uploadUrl, objectKey } = await parseJson<{ uploadUrl: string; objectKey: string }>(res)
+
+  const upload = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': file.type },
+    body: file,
+  })
+  if (!upload.ok) {
+    throw new Error(`${file.name}을(를) 올리지 못했습니다. (${upload.status})`)
+  }
+  return objectKey
 }
 
 // DELETE /api/hotels/:hotelId/rooms/:roomId (관리자 전용) - 객실 삭제

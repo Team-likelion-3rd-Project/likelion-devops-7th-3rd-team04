@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { HotelController } from './hotel.controller';
 
 describe('HotelController', () => {
@@ -16,6 +20,7 @@ describe('HotelController', () => {
   const updateRoomMock = jest.fn();
   const deleteRoomMock = jest.fn();
   const getRoomAvailabilityMock = jest.fn();
+  const createRoomImageUploadUrlMock = jest.fn();
 
   const hotel = {
     hotelId: 1,
@@ -56,6 +61,13 @@ describe('HotelController', () => {
     updateRoomMock.mockReturnValue(of(room));
     deleteRoomMock.mockReturnValue(of({ success: true }));
     getRoomAvailabilityMock.mockReturnValue(of(availability));
+    createRoomImageUploadUrlMock.mockReturnValue(
+      of({
+        uploadUrl: 'https://storage.test/room-types/1/x.jpg?signed',
+        objectKey: 'room-types/1/x.jpg',
+        expiresIn: 300,
+      }),
+    );
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [HotelController],
@@ -75,6 +87,7 @@ describe('HotelController', () => {
               updateRoom: updateRoomMock,
               deleteRoom: deleteRoomMock,
               getRoomAvailability: getRoomAvailabilityMock,
+              createRoomImageUploadUrl: createRoomImageUploadUrlMock,
             }),
           },
         },
@@ -242,18 +255,48 @@ describe('HotelController', () => {
         NotFoundException,
       );
     });
+  });
 
-    it('should pass images through to hotel-service', async () => {
-      const dto = {
-        name: '디럭스 더블룸',
-        capacity: 2,
-        description: '시티뷰를 갖춘 넓은 더블룸입니다.',
-        images: [{ mimeType: 'image/jpeg', imageBase64: 'AAA' }],
-      };
+  describe('createRoomImageUploadUrl', () => {
+    it('should issue an upload URL through hotel-service', async () => {
+      const dto = { mimeType: 'image/jpeg', size: 1024 };
 
-      await controller.createRoom(1, dto);
+      const result = await controller.createRoomImageUploadUrl(1, 1, dto);
 
-      expect(createRoomMock).toHaveBeenCalledWith({ hotelId: 1, ...dto });
+      expect(createRoomImageUploadUrlMock).toHaveBeenCalledWith({
+        hotelId: 1,
+        roomId: 1,
+        ...dto,
+      });
+      expect(result.objectKey).toBe('room-types/1/x.jpg');
+    });
+
+    it('should throw NotFoundException when the room does not exist', async () => {
+      createRoomImageUploadUrlMock.mockReturnValue(
+        throwError(() => ({ details: '존재하지 않는 객실입니다.' })),
+      );
+
+      await expect(
+        controller.createRoomImageUploadUrl(1, 999, {
+          mimeType: 'image/jpeg',
+          size: 1024,
+        }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw BadRequestException when hotel-service rejects the file', async () => {
+      createRoomImageUploadUrlMock.mockReturnValue(
+        throwError(() => ({
+          details: '이미지는 5MB 이하만 올릴 수 있습니다.',
+        })),
+      );
+
+      await expect(
+        controller.createRoomImageUploadUrl(1, 1, {
+          mimeType: 'image/jpeg',
+          size: 1024,
+        }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
@@ -291,7 +334,7 @@ describe('HotelController', () => {
         name: '디럭스 더블룸',
         capacity: 2,
         description: '시티뷰를 갖춘 넓은 더블룸입니다.',
-        images: [{ mimeType: 'image/jpeg', imageBase64: 'AAA' }],
+        images: [{ objectKey: 'room-types/1/x.jpg' }],
       };
 
       await controller.updateRoom(1, 1, dto);
@@ -301,6 +344,38 @@ describe('HotelController', () => {
         roomId: 1,
         ...dto,
       });
+    });
+
+    it('should throw BadRequestException when hotel-service rejects an image', async () => {
+      updateRoomMock.mockReturnValue(
+        throwError(() => ({ details: '이 객실의 사진 경로가 아닙니다.' })),
+      );
+      const dto = {
+        name: '디럭스 더블룸',
+        capacity: 2,
+        images: [{ objectKey: 'room-types/2/x.jpg' }],
+      };
+
+      await expect(controller.updateRoom(1, 1, dto)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw ConflictException when totalCount goes below existing bookings', async () => {
+      updateRoomMock.mockReturnValue(
+        throwError(() => ({
+          details:
+            '이미 예약된 수(최대 3개)보다 보유 수량을 적게 줄일 수 없습니다.',
+        })),
+      );
+
+      await expect(
+        controller.updateRoom(1, 1, {
+          name: '디럭스 더블룸',
+          capacity: 2,
+          totalCount: 1,
+        }),
+      ).rejects.toThrow(ConflictException);
     });
   });
 

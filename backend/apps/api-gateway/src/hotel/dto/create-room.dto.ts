@@ -1,15 +1,11 @@
-import { Type } from 'class-transformer';
 import {
-  IsArray,
   IsInt,
   IsOptional,
   IsString,
   MaxLength,
   Min,
   MinLength,
-  ValidateNested,
 } from 'class-validator';
-import { RoomImageDto } from './room-image.dto';
 
 export class CreateRoomDto {
   /**
@@ -47,12 +43,6 @@ export class CreateRoomDto {
   @IsString()
   description?: string;
 
-  /**
-   * 객실 이미지 목록 (배열 순서 = 노출 순서, 0번째가 대표 이미지)
-   */
-  @IsOptional()
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => RoomImageDto)
-  images?: RoomImageDto[];
+  // 사진은 저장 경로에 객실 id가 들어가서(LDP-88) 등록할 때는 받지 않는다.
+  // 등록 후 POST /api/hotels/{hotelId}/rooms/{roomId}/images/upload-url → 객실 수정(images)으로 붙인다.
 }

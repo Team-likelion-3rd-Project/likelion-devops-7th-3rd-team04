@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { fetchMyBookings, isUnauthorized, refreshAccessToken, type Booking } from '../api/gateway'
-import { toImageDataUrl } from '../api/hotels'
 import { PAYMENT_BLOCK_MESSAGE, formatPaymentDue, paymentBlockReason } from '../api/payments'
 import PaymentModal from '../components/reservation/PaymentModal'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
@@ -146,7 +145,7 @@ function PaymentsPendingPage() {
                         {thumbnail ? (
                           <img
                             className="reservation-card-thumb"
-                            src={toImageDataUrl(thumbnail)}
+                            src={thumbnail.imageUrl}
                             alt={roomInfo?.room.name}
                           />
                         ) : (

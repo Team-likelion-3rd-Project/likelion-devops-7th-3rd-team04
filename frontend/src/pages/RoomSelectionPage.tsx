@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useHotels } from '../data/hotelStore'
-import { searchRooms, toImageDataUrl } from '../api/hotels'
+import { searchRooms } from '../api/hotels'
 import type { Room, RoomSearchResult } from '../api/hotels'
 import ReservationSteps from '../components/reservation/ReservationSteps'
 import RoomDetailModal from '../components/reservation/RoomDetailModal'
@@ -126,7 +126,7 @@ function RoomSelectionPage() {
                 return (
                   <li className="room-select-card" key={room.roomId}>
                     {thumbnail ? (
-                      <img className="room-select-thumb" src={toImageDataUrl(thumbnail)} alt={room.name} />
+                      <img className="room-select-thumb" src={thumbnail.imageUrl} alt={room.name} />
                     ) : (
                       <div className="room-select-thumb is-placeholder" aria-hidden="true" />
                     )}

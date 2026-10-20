@@ -12,6 +12,7 @@ import { RoomType } from './entities/room-type.entity';
 import { RoomUnit } from './entities/room-unit.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
+import { RoomImageStorage } from './room-image.storage';
 
 describe('HotelServiceController', () => {
   let hotelServiceController: HotelServiceController;
@@ -38,6 +39,13 @@ describe('HotelServiceController', () => {
     delete: jest.Mock;
     create: jest.Mock;
     save: jest.Mock;
+  };
+  // 객실 사진 저장소(MinIO·S3) — 실제 저장소 없이 Presigned URL·업로드 확인 결과만 흉내 낸다
+  let roomImageStorage: {
+    createUploadUrl: jest.Mock;
+    createViewUrl: jest.Mock;
+    getUploadedImageType: jest.Mock;
+    deleteObjects: jest.Mock;
   };
 
   const hotel = {
@@ -90,6 +98,14 @@ describe('HotelServiceController', () => {
         Promise.resolve(entities),
       ),
     };
+    roomImageStorage = {
+      createUploadUrl: jest.fn(),
+      createViewUrl: jest.fn((objectKey: string) =>
+        Promise.resolve(`https://storage.test/${objectKey}?signed`),
+      ),
+      getUploadedImageType: jest.fn().mockResolvedValue('image/jpeg'),
+      deleteObjects: jest.fn().mockResolvedValue(undefined),
+    };
 
     const app: TestingModule = await Test.createTestingModule({
       controllers: [HotelServiceController],
@@ -113,6 +129,7 @@ describe('HotelServiceController', () => {
           provide: getRepositoryToken(RoomImage),
           useValue: roomImageRepository,
         },
+        { provide: RoomImageStorage, useValue: roomImageStorage },
       ],
     }).compile();
 
@@ -226,14 +243,14 @@ describe('HotelServiceController', () => {
           imageId: 10,
           roomId: 1,
           mimeType: 'image/jpeg',
-          imageBase64: 'AAA',
+          objectKey: 'room-types/1/a.jpg',
           sortOrder: 0,
         },
         {
           imageId: 11,
           roomId: 1,
           mimeType: 'image/png',
-          imageBase64: 'BBB',
+          objectKey: 'room-types/1/b.png',
           sortOrder: 1,
         },
       ]);
@@ -243,17 +260,20 @@ describe('HotelServiceController', () => {
       expect(roomImageRepository.find).toHaveBeenCalledWith(
         expect.objectContaining({ order: { sortOrder: 'ASC' } }),
       );
+      // 사진은 저장소 경로로 만든 보기용 Presigned URL로 내려간다
       expect(result.rooms[0].images).toEqual([
         {
           imageId: 10,
           mimeType: 'image/jpeg',
-          imageBase64: 'AAA',
+          imageUrl: 'https://storage.test/room-types/1/a.jpg?signed',
+          objectKey: 'room-types/1/a.jpg',
           sortOrder: 0,
         },
         {
           imageId: 11,
           mimeType: 'image/png',
-          imageBase64: 'BBB',
+          imageUrl: 'https://storage.test/room-types/1/b.png?signed',
+          objectKey: 'room-types/1/b.png',
           sortOrder: 1,
         },
       ]);
@@ -481,6 +501,11 @@ describe('HotelServiceController', () => {
       const existingRoom = { ...room };
       roomRepository.findOne.mockResolvedValue(existingRoom);
       roomRepository.save.mockImplementation((r) => Promise.resolve(r));
+      // 기존 사진 2장 중 kept.jpg만 새 목록에 남는다
+      roomImageRepository.find.mockResolvedValueOnce([
+        { roomId: 1, objectKey: 'room-types/1/kept.jpg' },
+        { roomId: 1, objectKey: 'room-types/1/removed.jpg' },
+      ]);
 
       const result = await hotelServiceController.updateRoom({
         hotelId: 1,
@@ -488,31 +513,115 @@ describe('HotelServiceController', () => {
         name: '스탠다드 트윈룸',
         capacity: 3,
         description: '수정된 설명입니다.',
-        images: [{ mimeType: 'image/jpeg', imageBase64: 'AAA' }],
+        images: [
+          { objectKey: 'room-types/1/new.jpg' },
+          { objectKey: 'room-types/1/kept.jpg' },
+        ],
       });
 
+      // 파일 형식은 브라우저가 보낸 값이 아니라 저장소에 올라간 파일에서 읽는다
+      expect(roomImageStorage.getUploadedImageType).toHaveBeenCalledWith(
+        1,
+        'room-types/1/new.jpg',
+      );
       expect(roomImageRepository.delete).toHaveBeenCalledWith({ roomId: 1 });
       expect(roomImageRepository.save).toHaveBeenCalledWith([
         expect.objectContaining({
           roomId: 1,
           mimeType: 'image/jpeg',
-          imageBase64: 'AAA',
+          objectKey: 'room-types/1/new.jpg',
           sortOrder: 0,
         }),
+        expect.objectContaining({
+          objectKey: 'room-types/1/kept.jpg',
+          sortOrder: 1,
+        }),
       ]);
-      expect(result.images).toEqual([
+      // 새 목록에 없는 기존 사진만 저장소에서 지운다
+      expect(roomImageStorage.deleteObjects).toHaveBeenCalledWith([
+        'room-types/1/removed.jpg',
+      ]);
+      expect(result.images[0]).toEqual(
         expect.objectContaining({
           mimeType: 'image/jpeg',
-          imageBase64: 'AAA',
+          imageUrl: 'https://storage.test/room-types/1/new.jpg?signed',
+          objectKey: 'room-types/1/new.jpg',
           sortOrder: 0,
         }),
-      ]);
+      );
+    });
+
+    it('should not touch the room or its images when an image was not uploaded', async () => {
+      roomRepository.findOne.mockResolvedValue({ ...room });
+      roomImageStorage.getUploadedImageType.mockRejectedValue(
+        new RpcException('업로드되지 않은 이미지입니다.'),
+      );
+
+      await expect(
+        hotelServiceController.updateRoom({
+          hotelId: 1,
+          roomId: 1,
+          name: '스탠다드 트윈룸',
+          capacity: 3,
+          description: '수정된 설명입니다.',
+          images: [{ objectKey: 'room-types/1/missing.jpg' }],
+        }),
+      ).rejects.toThrow(RpcException);
+      expect(roomRepository.save).not.toHaveBeenCalled();
+      expect(roomImageRepository.delete).not.toHaveBeenCalled();
+      expect(roomImageStorage.deleteObjects).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createRoomImageUploadUrl', () => {
+    it('should issue an upload URL under the room path when the room exists', async () => {
+      roomRepository.findOne.mockResolvedValue(room);
+      const uploadUrl = {
+        uploadUrl: 'https://storage.test/room-types/1/x.jpg?signed',
+        objectKey: 'room-types/1/x.jpg',
+        expiresIn: 300,
+      };
+      roomImageStorage.createUploadUrl.mockResolvedValue(uploadUrl);
+
+      const result = await hotelServiceController.createRoomImageUploadUrl({
+        hotelId: 1,
+        roomId: 1,
+        mimeType: 'image/jpeg',
+        size: 1024,
+      });
+
+      expect(roomRepository.findOne).toHaveBeenCalledWith({
+        where: { hotelId: 1, roomId: 1 },
+      });
+      expect(roomImageStorage.createUploadUrl).toHaveBeenCalledWith(
+        1,
+        'image/jpeg',
+        1024,
+      );
+      expect(result).toEqual(uploadUrl);
+    });
+
+    it('should throw RpcException when the room does not exist', async () => {
+      roomRepository.findOne.mockResolvedValue(null);
+
+      await expect(
+        hotelServiceController.createRoomImageUploadUrl({
+          hotelId: 1,
+          roomId: 999,
+          mimeType: 'image/jpeg',
+          size: 1024,
+        }),
+      ).rejects.toThrow(RpcException);
+      expect(roomImageStorage.createUploadUrl).not.toHaveBeenCalled();
     });
   });
 
   describe('deleteRoom', () => {
     it('should delete the room and its child rows when it exists', async () => {
       roomRepository.findOne.mockResolvedValue(room);
+      roomImageRepository.find.mockResolvedValueOnce([
+        { roomId: 1, objectKey: 'room-types/1/a.jpg' },
+      ]);
 
       const result = await hotelServiceController.deleteRoom({
         hotelId: 1,
@@ -530,6 +639,10 @@ describe('HotelServiceController', () => {
         hotelId: 1,
         roomId: 1,
       });
+      // 저장소의 사진 파일도 함께 지운다
+      expect(roomImageStorage.deleteObjects).toHaveBeenCalledWith([
+        'room-types/1/a.jpg',
+      ]);
       expect(result).toEqual({ success: true });
     });
 

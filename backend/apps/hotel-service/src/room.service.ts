@@ -14,6 +14,7 @@ import { RoomUnit } from './entities/room-unit.entity';
 import { Hotel } from './entities/hotel.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
+import { RoomImageStorage } from './room-image.storage';
 
 // 'YYYY-MM-DD' 문자열에 일 단위 offset을 더한 'YYYY-MM-DD' 문자열을 반환한다 (UTC 기준 계산,
 // date 컬럼은 시간대 정보가 없으므로 로컬 타임존에 영향받지 않도록 UTC로 계산한다).
@@ -38,18 +39,26 @@ function isBookable(row: RoomAvailability, totalCount: number): boolean {
   return row.isAvailable && row.bookedCount < totalCount;
 }
 
-// proto의 RoomImageInput 메시지와 1:1 대응되는 입력 형태
+// proto의 RoomImageInput 메시지와 1:1 대응되는 입력 형태.
+// 관리자가 업로드 URL(CreateRoomImageUploadUrl)로 저장소에 먼저 올린 사진의 경로다.
+// 경로에 객실 id가 들어가서(room-types/{roomId}/...) 사진은 객실을 등록한 뒤 수정(UpdateRoom)으로 붙인다.
 export interface RoomImageInput {
-  mimeType: string;
-  imageBase64: string;
+  objectKey: string;
 }
 
 // proto의 RoomImage 메시지와 1:1 대응되는 응답 형태
 export interface RoomImageGrpcResponse {
   imageId: number;
   mimeType: string;
-  imageBase64: string;
+  imageUrl: string; // 사진 보기용 Presigned URL (일정 시간 뒤 만료)
+  objectKey: string; // 객실 수정 때 기존 사진을 유지하려면 이 값을 그대로 다시 보낸다
   sortOrder: number;
+}
+
+// 저장소에 올라간 것을 확인한 사진 (객실 수정 직전에 만든다)
+interface VerifiedRoomImage {
+  objectKey: string;
+  mimeType: string;
 }
 
 // proto의 Room 메시지와 1:1 대응되는 응답 형태
@@ -100,16 +109,17 @@ export class RoomService {
     @InjectRepository(RoomImage)
     private readonly roomImageRepository: Repository<RoomImage>,
     private readonly dataSource: DataSource,
+    private readonly roomImageStorage: RoomImageStorage,
   ) {}
 
   // 신규 객실 등록. hotelId가 존재하지 않으면 RpcException.
+  // 사진은 경로에 객실 id가 필요해서 여기서는 받지 않고, 등록 후 업로드 URL → 객실 수정으로 붙인다.
   async createRoom(data: {
     hotelId: number;
     name: string;
     capacity: number;
     totalCount?: number;
     description?: string;
-    images?: RoomImageInput[];
   }): Promise<RoomGrpcResponse> {
     const hotel = await this.hotelRepository.findOne({
       where: { hotelId: data.hotelId },
@@ -117,7 +127,6 @@ export class RoomService {
     if (!hotel) {
       throw new RpcException('존재하지 않는 호텔입니다.');
     }
-
     const room = this.roomRepository.create({
       hotelId: data.hotelId,
       name: data.name,
@@ -128,8 +137,7 @@ export class RoomService {
       description: data.description,
     });
     const saved = await this.roomRepository.save(room);
-    const images = await this.replaceRoomImages(saved.roomId, data.images);
-    return this.toGrpcResponse(saved, images);
+    return this.toGrpcResponse(saved, []);
   }
 
   // 특정 호텔의 전체 객실 목록 조회. hotelId가 존재하지 않으면 RpcException.
@@ -157,8 +165,10 @@ export class RoomService {
       imagesByRoomId.set(image.roomId, bucket);
     }
 
-    return rooms.map((room) =>
-      this.toGrpcResponse(room, imagesByRoomId.get(room.roomId) ?? []),
+    return Promise.all(
+      rooms.map((room) =>
+        this.toGrpcResponse(room, imagesByRoomId.get(room.roomId) ?? []),
+      ),
     );
   }
 
@@ -251,10 +261,15 @@ export class RoomService {
       imagesByRoomId.set(image.roomId, bucket);
     }
 
-    return availableRooms.map((room) => ({
-      room: this.toGrpcResponse(room, imagesByRoomId.get(room.roomId) ?? []),
-      minPrice: minPriceByRoomId.get(room.roomId) ?? 0,
-    }));
+    return Promise.all(
+      availableRooms.map(async (room) => ({
+        room: await this.toGrpcResponse(
+          room,
+          imagesByRoomId.get(room.roomId) ?? [],
+        ),
+        minPrice: minPriceByRoomId.get(room.roomId) ?? 0,
+      })),
+    );
   }
 
   // 기존 객실 정보 수정. hotelId/roomId 조합이 존재하지 않으면 RpcException.
@@ -276,6 +291,7 @@ export class RoomService {
     if (!room) {
       throw new RpcException('존재하지 않는 객실입니다.');
     }
+    const verifiedImages = await this.verifyUploadedImages(roomId, data.images);
 
     // 보유 수량(totalCount)은 여기서 바꾸지 않는다 — ACTIVE 호실 수로 자동 계산된다 (LDP-89, 호실 추가·점검).
     // 예전 화면이 totalCount를 보내도 오류 없이 무시한다.
@@ -284,7 +300,7 @@ export class RoomService {
     room.capacity = data.capacity;
     room.description = data.description;
     const saved = await this.roomRepository.save(room);
-    const images = await this.replaceRoomImages(saved.roomId, data.images);
+    const images = await this.replaceRoomImages(saved.roomId, verifiedImages);
     return this.toGrpcResponse(saved, images);
   }
 
@@ -311,32 +327,88 @@ export class RoomService {
       );
     }
 
+    const oldImages = await this.roomImageRepository.find({
+      where: { roomId },
+    });
     await this.roomImageRepository.delete({ roomId });
     await this.roomAvailabilityRepository.delete({ roomId });
     await this.roomRepository.delete({ hotelId, roomId });
+    // DB에서 지운 뒤 저장소의 사진 파일도 정리한다
+    await this.roomImageStorage.deleteObjects(
+      oldImages.map((image) => image.objectKey),
+    );
 
     return { success: true };
   }
 
-  // roomId에 연결된 이미지를 전달받은 목록으로 완전히 교체한다 (기존 삭제 후 재삽입).
-  private async replaceRoomImages(
+  // 관리자 업로드 URL 발급 (사진을 저장소에 직접 올릴 Presigned URL).
+  // hotelId/roomId 조합이 존재하지 않으면 RpcException.
+  async createRoomImageUploadUrl(
+    hotelId: number,
+    roomId: number,
+    mimeType: string,
+    size: number,
+  ) {
+    const room = await this.roomRepository.findOne({
+      where: { hotelId, roomId },
+    });
+    if (!room) {
+      throw new RpcException('존재하지 않는 객실입니다.');
+    }
+    return this.roomImageStorage.createUploadUrl(roomId, mimeType, size);
+  }
+
+  // 객실 수정으로 받은 사진 경로가 그 객실 경로에 실제로 올라가 있는지 확인하고, 파일 형식을 함께 돌려준다.
+  // 파일 형식은 브라우저가 보낸 값이 아니라 저장소에 기록된 값을 쓴다.
+  private async verifyUploadedImages(
     roomId: number,
     images?: RoomImageInput[],
-  ): Promise<RoomImage[]> {
-    await this.roomImageRepository.delete({ roomId });
+  ): Promise<VerifiedRoomImage[]> {
     if (!images || images.length === 0) {
       return [];
     }
-
-    const entities = images.map((image, index) =>
-      this.roomImageRepository.create({
-        roomId,
-        mimeType: image.mimeType,
-        imageBase64: image.imageBase64,
-        sortOrder: index,
-      }),
+    return Promise.all(
+      images.map(async ({ objectKey }) => ({
+        objectKey,
+        mimeType: await this.roomImageStorage.getUploadedImageType(
+          roomId,
+          objectKey,
+        ),
+      })),
     );
-    return this.roomImageRepository.save(entities);
+  }
+
+  // roomId에 연결된 이미지를 전달받은 목록으로 완전히 교체한다 (기존 삭제 후 재삽입).
+  // 새 목록에 없는 기존 사진은 저장소에서도 지운다 (DB 반영 뒤에 지우므로, 실패해도 화면엔 영향 없음).
+  private async replaceRoomImages(
+    roomId: number,
+    images: VerifiedRoomImage[],
+  ): Promise<RoomImage[]> {
+    const oldImages = await this.roomImageRepository.find({
+      where: { roomId },
+    });
+    await this.roomImageRepository.delete({ roomId });
+
+    let saved: RoomImage[] = [];
+    if (images.length > 0) {
+      const entities = images.map((image, index) =>
+        this.roomImageRepository.create({
+          roomId,
+          mimeType: image.mimeType,
+          objectKey: image.objectKey,
+          sortOrder: index,
+        }),
+      );
+      saved = await this.roomImageRepository.save(entities);
+    }
+
+    const keptKeys = new Set(images.map((image) => image.objectKey));
+    await this.roomImageStorage.deleteObjects(
+      oldImages
+        .map((image) => image.objectKey)
+        .filter((key) => !keptKeys.has(key)),
+    );
+    return saved;
   }
 
   // 특정 기간 예약 가능 여부 조회. hotelId/roomId 조합이 존재하지 않으면 RpcException.
@@ -464,10 +536,11 @@ export class RoomService {
     return { success: true };
   }
 
-  private toGrpcResponse(
+  // 사진은 저장소 경로(objectKey)로 보기용 Presigned URL을 만들어 내려준다 (서명만 하고 저장소에 요청하지 않음).
+  private async toGrpcResponse(
     room: RoomType,
     images: RoomImage[],
-  ): RoomGrpcResponse {
+  ): Promise<RoomGrpcResponse> {
     return {
       roomId: room.roomId,
       hotelId: room.hotelId,
@@ -475,12 +548,15 @@ export class RoomService {
       capacity: room.capacity,
       totalCount: room.totalCount,
       description: room.description ?? '',
-      images: images.map((image) => ({
-        imageId: image.imageId,
-        mimeType: image.mimeType,
-        imageBase64: image.imageBase64,
-        sortOrder: image.sortOrder,
-      })),
+      images: await Promise.all(
+        images.map(async (image) => ({
+          imageId: image.imageId,
+          mimeType: image.mimeType,
+          imageUrl: await this.roomImageStorage.createViewUrl(image.objectKey),
+          objectKey: image.objectKey,
+          sortOrder: image.sortOrder,
+        })),
+      ),
     };
   }
 }

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Body,
   Controller,
   Delete,
@@ -26,6 +27,7 @@ import {
 import { ApiCommonResponses } from '@app/common/decorators/api-response.decorator';
 import { JwtAuthGuard, RolesGuard, Roles } from '@app/common';
 import { CreateRoomDto } from './dto/create-room.dto';
+import { CreateRoomImageUploadUrlDto } from './dto/create-room-image-upload-url.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
 import { RoomAvailabilityQueryDto } from './dto/room-availability-query.dto';
 import { RoomSearchQueryDto } from './dto/room-search-query.dto';
@@ -44,8 +46,16 @@ interface HotelDto {
 interface RoomImageDto {
   imageId: number;
   mimeType: string;
-  imageBase64: string;
+  imageUrl: string; // 사진 보기용 Presigned URL (1시간 뒤 만료)
+  objectKey: string; // 객실 수정 때 기존 사진을 유지하려면 그대로 다시 보낸다
   sortOrder: number;
+}
+
+// proto의 RoomImageUploadUrl 메시지와 1:1 대응되는 응답 형태
+interface RoomImageUploadUrlDto {
+  uploadUrl: string;
+  objectKey: string;
+  expiresIn: number;
 }
 
 // proto의 Room 메시지와 1:1 대응되는 응답 형태
@@ -111,7 +121,6 @@ interface HotelService {
     capacity: number;
     totalCount?: number;
     description?: string;
-    images?: { mimeType: string; imageBase64: string }[];
   }): Observable<RoomDto>;
   updateRoom(data: {
     hotelId: number;
@@ -120,12 +129,18 @@ interface HotelService {
     capacity: number;
     totalCount?: number;
     description?: string;
-    images?: { mimeType: string; imageBase64: string }[];
+    images?: { objectKey: string }[];
   }): Observable<RoomDto>;
   deleteRoom(data: {
     hotelId: number;
     roomId: number;
   }): Observable<{ success: boolean }>;
+  createRoomImageUploadUrl(data: {
+    hotelId: number;
+    roomId: number;
+    mimeType: string;
+    size: number;
+  }): Observable<RoomImageUploadUrlDto>;
   getRoomAvailability(data: {
     hotelId: number;
     roomId: number;
@@ -409,7 +424,8 @@ export class HotelController implements OnModuleInit {
   @ApiOperation({
     summary: '신규 객실 등록 (관리자 전용)',
     description:
-      '관리자 권한을 가진 사용자만 호출할 수 있습니다. gRPC를 통해 hotel-service에 신규 객실 정보를 등록합니다.',
+      '관리자 권한을 가진 사용자만 호출할 수 있습니다. gRPC를 통해 hotel-service에 신규 객실 정보를 등록합니다. ' +
+      '사진은 저장 경로에 객실 id가 들어가서, 등록 후 응답의 roomId로 업로드 URL을 받아 올리고 객실 수정(images)으로 붙입니다.',
   })
   @ApiResponse({ status: 201, description: '객실 등록 성공' })
   @ApiResponse({ status: 403, description: '관리자 권한이 없음' })
@@ -423,6 +439,58 @@ export class HotelController implements OnModuleInit {
     ).catch((err) => {
       throw new NotFoundException(
         err?.details || err?.message || '존재하지 않는 호텔입니다.',
+      );
+    });
+  }
+
+  /**
+   * POST http://localhost:3000/api/hotels/{hotelId}/rooms/{roomId}/images/upload-url
+   * 관리자 전용. 객실 사진을 저장소(MinIO·S3)에 직접 올릴 Presigned URL을 발급합니다 (LDP-88).
+   */
+  @Post(':hotelId/rooms/:roomId/images/upload-url')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth()
+  @ApiParam({
+    name: 'hotelId',
+    description: '호텔 PK ID',
+    type: Number,
+    example: 1,
+  })
+  @ApiParam({
+    name: 'roomId',
+    description: '객실(객실 종류) PK ID',
+    type: Number,
+    example: 1,
+  })
+  @ApiOperation({
+    summary: '객실 사진 업로드 URL 발급 (관리자 전용)',
+    description:
+      '사진 파일은 이 API로 받은 uploadUrl에 브라우저가 직접 PUT합니다(Content-Type·크기는 요청한 값과 같아야 함, 5분 뒤 만료). ' +
+      '업로드가 끝나면 objectKey를 객실 수정의 images[].objectKey로 보냅니다(경로 room-types/{roomId}/...). 저장소 버킷은 비공개라 사진 보기는 ' +
+      '객실 조회 응답의 images[].imageUrl(Presigned URL)을 씁니다.',
+  })
+  @ApiResponse({ status: 201, description: '업로드 URL 발급 성공' })
+  @ApiResponse({
+    status: 400,
+    description: 'JPG·PNG·WEBP가 아니거나 5MB 초과',
+  })
+  @ApiResponse({ status: 403, description: '관리자 권한이 없음' })
+  @ApiResponse({ status: 404, description: '존재하지 않는 객실' })
+  async createRoomImageUploadUrl(
+    @Param('hotelId', ParseIntPipe) hotelId: number,
+    @Param('roomId', ParseIntPipe) roomId: number,
+    @Body() dto: CreateRoomImageUploadUrlDto,
+  ): Promise<RoomImageUploadUrlDto> {
+    return firstValueFrom(
+      this.hotelService.createRoomImageUploadUrl({ hotelId, roomId, ...dto }),
+    ).catch((err: { details?: string; message?: string }) => {
+      const message = err?.details || err?.message || '';
+      if (message.includes('존재하지 않는 객실')) {
+        throw new NotFoundException(message);
+      }
+      throw new BadRequestException(
+        message || '업로드 URL을 발급하지 못했습니다.',
       );
     });
   }
@@ -454,6 +522,14 @@ export class HotelController implements OnModuleInit {
       'images는 항상 전체 교체됩니다 — 기존 이미지를 유지하려면 요청 바디에 기존 이미지를 그대로 포함해서 함께 보내야 합니다.',
   })
   @ApiResponse({ status: 200, description: '객실 수정 성공' })
+  @ApiResponse({
+    status: 400,
+    description: '사진 경로가 이 객실 것이 아니거나 업로드되지 않음',
+  })
+  @ApiResponse({
+    status: 409,
+    description: '보유 수량을 이미 받은 예약 수보다 적게 줄임',
+  })
   @ApiResponse({ status: 403, description: '관리자 권한이 없음' })
   @ApiResponse({ status: 404, description: '존재하지 않는 객실' })
   async updateRoom(
@@ -463,10 +539,17 @@ export class HotelController implements OnModuleInit {
   ): Promise<RoomDto> {
     return firstValueFrom(
       this.hotelService.updateRoom({ hotelId, roomId, ...dto }),
-    ).catch((err) => {
-      throw new NotFoundException(
-        err?.details || err?.message || '존재하지 않는 객실입니다.',
-      );
+    ).catch((err: { details?: string; message?: string }) => {
+      const message = err?.details || err?.message || '';
+      if (!message || message.includes('존재하지 않는')) {
+        throw new NotFoundException(message || '존재하지 않는 객실입니다.');
+      }
+      // 보유 수량을 줄이면 이미 받은 예약과 부딪히는 경우 → 409
+      if (message.includes('이미 예약된 수')) {
+        throw new ConflictException(message);
+      }
+      // 사진 경로가 잘못됐거나 업로드되지 않은 경우 → 요청 값 문제라 400
+      throw new BadRequestException(message);
     });
   }
 

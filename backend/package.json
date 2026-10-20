@@ -21,8 +21,10 @@
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1111.0",
+    "@aws-sdk/client-s3": "^3.1111.0",
     "@aws-sdk/client-sqs": "^3.1111.0",
     "@aws-sdk/lib-dynamodb": "^3.1111.0",
+    "@aws-sdk/s3-request-presigner": "^3.1111.0",
     "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1",
     "@nestjs/axios": "^4.0.1",

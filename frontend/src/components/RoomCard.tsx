@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom'
 import type { Room } from '../api/hotels'
-import { toImageDataUrl } from '../api/hotels'
 import './RoomCard.css'
 
 interface RoomCardProps {
@@ -18,7 +17,7 @@ function RoomCard({ room, hotelSlug }: RoomCardProps) {
       {thumbnail ? (
         <img
           className="room-card-image"
-          src={toImageDataUrl(thumbnail)}
+          src={thumbnail.imageUrl}
           alt={room.name}
         />
       ) : (

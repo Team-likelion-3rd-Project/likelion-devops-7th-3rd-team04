@@ -6,14 +6,15 @@ import {
   fetchAdminHotelById,
   fetchAdminHotelRooms,
   fetchAdminHotelStats,
-  readImageFileAsInput,
-  toAdminImageDataUrl,
+  readImageFileForPreview,
+  ROOM_IMAGE_TYPES,
+  updateAdminRoom,
+  uploadAdminRoomImage,
 } from '../../api/adminApi'
-import type { AdminHotel, AdminHotelStats, AdminRoom, AdminRoomImageInput } from '../../api/adminApi'
+import type { AdminHotel, AdminHotelStats, AdminRoom, PendingRoomImage } from '../../api/adminApi'
 import './AdminPages.css'
 
-// 이미지 하나당 허용하는 최대 용량. 오브젝트 스토리지 없이 DB에 Base64로 직접 저장하는 구조라
-// 너무 큰 파일이 들어가지 않도록 클라이언트에서 먼저 막는다.
+// 이미지 하나당 허용하는 최대 용량. 서버(업로드 URL 발급)도 5MB를 넘으면 거절하지만, 올리기 전에 화면에서 먼저 막는다.
 const MAX_IMAGE_SIZE_MB = 5
 
 function AdminHotelDetailPage() {
@@ -29,7 +30,7 @@ function AdminHotelDetailPage() {
   const [name, setName] = useState('')
   const [capacity, setCapacity] = useState('')
   const [description, setDescription] = useState('')
-  const [images, setImages] = useState<AdminRoomImageInput[]>([])
+  const [images, setImages] = useState<PendingRoomImage[]>([])
   const [imageError, setImageError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [formError, setFormError] = useState('')
@@ -75,12 +76,18 @@ function AdminHotelDetailPage() {
     setIsAdding(true)
   }
 
-  // 선택한 이미지 파일들을 즉시 Base64로 변환해 미리보기 목록에 추가한다. 배열 순서 = 노출 순서(첫 번째가 대표 이미지).
+  // 선택한 이미지 파일들을 미리보기 목록에 추가한다. 배열 순서 = 노출 순서(첫 번째가 대표 이미지).
+  // 저장소에는 객실 등록 뒤에 올린다 (사진 경로에 객실 id가 들어가기 때문).
   const handleImageFilesSelected = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     e.target.value = '' // 같은 파일을 다시 선택해도 onChange가 발생하도록 초기화
     if (files.length === 0) return
 
+    const unsupported = files.find((file) => !ROOM_IMAGE_TYPES.includes(file.type))
+    if (unsupported) {
+      setImageError(`${unsupported.name}은(는) 올릴 수 없는 형식입니다. (JPG·PNG·WEBP만 가능)`)
+      return
+    }
     const oversized = files.find((file) => file.size > MAX_IMAGE_SIZE_MB * 1024 * 1024)
     if (oversized) {
       setImageError(`${oversized.name}의 용량이 너무 큽니다. (최대 ${MAX_IMAGE_SIZE_MB}MB)`)
@@ -88,7 +95,7 @@ function AdminHotelDetailPage() {
     }
 
     try {
-      const converted = await Promise.all(files.map(readImageFileAsInput))
+      const converted = await Promise.all(files.map(readImageFileForPreview))
       setImages((prev) => [...prev, ...converted])
       setImageError('')
     } catch {
@@ -112,18 +119,37 @@ function AdminHotelDetailPage() {
 
     setIsSaving(true)
     setFormError('')
+    const input = {
+      name: name.trim(),
+      capacity: capacityNum,
+      description: description.trim() || undefined,
+    }
+    let created: AdminRoom
     try {
-      const created = await createAdminRoom(hotelId, {
-        name: name.trim(),
-        capacity: capacityNum,
-        description: description.trim() || undefined,
-        images: images.length > 0 ? images : undefined,
-      })
-      setRooms((prev) => [...(prev ?? []), created])
-      setIsAdding(false)
+      created = await createAdminRoom(hotelId, input)
     } catch (err) {
       setFormError(err instanceof Error ? err.message : '객실을 등록하지 못했습니다.')
+      setIsSaving(false)
+      return
+    }
+
+    // 객실을 먼저 등록하고, 받은 객실 id 경로로 사진을 올린 뒤 객실 수정으로 사진을 붙인다.
+    try {
+      if (images.length > 0) {
+        const objectKeys = await Promise.all(
+          images.map(({ file }) => uploadAdminRoomImage(hotelId, created.roomId, file)),
+        )
+        created = await updateAdminRoom(hotelId, created.roomId, {
+          ...input,
+          images: objectKeys.map((objectKey) => ({ objectKey })),
+        })
+      }
+      setIsAdding(false)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : ''
+      setFormError(`객실은 등록됐지만 사진을 올리지 못했습니다. 객실 상세에서 다시 올려 주세요. ${reason}`.trim())
     } finally {
+      setRooms((prev) => [...(prev ?? []), created])
       setIsSaving(false)
     }
   }
@@ -223,14 +249,14 @@ function AdminHotelDetailPage() {
               </label>
               <label className="admin-form-row">
                 <span>이미지</span>
-                <input type="file" accept="image/*" multiple onChange={handleImageFilesSelected} />
+                <input type="file" accept={ROOM_IMAGE_TYPES.join(',')} multiple onChange={handleImageFilesSelected} />
               </label>
 
               {images.length > 0 && (
                 <div className="admin-image-preview-grid">
                   {images.map((image, index) => (
                     <div className="admin-image-preview" key={index}>
-                      <img src={toAdminImageDataUrl(image)} alt={`객실 이미지 ${index + 1}`} />
+                      <img src={image.previewUrl} alt={`객실 이미지 ${index + 1}`} />
                       {index === 0 && <span className="admin-image-preview-badge">대표</span>}
                       <button
                         type="button"
@@ -284,7 +310,7 @@ function AdminHotelDetailPage() {
                         {room.images && room.images.length > 0 ? (
                           <img
                             className="admin-table-thumb"
-                            src={toAdminImageDataUrl(room.images[0])}
+                            src={room.images[0].imageUrl}
                             alt={room.name}
                           />
                         ) : (
