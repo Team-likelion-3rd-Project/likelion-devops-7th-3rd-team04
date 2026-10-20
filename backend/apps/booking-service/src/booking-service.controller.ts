@@ -3,6 +3,7 @@ import { GrpcMethod } from '@nestjs/microservices';
 import { BookingServiceService } from './booking-service.service';
 import { ReservationFacilityService } from './reservation-facility.service';
 import { RoomAssignmentService } from './room-assignment.service';
+import { AdminBookingService } from './admin-booking.service';
 
 @Controller()
 export class BookingServiceController {
@@ -10,6 +11,7 @@ export class BookingServiceController {
     private readonly bookingServiceService: BookingServiceService,
     private readonly reservationFacilityService: ReservationFacilityService,
     private readonly roomAssignmentService: RoomAssignmentService,
+    private readonly adminBookingService: AdminBookingService,
   ) {}
 
   @GrpcMethod('BookingService', 'GetHello')
@@ -134,5 +136,44 @@ export class BookingServiceController {
       data.roomUnitId,
     );
     return { count };
+  }
+
+  // 관리자 대리 예약 생성 (LDP-90). 회원 존재 확인·직원 이름 조회는 api-gateway에서
+  @GrpcMethod('BookingService', 'CreateAdminBooking')
+  async createAdminBooking(data: {
+    userId: number;
+    roomId: number;
+    hotelId: number;
+    checkInDate: string;
+    checkOutDate: string;
+    guestCount: number;
+    poolGuestCount?: number;
+    loungeGuestCount?: number;
+    adminId: number;
+    adminName: string;
+  }) {
+    return this.adminBookingService.createProxyBooking(data);
+  }
+
+  // 직원 취소 (LDP-90). 원래 예약이면 연장 예약도 함께 취소
+  @GrpcMethod('BookingService', 'AdminCancelBooking')
+  async adminCancelBooking(data: {
+    reservationId: number;
+    adminId: number;
+    cancelReason: string;
+  }) {
+    return this.adminBookingService.cancel(data);
+  }
+
+  // 투숙 연장 예약 생성 (LDP-90)
+  @GrpcMethod('BookingService', 'CreateExtensionBooking')
+  async createExtensionBooking(data: {
+    reservationId: number;
+    checkOutDate: string;
+    keepSameRoomUnit: boolean;
+    adminId: number;
+    adminName: string;
+  }) {
+    return this.adminBookingService.createExtension(data);
   }
 }
