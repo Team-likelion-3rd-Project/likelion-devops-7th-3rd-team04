@@ -1,8 +1,25 @@
 ---
-# backend 네임스페이스에 차트가 참조하는 Secret 2개를 만듭니다. (namespace 자체는 gitlab_agent role 이 생성)
+# backend 네임스페이스와, 차트가 참조하는 Secret 2개를 만듭니다. (차트 · ArgoCD 는 Namespace 를 만들지 않음 — CreateNamespace=false)
 #   gitlab-registry : GitLab Container Registry pull (그룹 Deploy Token, read_registry)
 #   backend-secrets : DB 비밀번호·JWT secret 등 — backend/.env 를 단일 소스로 (db.yml 과 같은 방식)
 # 값은 stdin 으로 kubectl apply 에 넘겨 노드 디스크에 남기지 않습니다.
+- name: 네임스페이스 ({{ backend_namespace }})
+  vars:
+    manifest:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ backend_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: ansible
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: "{{ manifest | to_json }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: backend_ns_apply
+  changed_when: "'configured' in backend_ns_apply.stdout or 'created' in backend_ns_apply.stdout"
+
 - name: 레지스트리 pull Secret ({{ backend_namespace }}/gitlab-registry)
   vars:
     dockerconfig:
@@ -129,5 +146,5 @@
     msg:
       - "Secret {{ backend_namespace }}/gitlab-registry ({{ gitlab_registry }}), {{ backend_namespace }}/{{ backend_secret_name }} 적용"
       - >-
-        backend-secrets 는 Pod 기동 시에만 읽힙니다. 값을 바꿨다면 CI deploy-dev 를 다시 실행하거나
-        kubectl -n {{ backend_namespace }} rollout restart deployment 로 재기동하세요.
+        backend-secrets 는 Pod 기동 시에만 읽힙니다. 값을 바꿨다면
+        kubectl -n {{ backend_namespace }} rollout restart deployment 로 재기동하세요 (ArgoCD selfHeal 이 되돌리지 않음).

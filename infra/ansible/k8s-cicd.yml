@@ -1,5 +1,5 @@
 ---
-- name: CI/CD 클러스터 측 구성 (GitLab Agent + backend 네임스페이스 / RBAC / Secret + ArgoCD)
+- name: CI/CD 클러스터 측 구성 (backend 네임스페이스 / Secret + ArgoCD)
   hosts: control_plane
   become: true
   vars:
@@ -8,7 +8,6 @@
       GITLAB_URL: "{{ gitlab_url }}"
       GITLAB_TS_IP: "{{ gitlab_ts_ip }}"
       GITLAB_REGISTRY: "{{ gitlab_registry }}"
-      DEV_AGENT_TOKEN: "{{ gitlab_agent_token }}"
       REGISTRY_DEPLOY_USER: "{{ registry_deploy_user }}"
       REGISTRY_DEPLOY_TOKEN: "{{ registry_deploy_token }}"
       ARGOCD_REPO_USER: "{{ argocd_repo_user }}"
@@ -58,7 +57,6 @@
 
   roles:
     - helm
-    - gitlab_agent
     - role: backend_namespace
       tags: [backend_secrets]
     # ArgoCD 만 다시: --tags argocd (README 12-9)

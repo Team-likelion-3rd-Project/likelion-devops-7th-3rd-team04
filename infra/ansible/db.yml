@@ -92,6 +92,6 @@
     - docker
     - firewall
     - db_stack
-    # dev 초기 데이터 — 메인 DB 스키마(deploy-dev 의 main-db-migration)가 있어야 실행, 없으면 건너뜀
+    # dev 초기 데이터 — 메인 DB 스키마(ArgoCD sync 때 main-db-migration hook 이 적용)가 있어야 실행, 없으면 건너뜀
     - role: db_seed
       tags: [seed]

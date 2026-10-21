@@ -2,7 +2,7 @@
 {{- if and $svc.enabled $svc.hpa.enabled }}
 {{- $ctx := dict "root" $ "name" $name }}
 ---
-# metrics-server 필요. ArgoCD 전환 시 Application 에 ignoreDifferences /spec/replicas 추가 (README 12-6)
+# metrics-server 필요. HPA 를 켜면 Deployment 에 replicas 를 렌더링하지 않음 (dev ArgoCD 는 HPA 가 바꾼 replicas 를 ignoreDifferences 로 무시)
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

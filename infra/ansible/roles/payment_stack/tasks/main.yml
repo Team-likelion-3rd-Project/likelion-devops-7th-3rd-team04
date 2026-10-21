@@ -103,7 +103,7 @@
       - payment_image_tag != 'latest'
     fail_msg: >-
       사용할 이미지 태그가 없습니다. gitops {{ payment_gitops_values }} 의 global.imageTag 가 비어 있으면
-      develop 파이프라인의 deploy-dev 를 먼저 실행하거나, PAYMENT_IMAGE_TAG=<커밋 short sha> 로 지정하세요. (latest 는 사용 불가)
+      develop 파이프라인의 deploy-dev 를 먼저 실행(gitops 에 태그 커밋)하거나, PAYMENT_IMAGE_TAG=<커밋 short sha> 로 지정하세요. (latest 는 사용 불가)
     quiet: true
 
 - name: 이미지 경로

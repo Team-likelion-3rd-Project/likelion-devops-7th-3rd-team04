@@ -1,6 +1,6 @@
 ---
 # CI/CD 에 필요한 GitLab 리소스를 REST API 로 멱등하게 맞춥니다. (--tags bootstrap 단독 실행 가능)
-#   그룹/프로젝트 → agent 설정 커밋 → agent 등록·토큰 → gitops 초기 values · apps/dev → Deploy Token(k8s 레지스트리 / ArgoCD 레포 / 결제 노드)
+#   그룹/프로젝트 → gitops 초기 values · apps/dev → Deploy Token(k8s 레지스트리 / ArgoCD 레포 / 결제 노드)
 #   → gitops push 토큰(CI 변수) → 미러 push 토큰 → 보호 브랜치 → smoke test CI 변수 → 레지스트리 cleanup policy
 # 발급된 토큰은 로컬 .secrets/gitlab-k8s.env, .secrets/github-mirror.env, .secrets/payment-node.env 에 저장 (이미 있으면 재사용)
 - name: Tailscale 정보 조회 (--tags bootstrap 단독 실행 대비)
@@ -113,7 +113,6 @@
       timeout: 120
   block:
     # ── 그룹 / 프로젝트 ───────────────────────────────────
-    # ci_access 로 권한을 받는 프로젝트는 agent 설정 프로젝트와 같은 최상위 그룹 안에 있어야 함
     - name: 그룹
       ansible.builtin.include_tasks: group.yml
       loop:
@@ -133,12 +132,8 @@
           prj_path: "{{ gitlab_app_project }}"
           prj_description: "GitHub 모노레포 미러 (GitHub Actions 가 push — 직접 커밋 금지)"
         - prj_namespace: "{{ gitlab_group }}/{{ gitlab_infra_subgroup }}"
-          prj_path: "{{ gitlab_agents_project }}"
-          prj_description: "GitLab Agent for Kubernetes 설정 (Ansible gitlab_bootstrap 이 관리 — 원본은 GitHub infra/gitlab/k8s-agents)"
-          prj_extra: {builds_access_level: disabled}
-        - prj_namespace: "{{ gitlab_group }}/{{ gitlab_infra_subgroup }}"
           prj_path: "{{ gitlab_gitops_project }}"
-          prj_description: "환경별 Helm values / 이미지 태그 (CI deploy job 이 커밋, ArgoCD 도입 후 sync 대상)"
+          prj_description: "dev 배포 상태 — Helm values · 이미지 태그 · ArgoCD Application (main 커밋 = 배포, ArgoCD 가 sync)"
           prj_extra: {builds_access_level: disabled}
       loop_control:
         loop_var: prj
@@ -148,25 +143,6 @@
         prj_path: "{{ prj.prj_path }}"
         prj_description: "{{ prj.prj_description }}"
         prj_extra: "{{ prj.prj_extra | default({}) }}"
-
-    # ── agent 설정 / 등록 ─────────────────────────────────
-    - name: agent 설정 파일 커밋
-      ansible.builtin.include_tasks: repo_files.yml
-      vars:
-        rf_project: "{{ gitlab_agents_project_path }}"
-        rf_message: "chore: agent 설정 동기화 (Ansible gitlab_bootstrap)"
-        rf_files: "{{ gitlab_agents_files }}"
-
-    - name: 등록된 agent 조회
-      ansible.builtin.uri:
-        url: "{{ gl_api }}/projects/{{ gl_ids[gitlab_agents_project_path] }}/cluster_agents"
-      register: gl_agents_existing
-
-    - name: agent 등록 / 토큰
-      ansible.builtin.include_tasks: agent.yml
-      loop: "{{ gitlab_agents }}"
-      loop_control:
-        loop_var: agent_name
 
     # ── gitops 초기 values (레포가 비어 있을 때만) ─────────────
     - name: gitops 초기 values 커밋
@@ -431,10 +407,6 @@
           GITLAB_URL={{ gitlab_url }}
           GITLAB_TS_IP={{ ts_ip }}
           GITLAB_REGISTRY={{ gitlab_fqdn }}:{{ gitlab_registry_port }}
-          {% for agent in gitlab_agents %}
-          {% set key = agent | upper | replace('-', '_') ~ '_TOKEN' %}
-          {{ key }}={{ gl_k8s_env[key] | default('') }}
-          {% endfor %}
           REGISTRY_DEPLOY_USER={{ gl_k8s_env.REGISTRY_DEPLOY_USER | default('') }}
           REGISTRY_DEPLOY_TOKEN={{ gl_k8s_env.REGISTRY_DEPLOY_TOKEN | default('') }}
           ARGOCD_REPO_USER={{ gl_k8s_env.ARGOCD_REPO_USER | default('') }}
@@ -477,7 +449,7 @@
 - name: 안내
   ansible.builtin.debug:
     msg:
-      - "GitLab 프로젝트: {{ gitlab_url }}/{{ gitlab_app_project_path }} (미러), {{ gitlab_agents_project_path }}, {{ gitlab_gitops_project_path }}"
+      - "GitLab 프로젝트: {{ gitlab_url }}/{{ gitlab_app_project_path }} (미러), {{ gitlab_gitops_project_path }}"
       - "k8s 용 토큰: {{ local_secrets_dir }}/gitlab-k8s.env → k8s-cicd.yml 실행 시 source"
       - "GitHub 용 토큰: {{ local_secrets_dir }}/github-mirror.env → GitHub Actions Secrets 등록"
       - "결제 노드 용 토큰: {{ local_secrets_dir }}/payment-node.env → payment.yml 실행 시 source"

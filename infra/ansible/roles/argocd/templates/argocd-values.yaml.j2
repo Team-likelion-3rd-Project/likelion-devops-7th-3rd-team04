@@ -3,14 +3,14 @@
 # 단일 인스턴스(HA 끔) · 전 컴포넌트 control plane 고정. dex · notifications · ApplicationSet 은 쓰지 않음
 global:
   domain: {{ argocd_fqdn | to_json }}
-  # 워커는 팀원 PC 의 VM 이라 꺼질 수 있으므로 control plane 1대에 고정 (Traefik · agentk 와 같은 이유)
+  # 워커는 팀원 PC 의 VM 이라 꺼질 수 있으므로 control plane 1대에 고정 (Traefik 과 같은 이유)
   nodeSelector:
     node-role.kubernetes.io/control-plane: ""
   tolerations:
     - key: node-role.kubernetes.io/control-plane
       operator: Exists
       effect: NoSchedule
-  # Pod 의 CoreDNS 는 MagicDNS(*.ts.net)를 해석한다는 보장이 없어 GitLab 주소를 고정 (agentk · Runner 와 같은 이유)
+  # Pod 의 CoreDNS 는 MagicDNS(*.ts.net)를 해석한다는 보장이 없어 GitLab 주소를 고정 (Runner 의 extra_hosts 와 같은 이유)
   hostAliases:
     - ip: {{ gitlab_ts_ip | to_json }}
       hostnames:
