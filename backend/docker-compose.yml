@@ -291,6 +291,8 @@ services:
     environment:
       - NODE_ENV=development
       - USER_SERVICE_HOST=user-service:3001
+      # 회원 탈퇴 전 이용 예정 예약 확인 (LDP-95)
+      - BOOKING_SERVICE_HOST=booking-service:3003
     # credentials/admin_credentials도 main-db-migration(Flyway V6)이 만듭니다.
     depends_on:
       user-service:

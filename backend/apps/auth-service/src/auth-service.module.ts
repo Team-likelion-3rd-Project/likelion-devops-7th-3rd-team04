@@ -65,6 +65,15 @@ import { AdminCredential } from './entities/admin-credential.entity';
           process.env.USER_SERVICE_HOST || 'localhost:3001',
         ),
       },
+      // booking-service: 회원 탈퇴 전 이용 예정 예약 확인 (LDP-95)
+      {
+        name: 'BOOKING_SERVICE',
+        ...getGrpcOptions(
+          'booking',
+          'booking.proto',
+          process.env.BOOKING_SERVICE_HOST || 'localhost:3003',
+        ),
+      },
     ]),
 
     // 6. 리프레시 토큰 저장소 (로컬: docker-compose의 redis 컨테이너, 운영: AWS ElastiCache)

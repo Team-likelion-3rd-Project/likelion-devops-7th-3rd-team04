@@ -60,6 +60,7 @@ describe('AuthServiceService - 절대 만료', () => {
             }),
           },
         },
+        { provide: 'BOOKING_SERVICE', useValue: { getService: () => ({}) } },
         { provide: REDIS_CLIENT, useValue: { get: redisGet, set: redisSet, del: redisDel } },
       ],
     }).compile();
