@@ -1,0 +1,97 @@
+---
+- name: DB 노드 구성 (MariaDB + Valkey + MinIO, Docker Compose)
+  hosts: db
+  become: true
+  vars:
+    # compose env_file / cnf / valkey.conf / SQL 에 따옴표 없이 들어가므로 특수문자 제한
+    secret_charset_regex: '^[^\s''"\\$#`]+$'
+    # MinIO 키는 MC_HOST_<alias>=http://<key>:<secret>@host URL 에 들어가므로 URL 에 안전한 문자만
+    minio_key_charset_regex: '^[A-Za-z0-9._~-]+$'
+    required_env:
+      TS_DB_OAUTH_CLIENT_SECRET: "{{ ts_oauth_secret }}"
+      VALKEY_PASSWORD: "{{ valkey_password }}"
+      MINIO_ROOT_USER: "{{ minio_root_user }}"
+      MINIO_ROOT_PASSWORD: "{{ minio_root_password }}"
+      MINIO_APP_ACCESS_KEY: "{{ minio_app_access_key }}"
+      MINIO_APP_SECRET_KEY: "{{ minio_app_secret_key }}"
+      MINIO_RAG_ACCESS_KEY: "{{ minio_rag_access_key }}"
+      MINIO_RAG_SECRET_KEY: "{{ minio_rag_secret_key }}"
+      DB_USERNAME (backend/.env): "{{ db_username }}"
+      DB_PASSWORD (backend/.env): "{{ db_password }}"
+      DB_ROOT_PASSWORD (backend/.env): "{{ db_root_password }}"
+  pre_tasks:
+    - name: backend env 파일 확인
+      ansible.builtin.stat:
+        path: "{{ backend_env_file }}"
+      register: backend_env_stat
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: backend env 파일 없음 안내
+      ansible.builtin.fail:
+        msg: >-
+          {{ backend_env_file }} 가 없습니다. backend/.env.example 을 backend/.env 로 복사해 값을 채우거나,
+          BACKEND_ENV_FILE 로 다른 경로를 지정하세요.
+      when: not backend_env_stat.stat.exists
+      run_once: true
+
+    - name: DB 계정 정책 확인
+      ansible.builtin.assert:
+        that:
+          - db_username != 'root'
+          - db_password is regex(secret_charset_regex)
+          - db_root_password is regex(secret_charset_regex)
+          - valkey_password is regex(secret_charset_regex)
+          - ci_smoke_db_password | length == 0 or ci_smoke_db_password is regex(secret_charset_regex)
+        fail_msg: >-
+          DB_USERNAME 은 root 를 쓸 수 없습니다(앱 전용 계정 사용). 비밀번호에는 공백, 따옴표, 역슬래시, $, #, ` 를 쓸 수 없습니다.
+        quiet: true
+      no_log: true
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: MinIO 계정 정책 확인
+      ansible.builtin.assert:
+        that:
+          - minio_root_user is regex(minio_key_charset_regex)
+          - minio_root_password is regex(minio_key_charset_regex)
+          - minio_app_access_key is regex(minio_key_charset_regex)
+          - minio_app_secret_key is regex(minio_key_charset_regex)
+          - minio_root_user | length >= 3
+          - minio_app_access_key | length >= 3
+          - minio_root_password | length >= 8
+          - minio_app_secret_key | length >= 8
+          - minio_app_access_key != minio_root_user
+          - minio_rag_access_key is regex(minio_key_charset_regex)
+          - minio_rag_secret_key is regex(minio_key_charset_regex)
+          - minio_rag_access_key | length >= 3
+          - minio_rag_secret_key | length >= 8
+          - minio_rag_access_key not in [minio_root_user, minio_app_access_key]
+        fail_msg: >-
+          MINIO_* 값에는 영문, 숫자, . _ ~ - 만 쓸 수 있습니다. USER / ACCESS_KEY 는 3자 이상,
+          PASSWORD / SECRET_KEY 는 8자 이상이어야 하고, 앱 계정(MINIO_APP_ACCESS_KEY)·RAG 계정(MINIO_RAG_ACCESS_KEY)은
+          root 및 서로와 달라야 합니다.
+        quiet: true
+      no_log: true
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: 선행 패키지 설치
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, python3-debian, ufw]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+  roles:
+    - preflight
+    - tailscale
+    - docker
+    - firewall
+    - db_stack
+    # dev 초기 데이터 — 메인 DB 스키마(deploy-dev 의 main-db-migration)가 있어야 실행, 없으면 건너뜀
+    - role: db_seed
+      tags: [seed]

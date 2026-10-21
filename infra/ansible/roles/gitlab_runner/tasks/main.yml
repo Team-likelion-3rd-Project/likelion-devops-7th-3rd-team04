@@ -1,0 +1,111 @@
+---
+- name: GitLab Runner apt 저장소 등록
+  ansible.builtin.deb822_repository:
+    name: gitlab-runner
+    types: deb
+    uris: https://packages.gitlab.com/runner/gitlab-runner/ubuntu
+    suites: "{{ ansible_distribution_release }}"
+    components: main
+    signed_by: https://packages.gitlab.com/gpgkey/gpg.key
+
+- name: GitLab Runner 설치 (버전 고정, helper images 는 같은 버전 필수)
+  ansible.builtin.apt:
+    name:
+      - "gitlab-runner={{ gitlab_runner_version }}"
+      - "gitlab-runner-helper-images={{ gitlab_runner_version }}"
+    state: present
+    update_cache: true
+    allow_downgrade: true
+
+- name: Runner 설정 (config.toml, 토큰 포함)
+  # gitlab-runner 는 config.toml 변경을 감지해 자동 reload
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: /etc/gitlab-runner/config.toml
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: 사설 CA 신뢰 (private_ca_cert_file 이 있을 때만)
+  # Runner 는 /etc/gitlab-runner/certs/<host>.crt 로 GitLab 에 접속하고, job 에 CI_SERVER_TLS_CA_FILE 로 전달
+  # (tailscale serve 의 *.ts.net 인증서는 공인 CA 라 기본적으로 필요 없음)
+  when: private_ca_cert_file | length > 0
+  block:
+    - name: certs 디렉토리
+      ansible.builtin.file:
+        path: /etc/gitlab-runner/certs
+        state: directory
+        mode: "0755"
+
+    - name: GitLab / Registry CA
+      ansible.builtin.copy:
+        src: "{{ private_ca_cert_file }}"
+        dest: "/etc/gitlab-runner/certs/{{ gitlab_fqdn }}.crt"
+        mode: "0644"
+
+- name: gitlab-runner 활성화
+  ansible.builtin.systemd_service:
+    name: gitlab-runner
+    enabled: true
+    state: started
+
+- name: GitLab 등록 확인
+  # gitlab_runner_verify_required: false 면 실패해도 진행 (AWS Runner — GitLab 이 꺼져 있어도 부트스트랩을 실패시키지 않고,
+  # gitlab-runner 가 GitLab 이 켜지면 다시 연결한다)
+  ansible.builtin.command: gitlab-runner verify
+  register: runner_verify
+  changed_when: false
+  failed_when: >-
+    gitlab_runner_verify_required | default(true) | bool and
+    (runner_verify.rc != 0 or 'is valid' not in (runner_verify.stdout ~ runner_verify.stderr))
+  until: runner_verify is not failed
+  retries: 3
+  delay: 5
+
+- name: GitLab 등록 확인 실패 (진행)
+  ansible.builtin.debug:
+    msg: "gitlab-runner verify 실패 — GitLab({{ gitlab_url }}) 이 켜지면 Runner 가 다시 연결합니다"
+  when: runner_verify.rc != 0 or 'is valid' not in (runner_verify.stdout ~ runner_verify.stderr)
+
+# job / service 이미지, runner cache 볼륨, (docker.sock 을 공유하면) job 의 빌드 결과물이 호스트 docker 에 계속 쌓임.
+# VM 을 일과 시간에만 켜므로 고정 시각 cron 대신 부팅 기준 + Persistent systemd timer 로 정리한다
+- name: 이전 주간 prune cron 제거 (VM 이 꺼져 있는 일요일 00:00 에 예약돼 실행되지 않았음)
+  ansible.builtin.cron:
+    name: gitlab-runner docker prune
+    user: root
+    state: absent
+
+- name: docker prune 스크립트
+  ansible.builtin.template:
+    src: runner-prune.sh.j2
+    dest: /usr/local/sbin/team04-runner-prune
+    mode: "0700"
+
+- name: docker prune systemd unit
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - team04-runner-prune@.service
+    - team04-runner-prune-light.timer
+    - team04-runner-prune-threshold.timer
+    - team04-runner-prune-weekly.timer
+
+- name: docker prune timer 활성화
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - team04-runner-prune-light.timer
+    - team04-runner-prune-threshold.timer
+    - team04-runner-prune-weekly.timer
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "Runner {{ node_name }} → {{ gitlab_url }} (executor=docker{{ ', docker.sock 바인드' if gitlab_runner_mount_docker_sock else '' }})"
+      - "GitLab Admin → CI/CD → Runners 에서 online 상태 확인"

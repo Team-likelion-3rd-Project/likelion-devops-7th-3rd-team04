@@ -1,0 +1,361 @@
+.reservation-options-page {
+  /* 다른 예약 플로우 페이지들과 동일한 컨테이너 폭/여백을 그대로 맞춘다 */
+  max-width: 1720px;
+  margin: 0 auto;
+  padding: 48px 56px 96px;
+
+  @media (max-width: 767px) {
+    padding: 32px 20px 88px;
+  }
+}
+
+.reservation-options-body {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  align-items: start;
+  gap: 40px;
+  margin-top: 80px;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.reservation-options-main {
+  min-width: 0;
+}
+
+.reservation-options-room-header {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+
+  h2 {
+    margin: 0;
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--text-h);
+  }
+}
+
+.reservation-options-room-guests {
+  margin-left: 10px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.reservation-options-section {
+  margin-top: 28px;
+
+  h3 {
+    margin: 0 0 4px;
+    font-size: 16px;
+    color: var(--text-h);
+  }
+}
+
+.reservation-option-list {
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reservation-option-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 0;
+
+  @media (max-width: 640px) {
+    flex-wrap: wrap;
+    gap: 8px 20px;
+  }
+}
+
+.reservation-option-name {
+  flex: 1;
+  min-width: 120px;
+  font-size: 15px;
+  color: var(--text-h);
+}
+
+.reservation-option-price {
+  flex: 0 0 auto;
+  min-width: 90px;
+  text-align: right;
+  font-size: 15px;
+  color: var(--text-h);
+}
+
+.reservation-option-stepper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+
+  button {
+    appearance: none;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-h);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    &:hover:not(:disabled),
+    &:focus-visible {
+      border-color: var(--accent-border);
+      color: var(--accent);
+    }
+    &:disabled {
+      color: var(--border);
+      cursor: default;
+    }
+  }
+}
+
+.reservation-option-stepper-value {
+  min-width: 16px;
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-h);
+}
+
+.reservation-options-notice {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.reservation-options-notice-group-title {
+  margin: 20px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+
+  &:first-child {
+    margin-top: 0;
+  }
+}
+
+.reservation-options-note {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  li {
+    position: relative;
+    padding-left: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text);
+
+    &::before {
+      content: '·';
+      position: absolute;
+      left: 0;
+    }
+  }
+}
+
+.reservation-options-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 40px;
+}
+
+.reservation-options-back {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-h);
+  font: inherit;
+  font-size: 15px;
+  padding: 12px 32px;
+  text-decoration: none;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent-border);
+    color: var(--accent);
+  }
+}
+
+/* 우측 요약 사이드바 — 검색 조건 + 선택한 객실/요금까지 영수증처럼 보여준다 */
+.reservation-options-summary {
+  position: sticky;
+  top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+  background: var(--accent-bg);
+}
+
+.reservation-options-summary-header {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px;
+}
+
+.reservation-options-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  text-decoration: none;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--text-h);
+  }
+}
+
+.reservation-options-summary-info {
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.reservation-options-summary-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 20px;
+
+  & + & {
+    border-top: 1px solid var(--border);
+  }
+}
+
+.reservation-options-summary-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.reservation-options-summary-value {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-h);
+  line-height: 1.5;
+}
+
+/* 선택한 객실의 박별 요금 + 합계 — 안내 카드와 구분되도록 흰 배경으로 한 겹 더 감싼다 */
+.reservation-options-summary-price {
+  margin-top: 8px;
+  padding: 16px 20px;
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.reservation-options-summary-status {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+
+  &.error {
+    color: #e5484d;
+  }
+}
+
+.reservation-options-summary-nights {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 13px;
+    color: var(--text);
+  }
+}
+
+.reservation-options-summary-total {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+
+  strong {
+    font-size: 20px;
+    color: var(--text-h);
+  }
+}
+
+.reservation-options-summary-total-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+.reservation-options-summary-total-note {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.reservation-options-summary-pay {
+  margin-top: 8px;
+}
+
+.reservation-options-pay-button {
+  appearance: none;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  padding: 14px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  transition: opacity 0.2s;
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    opacity: 0.85;
+  }
+  &:disabled {
+    background: var(--border);
+    color: var(--text);
+    cursor: default;
+  }
+}
+
+.reservation-options-pay-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--text);
+
+  &.error {
+    color: #e5484d;
+  }
+  &.success {
+    color: var(--accent);
+  }
+}

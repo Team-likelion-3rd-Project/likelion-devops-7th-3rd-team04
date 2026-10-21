@@ -1,0 +1,337 @@
+syntax = "proto3";
+
+package hotel;
+
+service HotelService {
+  rpc GetHello (Empty) returns (HelloResponse);
+  rpc GetHotels (Empty) returns (HotelListResponse);
+  rpc GetHotel (GetHotelRequest) returns (Hotel);
+
+  // 관리자 전용: 특정 호텔의 기존 정보를 수정합니다. (hotelId가 존재하지 않으면 에러)
+  rpc UpdateHotel (UpdateHotelRequest) returns (Hotel);
+
+  // 특정 호텔에 등록된 전체 객실 목록을 조회합니다. (hotelId가 존재하지 않으면 에러)
+  rpc GetRooms (GetRoomsRequest) returns (RoomListResponse);
+  // 특정 호텔의 단건 객실 상세 정보를 조회합니다. (hotelId/roomId 조합이 존재하지 않으면 에러)
+  rpc GetRoom (GetRoomRequest) returns (Room);
+
+  // 체크인/체크아웃 날짜와 인원수를 바탕으로 특정 호텔에서 예약 가능한 객실을 검색합니다.
+  // (hotelId가 존재하지 않으면 에러) capacity가 guests 이상이고, checkIn~(checkOut 전날)까지
+  // 모든 날짜의 room_availabilities가 하루도 빠짐없이 존재하며 "판매 중 + 남은 방 1개 이상"인 객실만 반환합니다.
+  // 검색 과정에서 이미 조회한 room_availabilities.price로 minPrice(구간 중 최저 1박 요금)도 함께 계산해 돌려줍니다.
+  rpc SearchRooms (SearchRoomsRequest) returns (RoomSearchResponse);
+
+  // 관리자 전용: 특정 호텔에 신규 객실을 등록합니다. (hotelId가 존재하지 않으면 에러)
+  rpc CreateRoom (CreateRoomRequest) returns (Room);
+
+  // 관리자 전용: 특정 호텔의 기존 객실 정보를 수정합니다. (hotelId/roomId 조합이 존재하지 않으면 에러)
+  rpc UpdateRoom (UpdateRoomRequest) returns (Room);
+
+  // 관리자 전용: 특정 호텔의 객실을 삭제합니다(연관된 이미지/예약 가능일도 함께 삭제).
+  // (hotelId/roomId 조합이 존재하지 않으면 에러)
+  rpc DeleteRoom (DeleteRoomRequest) returns (DeleteRoomResponse);
+
+  // 관리자 전용: 객실 사진을 저장소(MinIO·S3)에 직접 올릴 Presigned URL을 발급합니다 (LDP-88).
+  // 브라우저가 uploadUrl로 파일을 PUT한 뒤, 받은 objectKey를 UpdateRoom의 images에 넣습니다.
+  // 경로에 객실 id가 들어가서(room-types/{roomId}/...) 새 객실은 CreateRoom으로 먼저 등록한 뒤 사진을 올립니다.
+  // (hotelId/roomId 조합이 존재하지 않거나, JPG·PNG·WEBP가 아니거나, 5MB를 넘으면 에러)
+  rpc CreateRoomImageUploadUrl (CreateRoomImageUploadUrlRequest) returns (RoomImageUploadUrl);
+
+  // 특정 객실의 지정 기간 예약 가능 여부를 조회합니다. (hotelId/roomId 조합이 존재하지 않으면 에러)
+  rpc GetRoomAvailability (GetRoomAvailabilityRequest) returns (RoomAvailabilityResponse);
+
+  // 관리자 판매 중지/재개 (isAvailable=false → 판매 중지, true → 판매 재개).
+  // 판매 상태(is_available)만 바꾸고 예약 수(booked_count)는 그대로 둡니다 — 판매 중지해도 기존 예약은 유지되고
+  // 새 예약만 막힙니다. (startDate~endDate 구간, 둘 다 포함) roomId에 해당하는 행이 없는 날짜는 조용히 건너뜁니다.
+  // V8 전에는 booking-service가 예약 취소 시 이 RPC로 되돌렸지만, 이제 취소는 ReleaseRoomAvailability를 씁니다.
+  rpc SetRoomAvailability (SetRoomAvailabilityRequest) returns (SetRoomAvailabilityResponse);
+
+  // booking-service 전용: 예약 생성 시 호출됩니다. roomId의 지정 기간(startDate~endDate, 둘 다 포함)에
+  // room_availabilities row가 하루도 빠짐없이 존재하고 전부 "판매 중 + 남은 방 1개 이상"인지 검증한 뒤,
+  // 같은 트랜잭션 내에서 날짜별 booked_count를 1씩 올리고 가격 합계를 반환합니다.
+  // 하루라도 row가 없거나 판매 중지·매진이면 예약을 막기 위해 RpcException을 던집니다.
+  rpc ReserveRoomAvailability (ReserveRoomAvailabilityRequest) returns (ReserveRoomAvailabilityResponse);
+
+  // booking-service 전용: 예약이 취소·결제 실패·만료로 풀릴 때 호출됩니다. 지정 기간(startDate~endDate,
+  // 둘 다 포함)의 날짜별 booked_count를 1씩 내립니다(남은 방 +1). 판매 중지 여부는 바꾸지 않습니다.
+  rpc ReleaseRoomAvailability (ReleaseRoomAvailabilityRequest) returns (ReleaseRoomAvailabilityResponse);
+
+  // 관리자 전용: 특정 호텔에 신규 편의시설을 등록합니다. (hotelId가 존재하지 않으면 에러)
+  rpc CreateFacility (CreateFacilityRequest) returns (Facility);
+
+  // 특정 호텔에 등록된 전체 편의시설 목록을 조회합니다. booking-service가 예약 생성 시 편의시설
+  // 요금(가격)을 조회하기 위해 호출합니다. (hotelId가 존재하지 않으면 에러)
+  rpc GetFacilities (GetFacilitiesRequest) returns (FacilityListResponse);
+
+  // ── 호실 관리 (관리자, LDP-89). 객실 종류(room_types) 아래 실제 호실(rooms: 101호 등).
+  // 보유 수량(room_types.total_count)은 ACTIVE 호실 수로 자동 갱신된다 — 호실 추가·점검·해제 때 같은 트랜잭션에서.
+  // 실패는 api-error 형식(libs/common/src/grpc/api-error.ts)의 RpcException (ROOM_UNIT_* 코드).
+
+  // 호실 목록. roomId가 0이면 지점 전체, status가 비어 있으면 모든 상태.
+  rpc ListRoomUnits (ListRoomUnitsRequest) returns (RoomUnitListResponse);
+  // 호실 ID로 조회 (booking-service가 배정 검증·방 번호 표시에 사용). 없는 ID는 결과에서 빠진다.
+  rpc GetRoomUnitsByIds (GetRoomUnitsByIdsRequest) returns (RoomUnitListResponse);
+  // 호실 추가 (ACTIVE로 생성, 보유 수량 +1). 같은 지점에 같은 방 번호면 409 ROOM_NUMBER_DUPLICATED.
+  rpc CreateRoomUnit (CreateRoomUnitRequest) returns (RoomUnit);
+  // 호실 방 번호·층 수정.
+  rpc UpdateRoomUnit (UpdateRoomUnitRequest) returns (RoomUnit);
+  // 점검(OUT_OF_SERVICE) 처리·해제(ACTIVE). 점검하면 보유 수량 −1 — 오늘 이후 어느 날이든 그 객실 종류의
+  // 예약 수가 새 보유 수량보다 많으면 409 ROOM_UNIT_OVERBOOKING. (이 호실의 미래 배정 확인은 api-gateway가 먼저 한다)
+  rpc SetRoomUnitStatus (SetRoomUnitStatusRequest) returns (RoomUnit);
+}
+
+message Empty {}
+
+message HelloResponse {
+  string message = 1;
+}
+
+message GetHotelRequest {
+  int32 hotelId = 1;
+}
+
+message Hotel {
+  int32 hotelId = 1;
+  string name = 2;
+  string address = 3;
+  string phoneNumber = 4;
+  string description = 5;
+}
+
+message HotelListResponse {
+  repeated Hotel hotels = 1;
+}
+
+message UpdateHotelRequest {
+  int32 hotelId = 1;
+  string name = 2;
+  string address = 3;
+  string phoneNumber = 4;
+  string description = 5;
+}
+
+message GetRoomsRequest {
+  int32 hotelId = 1;
+}
+
+message RoomListResponse {
+  repeated Room rooms = 1;
+}
+
+message GetRoomRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+}
+
+message SearchRoomsRequest {
+  int32 hotelId = 1;
+  string checkIn = 2; // 포함
+  string checkOut = 3; // 제외 (묵는 마지막 날은 checkOut 전날)
+  int32 guests = 4;
+}
+
+message RoomSearchResult {
+  Room room = 1;
+  int32 minPrice = 2; // 조회 구간(checkIn~checkOut 전날) 중 가장 저렴한 1박 요금
+}
+
+message RoomSearchResponse {
+  repeated RoomSearchResult results = 1;
+}
+
+message CreateRoomRequest {
+  // 예전 images. 사진 경로에 객실 id가 필요해서 등록 후 UpdateRoom으로 붙인다 (LDP-88)
+  reserved 5;
+  reserved "images";
+  int32 hotelId = 1;
+  string name = 2;
+  int32 capacity = 3;
+  string description = 4;
+  int32 totalCount = 6; // 무시됨 (LDP-89): 보유 수량은 ACTIVE 호실 수로 자동 계산 — 새 객실 종류는 호실을 추가하기 전까지 0
+}
+
+// 객실 이미지. 사진 파일은 저장소(MinIO·S3)에 있고 DB에는 경로(objectKey)만 저장한다 (LDP-88).
+// 버킷이 비공개라 imageUrl(보기용 Presigned URL, 1시간 뒤 만료)로 화면에 표시한다.
+message RoomImage {
+  reserved 3; // 예전 imageBase64 (DB에 사진 자체를 넣던 방식)
+  reserved "imageBase64";
+  int32 imageId = 1;
+  string mimeType = 2;
+  int32 sortOrder = 4;
+  string imageUrl = 5;
+  string objectKey = 6; // 객실 수정 때 기존 사진을 유지하려면 이 값을 그대로 다시 보낸다
+}
+
+// 객실 이미지 등록/수정 입력용. CreateRoomImageUploadUrl로 저장소에 먼저 올린 사진의 경로를 보낸다.
+// (imageId/sortOrder는 서버가 채우고, mimeType은 저장소에 올라간 파일에서 읽는다)
+message RoomImageInput {
+  reserved 1, 2; // 예전 mimeType, imageBase64
+  reserved "mimeType", "imageBase64";
+  string objectKey = 3;
+}
+
+message CreateRoomImageUploadUrlRequest {
+  int32 hotelId = 1;
+  string mimeType = 2; // image/jpeg, image/png, image/webp
+  int32 size = 3; // 파일 크기(byte), 5MB 이하
+  int32 roomId = 4; // 사진을 붙일 객실(객실 종류). 경로 room-types/{roomId}/에 올라간다
+}
+
+message RoomImageUploadUrl {
+  string uploadUrl = 1; // 이 주소로 파일을 PUT (Content-Type·크기는 요청할 때 보낸 값과 같아야 함)
+  string objectKey = 2; // 객실 수정의 images에 넣을 사진 경로
+  int32 expiresIn = 3; // uploadUrl 유효 시간(초)
+}
+
+message Room {
+  int32 roomId = 1;
+  int32 hotelId = 2;
+  string name = 3;
+  int32 capacity = 4;
+  string description = 5;
+  repeated RoomImage images = 6;
+  int32 totalCount = 7; // 객실 타입별 보유 수량 (같은 날짜에 이 수만큼 예약 가능)
+}
+
+message UpdateRoomRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+  string name = 3;
+  int32 capacity = 4;
+  string description = 5;
+  // PUT은 이미지 전체를 교체한다 — 기존 이미지를 유지하려면 그대로 포함해서 다시 보내야 한다.
+  repeated RoomImageInput images = 6;
+  int32 totalCount = 7; // 무시됨 (LDP-89): 보유 수량은 호실 추가·점검으로만 바뀐다
+}
+
+message DeleteRoomRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+}
+
+message DeleteRoomResponse {
+  bool success = 1;
+}
+
+message GetRoomAvailabilityRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+  string startDate = 3;
+  string endDate = 4;
+}
+
+message RoomAvailabilityDay {
+  string date = 1;
+  bool isAvailable = 2; // 예약 가능 = 판매 중 && 남은 방 > 0
+  int32 price = 3;
+  int32 remainingCount = 4; // 남은 방 수 (0이면 매진)
+  bool isSaleStopped = 5; // 관리자 판매 중지 여부
+}
+
+message RoomAvailabilityResponse {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+  string startDate = 3;
+  string endDate = 4;
+  bool isAvailable = 5;
+  repeated RoomAvailabilityDay availabilities = 6;
+  int32 totalCount = 7; // 객실 타입별 보유 수량
+}
+
+message SetRoomAvailabilityRequest {
+  int32 roomId = 1;
+  string startDate = 2; // 포함
+  string endDate = 3; // 포함
+  bool isAvailable = 4;
+}
+
+message SetRoomAvailabilityResponse {
+  bool success = 1;
+}
+
+message ReserveRoomAvailabilityRequest {
+  int32 roomId = 1;
+  string startDate = 2;
+  string endDate = 3;
+}
+
+message ReserveRoomAvailabilityResponse {
+  // 예약한 기간(startDate~endDate, 둘 다 포함)의 일별 price 합계
+  int32 totalAmount = 1;
+}
+
+message ReleaseRoomAvailabilityRequest {
+  int32 roomId = 1;
+  string startDate = 2; // 포함
+  string endDate = 3; // 포함
+}
+
+message ReleaseRoomAvailabilityResponse {
+  bool success = 1;
+}
+
+message Facility {
+  int32 facilityId = 1;
+  int32 hotelId = 2;
+  string name = 3;
+  int32 price = 4; // 1인 1회 기준 요금
+}
+
+message CreateFacilityRequest {
+  int32 hotelId = 1;
+  string name = 2;
+  int32 price = 3;
+}
+
+message GetFacilitiesRequest {
+  int32 hotelId = 1;
+}
+
+message FacilityListResponse {
+  repeated Facility facilities = 1;
+}
+
+// 실제 호실 (rooms 테이블)
+message RoomUnit {
+  int32 roomUnitId = 1;
+  int32 roomId = 2; // 객실 종류 (room_types.room_type_id)
+  string roomName = 3; // 객실 종류 이름
+  int32 hotelId = 4;
+  string roomNumber = 5; // "201"
+  int32 floor = 6; // 층. 없으면 0
+  string status = 7; // ACTIVE | OUT_OF_SERVICE
+}
+
+message RoomUnitListResponse {
+  repeated RoomUnit units = 1;
+}
+
+message ListRoomUnitsRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2; // 0이면 지점 전체
+  string status = 3; // 비어 있으면 모든 상태
+}
+
+message GetRoomUnitsByIdsRequest {
+  repeated int32 roomUnitIds = 1;
+}
+
+message CreateRoomUnitRequest {
+  int32 hotelId = 1;
+  int32 roomId = 2;
+  string roomNumber = 3;
+  int32 floor = 4; // 0이면 없음
+}
+
+message UpdateRoomUnitRequest {
+  int32 hotelId = 1;
+  int32 roomUnitId = 2;
+  string roomNumber = 3;
+  int32 floor = 4; // 0이면 없음
+}
+
+message SetRoomUnitStatusRequest {
+  int32 hotelId = 1;
+  int32 roomUnitId = 2;
+  string status = 3; // ACTIVE | OUT_OF_SERVICE
+}

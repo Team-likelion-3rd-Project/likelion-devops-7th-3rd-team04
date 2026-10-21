@@ -1,0 +1,33 @@
+---
+# 프로젝트 하나를 조회하고 없으면 만듭니다. (vars: prj_namespace, prj_path, prj_description, prj_extra)
+# 결과는 gl_ids[<전체 경로>] (id) 와 gl_projects[<전체 경로>] (API 응답) 에 기록
+- name: "프로젝트 경로 계산 ({{ prj_path }})"
+  ansible.builtin.set_fact:
+    prj_full_path: "{{ prj_namespace }}/{{ prj_path }}"
+
+- name: "프로젝트 조회 ({{ prj_full_path }})"
+  ansible.builtin.uri:
+    url: "{{ gl_api }}/projects/{{ prj_full_path | replace('/', '%2F') }}"
+    status_code: [200, 404]
+  register: gl_prj
+
+- name: "프로젝트 생성 ({{ prj_full_path }})"
+  ansible.builtin.uri:
+    url: "{{ gl_api }}/projects"
+    method: POST
+    body: >-
+      {{ {'name': prj_path, 'path': prj_path, 'namespace_id': gl_ids[prj_namespace],
+          'description': prj_description, 'visibility': 'private',
+          'initialize_with_readme': false, 'auto_devops_enabled': false}
+         | combine(prj_extra | default({})) }}
+    status_code: 201
+  register: gl_prj_new
+  when: gl_prj.status == 404
+  changed_when: true
+
+- name: "프로젝트 기록 ({{ prj_full_path }})"
+  vars:
+    prj_json: "{{ gl_prj_new.json if gl_prj.status == 404 else gl_prj.json }}"
+  ansible.builtin.set_fact:
+    gl_ids: "{{ gl_ids | combine({prj_full_path: prj_json.id}) }}"
+    gl_projects: "{{ gl_projects | default({}) | combine({prj_full_path: prj_json}) }}"

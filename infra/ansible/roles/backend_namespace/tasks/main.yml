@@ -1,0 +1,133 @@
+---
+# backend 네임스페이스에 차트가 참조하는 Secret 2개를 만듭니다. (namespace 자체는 gitlab_agent role 이 생성)
+#   gitlab-registry : GitLab Container Registry pull (그룹 Deploy Token, read_registry)
+#   backend-secrets : DB 비밀번호·JWT secret 등 — backend/.env 를 단일 소스로 (db.yml 과 같은 방식)
+# 값은 stdin 으로 kubectl apply 에 넘겨 노드 디스크에 남기지 않습니다.
+- name: 레지스트리 pull Secret ({{ backend_namespace }}/gitlab-registry)
+  vars:
+    dockerconfig:
+      auths: >-
+        {{ {gitlab_registry: {'username': registry_deploy_user,
+                              'password': registry_deploy_token,
+                              'auth': (registry_deploy_user ~ ':' ~ registry_deploy_token) | b64encode}} }}
+    manifest:
+      apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/dockerconfigjson
+      metadata:
+        name: gitlab-registry
+        namespace: "{{ backend_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: ansible
+      data:
+        .dockerconfigjson: "{{ dockerconfig | to_json | b64encode }}"
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: "{{ manifest | to_json }}"
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: pull_secret_apply
+  changed_when: "'configured' in pull_secret_apply.stdout or 'created' in pull_secret_apply.stdout"
+  no_log: true
+
+- name: 챗봇 AI 스택 값 확인 (infra/ansible/.env)
+  ansible.builtin.assert:
+    that:
+      - gcp_sa_key_file | length > 0
+      - lookup('env', 'MINIO_RAG_ACCESS_KEY') | length > 0
+      - lookup('env', 'MINIO_RAG_SECRET_KEY') | length > 0
+      - lookup('env', 'N8N_INIT_OWNER_PASSWORD') | length >= 8
+      - db_ts_ip | length > 0
+    fail_msg: >-
+      GCP_SA_KEY_FILE / MINIO_RAG_ACCESS_KEY / MINIO_RAG_SECRET_KEY / N8N_INIT_OWNER_PASSWORD(8자 이상) / DB_TS_IP 가
+      비어 있습니다. infra/ansible/.env 를 채우고 다시 source 하세요 (README 15절).
+    quiet: true
+  no_log: true
+
+- name: 서비스 계정 키 파일 확인
+  ansible.builtin.stat:
+    path: "{{ gcp_sa_key_path }}"
+  register: gcp_sa_key_stat
+  delegate_to: localhost
+  become: false
+
+- name: 서비스 계정 키 파일 없음 안내
+  ansible.builtin.fail:
+    msg: >-
+      GCP_SA_KEY_FILE({{ gcp_sa_key_path }}) 이 없습니다. infra/gcp-terraform/README 의 "키 발급" 으로
+      llm-service-dev 서비스 계정 키를 만들고 경로를 지정하세요.
+  when: not gcp_sa_key_stat.stat.exists
+
+- name: backend-secrets 값 계산
+  # backend/.env 에서 차트가 쓰는 key 만 고르고, DB/Redis 주소는 DB 노드 Tailscale IP(DB_TS_IP)로 덮어씀
+  # (backend/.env 의 *_HOST 는 로컬 docker compose 용 컨테이너 이름일 수 있음)
+  ansible.builtin.set_fact:
+    backend_secret_data: >-
+      {%- set data = {} -%}
+      {%- for key in backend_secret_keys -%}
+        {%- set _ = data.update({key: backend_env[key] | default('')}) -%}
+      {%- endfor -%}
+      {#- 선택 key 는 값이 있을 때만 넣음 -#}
+      {%- for key in backend_secret_optional_keys if backend_env[key] | default('') | length > 0 -%}
+        {%- set _ = data.update({key: backend_env[key]}) -%}
+      {%- endfor -%}
+      {{ data | combine(backend_secret_host_overrides if db_ts_ip | length > 0 else {}) | combine(backend_secret_extra) }}
+  no_log: true
+
+- name: backend-secrets 필수값 확인
+  ansible.builtin.assert:
+    that: backend_secret_data[item] | default('') | length > 0
+    fail_msg: >-
+      {{ item }} 가 비어 있습니다. {{ backend_env_file }} 에 값을 채우세요
+      (DB_HOST / REDIS_HOST 는 .env 의 DB_TS_IP 로도 지정 가능).
+    quiet: true
+  loop: "{{ backend_secret_required_keys }}"
+
+- name: 선택 key 확인 (전부 채우거나 전부 비우기)
+  vars:
+    optional_filled: "{{ backend_secret_optional_keys | select('in', backend_secret_data) | list }}"
+  ansible.builtin.assert:
+    that: optional_filled | length in [0, backend_secret_optional_keys | length]
+    fail_msg: >-
+      선택 key 가 일부만 채워져 있습니다 ({{ optional_filled | join(', ') }}).
+      {{ backend_secret_optional_keys | join(', ') }} 를 모두 채우거나 모두 비우세요.
+    quiet: true
+
+- name: 선택 key 미설정 안내
+  ansible.builtin.debug:
+    msg: >-
+      {{ backend_secret_optional_keys | join(', ') }} 가 비어 있어 backend-secrets 에서 제외했습니다.
+  when:
+    - backend_secret_optional_keys | length > 0
+    - backend_secret_optional_keys | select('in', backend_secret_data) | list | length == 0
+
+- name: backend-secrets ({{ backend_namespace }}/{{ backend_secret_name }})
+  vars:
+    manifest:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: "{{ backend_secret_name }}"
+        namespace: "{{ backend_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: ansible
+      # JSON 파일은 base64(data)로 — stringData 와 함께 쓰면 kubectl 이 합쳐서 저장
+      data:
+        GCP_SA_KEY_JSON: "{{ gcp_sa_key_b64 }}"
+      stringData: "{{ backend_secret_data }}"
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: "{{ manifest | to_json }}"
+  environment: *kubeconfig
+  register: backend_secret_apply
+  changed_when: "'configured' in backend_secret_apply.stdout or 'created' in backend_secret_apply.stdout"
+  no_log: true
+
+- name: 안내
+  ansible.builtin.debug:
+    msg:
+      - "Secret {{ backend_namespace }}/gitlab-registry ({{ gitlab_registry }}), {{ backend_namespace }}/{{ backend_secret_name }} 적용"
+      - >-
+        backend-secrets 는 Pod 기동 시에만 읽힙니다. 값을 바꿨다면 CI deploy-dev 를 다시 실행하거나
+        kubectl -n {{ backend_namespace }} rollout restart deployment 로 재기동하세요.

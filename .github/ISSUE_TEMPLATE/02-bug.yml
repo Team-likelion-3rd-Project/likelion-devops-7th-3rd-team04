@@ -1,6 +1,5 @@
 name: 버그 리포트
 description: 동작하지 않는 문제를 등록합니다.
-title: "[BUG] "
 labels: ["fix"]
 body:
   - type: textarea

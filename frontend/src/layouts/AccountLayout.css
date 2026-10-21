@@ -1,0 +1,146 @@
+.account-layout {
+  /* 다른 페이지(HotelsPage 등)는 1126px로 콘텐츠를 가운데 정렬하지만, 이 레이아웃은 헤더처럼
+     좌우 여백만 두고 폭을 넓게 쓴다 — 사이드바는 왼쪽 끝에 붙고, 오른쪽 콘텐츠 영역은
+     우측에 여백을 남긴 채로 늘어난다.
+     box-sizing을 border-box로 지정해야 width: 100% 안에 좌우 padding이 포함되어, 실제 폭이
+     뷰포트를 넘기지 않는다 (넘치면 오른쪽 끝 버튼들이 화면 밖으로 밀려 안 보이게 된다). */
+  box-sizing: border-box;
+  width: 100%;
+  padding: 56px 64px 96px;
+  display: flex;
+  align-items: flex-start;
+  gap: 40px;
+
+  @media (max-width: 767px) {
+    flex-direction: column;
+    padding: 32px 24px 88px;
+    gap: 20px;
+  }
+}
+
+.account-sidebar-title {
+  font-family: var(--heading);
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-h);
+  margin: 0 0 50px;
+  padding: 0 16px;
+
+  @media (max-width: 767px) {
+    display: none;
+  }
+}
+
+.account-sidebar {
+  flex: 0 0 480px;
+
+  @media (max-width: 767px) {
+    width: 100%;
+  }
+
+  nav {
+    @media (max-width: 767px) {
+      display: flex;
+      overflow-x: auto;
+      gap: 16px;
+    }
+  }
+
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+
+    @media (max-width: 767px) {
+      flex-direction: row;
+      gap: 8px;
+    }
+  }
+
+  a {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 14px 16px;
+    border-radius: 8px;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 15px;
+    white-space: nowrap;
+    transition:
+      background 0.2s,
+      color 0.2s;
+
+    &:hover,
+    &:focus-visible {
+      background: var(--accent-bg);
+      color: var(--text-h);
+    }
+
+    &.active {
+      background: var(--accent-bg);
+      color: var(--accent);
+      font-weight: 500;
+    }
+  }
+}
+
+/* 결제대기 항목 옆에 붙는 개수 뱃지. 다른 곳(mypage-error 등)과 같은 빨강(#e5484d)을 쓴다. */
+.account-nav-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.account-nav-group + .account-nav-group {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+
+  @media (max-width: 767px) {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+  }
+}
+
+.account-nav-group-label {
+  margin: 0 0 16px;
+  padding: 0 16px;
+  font-family: var(--sans);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-h);
+
+  @media (max-width: 767px) {
+    display: none;
+  }
+}
+
+.account-content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 사이드바 없이 단독 페이지로도 쓰이는 PlaceholderPage가 이 레이아웃 안에서는 account-layout이
+   이미 잡아준 여백/폭을 따르도록, 자체 상단 여백과 가운데 정렬만 덜어낸다. */
+.account-content .placeholder-page {
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}

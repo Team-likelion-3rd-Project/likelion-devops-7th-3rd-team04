@@ -1,0 +1,17 @@
+---
+- name: Kubernetes worker node 구성 및 control plane join
+  hosts: workers
+  become: true
+  vars:
+    required_env:
+      TS_OAUTH_CLIENT_SECRET: "{{ ts_oauth_secret }}"
+      K8S_API_ENDPOINT: "{{ k8s_api_endpoint }}"
+      K8S_JOIN_TOKEN: "{{ k8s_join_token }}"
+      K8S_CA_CERT_HASH: "{{ k8s_ca_cert_hash }}"
+  roles:
+    - preflight
+    - common
+    - containerd
+    - tailscale
+    - kubernetes
+    - worker_join

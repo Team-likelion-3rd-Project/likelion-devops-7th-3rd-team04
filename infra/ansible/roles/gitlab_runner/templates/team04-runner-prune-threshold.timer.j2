@@ -1,0 +1,12 @@
+# Ansible(roles/gitlab_runner) 이 관리. 켜져 있는 동안 주기 실행 — 사용률이 기준 미만이면 아무것도 하지 않는다
+[Unit]
+Description=GitLab Runner prune when disk usage >= {{ gitlab_runner_prune_threshold }}%
+
+[Timer]
+Unit=team04-runner-prune@threshold.service
+OnBootSec={{ gitlab_runner_prune_threshold_interval }}
+OnUnitActiveSec={{ gitlab_runner_prune_threshold_interval }}
+Persistent=false
+
+[Install]
+WantedBy=timers.target

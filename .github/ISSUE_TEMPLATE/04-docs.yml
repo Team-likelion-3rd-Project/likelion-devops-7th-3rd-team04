@@ -1,6 +1,5 @@
 name: 문서 작업
 description: README, Wiki, API 명세 등 문서 작업을 등록합니다.
-title: "[DOCS] "
 labels: ["docs"]
 body:
   - type: textarea

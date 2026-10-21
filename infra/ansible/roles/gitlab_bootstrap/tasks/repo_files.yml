@@ -1,0 +1,45 @@
+---
+# 로컬 파일을 GitLab 레포의 기본 브랜치에 커밋 1개로 맞춥니다. 내용이 같은 파일은 건너뜁니다.
+# vars:
+#   rf_project : 프로젝트 전체 경로 (gl_ids 키)
+#   rf_files   : [{path: <레포 안 경로>, src: <로컬 경로>, render: <true 면 Jinja 템플릿으로 렌더링>}]
+#   rf_message : 커밋 메시지
+#   rf_seed_only: true 면 레포가 비어 있을 때만 커밋 (이후는 CI 가 관리하는 파일 — 덮어쓰지 않음)
+- name: "기존 파일 조회 ({{ rf_project }})"
+  ansible.builtin.uri:
+    url: >-
+      {{ gl_api }}/projects/{{ gl_ids[rf_project] }}/repository/files/{{ item.path | urlencode | replace('/', '%2F') }}?ref={{ gitlab_default_branch }}
+    status_code: [200, 404]
+  loop: "{{ rf_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: rf_existing
+  when: not (rf_seed_only | default(false)) or gl_projects[rf_project].empty_repo
+
+- name: "변경할 파일 계산 ({{ rf_project }})"
+  # lookup('file') 은 끝 개행을 지우므로 하나 붙여서 비교 / 커밋 (원본 파일과 동일하게 유지)
+  ansible.builtin.set_fact:
+    rf_actions: >-
+      {%- set acts = [] -%}
+      {%- for r in rf_existing.results if r is not skipped -%}
+        {%- set content = lookup('ansible.builtin.template', r.item.src) if r.item.render | default(false)
+                          else lookup('ansible.builtin.file', r.item.src) ~ '\n' -%}
+        {%- if r.status == 404 -%}
+          {%- set _ = acts.append({'action': 'create', 'file_path': r.item.path, 'content': content}) -%}
+        {%- elif (r.json.content | b64decode) != content -%}
+          {%- set _ = acts.append({'action': 'update', 'file_path': r.item.path, 'content': content}) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ acts }}
+
+- name: "커밋 ({{ rf_project }})"
+  ansible.builtin.uri:
+    url: "{{ gl_api }}/projects/{{ gl_ids[rf_project] }}/repository/commits"
+    method: POST
+    body:
+      branch: "{{ gitlab_default_branch }}"
+      commit_message: "{{ rf_message }}"
+      actions: "{{ rf_actions }}"
+    status_code: 201
+  when: rf_actions | length > 0
+  changed_when: true

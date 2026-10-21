@@ -1,0 +1,12 @@
+# Ansible(roles/gitlab_runner) 이 관리. VM 을 일과 시간에만 켜므로 고정 시각 대신 부팅 기준 + 놓친 실행 보충(Persistent)
+[Unit]
+Description=GitLab Runner light prune after boot and daily
+
+[Timer]
+Unit=team04-runner-prune@light.service
+OnBootSec={{ gitlab_runner_prune_boot_delay }}
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

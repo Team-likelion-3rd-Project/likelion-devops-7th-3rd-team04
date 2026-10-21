@@ -1,0 +1,36 @@
+---
+# gitlab_runners 의 instance runner 를 만들고(이미 있으면 재사용) Runner 마다 접속 정보를 로컬 .secrets/<env_file> 에 저장합니다.
+# (--tags runner_token 단독 실행 가능)
+- name: Tailscale 정보 조회 (--tags runner_token 단독 실행 대비)
+  ansible.builtin.command: tailscale status --self --peers=false --json
+  register: gl_ts_self
+  changed_when: false
+  when: ts_ip is not defined or ts_fqdn is not defined
+
+- name: ts_ip / ts_fqdn fact 등록
+  ansible.builtin.set_fact:
+    ts_ip: "{{ (gl_ts_self.stdout | from_json).Self.TailscaleIPs | select('match', '^[0-9.]+$') | first }}"
+    ts_fqdn: "{{ (gl_ts_self.stdout | from_json).Self.DNSName | regex_replace('\\.$', '') }}"
+  when: gl_ts_self is not skipped
+
+- name: 로컬 .secrets 디렉토리
+  ansible.builtin.file:
+    path: "{{ local_secrets_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Runner 별 생성 / 토큰 저장
+  ansible.builtin.include_tasks: runner.yml
+  loop: "{{ gitlab_runners }}"
+  loop_control:
+    loop_var: runner
+    label: "{{ runner.description }}"
+
+- name: 안내
+  ansible.builtin.debug:
+    msg:
+      - "Runner 접속 정보: {{ gitlab_runners | map(attribute='env_file') | map('regex_replace', '^', local_secrets_dir ~ '/') | join(', ') }}"
+      - "온프레미스 Runner: set -a; source .env; source .secrets/gitlab-runner.env; set +a && ansible-playbook gitlab-runner.yml -K"
+      - "AWS Runner: Terraform 12-secrets apply 로 Secrets Manager 에 등록 (README 13절)"

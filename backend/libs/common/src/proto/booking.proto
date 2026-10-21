@@ -1,0 +1,260 @@
+syntax = "proto3";
+
+package booking;
+
+service BookingService {
+  rpc GetHello (Empty) returns (HelloResponse);
+
+  // 관리자 전용: 전체 예약 목록 조회 (권한 검증은 api-gateway에서 수행)
+  rpc GetBookings (Empty) returns (BookingListResponse);
+
+  // 특정 유저의 예약 목록 조회. /me(본인 조회)와 /:userId(관리자 조회) 양쪽에서 재사용된다.
+  rpc GetBookingsByUserId (GetBookingsByUserIdRequest) returns (BookingListResponse);
+
+  // 본인 예약 취소: status를 CANCELLED로 변경하고, hotel-service에 예약 가능일 복구를 요청한다.
+  // (reservationId가 없거나 userId가 예약자 본인이 아니면 에러)
+  // PENDING_PAYMENT(결제 전) / RESERVED(결제 완료) 상태 모두 취소 가능하며, payment-service의
+  // RefundPayment는 상태와 무관하게 항상 호출한다 — 결제 존재 여부 판단은 payment-service가
+  // 스스로 한다 (PENDING_PAYMENT로 남아있어도 실제로는 결제가 됐을 수 있어서, reservation.status만
+  // 믿고 환불 호출 여부를 정하면 환불 누락이 생길 수 있다. payment-service.service.ts의
+  // refundPayment 주석 참고).
+  rpc CancelBooking (CancelBookingRequest) returns (Booking);
+
+  // 신규 예약 생성. hotel-service의 ReserveRoomAvailability를 호출해 checkInDate~checkOutDate 전날까지
+  // 예약 가능 여부를 검증하고 가격 합계(totalAmount)를 받아온 뒤 예약을 PENDING_PAYMENT 상태로 저장한다.
+  rpc CreateBooking (CreateBookingRequest) returns (Booking);
+
+  // 단건 예약 조회. payment-service가 결제 요청을 처리할 때 예약의 금액(totalAmount)/소유자
+  // (userId)/상태(status)를 검증하기 위해 호출한다. 소유자 검증은 호출 측(payment-service)의
+  // 책임이며, 여기서는 reservationId로 조회만 한다 (없으면 에러).
+  rpc GetBookingById (GetBookingByIdRequest) returns (Booking);
+
+  // 특정 예약에 연결된 편의시설 이용 내역 목록 조회. reservationId가 존재하지 않으면 에러.
+  rpc GetReservationFacilitiesByReservationId (GetReservationFacilitiesByReservationIdRequest) returns (ReservationFacilityListResponse);
+
+  // 관리자 호텔 상세 페이지의 "호텔별 지표" 섹션용 집계. hotelId 스냅샷 컬럼 덕분에
+  // hotel-service 호출 없이 이 서비스의 reservations 테이블만으로 계산된다.
+  rpc GetHotelBookingStats (GetHotelBookingStatsRequest) returns (HotelBookingStats);
+
+  // 결제 준비 (위키 API 명세 5.8). 본인 예약·결제 대기 상태·결제 마감 전·시도 5회 미만을 확인한 뒤
+  // payment_attempts에 새 시도(멱등 키, 주문번호)를 기록하고 토스 결제창에 넘길 값을 돌려준다.
+  // 실패는 api-error 형식(libs/common/src/grpc/api-error.ts)의 RpcException.
+  rpc PreparePayment (PreparePaymentRequest) returns (PreparePaymentResponse);
+
+  // 결제 승인 (위키 API 명세 5.9). 시도·금액을 대조한 뒤 payment-service의 ApprovePayment를 호출하고
+  // 결과(APPROVED/FAILED/UNKNOWN/PROCESSING)를 돌려준다. 같은 orderId로 다시 호출하면 처음 결과를 돌려준다.
+  rpc ConfirmPayment (ConfirmPaymentRequest) returns (ConfirmPaymentResponse);
+
+  // ── 호실 배정 (관리자, LDP-89). 예약은 객실 종류 재고만 잡고, 실제 호실은 직원이 나중에 배정한다.
+  // 실패는 api-error 형식의 RpcException (ROOM_UNIT_* / INVALID_RESERVATION_STATUS 등).
+
+  // 예약에 호실 배정·변경·해제 (roomUnitId 0 = 해제). 같은 호실·겹치는 기간에 다른 배정이 있으면 409.
+  rpc AssignRoomUnit (AssignRoomUnitRequest) returns (Booking);
+  // 기간·지점의 배정 현황용 예약 목록 (결제 대기·예약 확정만). 배정 안 된 예약은 roomUnitId 0.
+  rpc ListUnitAssignments (ListUnitAssignmentsRequest) returns (UnitAssignmentListResponse);
+  // 호실의 미래 배정 수 (체크아웃이 오늘 이후인 결제 대기·예약 확정). 호실 점검 전 확인용.
+  rpc CountFutureUnitAssignments (CountFutureUnitAssignmentsRequest) returns (CountFutureUnitAssignmentsResponse);
+
+  // ── 관리자 예약 기능 (LDP-90). 실패는 api-error 형식의 RpcException.
+  // 회원 존재 확인·직원 이름 조회는 api-gateway가 user-service에서 한 뒤 넘긴다.
+
+  // 대리 예약 생성 — 회원 명의로 예약하고 만든 직원을 기록한다. 결제는 손님이 앱에서 (결제 마감 = 생성한 날 자정, 최소 30분)
+  rpc CreateAdminBooking (CreateAdminBookingRequest) returns (Booking);
+  // 직원 취소 — 결제 대기·예약 확정 예약 모두. 재고 반환·전액 환불, 취소 직원·사유 기록. 원래 예약이면 연장 예약도 함께 취소
+  rpc AdminCancelBooking (AdminCancelBookingRequest) returns (Booking);
+  // 연장 예약 생성 — 예약 확정 예약의 체크아웃부터 새 예약을 이어 붙인다 (linkedReservationId = 맨 처음 원래 예약)
+  rpc CreateExtensionBooking (CreateExtensionBookingRequest) returns (Booking);
+
+  // 회원의 이용 예정 예약 수 (LDP-95). auth-service가 회원 탈퇴 전에 확인한다 — 1건 이상이면 탈퇴 거절.
+  // 이용 예정 = 결제 대기 전부 + 예약 확정 중 체크아웃이 오늘(한국 날짜) 이후 (체크아웃 당일 포함)
+  rpc CountUpcomingReservations (CountUpcomingReservationsRequest) returns (CountUpcomingReservationsResponse);
+}
+
+message Empty {}
+
+message HelloResponse {
+  string message = 1;
+}
+
+message GetBookingsByUserIdRequest {
+  int32 userId = 1;
+}
+
+message GetBookingByIdRequest {
+  int32 reservationId = 1;
+}
+
+message CancelBookingRequest {
+  int32 reservationId = 1;
+  int32 userId = 2; // 본인 확인용 (api-gateway가 JWT에서 추출해 넘긴다)
+}
+
+message CreateBookingRequest {
+  int32 userId = 1;
+  int32 roomId = 2;
+  string checkInDate = 3;
+  string checkOutDate = 4;
+  int32 guestCount = 7;
+  // 편의시설 요금(hotel-service의 facilities) 조회에 사용되고, Reservation에도 스냅샷 컬럼으로
+  // 저장된다 (호텔별 집계를 hotel-service 호출 없이 하기 위함 — totalAmount/facilityName과 동일한
+  // 스냅샷 원칙).
+  int32 hotelId = 8;
+  int32 poolGuestCount = 9; // 인도어풀 이용 인원수. 0 또는 미지정이면 미이용.
+  int32 loungeGuestCount = 10; // 라운지 이용 인원수. 0 또는 미지정이면 미이용.
+}
+
+// 편의시설(수영장/라운지 등) 이용 여부/인원수는 여기 담지 않는다 — reservation_facilities가
+// 유일한 소스이며, GetReservationFacilitiesByReservationId로 별도 조회한다.
+message Booking {
+  int32 reservationId = 1;
+  int32 userId = 2;
+  int32 roomId = 3;
+  string checkInDate = 4;
+  string checkOutDate = 5;
+  int32 totalAmount = 8;
+  string status = 9;
+  int32 guestCount = 10;
+  int32 hotelId = 11; // 스냅샷 컬럼. 이 컬럼 추가 이전에 생성된 예약은 0으로 내려온다.
+  string paymentDueAt = 12; // 결제 마감 시각(ISO 8601). 없으면 빈 문자열
+  string lastPaymentAttemptStatus = 13; // 가장 최근 결제 시도 상태 REQUESTED/CONFIRMING/SUCCEEDED/FAILED. 시도 없으면 빈 문자열 (CONFIRMING = 승인 요청 후 결과 확인 중, LDP-67)
+  int32 roomUnitId = 14; // 배정된 호실 (LDP-89). 배정 전 0
+  string roomNumber = 15; // 배정된 방 번호. 배정 전 빈 문자열
+  // ── LDP-90
+  int32 linkedReservationId = 16; // 연장 예약이면 원래 예약 번호. 아니면 0
+  int32 createdByAdminId = 17; // 대리 예약을 만든 직원. 손님 본인 예약이면 0
+  string createdByAdminName = 18; // 만든 직원 이름. 없으면 빈 문자열
+  int32 cancelledByAdminId = 19; // 취소한 직원. 손님 취소·자동 만료·미취소면 0
+  string cancelReason = 20; // 직원 취소 사유. 없으면 빈 문자열
+  string createdAt = 21; // 예약 생성 일시 (ISO 8601)
+}
+
+message CreateAdminBookingRequest {
+  int32 userId = 1; // 예약할 회원 (api-gateway가 존재 확인)
+  int32 roomId = 2;
+  int32 hotelId = 3;
+  string checkInDate = 4;
+  string checkOutDate = 5;
+  int32 guestCount = 6;
+  int32 poolGuestCount = 7;
+  int32 loungeGuestCount = 8;
+  int32 adminId = 9; // 만든 직원 (JWT)
+  string adminName = 10; // 만든 직원 이름 (api-gateway가 user-service에서 조회)
+}
+
+message AdminCancelBookingRequest {
+  int32 reservationId = 1;
+  int32 adminId = 2; // 취소한 직원 (JWT)
+  string cancelReason = 3; // 1~255자
+}
+
+message CountUpcomingReservationsRequest {
+  int32 userId = 1;
+}
+
+message CountUpcomingReservationsResponse {
+  int32 count = 1;
+}
+
+message CreateExtensionBookingRequest {
+  int32 reservationId = 1; // 연장할 예약 (연장의 연장이면 가장 최근 연장 예약)
+  string checkOutDate = 2; // 새 체크아웃 (연장할 예약의 체크아웃보다 뒤)
+  bool keepSameRoomUnit = 3; // 같은 호실 배정 시도
+  int32 adminId = 4;
+  string adminName = 5;
+}
+
+message PreparePaymentRequest {
+  int32 reservationId = 1;
+  int32 userId = 2; // 본인 확인용 (api-gateway가 JWT에서 추출해 넘긴다)
+}
+
+message PreparePaymentResponse {
+  string orderId = 1; // payment_attempts.pg_order_id
+  int32 amount = 2;
+  string orderName = 3;
+  string paymentDueAt = 4; // ISO 8601
+}
+
+message ConfirmPaymentRequest {
+  int32 reservationId = 1;
+  int32 userId = 2;
+  string paymentKey = 3; // 토스가 발급한 결제 키 (MOCK: mock_{orderId})
+  string orderId = 4;
+  int32 amount = 5;
+}
+
+message ConfirmPaymentResponse {
+  string result = 1; // APPROVED | FAILED | UNKNOWN | PROCESSING
+  bool retryable = 2;
+  string code = 3; // result가 FAILED일 때만 (PAYMENT_DECLINED 등)
+  string message = 4;
+}
+
+message BookingListResponse {
+  repeated Booking bookings = 1;
+}
+
+message GetReservationFacilitiesByReservationIdRequest {
+  int32 reservationId = 1;
+}
+
+message ReservationFacilityItem {
+  int32 reservationFacilityId = 1;
+  int32 reservationId = 2;
+  int32 facilityId = 3;
+  int32 guestCount = 4;
+  int32 totalAmount = 5;
+  string facilityName = 6; // 예약 생성 시점의 시설명 스냅샷
+}
+
+message ReservationFacilityListResponse {
+  repeated ReservationFacilityItem reservationFacilities = 1;
+}
+
+message GetHotelBookingStatsRequest {
+  int32 hotelId = 1;
+  string date = 2; // 'YYYY-MM-DD'. 빈 문자열이면 서버 기준 오늘로 계산.
+}
+
+message HotelBookingStats {
+  int32 checkInsToday = 1;
+  int32 checkOutsToday = 2;
+  int32 occupiedRoomsToday = 3; // 점유율 분자. 분모(총 객실 수)는 hotel-service의 GetRooms 결과 재사용.
+  int32 newReservationsToday = 4; // 오늘 생성 + 결제 확정(RESERVED)된 예약 건수. PENDING_PAYMENT는 제외.
+  int32 cancellationsToday = 5; // 오늘 취소(CANCELLED)된 예약 건수.
+  int32 revenueToday = 6;
+}
+
+message AssignRoomUnitRequest {
+  int32 reservationId = 1;
+  int32 roomUnitId = 2; // 0이면 배정 해제
+}
+
+message ListUnitAssignmentsRequest {
+  int32 hotelId = 1;
+  string startDate = 2; // 포함
+  string endDate = 3; // 포함
+  int32 roomId = 4; // 객실 종류. 0이면 전체
+}
+
+message UnitAssignment {
+  int32 reservationId = 1;
+  int32 roomId = 2; // 객실 종류
+  int32 roomUnitId = 3; // 배정 전 0
+  string checkInDate = 4;
+  string checkOutDate = 5;
+  string status = 6;
+  int32 userId = 7;
+}
+
+message UnitAssignmentListResponse {
+  repeated UnitAssignment assignments = 1;
+}
+
+message CountFutureUnitAssignmentsRequest {
+  int32 roomUnitId = 1;
+}
+
+message CountFutureUnitAssignmentsResponse {
+  int32 count = 1;
+}

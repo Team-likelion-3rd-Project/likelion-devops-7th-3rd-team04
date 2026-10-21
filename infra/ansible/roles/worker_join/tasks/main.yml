@@ -1,0 +1,40 @@
+---
+- name: control plane API 도달성 확인 (Tailnet / ACL)
+  ansible.builtin.wait_for:
+    host: "{{ k8s_api_endpoint.split(':') | first }}"
+    port: "{{ k8s_api_endpoint.split(':') | last | int }}"
+    timeout: 30
+  register: api_reachable
+  ignore_errors: true
+
+- name: 도달 실패 안내
+  ansible.builtin.fail:
+    msg: >-
+      {{ k8s_api_endpoint }} 에 연결할 수 없습니다.
+      'tailscale status' 로 control plane 이 보이는지, Tailscale ACL grants 에서
+      tag:k8s-node 간 tcp:6443 이 허용되어 있는지 확인하세요.
+  when: api_reachable is failed
+
+- name: kubeadm join 설정 파일 생성
+  ansible.builtin.template:
+    src: kubeadm-join.yaml.j2
+    dest: /etc/kubernetes/kubeadm-join.yaml
+    mode: "0600"
+  no_log: true
+
+- name: kubeadm join
+  # 재시도할 때는 실패한 join 이 남긴 파일을 reset 으로 지운 뒤 다시 시도한다
+  ansible.builtin.shell: >-
+    kubeadm join --config /etc/kubernetes/kubeadm-join.yaml
+    {% if kubeadm_join_retries | int > 0 %}|| { kubeadm reset -f > /dev/null 2>&1; exit 1; }{% endif %}
+  args:
+    creates: /etc/kubernetes/kubelet.conf
+  register: kubeadm_join
+  until: kubeadm_join.rc == 0
+  retries: "{{ kubeadm_join_retries }}"
+  delay: 30
+
+- name: join 설정 파일 삭제 (token 포함)
+  ansible.builtin.file:
+    path: /etc/kubernetes/kubeadm-join.yaml
+    state: absent

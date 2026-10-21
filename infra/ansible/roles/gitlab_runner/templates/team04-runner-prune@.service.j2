@@ -1,0 +1,11 @@
+# Ansible(roles/gitlab_runner) 이 관리. %i = light | threshold | weekly
+[Unit]
+Description=GitLab Runner docker prune (%i)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/team04-runner-prune %i
+Nice=10
+IOSchedulingClass=idle

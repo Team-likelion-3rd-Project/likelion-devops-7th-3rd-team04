@@ -1,0 +1,19 @@
+---
+# GitOps pull 배포 agent (AWS Main 클러스터 전용, aws-control-plane.yml). 대상 브랜치는 group_vars/aws_control_plane.yml
+gitops_sync_namespace: gitops-sync
+# public 레포라 자격 증명 없이 읽는다. main 은 ruleset(PR · 승인 1 · validate)으로 보호
+gitops_sync_repo_url: https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops.git
+gitops_sync_apps_path: envs/prod
+gitops_sync_schedule: "* * * * *"
+gitops_sync_helm_timeout: 5m
+
+# chart.yaml 에 clusterValues: true 인 앱에 helm -f 로 더 넘기는 values (ConfigMap gitops-sync-cluster-values).
+# public gitops 레포에 둘 수 없는 클러스터 값(계정 ID 등)만 둔다. 비밀값은 넣지 않는다 (Secrets Manager → ESO)
+gitops_sync_cluster_values: {}
+
+# kubectl · helm · git · yq · jq 포함. 태그 변조를 막으려고 digest(멀티 아키텍처 index)로 고정
+# 올릴 때: docker buildx imagetools inspect alpine/k8s:<버전> 의 Digest
+gitops_sync_image: "docker.io/alpine/k8s:1.33.4@sha256:b0523f0a244ddc4c8e055aa335c040d3d78b3ead5528f4544395f7f9f69c7b68"
+
+# 부트스트랩 Job 완료 대기 = retries × 10초. 첫 설치(차트 다운로드 · 이미지 pull · Traefik Ready)를 넉넉히 기다린다
+gitops_sync_bootstrap_wait_retries: 90

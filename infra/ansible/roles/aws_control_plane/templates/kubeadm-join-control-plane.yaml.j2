@@ -1,0 +1,23 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: "{{ k8s_control_plane_endpoint }}:6443"
+    token: "{{ kubeadm_bootstrap_token }}"
+    caCertHashes:
+      - "{{ kubeadm_ca_cert_hash }}"
+controlPlane:
+  localAPIEndpoint:
+    advertiseAddress: "{{ node_ip }}"
+    bindPort: 6443
+  certificateKey: "{{ kubeadm_certificate_key }}"
+nodeRegistration:
+  name: "{{ node_name }}"
+  criSocket: unix:///run/containerd/containerd.sock
+  kubeletExtraArgs:
+    - name: node-ip
+      value: "{{ node_ip }}"
+{% if kubelet_cloud_provider is defined %}
+    - name: cloud-provider
+      value: "{{ kubelet_cloud_provider }}"
+{% endif %}

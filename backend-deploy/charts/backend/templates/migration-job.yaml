@@ -1,0 +1,76 @@
+{{- range $name, $m := .Values.migrations }}
+{{- if $m.enabled }}
+{{- $prefix := required (printf "migrations.%s.db.envPrefix 가 필요합니다" $name) $m.db.envPrefix }}
+{{- $jobName := printf "%s-db-migration" $name }}
+---
+# DB 스키마 마이그레이션 (Flyway) — migrations.<이름> 마다 Job 1개
+#   main    : 메인 DB (backend/migrations — user/auth/hotel/booking)
+#   payment : 결제 DB (backend/apps/payment-service/migrations)
+# 앱 Deployment 보다 먼저 실행되는 hook — 실패하면 helm upgrade 가 실패하고 --atomic 이 릴리스를 되돌림.
+# 실패한 Job 은 로그 확인을 위해 남기고, 다음 배포 때 before-hook-creation 으로 정리
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $jobName }}
+  labels:
+    {{- include "backend.labels" (dict "root" $ "name" $jobName) | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: {{ $m.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "backend.labels" (dict "root" $ "name" $jobName) | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- include "backend.imagePullSecrets" $ | trim | nindent 6 }}
+      containers:
+        - name: flyway
+          image: {{ include "backend.image" (dict "root" $ "image" $m.image) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          args: ["migrate"]
+          env:
+            # 접속 정보는 global.secretName Secret 의 <envPrefix>_* key (db.port 를 주면 포트만 평문 값)
+            {{- range $field := list "HOST" "PORT" "DATABASE" "USERNAME" "PASSWORD" }}
+            {{- $key := printf "%s_%s" $prefix $field }}
+            - name: {{ $key }}
+              {{- if and (eq $field "PORT") $m.db.port }}
+              value: {{ $m.db.port | quote }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.secretName }}
+                  key: {{ $key }}
+              {{- end }}
+            {{- end }}
+            # $(VAR) 는 위에서 정의한 env 를 참조 (k8s 변수 치환)
+            - name: FLYWAY_URL
+              value: "jdbc:mariadb://$({{ $prefix }}_HOST):$({{ $prefix }}_PORT)/$({{ $prefix }}_DATABASE){{ with $m.db.jdbcParams }}?{{ . }}{{ end }}"
+            - name: FLYWAY_USER
+              value: "$({{ $prefix }}_USERNAME)"
+            - name: FLYWAY_PASSWORD
+              value: "$({{ $prefix }}_PASSWORD)"
+            - name: FLYWAY_CONNECT_RETRIES
+              value: "10"
+          resources:
+            {{- toYaml $m.resources | nindent 12 }}
+          {{- with $.Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $m.db.caConfigMap }}
+          volumeMounts:
+            - name: db-ca
+              mountPath: /flyway/certs
+              readOnly: true
+      volumes:
+        - name: db-ca
+          configMap:
+            name: {{ $m.db.caConfigMap }}
+          {{- end }}
+{{- end }}
+{{- end }}

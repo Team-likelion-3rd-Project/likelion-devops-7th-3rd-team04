@@ -1,0 +1,336 @@
+# 공통 기본값 — 환경별 차이(레지스트리, 이미지 태그, Ingress, 리소스)는
+# dev: GitLab team04/infra/backend-gitops 의 envs/dev/values.yaml (초기본: backend-deploy/gitops-seed),
+# prod: GitHub 별도 prod gitops 레포(PR 로 관리) 로 덮어씁니다.
+#
+# 배포:
+#   helm upgrade --install --atomic --wait backend backend-deploy/charts/backend \
+#     -n backend -f <gitops>/envs/dev/values.yaml
+# Namespace 는 차트에 넣지 않습니다 — CI agent 권한이 backend 네임스페이스 안으로 제한되어 있어
+# 클러스터 범위 리소스를 만들 수 없음 (온프레미스는 Ansible k8s-cicd.yml 이 미리 생성)
+
+global:
+  # 이미지 = <imageRegistry>/<imageRepositoryPrefix><services.*.image.repository>:<tag>
+  #   dev : <gitlab fqdn>:5050 / team04/hotel/          (GitLab Container Registry)
+  #   prod: <account>.dkr.ecr.us-east-1.amazonaws.com / team04-hotel/   (Terraform 11-registry)
+  # imageRegistry 와 services.*.env 값은 tpl 로 렌더링한다 — prod 는 public gitops 레포에 계정 ID 를 두지 않고
+  # 배포 agent 가 넘기는 {{ .Values.global.awsAccountId }} 로 쓴다 (infra/gitops/prod/README.md "클러스터 값")
+  imageRegistry: ""
+  imageRepositoryPrefix: ""
+  # 한 커밋에서 빌드한 이미지 9개는 같은 태그(커밋 SHA)를 씀 → CI deploy job 이 이 값만 갱신.
+  # 서비스별 image.tag 를 채우면 그 서비스만 다른 태그를 씀. latest 는 차트가 거부
+  imageTag: ""
+  imagePullPolicy: IfNotPresent
+  # 온프레미스: GitLab Deploy Token(read_registry) 으로 만든 Secret (Ansible backend_namespace role)
+  imagePullSecrets:
+    - gitlab-registry
+  # DB 비밀번호·JWT secret 등 — 차트 밖에서 만든 Secret (온프레미스: Ansible 이 backend/.env 로 생성)
+  secretName: backend-secrets
+  # 모든 서비스에 공통으로 들어가는 환경변수
+  env:
+    NODE_ENV: production
+
+# 서비스마다 서비스 이름과 같은 ServiceAccount 를 만들어 붙인다 (false 면 네임스페이스 default SA).
+# prod 는 IRSA 매핑(pod-identity-webhook, ns/SA → IAM Role)이 SA 이름 기준이라 켠다.
+# 앱은 Kubernetes API 를 쓰지 않으므로 SA 토큰은 마운트하지 않는다 (IRSA 토큰은 webhook 이 따로 주입)
+serviceAccounts:
+  create: false
+
+# Pod 공통
+terminationGracePeriodSeconds: 30
+# SIGTERM 직후 Service 에서 빠지는 시간 동안 들어온 요청까지 처리 (2nd 프로젝트에서 겪은 커넥션 리셋 대응)
+preStopSleepSeconds: 5
+podSecurityContext: {}
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+
+# 헬스체크: libs/common HealthController 의 GET /health (DB 등 외부 의존성은 확인하지 않음)
+#   - HTTP 서비스(api-gateway, pg-mock)는 서비스 포트, gRPC 서비스는 gRPC 포트 + 100 의 HTTP 포트
+probes:
+  startup:
+    periodSeconds: 3
+    failureThreshold: 40      # 최대 2분 (DB 연결 대기 포함)
+  readiness:
+    periodSeconds: 5
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 3
+
+defaultResources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# 서비스 목록. env 는 평문 값, secretEnv 는 global.secretName Secret 에서 같은 이름의 key 를 읽음
+# 클러스터 밖(온프레미스 결제 노드)에서 호출해야 하는 서비스는 환경별 values 에 nodePort: <30000-32767> 를 지정
+services:
+  api-gateway:
+    enabled: true
+    image:
+      repository: api-gateway
+      tag: ""
+    port: 3000
+    healthPort: 3000
+    replicas: 1
+    env:
+      PORT: "3000"
+      USER_SERVICE_HOST: user-service:3001
+      HOTEL_SERVICE_HOST: hotel-service:3002
+      BOOKING_SERVICE_HOST: booking-service:3003
+      PAYMENT_SERVICE_HOST: payment-service:3004
+      CHAT_BOT_SERVICE_HOST: chat-bot-service:3005
+      AUTH_SERVICE_HOST: auth-service:3006
+      JWT_REFRESH_EXPIRES_IN: 7d
+      CORS_ORIGIN: http://localhost:5173
+    secretEnv:
+      - JWT_ACCESS_SECRET
+      - MOCK_PG_SECRET
+    resources: {}
+    hpa:
+      enabled: false
+
+  user-service:
+    enabled: true
+    image:
+      repository: user-service
+      tag: ""
+    port: 3001
+    healthPort: 3101
+    replicas: 1
+    env:
+      DB_PORT: "3306"
+    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+    resources: {}
+    hpa:
+      enabled: false
+
+  hotel-service:
+    enabled: true
+    image:
+      repository: hotel-service
+      tag: ""
+    port: 3002
+    healthPort: 3102
+    replicas: 1
+    env:
+      DB_PORT: "3306"
+    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+    resources: {}
+    hpa:
+      enabled: false
+
+  booking-service:
+    enabled: true
+    image:
+      repository: booking-service
+      tag: ""
+    port: 3003
+    healthPort: 3103
+    replicas: 1
+    env:
+      DB_PORT: "3306"
+      HOTEL_SERVICE_HOST: hotel-service:3002
+      PAYMENT_SERVICE_HOST: payment-service:3004
+    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+    resources: {}
+    hpa:
+      enabled: false
+
+  payment-service:
+    enabled: true
+    image:
+      repository: payment-service
+      tag: ""
+    port: 3004
+    healthPort: 3104
+    replicas: 1
+    env:
+      PG_MOCK_SERVICE_URL: http://pg-mock-service:3007
+    secretEnv:
+      - PAYMENT_DB_HOST
+      - PAYMENT_DB_PORT
+      - PAYMENT_DB_USERNAME
+      - PAYMENT_DB_PASSWORD
+      - PAYMENT_DB_DATABASE
+    resources: {}
+    hpa:
+      enabled: false
+
+  chat-bot-service:
+    enabled: true
+    image:
+      repository: chat-bot-service
+      tag: ""
+    port: 3005
+    healthPort: 3105
+    replicas: 1
+    env:
+      DYNAMODB_REGION: ap-northeast-2
+      # 기동 시 필수값(getRequiredEnv). 같은 릴리스의 n8n(아래 n8n 블록). n8n 이 꺼져 있으면 호출만 실패하고 기동은 됨
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/chat
+      # n8n → llm-service 는 턴마다 Vertex AI 를 2번(의도 분류 + 답변) 부름
+      N8N_TIMEOUT_MS: "60000"
+    # prod(AWS DynamoDB)는 Pod Identity 로 인증해 비어 있음. dev(온프레미스)는 DB 노드의 DynamoDB Local
+    # 주소(DYNAMODB_ENDPOINT)를 Secret 에서 읽도록 gitops envs/dev 에서 지정
+    secretEnv: []
+    resources: {}
+    hpa:
+      enabled: false
+
+  auth-service:
+    enabled: true
+    image:
+      repository: auth-service
+      tag: ""
+    port: 3006
+    healthPort: 3106
+    replicas: 1
+    env:
+      DB_PORT: "3306"
+      USER_SERVICE_HOST: user-service:3001
+      # 회원 탈퇴 전 이용 예정 예약 확인 (LDP-95)
+      BOOKING_SERVICE_HOST: booking-service:3003
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      JWT_REFRESH_ABSOLUTE_MAX_DAYS: "30"
+      REDIS_PORT: "6379"
+      REDIS_TLS: "false"
+    secretEnv:
+      - DB_HOST
+      - DB_USERNAME
+      - DB_PASSWORD
+      - DB_DATABASE
+      - JWT_ACCESS_SECRET
+      - JWT_REFRESH_SECRET
+      - REDIS_HOST
+      - REDIS_PASSWORD
+    resources: {}
+    hpa:
+      enabled: false
+
+  pg-mock-service:
+    enabled: true
+    image:
+      repository: pg-mock-service
+      tag: ""
+    port: 3007
+    healthPort: 3007
+    replicas: 1
+    env:
+      PORT: "3007"
+      PAYMENT_SERVICE_WEBHOOK_URL: http://api-gateway:3000/api/payments/webhook
+    secretEnv:
+      - MOCK_PG_SECRET
+    resources: {}
+    hpa:
+      enabled: false
+
+  # 챗봇 AI 응답 서비스 (langchain_rag/llm-service — FastAPI + LangChain). n8n 워크플로가 호출
+  # 기본은 꺼 둠 — prod 는 GCP 키 · S3 Vectors 준비 후 prod gitops 에서 켬. dev 는 gitops envs/dev 에서 켜고
+  # VECTOR_STORE=object(MinIO) 와 Secret key 를 지정 (infra/ansible README 15절)
+  llm-service:
+    enabled: false
+    image:
+      repository: llm-service
+      tag: ""
+    port: 8000
+    healthPort: 8000
+    replicas: 1
+    env:
+      LLM_PROVIDER: vertex
+      GCP_PROJECT_ID: likelion-devops-7th-3rd-team4
+      # 임베딩 리전 / 채팅 리전 — Gemini 는 서울 리전 429(용량 부족)가 잦아 global 엔드포인트 사용
+      GCP_LOCATION: asia-northeast3
+      VERTEX_CHAT_LOCATION: global
+      VERTEX_CHAT_MODEL: gemini-2.5-flash
+      VERTEX_EMBED_MODEL: text-multilingual-embedding-002
+      VECTOR_STORE: s3vectors
+    secretEnv:
+      - GCP_SA_KEY_JSON
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 768Mi
+    hpa:
+      enabled: false
+
+# 챗봇 오케스트레이션 워크플로 (n8n) — templates/n8n.yaml. chat-bot-service → n8n → llm-service
+# 워크플로 JSON · 활성화 스크립트는 files/n8n/ (langchain_rag/n8n 의 사본 — CI helm-lint 가 원본과 같은지 검사)
+# 이미지는 Docker Hub n8nio/n8n:<tag> 를 CI(push job)가 레지스트리로 미러링한 것. tag 는 CI 의 N8N_VERSION 과 같아야 함
+n8n:
+  enabled: false
+  image:
+    repository: n8n
+    tag: "2.35.3"
+  # 워크플로 활성화(REST API)용 로컬 owner 계정. 비밀번호는 Secret 의 N8N_INIT_OWNER_PASSWORD
+  ownerEmail: admin@example.com
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# api-gateway 외부 노출 (dev: Traefik NodePort 30080, prod: ALB)
+ingress:
+  enabled: false
+  className: traefik
+  annotations: {}
+  # 비우면 host 규칙 없이 모든 이름으로 라우팅 (MagicDNS 이름 / Tailscale IP 어느 쪽이든)
+  host: ""
+  tls: []
+  service: api-gateway
+  paths:
+    - /api
+
+# DB 마이그레이션 — helm pre-install/pre-upgrade hook Job (실패하면 앱 배포 전에 중단, --atomic 로 롤백)
+# 앱은 모두 synchronize: false 라 테이블은 이 Job(Flyway)만 만듭니다.
+#   db.envPrefix: global.secretName Secret 에서 <prefix>_HOST/_PORT/_DATABASE/_USERNAME/_PASSWORD 를 읽음
+#   db.port     : 지정하면 포트는 Secret 대신 이 값 (backend-secrets 에 DB_PORT 가 없음)
+#   db.jdbcParams  : JDBC URL 뒤에 붙일 옵션 (prod TLS: sslMode=verify-full&serverSslCert=/flyway/certs/<파일>)
+#   db.caConfigMap : serverSslCert 로 쓸 CA 인증서 ConfigMap. 지정하면 /flyway/certs 에 읽기 전용으로 마운트
+migrations:
+  main:
+    enabled: true
+    image:
+      repository: main-migrations
+      tag: ""
+    db:
+      envPrefix: DB
+      port: "3306"
+      jdbcParams: ""
+      caConfigMap: ""
+    activeDeadlineSeconds: 300
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  # dev(온프레미스)는 결제 노드가 실행하므로 gitops envs/dev 에서 false
+  payment:
+    enabled: true
+    image:
+      repository: payment-migrations
+      tag: ""
+    db:
+      envPrefix: PAYMENT_DB
+      jdbcParams: ""
+      caConfigMap: ""
+    activeDeadlineSeconds: 300
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi

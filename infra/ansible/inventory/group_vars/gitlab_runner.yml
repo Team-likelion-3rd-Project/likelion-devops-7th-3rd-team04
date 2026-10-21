@@ -1,0 +1,30 @@
+---
+# ── Tailscale: Runner 노드 전용 태그 / OAuth client (all.yml 값을 그룹 단위로 덮어씀) ──
+ts_tags: "tag:gitlab-runner"
+ts_oauth_secret: "{{ lookup('env', 'TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET') }}"
+
+# ── 버전 고정 (GitLab 이미지와 major.minor 를 맞춤, apt 버전 문자열) ──
+gitlab_runner_version: "19.4.1-1"
+
+# ── GitLab 접속 정보: gitlab.yml 이 생성한 .secrets/gitlab-runner.env 에서 ──
+gitlab_url: "{{ lookup('env', 'GITLAB_URL') }}"
+gitlab_ts_ip: "{{ lookup('env', 'GITLAB_TS_IP') }}"
+gitlab_runner_token: "{{ lookup('env', 'GITLAB_RUNNER_TOKEN') }}"
+gitlab_fqdn: "{{ gitlab_url | urlsplit('hostname') }}"
+
+# ── Runner 설정 ───────────────────────────────────────────
+gitlab_runner_concurrent: 2                    # 동시 job 수 (vCPU 수 이하 권장)
+gitlab_runner_default_image: "alpine:3.22"     # .gitlab-ci.yml 에 image 미지정 시
+# backend 파이프라인은 kaniko 로 빌드하므로 docker.sock 이 필요 없음.
+# 다른 프로젝트가 docker CLI 를 쓰지 않는 것을 확인했으면 false 로 바꿔 job 의 호스트 root 권한을 없앱니다 (README 12-7)
+gitlab_runner_mount_docker_sock: true
+
+# ── docker 정리 (systemd timer, roles/gitlab_runner/templates/runner-prune.sh.j2) ──
+gitlab_runner_prune_boot_delay: 10min                  # light: 부팅 후 첫 실행 (이후 하루 1회)
+gitlab_runner_prune_builder_until: 24h                 # light: 이보다 오래된 빌드 캐시 삭제
+gitlab_runner_prune_threshold: 80                      # threshold: 디스크 사용률(%) 이 이 값 이상일 때만 전체 정리
+gitlab_runner_prune_threshold_interval: 30min          # threshold: 확인 주기
+gitlab_runner_prune_weekly_calendar: "Mon *-*-* 09:00" # weekly: runner cache 볼륨 정리 (꺼져 있었으면 다음 부팅 때)
+
+# ── 방화벽: 인바운드 서비스 없음 (SSH / Tailscale 만) ─────────
+firewall_tailnet_tcp_ports: []

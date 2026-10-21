@@ -1,0 +1,28 @@
+# Ansible(gitlab_runner_token role)이 생성 — gitlab-rails runner 로 실행됩니다.
+# 같은 description 의 instance runner 가 있으면 재사용하고, 없으면 새로 만든 뒤 인증 토큰(glrt-...)을 출력합니다.
+description = {{ runner.description | to_json }}
+
+settings = ApplicationSetting.current_without_cache
+settings.update!(signup_enabled: false) if settings.signup_enabled  # 외부 회원가입 차단
+
+runner = Ci::Runner.instance_type.find_by(description: description)
+if runner.nil?
+  admin = User.find_by_username('root')
+  raise 'root 계정이 없습니다 — 최초 초기화 때 GITLAB_ROOT_PASSWORD 가 거부됐는지 확인 (README 8-3)' if admin.nil?
+  result = Ci::Runners::CreateRunnerService.new(
+    user: admin,
+    params: {
+      runner_type: 'instance_type',
+      description: description,
+      tag_list: {{ runner.tags | to_json }},
+      run_untagged: {{ runner.run_untagged | bool | to_json }},
+      access_level: {{ runner.access_level | default('not_protected') | to_json }},
+      maintenance_note: 'Ansible(gitlab.yml) 자동 생성'
+    }
+  ).execute
+  raise "runner 생성 실패: #{result.message}" unless result.success?
+  runner = result.payload[:runner]
+  puts 'RUNNER_CREATED=true'
+end
+
+puts "RUNNER_TOKEN=#{runner.token}"

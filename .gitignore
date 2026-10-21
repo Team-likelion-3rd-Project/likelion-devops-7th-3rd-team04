@@ -2,7 +2,10 @@
 .env
 .env.*
 !.env.example
+!.env.*.example
 *.pem
+# 공개 CA 인증서 (AWS RDS 루트 CA, 비밀 아님) — prod gitops backend-secrets 차트가 ConfigMap 으로 씀
+!infra/gitops/prod/backend-secrets/chart/files/us-east-1-bundle.pem
 *.key
 *.p12
 *.jks
@@ -40,6 +43,23 @@ __pycache__/
 venv/
 *.egg-info/
 
+# ── Terraform ─────────────────────────────────
+# .terraform.lock.hcl 은 커밋한다
+.terraform/
+.terragrunt-cache/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
 # ── IDE / OS ──────────────────────────────────
 .idea/
 .vscode/
@@ -51,3 +71,7 @@ Thumbs.db
 *.sqlite3
 /uploads/
 /tmp/
+
+# Ansible (infra/ansible) - local inventory / generated join token & kubeconfig
+infra/ansible/inventory/hosts.ini
+infra/ansible/.secrets/

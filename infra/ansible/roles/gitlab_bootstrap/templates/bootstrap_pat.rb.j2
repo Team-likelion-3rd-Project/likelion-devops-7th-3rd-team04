@@ -1,0 +1,19 @@
+# Ansible(gitlab_bootstrap role)이 생성 — gitlab-rails runner 로 실행됩니다.
+# root 의 단기(1일) Personal Access Token 을 새로 발급합니다. role 이 끝나면 API 로 바로 폐기하고,
+# 이전 실행이 중간에 끊겨 남은 같은 이름의 토큰도 여기서 함께 폐기합니다.
+name = {{ gitlab_bootstrap_pat_name | to_json }}
+
+user = User.find_by_username('root')
+raise 'root 계정이 없습니다 — 최초 초기화 때 GITLAB_ROOT_PASSWORD 가 거부됐는지 확인 (README 8-3)' if user.nil?
+
+user.personal_access_tokens.active.where(name: name).find_each(&:revoke!)
+
+scopes = [:api]
+# Admin Mode 가 켜져 있으면 관리자 API(그룹 생성 등)에 admin_mode scope 가 필요
+scopes << :admin_mode if Gitlab::CurrentSettings.admin_mode
+
+token = user.personal_access_tokens.build(name: name, scopes: scopes, expires_at: 1.day.from_now)
+token.set_token("glpat-#{SecureRandom.alphanumeric(32)}")
+token.save!
+
+puts "BOOTSTRAP_PAT=#{token.token}"

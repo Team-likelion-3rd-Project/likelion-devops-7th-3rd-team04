@@ -1,0 +1,46 @@
+---
+# Runner 1개 (runner = gitlab_runners 항목)
+- name: "runner 생성 스크립트 ({{ runner.description }})"
+  ansible.builtin.template:
+    src: runner_token.rb.j2
+    dest: "{{ gitlab_base_dir }}/scripts/runner_token.rb"
+    mode: "0644"
+
+- name: "instance runner 생성 / 토큰 조회 ({{ runner.description }})"
+  # gitlab-rails 부팅 때문에 30초~1분 정도 걸림
+  # gitlab-rails 는 git 사용자로 실행되어 root 전용(0700) 디렉토리의 파일을 못 읽으므로,
+  # 컨테이너 root 셸에서 스크립트 내용을 읽어 코드 문자열로 넘김
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - gitlab
+      - sh
+      - -c
+      - 'gitlab-rails runner "$(cat /opt/ansible-scripts/runner_token.rb)"'
+  register: runner_token_out
+  changed_when: "'RUNNER_CREATED=true' in runner_token_out.stdout"
+  failed_when: false
+  no_log: true
+
+- name: "runner 생성 실패 원인 출력 (토큰 마스킹, {{ runner.description }})"
+  ansible.builtin.fail:
+    msg: >-
+      gitlab-rails runner 실패 (rc={{ runner_token_out.rc }}):
+      {{ (runner_token_out.stderr ~ ' ' ~ runner_token_out.stdout)
+         | regex_replace('glrt-[A-Za-z0-9_.-]+', 'glrt-***')
+         | regex_replace('\s+', ' ') | trim | truncate(2000) }}
+  when: runner_token_out.rc != 0 or runner_token_out.stdout is not search('RUNNER_TOKEN=glrt-')
+
+- name: "접속 정보 파일 생성 (로컬, {{ runner.env_file }})"
+  ansible.builtin.copy:
+    dest: "{{ local_secrets_dir }}/{{ runner.env_file }}"
+    content: |
+      # gitlab.yml 이 생성 — 커밋 금지, 팀 비밀 채널로만 공유
+      GITLAB_URL=https://{{ ts_fqdn }}
+      GITLAB_TS_IP={{ ts_ip }}
+      GITLAB_RUNNER_TOKEN={{ runner_token_out.stdout_lines | select('match', '^RUNNER_TOKEN=glrt-') | first | regex_replace('^RUNNER_TOKEN=', '') }}
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true

@@ -1,0 +1,68 @@
+---
+# tailscale serve 가 Tailnet 쪽 443(HTTPS) / 2222(TCP) 를 받아 loopback 의 GitLab 으로 넘깁니다.
+# 인증서(<hostname>.<tailnet>.ts.net, Let's Encrypt) 발급·갱신은 tailscaled 가 자동 처리 — 설정은 재부팅 후에도 유지됨
+- name: 현재 serve 설정 조회
+  ansible.builtin.command: tailscale serve status --json
+  register: ts_serve_out
+  changed_when: false
+
+- name: HTTPS 443 → GitLab http 프록시
+  # HTTPS Certificates 가 꺼져 있으면 활성화 URL 을 띄우고 대기하므로 timeout 으로 끊음
+  ansible.builtin.command: >-
+    timeout 120 tailscale serve --bg --https=443 http://127.0.0.1:{{ gitlab_http_port }}
+  when: ts_serve_out.stdout is not search('"Proxy":\s*"http://127\.0\.0\.1:' ~ gitlab_http_port ~ '"')
+  changed_when: true
+
+- name: TCP 2222 → GitLab SSH 포워딩
+  ansible.builtin.command: >-
+    timeout 60 tailscale serve --bg --tcp={{ gitlab_ssh_port }} tcp://127.0.0.1:{{ gitlab_ssh_port }}
+  when: ts_serve_out.stdout is not search('"TCPForward":\s*"127\.0\.0\.1:' ~ gitlab_ssh_port ~ '"')
+  changed_when: true
+
+- name: HTTPS {{ gitlab_registry_port }} → Container Registry http 프록시
+  # registry 는 별도 포트로 노출 (같은 *.ts.net 인증서 사용)
+  ansible.builtin.command: >-
+    timeout 60 tailscale serve --bg --https={{ gitlab_registry_port }} http://127.0.0.1:{{ gitlab_registry_port }}
+  when: ts_serve_out.stdout is not search('"Proxy":\s*"http://127\.0\.0\.1:' ~ gitlab_registry_port ~ '"')
+  changed_when: true
+
+- name: HTTPS 응답 확인 (첫 인증서 발급 대기 포함)
+  ansible.builtin.uri:
+    url: "{{ gitlab_url }}/users/sign_in"
+    status_code: 200
+  register: gitlab_https
+  until: gitlab_https.status == 200
+  retries: 12
+  delay: 10
+
+- name: Registry 응답 확인 (/v2/ 는 미인증 401 이 정상)
+  ansible.builtin.uri:
+    url: "{{ gitlab_url }}:{{ gitlab_registry_port }}/v2/"
+    status_code: 401
+  register: registry_https
+  until: registry_https.status == 401
+  retries: 6
+  delay: 10
+
+- name: KAS WebSocket 프록시 확인 (502/504 가 아니면 tailscale serve → nginx → KAS 경로 정상)
+  # 핸드셰이크 헤더만 보내 Upgrade 가 KAS 까지 전달되는지 확인 (agentk 인증이 없으므로 101 이 아닐 수 있음)
+  ansible.builtin.uri:
+    url: "{{ gitlab_url }}/-/kubernetes-agent/"
+    headers:
+      Connection: Upgrade
+      Upgrade: websocket
+      Sec-WebSocket-Version: "13"
+      Sec-WebSocket-Key: "dGhlIHNhbXBsZSBub25jZQ=="
+    status_code: [101, 400, 401, 403, 404, 426]
+  register: kas_ws
+  until: kas_ws.status not in [502, 503, 504]
+  retries: 6
+  delay: 10
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "GitLab : {{ gitlab_url }}  (root / GITLAB_ROOT_PASSWORD)"
+      - "Registry: {{ gitlab_fqdn }}:{{ gitlab_registry_port }}"
+      - "KAS    : wss://{{ gitlab_fqdn }}/-/kubernetes-agent/"
+      - "git SSH: ssh://git@{{ gitlab_fqdn }}:{{ gitlab_ssh_port }}/<group>/<project>.git"

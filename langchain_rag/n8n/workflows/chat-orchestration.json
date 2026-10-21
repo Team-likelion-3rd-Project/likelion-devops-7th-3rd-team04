@@ -1,0 +1,99 @@
+{
+  "name": "chat-orchestration",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## chat-orchestration\n\n`backend/apps/chat-bot-service/src/n8n/n8n.client.ts`가 호출하는 `N8N_WEBHOOK_URL` 계약을 구현합니다.\n\nRAG 검색과 예약·결제·취소 의도 분류는 llm-service가 합니다. 이 워크플로는 `{message, history, authenticated}`를 넘기고 `{reply, intent, action}`을 그대로 돌려줍니다. 액션 검증은 chat-bot-service가 합니다.\n\n로컬 실행·테스트 방법은 `langchain_rag/n8n/README.md`를 참고하세요.",
+        "height": 300,
+        "width": 380,
+        "color": 5
+      },
+      "id": "93e8eedb-a319-476a-840e-aecad900221b",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-200, -180]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e5eb284c-1ed5-4e35-8f1e-e1c4a6b436d3",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-200, 120],
+      "webhookId": "3a8fe01a-8a5e-4e19-a2fd-86dcb6f9fcee"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Map chat-bot-service's contract (uppercase USER/ASSISTANT roles, per\n// apps/chat-bot-service/src/message/message.service.ts's ChatRole) onto\n// llm-service's contract (lowercase user/assistant, app/schemas.py).\n// sessionId/userId aren't needed for generation, so they're dropped here.\nconst body = $input.first().json.body ?? $input.first().json;\n\nconst history = (body.history || []).map((turn) => ({\n  role: turn.role === 'ASSISTANT' ? 'assistant' : 'user',\n  content: turn.content,\n}));\n\nreturn [\n  {\n    json: {\n      message: body.message,\n      history,\n      // 로그인 여부는 답변 문구에만 쓰임 (액션 차단은 chat-bot-service가 함)\n      authenticated: Boolean(body.userId),\n    },\n  },\n];"
+      },
+      "id": "daa441e7-69c7-4067-bee9-c4f7a669cf85",
+      "name": "Map to llm-service contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [40, 120]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llm-service:8000/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { message: $json.message, history: $json.history, authenticated: $json.authenticated } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "073d3cb7-efb4-4f34-999d-b9a4df03e984",
+      "name": "Call llm-service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [280, 120]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { reply: $json.reply, intent: $json.intent ?? null, action: $json.action ?? null } }}",
+        "options": {}
+      },
+      "id": "09834828-4a52-4696-8488-89d3311881cc",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 120]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "Map to llm-service contract", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Map to llm-service contract": {
+      "main": [
+        [
+          { "node": "Call llm-service", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Call llm-service": {
+      "main": [
+        [
+          { "node": "Respond to Webhook", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "44c978a5-5152-42e6-ba03-d76a4dbffb22"
+}

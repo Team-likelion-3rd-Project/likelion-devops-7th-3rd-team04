@@ -1,0 +1,80 @@
+---
+- name: containerd 설치
+  ansible.builtin.apt:
+    name: containerd
+    state: present
+
+- name: containerd 설정 디렉토리
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: containerd 기본 설정 생성
+  ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+
+- name: SystemdCgroup 활성화
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: Restart containerd
+
+- name: sandbox(pause) 이미지를 kubeadm 버전에 맞춤
+  # 키 이름이 설정 버전마다 다름 — 1.x(v2) sandbox_image / 2.x(v3) sandbox (pinned_images 아래)
+  # ' = ' 까지 맞춰 sandboxer = 'podsandbox' 는 제외
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: '^(\s*)sandbox(_image)? = .*$'
+    replace: '\1sandbox\2 = "{{ pause_image }}"'
+  notify: Restart containerd
+
+- name: 레지스트리별 설정 디렉토리(certs.d) 사용
+  # hosts.toml 로 레지스트리 CA / 미러를 지정할 수 있게 함 (변경은 재시작 없이 반영)
+  # 1.x(v2) 설정용 — 2.x(v3) 는 기본값에 certs.d 가 이미 들어 있어 일치하는 줄이 없고 그대로 통과
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    after: 'plugins."io.containerd.grpc.v1.cri".registry\]'
+    regexp: '^(\s*)config_path = ""'
+    replace: '\1config_path = "/etc/containerd/certs.d"'
+  notify: Restart containerd
+
+- name: 사설 CA 신뢰 — GitLab Container Registry (private_ca_cert_file 이 있을 때만)
+  # tailscale serve 의 *.ts.net 인증서는 공인 CA(Let's Encrypt)라 기본적으로 필요 없음
+  when: private_ca_cert_file | length > 0 and gitlab_registry | default('') | length > 0
+  tags: [registry_trust]
+  block:
+    - name: 레지스트리 디렉토리
+      ansible.builtin.file:
+        path: "/etc/containerd/certs.d/{{ gitlab_registry }}"
+        state: directory
+        mode: "0755"
+
+    - name: 레지스트리 CA
+      ansible.builtin.copy:
+        src: "{{ private_ca_cert_file }}"
+        dest: "/etc/containerd/certs.d/{{ gitlab_registry }}/ca.crt"
+        mode: "0644"
+
+    - name: hosts.toml
+      ansible.builtin.copy:
+        dest: "/etc/containerd/certs.d/{{ gitlab_registry }}/hosts.toml"
+        content: |
+          # Ansible(containerd role) 이 관리 — 직접 수정 금지
+          server = "https://{{ gitlab_registry }}"
+
+          [host."https://{{ gitlab_registry }}"]
+            capabilities = ["pull", "resolve"]
+            ca = "/etc/containerd/certs.d/{{ gitlab_registry }}/ca.crt"
+        mode: "0644"
+
+- name: containerd 활성화
+  ansible.builtin.systemd_service:
+    name: containerd
+    enabled: true
+    state: started
+
+- name: 설정 변경 즉시 반영
+  ansible.builtin.meta: flush_handlers

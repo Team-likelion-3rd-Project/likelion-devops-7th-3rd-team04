@@ -1,0 +1,44 @@
+---
+# helm upgrade 는 값이 같아도 revision 을 새로 만들기 때문에,
+# 설치된 chart 버전과 values 가 원하는 상태와 같으면 건너뜁니다.
+- name: values 파일 생성
+  ansible.builtin.template:
+    src: traefik-values.yaml.j2
+    dest: /etc/kubernetes/traefik-values.yaml
+    mode: "0644"
+
+- name: 설치된 Traefik release 조회
+  ansible.builtin.command: >-
+    helm list -n {{ traefik_namespace }} --filter '^traefik$' -o json
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: traefik_release
+  changed_when: false
+
+- name: 적용된 values 조회
+  ansible.builtin.command: helm get values traefik -n {{ traefik_namespace }} -o json
+  environment: *kubeconfig
+  register: traefik_values_applied
+  changed_when: false
+  when: traefik_release.stdout | from_json | length > 0
+
+- name: Traefik 설치 / 업그레이드
+  ansible.builtin.command: >-
+    helm upgrade --install traefik traefik
+    --repo {{ traefik_chart_repo }}
+    --version {{ traefik_chart_version }}
+    -n {{ traefik_namespace }} --create-namespace
+    -f /etc/kubernetes/traefik-values.yaml
+    --wait --timeout 5m
+  environment: *kubeconfig
+  when: >-
+    (traefik_release.stdout | from_json | length == 0)
+    or ((traefik_release.stdout | from_json | first).chart != 'traefik-' ~ traefik_chart_version)
+    or ((traefik_values_applied.stdout | from_json) != (lookup('ansible.builtin.template', 'traefik-values.yaml.j2') | from_yaml))
+  changed_when: true
+
+- name: Traefik Deployment Ready 대기
+  ansible.builtin.command: >-
+    kubectl rollout status deployment/traefik -n {{ traefik_namespace }} --timeout=180s
+  environment: *kubeconfig
+  changed_when: false

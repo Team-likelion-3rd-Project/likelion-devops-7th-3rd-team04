@@ -1,0 +1,56 @@
+---
+# 70-main-cluster-kubeadm 의 CP user-data 가 노드 안에서 자기 자신에게 실행한다. 사람이 실행하지 않는다 (README 13절)
+- name: AWS Main 클러스터 control plane 구성 (kubeadm init / join --control-plane + Calico)
+  hosts: aws_control_plane
+  become: true
+  vars:
+    required_env: {}
+  roles:
+    - preflight
+    - common
+    - containerd
+    - kubernetes
+    - aws_control_plane
+    - role: calico
+      when: kubeadm_mode == 'init'
+    # CCM 이 노드를 초기화해야(uninitialized taint 제거) 일반 파드가 뜬다. 워커 join 과 병행되도록 Calico 바로 뒤에 둔다
+    - role: helm
+      when: kubeadm_mode == 'init'
+    - role: aws_node_lifecycle
+      when: kubeadm_mode == 'init'
+
+# 클러스터 서비스(Traefik · whoami ...)는 GitOps pull 배포 agent 가 gitops 레포에서 설치한다 (infra/gitops/prod/README.md).
+# Traefik 은 워커에만 뜨므로 워커가 join 한 뒤 첫 실행한다 (워커 없이 실행하면 --atomic 롤백 후 그 SHA 가 실패로 기록됨).
+# 클러스터당 한 번이면 되어 init 한 CP-a 만 실행
+- name: AWS Main 클러스터 GitOps pull 배포 agent
+  hosts: aws_control_plane
+  become: true
+  pre_tasks:
+    - name: init 한 CP 만 진행
+      ansible.builtin.meta: end_host
+      when: kubeadm_mode != 'init'
+
+    - name: 워커 Ready 대기
+      ansible.builtin.command: >-
+        kubectl get nodes -l '!node-role.kubernetes.io/control-plane'
+        -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: worker_ready
+      until: "'True' in worker_ready.stdout"
+      retries: 60
+      delay: 10
+      changed_when: false
+
+    # gitops_sync_cluster_values (group_vars/aws_control_plane.yml). CP Role 자격 증명으로 조회해 Terraform · Git 에 두지 않는다
+    - name: 계정 ID 조회
+      ansible.builtin.command: aws sts get-caller-identity --region {{ aws_region }} --query Account --output text
+      register: caller_account
+      changed_when: false
+
+    - name: 계정 ID fact 등록
+      ansible.builtin.set_fact:
+        aws_account_id: "{{ caller_account.stdout | trim }}"
+
+  roles:
+    - gitops_sync

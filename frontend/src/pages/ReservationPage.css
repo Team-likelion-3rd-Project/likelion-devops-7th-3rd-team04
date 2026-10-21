@@ -1,0 +1,209 @@
+.reservation-page {
+  /* 검색 바가 필드 3개 + 버튼을 한 줄에 담아야 해서, 다른 페이지의 1126px보다 넓게 잡는다 */
+  max-width: 1720px;
+  margin: 0 auto;
+  padding: 48px 56px 96px;
+
+  @media (max-width: 767px) {
+    padding: 32px 20px 88px;
+  }
+}
+
+/* ReservationOptionsPage(3단계 자리 표시) 등 이 페이지의 CSS를 함께 쓰는 플로우 페이지용 안내 문구 */
+.reservation-placeholder-note {
+  margin-top: 56px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.reservation-search {
+  margin-top: 80px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.reservation-search-bar {
+  display: flex;
+  align-items: stretch;
+  background: var(--code-bg);
+
+  @media (max-width: 900px) {
+    flex-wrap: wrap;
+  }
+}
+
+.reservation-field {
+  appearance: none;
+  border: none;
+  background: none;
+  flex: 1;
+  min-width: 200px;
+  text-align: left;
+  padding: 18px 24px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+
+  &:hover,
+  &:focus-visible,
+  &.is-open {
+    background: var(--bg);
+  }
+}
+
+.reservation-field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.reservation-field-value {
+  display: block;
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-h);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reservation-divider {
+  width: 1px;
+  margin: 16px 0;
+  background: var(--border);
+}
+
+.reservation-search-submit {
+  appearance: none;
+  border: none;
+  flex: 0 0 auto;
+  padding: 0 40px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 500;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  transition: opacity 0.2s;
+
+  &:hover,
+  &:focus-visible {
+    opacity: 0.85;
+  }
+
+  @media (max-width: 900px) {
+    flex: 1 0 100%;
+    padding: 16px;
+  }
+}
+
+.reservation-panel {
+  border-top: 1px solid var(--border);
+  animation: reservation-panel-slide-down 0.15s ease-out;
+}
+
+@keyframes reservation-panel-slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.reservation-hotel-panel {
+  padding: 20px 24px;
+}
+
+.reservation-field-error {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #e5484d;
+}
+
+.reservation-hotel-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reservation-hotel-option {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.2s;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent-border);
+  }
+
+  &.is-selected {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+  }
+}
+
+.reservation-hotel-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.reservation-hotel-location {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.reservation-hotel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.reservation-hotel-next {
+  appearance: none;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 32px;
+  font: inherit;
+  font-size: 15px;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  transition: opacity 0.2s;
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    opacity: 0.85;
+  }
+  &:disabled {
+    background: var(--border);
+    color: var(--text);
+    cursor: default;
+  }
+}
+

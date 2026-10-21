@@ -1,0 +1,15 @@
+# Ansible(db_stack role)이 생성 — 값은 inventory/group_vars/db.yml 에서 조정
+# backend(auth-service 리프레시 토큰) 연동은 추후 — 그때 backend REDIS_PASSWORD 를 이 값과 맞춤
+bind * -::*
+port {{ valkey_port }}
+protected-mode yes
+requirepass {{ valkey_password }}
+
+maxmemory {{ valkey_maxmemory }}
+maxmemory-policy volatile-lru
+
+dir /data
+appendonly yes
+appendfsync everysec
+
+tcp-backlog 4096

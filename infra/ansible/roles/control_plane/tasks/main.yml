@@ -1,0 +1,50 @@
+---
+# kubeadm_bootstrap_token / kubeadm_certificate_key 는 AWS(aws_control_plane role) 만 지정한다.
+# 지정하면 그 token 으로 init 하고 --upload-certs 로 인증서를 올려 다른 CP 가 join 할 수 있게 한다.
+- name: kubeadm 설정 파일 생성
+  ansible.builtin.template:
+    src: kubeadm-init.yaml.j2
+    dest: /etc/kubernetes/kubeadm-init.yaml
+    mode: "0600"
+  no_log: "{{ kubeadm_bootstrap_token is defined }}"
+
+- name: kubeadm init
+  # token · certificate-key 가 출력(실패 시 Ansible 로그)에 찍히지 않도록 --skip-*-print
+  ansible.builtin.command: >-
+    kubeadm init --config /etc/kubernetes/kubeadm-init.yaml
+    {{ '--upload-certs --skip-token-print --skip-certificate-key-print' if kubeadm_certificate_key is defined else '' }}
+  args:
+    creates: /etc/kubernetes/admin.conf
+
+- name: init 설정 파일 삭제 (token 포함)
+  ansible.builtin.file:
+    path: /etc/kubernetes/kubeadm-init.yaml
+    state: absent
+  when: kubeadm_bootstrap_token is defined
+
+- name: 접속 사용자 kubeconfig 디렉토리
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0700"
+  when: copy_user_kubeconfig | default(true)
+
+- name: 접속 사용자 kubeconfig 복사
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+  when: copy_user_kubeconfig | default(true)
+
+- name: API 서버 Ready 대기
+  ansible.builtin.command: kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz
+  register: readyz
+  until: readyz.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false

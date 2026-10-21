@@ -1,0 +1,37 @@
+{{- if .Values.ingress.enabled }}
+{{- $svc := index .Values.services .Values.ingress.service }}
+# api-gateway 외부 노출. 온프레미스는 Traefik(NodePort 30080), prod 는 ALB annotations 를 values 로 지정
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.ingress.service }}
+  labels:
+    {{- include "backend.labels" (dict "root" $ "name" .Values.ingress.service) | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- if .Values.ingress.host }}
+    - host: {{ .Values.ingress.host }}
+      http:
+    {{- else }}
+    - http:
+    {{- end }}
+        paths:
+          {{- range .Values.ingress.paths }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Values.ingress.service }}
+                port:
+                  number: {{ $svc.port }}
+          {{- end }}
+{{- end }}

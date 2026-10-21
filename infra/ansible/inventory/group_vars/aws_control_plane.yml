@@ -1,0 +1,41 @@
+---
+# AWS Main 클러스터 CP (aws-control-plane.yml). 공통값은 aws.yml, 온프레미스와 다른 값만 둔다.
+#
+# user-data 가 aws.yml 의 값 외에 넘기는 extra vars
+#   k8s_cp_role                 init (CP-a) | join (CP-b · c)
+#   nth_queue_url               NTH 가 받는 SQS 큐 URL (70 node-lifecycle.tf)
+#   k8s_service_account_issuer  kube-apiserver --service-account-issuer = 10-global OIDC 버킷 URL (IRSA, 70 irsa.tf)
+#   oidc_bucket_name            CP-a 가 init 후 keys.json 을 올리는 버킷
+
+# VPC 점보 프레임 MTU(9001) - VXLAN 오버헤드(50)
+calico_mtu: 8951
+calico_node_address_autodetection:
+  kubernetes: NodeInternalIP
+
+# 접속은 SSM. kubeconfig 는 /etc/kubernetes/admin.conf 를 sudo 로 쓴다
+copy_user_kubeconfig: false
+
+# join token 갱신 (systemd timer). Terraform 이 만든 첫 token 은 kubeadm_token_ttl(72h) 후 만료되므로
+# 당일 ASG 교체 · 확장에 대비해 CP 가 새 token 을 만들어 join-token 파라미터를 덮어쓴다
+kubeadm_join_token_renew_interval: 12h
+kubeadm_join_token_renew_ttl: 24h
+
+# CP 교체 뒷정리 주기 (team04-cp-reconcile.timer). 사라진 CP 의 etcd 멤버 제거, kubeadm-certs Secret(2시간 후 삭제) 재업로드
+kubeadm_cp_reconcile_interval: 1min
+
+# ── 노드 수명주기 (CP-a 만 설치, aws_node_lifecycle role) ──
+# CCM 이미지는 Kubernetes 마이너 버전(kube_version) 과 맞춘다. 차트 0.0.9 기본값(v1.33.0) 대신 최신 패치
+aws_ccm_chart_version: "0.0.9"
+aws_ccm_image_tag: "v1.33.4"
+aws_nth_chart_version: "0.27.6"   # NTH v1.25.6
+
+# ── GitOps pull 배포 agent (CP-a 만 설치, gitops_sync role) ──
+# Traefik · whoami 등 클러스터 서비스의 원본은 gitops 레포 envs/prod (모노레포 infra/gitops/prod)
+# 대상 브랜치. 작업 브랜치 검증은 이 값이 아니라 ConfigMap gitops-sync-config 의 BRANCH 를 바꾼다 — 머지 시 main
+gitops_sync_branch: main
+
+# public gitops 레포에 두지 않는 클러스터 값. chart.yaml 에 clusterValues: true 인 앱에만 넘긴다 (roles/gitops_sync).
+# 계정 ID 는 IRSA Role ARN 에 쓴다 (pod-identity-webhook). aws_account_id 는 aws-control-plane.yml 이 STS 로 조회
+gitops_sync_cluster_values:
+  global:
+    awsAccountId: "{{ aws_account_id }}"

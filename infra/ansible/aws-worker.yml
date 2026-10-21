@@ -1,0 +1,15 @@
+---
+# 70-main-cluster-kubeadm 의 워커 Launch Template user-data 가 노드 안에서 자기 자신에게 실행한다. 사람이 실행하지 않는다 (README 13절)
+- name: AWS Main 클러스터 worker 구성 및 join
+  hosts: aws_worker
+  become: true
+  vars:
+    required_env: {}
+  roles:
+    - preflight
+    - common
+    - containerd
+    - kubernetes
+    # kubeadm join(kubelet 시작) 전에 설치
+    - aws_ecr_credential_provider
+    - aws_worker

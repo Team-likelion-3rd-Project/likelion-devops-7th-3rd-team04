@@ -1,0 +1,76 @@
+# Ansible(db_stack role)이 생성 — 직접 수정하지 마세요.
+# MariaDB · Valkey · MinIO · DynamoDB Local 모두 network_mode: host + ufw 로 tailscale0 에서만 접근 허용 (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
+name: hotel-db
+
+services:
+  mariadb:
+    image: {{ mariadb_image }}
+    container_name: mariadb
+    network_mode: host
+    restart: unless-stopped
+    env_file: [mariadb.env]
+    labels:
+      hotel-db.config-checksum: "{{ mariadb_conf.checksum }}"
+    volumes:
+      - {{ db_data_dir }}/mariadb:/var/lib/mysql
+      - ./conf/mariadb-tuning.cnf:/etc/mysql/conf.d/zz-tuning.cnf:ro
+      - ./mysql:/etc/mysql/ansible:ro
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  valkey:
+    image: {{ valkey_image }}
+    container_name: valkey
+    network_mode: host
+    restart: unless-stopped
+    command: ["valkey-server", "/usr/local/etc/valkey/valkey.conf"]
+    env_file: [valkey.env]
+    labels:
+      hotel-db.config-checksum: "{{ valkey_conf.checksum }}"
+    volumes:
+      - {{ db_data_dir }}/valkey:/data
+      - ./conf/valkey.conf:/usr/local/etc/valkey/valkey.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -p {{ valkey_port }} -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # dev 용 S3 (객실 이미지). 버킷 / 앱 계정은 db_stack role 이 기동 후 맞춤 (README 7-6)
+  minio:
+    image: {{ minio_image }}
+    container_name: minio
+    network_mode: host
+    restart: unless-stopped
+    command: ["server", "/data", "--address", ":{{ minio_api_port }}", "--console-address", ":{{ minio_console_port }}"]
+    # env_file 변경은 compose 가 감지해 재생성 / 정책 파일은 mcli 가 읽으므로 checksum label 불필요
+    env_file: [minio.env]
+    volumes:
+      - {{ db_data_dir }}/minio:/data
+      - ./minio:/etc/minio/ansible:ro
+    healthcheck:
+      # MC_HOST_local(minio.env) 로 root alias 사용
+      test: ["CMD", "mcli", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # chat-bot-service 대화 세션·이력 (AWS DynamoDB 대체). 테이블은 db_seed role 이 dynamodb-init.ts 로 생성.
+  # 인증이 없으므로 ufw 로 tailscale0 에서만 허용. 상태 확인용 HTTP 엔드포인트가 없어 healthcheck 는 두지 않음
+  dynamodb:
+    image: {{ dynamodb_image }}
+    container_name: dynamodb
+    network_mode: host
+    restart: unless-stopped
+    user: "{{ dynamodb_uid }}:{{ dynamodb_uid }}"
+    # 이미지 entrypoint 가 java 라 jar 인자만 넘김. -sharedDb: 자격 증명·리전과 관계없이 DB 파일 하나를 씀
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/data", "-port", "{{ dynamodb_port }}"]
+    volumes:
+      - {{ db_data_dir }}/dynamodb:/data

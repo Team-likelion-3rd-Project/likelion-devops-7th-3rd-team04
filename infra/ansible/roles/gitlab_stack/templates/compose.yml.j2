@@ -1,0 +1,26 @@
+# Ansible(gitlab_stack role)이 생성 — 직접 수정하지 마세요.
+# 포트는 127.0.0.1 에만 publish 하고 tailscale serve 가 Tailnet 으로 노출 (사설 IP 로는 접근 불가)
+name: gitlab
+
+services:
+  gitlab:
+    image: {{ gitlab_image }}
+    container_name: gitlab
+    hostname: {{ gitlab_fqdn }}
+    restart: unless-stopped
+    shm_size: 256m
+    env_file: [gitlab.env]
+    environment:
+      GITLAB_OMNIBUS_CONFIG: "from_file('/omnibus_config.rb')"
+    labels:
+      gitlab.config-checksum: "{{ gitlab_rb.checksum }}"
+    ports:
+      - "127.0.0.1:{{ gitlab_http_port }}:80"
+      - "127.0.0.1:{{ gitlab_ssh_port }}:22"
+      - "127.0.0.1:{{ gitlab_registry_port }}:{{ gitlab_registry_port }}"
+    volumes:
+      - ./gitlab.rb:/omnibus_config.rb:ro
+      - ./scripts:/opt/ansible-scripts:ro
+      - {{ gitlab_data_dir }}/config:/etc/gitlab
+      - {{ gitlab_data_dir }}/logs:/var/log/gitlab
+      - {{ gitlab_data_dir }}/data:/var/opt/gitlab

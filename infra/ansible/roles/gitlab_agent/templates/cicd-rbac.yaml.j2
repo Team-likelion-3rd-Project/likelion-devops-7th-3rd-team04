@@ -1,0 +1,109 @@
+# Ansible(roles/gitlab_agent) 이 관리 — 직접 수정 금지
+#
+# GitLab Free 에는 ci_access impersonation 이 없어서, CI job 의 kubectl/helm 권한 = agentk ServiceAccount 권한입니다.
+# 그래서 agentk 차트의 기본 cluster-admin 바인딩(rbac.create)은 끄고, 아래 Role 로 권한을 좁힙니다.
+#   - {{ backend_namespace }} : 앱 배포에 필요한 namespaced 리소스만 (클러스터 범위 리소스·다른 네임스페이스 불가)
+#   - {{ gitlab_agent_namespace }}  : agentk 자신의 동작(leader election, 상태 저장, 형제 Pod 조회)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ gitlab_agent_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+---
+# 앱 네임스페이스 — agent 가 만들 수 없으므로(cluster 범위) 여기서 생성. 차트에는 Namespace 를 넣지 않음
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ backend_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cicd-deployer
+  namespace: {{ backend_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+rules:
+  # 차트가 만드는 리소스 + helm 릴리스 기록(Secret, sh.helm.release.v1.*)
+  - apiGroups: [""]
+    resources: [services, configmaps, secrets, serviceaccounts, persistentvolumeclaims]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # rollout status / --wait / 디버깅
+  - apiGroups: [""]
+    resources: [pods, pods/log, events, endpoints]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets, statefulsets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # DB 마이그레이션 hook Job
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cicd-deployer
+  namespace: {{ backend_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cicd-deployer
+subjects:
+  - kind: ServiceAccount
+    name: {{ gitlab_agent_sa }}
+    namespace: {{ gitlab_agent_namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agentk-self
+  namespace: {{ gitlab_agent_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [secrets, configmaps]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agentk-self
+  namespace: {{ gitlab_agent_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agentk-self
+subjects:
+  - kind: ServiceAccount
+    name: {{ gitlab_agent_sa }}
+    namespace: {{ gitlab_agent_namespace }}

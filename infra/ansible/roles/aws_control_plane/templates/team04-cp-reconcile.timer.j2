@@ -1,0 +1,14 @@
+# Ansible(roles/aws_control_plane) 이 관리. 주기 < 새 CP 부트스트랩 시간(약 3분) 이어야 죽은 멤버가 join 전에 정리된다
+[Unit]
+Description=Reconcile control plane every {{ kubeadm_cp_reconcile_interval }}
+
+[Timer]
+OnActiveSec={{ kubeadm_cp_reconcile_interval }}
+OnUnitActiveSec={{ kubeadm_cp_reconcile_interval }}
+# 기본 정확도(1분) 로는 주기가 늘어진다. CP 3대가 같은 순간에 실행하지 않게 조금 흩뜨린다
+AccuracySec=1s
+RandomizedDelaySec=15s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,33 @@
+---
+# AWS Main 클러스터 노드 공통 (aws-control-plane.yml, aws-worker.yml). 온프레미스와 다른 값만 둔다.
+#
+# 아래 값은 70-main-cluster-kubeadm user-data 가 extra vars 로 넘긴다.
+#   node_name                   EC2 private DNS (ip-10-10-4-10.ec2.internal)
+#   k8s_control_plane_endpoint  kube-apiserver 내부 NLB DNS
+#   kubeadm_param_prefix        Parameter Store 경로 (/team04-hotel/prod/kubeadm)
+#   aws_region
+
+# Tailscale 없이 VPC private IP 를 노드 IP 로 쓴다
+use_tailscale: false
+
+# 워커는 ASG 가 관리하므로 애드온 배치를 operator / kubeadm 기본값 그대로 둔다
+addons_on_control_plane: false
+
+# kubelet 이 노드를 uninitialized taint 로 등록하고, aws-cloud-controller-manager 가 providerID 를 넣어 초기화한다
+# (aws_node_lifecycle role). 온프레미스는 정의하지 않는다 (kubeadm 템플릿에 들어가지 않음)
+kubelet_cloud_provider: external
+
+# 워커 kubelet 이 ECR 이미지를 노드 Role 로 pull 한다 (imagePullSecret 없음). 플러그인 설치는 aws_ecr_credential_provider role,
+# kubelet 플래그는 worker_join 템플릿. CP 는 앱 파드가 뜨지 않아 쓰지 않는다. 온프레미스는 정의하지 않는다
+kubelet_image_credential_provider_config: /etc/kubernetes/image-credential-provider-config.yaml
+kubelet_image_credential_provider_bin_dir: /usr/local/lib/kubelet/credential-provider
+
+# 70 스택이 CA cert hash 파라미터를 만들 때 넣는 값 (Parameter Store 는 빈 값을 허용하지 않는다)
+kubeadm_ca_cert_hash_pending: pending
+
+# join 노드가 CP-a 의 init 완료(CA cert hash 기록)를 기다리는 최대 시간 = retries × 10초
+kubeadm_ca_cert_hash_wait_retries: 90
+
+# 워커 join 실패 시 reset 후 재시도 횟수 (30초 간격). CP-b · c 가 etcd 멤버로 추가되는 동안
+# kube-apiserver 가 잠시 응답하지 않아 /readyz 대기를 통과한 직후 join preflight 가 타임아웃 날 수 있다
+kubeadm_join_retries: 3

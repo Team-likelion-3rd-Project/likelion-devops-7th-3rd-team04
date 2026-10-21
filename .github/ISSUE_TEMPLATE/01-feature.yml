@@ -1,6 +1,5 @@
 name: 기능 개발
 description: 새로 구현할 기능을 등록합니다.
-title: "[FEAT] "
 labels: ["feat"]
 body:
   - type: textarea

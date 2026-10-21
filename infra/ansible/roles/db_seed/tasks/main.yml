@@ -1,0 +1,141 @@
+---
+# dev DB 시딩 — backend/scripts/seed.ts (관리자 계정, 호텔·객실, 편의시설, 객실 재고 30일)
+# 앱이 모두 synchronize: false 라 테이블은 클러스터의 main-db-migration hook(Flyway)만 만듭니다.
+# 그래서 순서는 db.yml → deploy-dev(스키마 생성) → db.yml --tags seed. 스키마가 없으면 MariaDB 시딩은 건너뜁니다.
+# 같은 이미지로 DynamoDB Local 테이블(chat-bot-service 대화 이력, scripts/dynamodb-init.ts)도 만듭니다 — 스키마와 무관하게 실행.
+# seed.ts 는 멱등 — 이미 있는 데이터는 건너뛰므로 여러 번 실행해도 안전 (README 7-5)
+
+- name: 메인 DB 스키마 확인 (Flyway 적용 여부)
+  ansible.builtin.command: >-
+    docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/app.cnf -N -e
+    "SELECT COUNT(*) FROM information_schema.tables
+     WHERE table_schema = DATABASE() AND table_name IN ('{{ db_seed_required_tables | join("', '") }}')"
+  register: seed_schema
+  changed_when: false
+
+- name: 스키마 없음 안내
+  ansible.builtin.debug:
+    msg: >-
+      {{ db_database }} 에 Flyway 스키마({{ db_seed_required_tables | join(', ') }})가 아직 없어 시딩을 건너뜁니다.
+      GitLab 파이프라인의 deploy-dev 를 먼저 실행(main-db-migration hook 이 V1~ 적용)한 뒤
+      ansible-playbook db.yml -K --tags seed 를 실행하세요.
+  when: seed_schema.stdout | trim | int < db_seed_required_tables | length
+
+- name: 시딩
+  vars:
+    seed_schema_ready: "{{ seed_schema.stdout | trim | int == db_seed_required_tables | length }}"
+  block:
+    # 소스가 바뀐 경우에만 다시 올리고 빌드 — 이미지 태그 = 로컬 backend 소스 해시
+    - name: 시딩 소스 해시 (로컬)
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        cd {{ db_seed_backend_dir | quote }} &&
+        find . -type f
+        -not -path './node_modules/*' -not -path './dist/*' -not -path './.git/*' -not -name '.env*'
+        -print0
+        | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12
+      args:
+        executable: /bin/bash
+      register: seed_src_hash
+      changed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: 시딩 이미지 태그
+      ansible.builtin.set_fact:
+        db_seed_image: "{{ db_seed_image_name }}:{{ seed_src_hash.stdout | trim }}"
+
+    - name: 시딩 이미지 존재 확인
+      ansible.builtin.command: docker image inspect --format '{{ '{{' }}.Id{{ '}}' }}' {{ db_seed_image }}
+      register: seed_image_inspect
+      changed_when: false
+      failed_when: false
+
+    - name: 시딩 이미지 빌드
+      when: seed_image_inspect.rc != 0
+      block:
+        - name: 소스 아카이브 (로컬, node_modules · dist · .env 제외)
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            tar -C {{ db_seed_backend_dir | quote }}
+            --exclude='./node_modules' --exclude='./dist' --exclude='./.git' --exclude='.env*'
+            -czf {{ db_seed_local_archive | quote }} .
+          args:
+            executable: /bin/bash
+          changed_when: true
+          delegate_to: localhost
+          become: false
+
+        - name: 빌드 디렉토리 초기화
+          ansible.builtin.file:
+            path: "{{ db_seed_dir }}/src"
+            state: "{{ item }}"
+            mode: "0700"
+          loop: [absent, directory]
+
+        - name: 소스 업로드
+          ansible.builtin.unarchive:
+            src: "{{ db_seed_local_archive }}"
+            dest: "{{ db_seed_dir }}/src"
+
+        # 동료가 만든 backend/scripts/Dockerfile.seed 그대로 (npm ci 레이어는 캐시되므로 두 번째부터 빠름)
+        - name: 시딩 이미지 빌드 ({{ db_seed_image }})
+          ansible.builtin.command: >-
+            docker build --pull -f scripts/Dockerfile.seed -t {{ db_seed_image }} .
+          args:
+            chdir: "{{ db_seed_dir }}/src"
+          changed_when: true
+      always:
+        - name: 로컬 아카이브 삭제
+          ansible.builtin.file:
+            path: "{{ db_seed_local_archive }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+
+    # 로컬 backend/docker-compose.yml 의 dynamodb-init 과 같은 명령. 이미 있는 테이블은 건너뜀(멱등)
+    - name: DynamoDB Local 테이블 생성 (ChatSessions / ChatMessages)
+      ansible.builtin.command: >-
+        docker run --rm --network host
+        -e DYNAMODB_ENDPOINT=http://127.0.0.1:{{ dynamodb_port }} -e DYNAMODB_REGION={{ minio_region }}
+        {{ db_seed_image }}
+        npx ts-node --transpile-only -r tsconfig-paths/register scripts/dynamodb-init.ts
+      register: dynamodb_init
+      changed_when: "'테이블 생성 완료' in dynamodb_init.stdout"
+
+    - name: DynamoDB Local 테이블 결과
+      ansible.builtin.debug:
+        msg: "{{ dynamodb_init.stdout_lines }}"
+
+    - name: 시딩 환경변수 파일
+      ansible.builtin.template:
+        src: seed.env.j2
+        dest: "{{ db_seed_dir }}/seed.env"
+        mode: "0600"
+      no_log: true
+
+    - name: 관리자 계정 값 없음 안내
+      ansible.builtin.debug:
+        msg: >-
+          backend/.env 의 SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD 가 비어 있어 관리자 계정 생성은 건너뜁니다
+          (호텔·객실 등 나머지는 시딩).
+      when: seed_schema_ready | bool and (seed_admin_email | length == 0 or seed_admin_password | length == 0)
+
+    - name: 시딩 실행
+      ansible.builtin.command: >-
+        docker run --rm --network host --env-file {{ db_seed_dir }}/seed.env {{ db_seed_image }}
+      register: seed_run
+      changed_when: "'생성 완료' in seed_run.stdout"
+      when: seed_schema_ready | bool
+
+    - name: 시딩 결과
+      when: seed_schema_ready | bool
+      ansible.builtin.debug:
+        msg: "{{ seed_run.stdout_lines | select('search', '^\\[seed\\]') | list }}"
+
+    - name: 이전 시딩 이미지 정리
+      ansible.builtin.shell: >-
+        docker image ls {{ db_seed_image_name }} --format '{{ '{{' }}.Repository{{ '}}' }}:{{ '{{' }}.Tag{{ '}}' }}'
+        | grep -vx {{ db_seed_image | quote }} | xargs -r docker image rm
+      register: seed_prune
+      changed_when: seed_prune.stdout | length > 0

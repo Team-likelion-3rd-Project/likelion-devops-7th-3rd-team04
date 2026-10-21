@@ -1,0 +1,22 @@
+---
+- name: Kubernetes control plane 구성 (kubeadm init + Calico)
+  hosts: control_plane
+  become: true
+  vars:
+    required_env: "{{ {'TS_OAUTH_CLIENT_SECRET': ts_oauth_secret} if use_tailscale else {} }}"
+  roles:
+    - preflight
+    - common
+    - containerd
+    - role: tailscale
+      when: use_tailscale
+    - kubernetes
+    - control_plane
+    - role: calico
+      tags: [calico]
+    # 기존 클러스터에 배치만 다시 적용: --tags calico,addon_placement
+    - role: addon_placement
+      when: addons_on_control_plane
+      tags: [addon_placement]
+    - role: join_info
+      tags: [join_info]

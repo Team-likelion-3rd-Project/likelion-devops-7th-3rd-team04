@@ -1,0 +1,51 @@
+# Ansible(gitlab_stack role)이 생성 — 직접 수정하지 마세요.
+# 컨테이너에 /omnibus_config.rb 로 마운트되어 GITLAB_OMNIBUS_CONFIG 로 로드됩니다.
+
+# ── URL / TLS ────────────────────────────────────────────
+# TLS 는 호스트의 tailscale serve(443) 가 종료하고 127.0.0.1:{{ gitlab_http_port }} → 컨테이너 80 으로 프록시
+external_url '{{ gitlab_url }}'
+letsencrypt['enable'] = false
+nginx['listen_port'] = 80
+nginx['listen_https'] = false
+nginx['proxy_set_headers'] = {
+  "X-Forwarded-Proto" => "https",
+  "X-Forwarded-Ssl" => "on"
+}
+# 프록시(docker-proxy) 가 docker bridge 게이트웨이 주소로 접속하므로 해당 대역을 신뢰
+nginx['real_ip_trusted_addresses'] = ['172.16.0.0/12', '127.0.0.1']
+nginx['real_ip_header'] = 'X-Forwarded-For'
+nginx['real_ip_recursive'] = 'on'
+gitlab_rails['trusted_proxies'] = ['172.16.0.0/12', '127.0.0.1']
+
+# ── git over SSH: tailscale serve tcp:{{ gitlab_ssh_port }} → 127.0.0.1:{{ gitlab_ssh_port }} → 컨테이너 22 ──
+gitlab_rails['gitlab_shell_ssh_port'] = {{ gitlab_ssh_port }}
+
+# ── Container Registry: tailscale serve https:{{ gitlab_registry_port }} → 127.0.0.1:{{ gitlab_registry_port }} → 컨테이너 registry nginx(http) ──
+# dev 이미지 저장소 (prod 는 ECR). 인증서는 tailscale serve 가 처리하므로 컨테이너 안은 http
+registry_external_url '{{ gitlab_url }}:{{ gitlab_registry_port }}'
+gitlab_rails['registry_enabled'] = true
+registry_nginx['listen_port'] = {{ gitlab_registry_port }}
+registry_nginx['listen_https'] = false
+registry_nginx['proxy_set_headers'] = {
+  "X-Forwarded-Proto" => "https",
+  "X-Forwarded-Ssl" => "on"
+}
+
+# ── KAS (GitLab Agent for Kubernetes): agentk 접속 + CI job 의 ci_access(k8s-proxy) ──
+# 내장 nginx 가 /-/kubernetes-agent/ 를 WebSocket 업그레이드 포함해 KAS 로 프록시
+gitlab_kas['enable'] = true
+gitlab_kas_external_url 'wss://{{ gitlab_fqdn }}/-/kubernetes-agent/'
+# KAS → GitLab 내부 API(agent 인증 · ci_access 권한 갱신) 주소. 기본값은 external_url(https://<fqdn>:443)인데
+# 컨테이너 안에서는 hostname 때문에 <fqdn> 이 자기 자신(docker IP)으로 풀리고, TLS 는 호스트의 tailscale serve 가
+# 종료하므로 컨테이너 안 443 은 열려 있지 않음 → 컨테이너 내부 nginx(80)로 직접 호출
+gitlab_kas['gitlab_address'] = 'http://127.0.0.1'
+gitlab_rails['gitlab_kas_external_k8s_proxy_url'] = '{{ gitlab_url }}/-/kubernetes-agent/k8s-proxy/'
+
+# ── 사용하지 않는 기능 ────────────────────────────────────
+gitlab_pages['enable'] = false
+prometheus_monitoring['enable'] = false
+gitlab_rails['usage_ping_enabled'] = false
+
+# ── 리소스 튜닝 ───────────────────────────────────────────
+puma['worker_processes'] = {{ gitlab_puma_workers }}
+sidekiq['concurrency'] = {{ gitlab_sidekiq_concurrency }}

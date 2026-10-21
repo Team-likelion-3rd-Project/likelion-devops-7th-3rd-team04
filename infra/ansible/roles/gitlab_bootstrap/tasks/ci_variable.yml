@@ -1,0 +1,30 @@
+---
+# 프로젝트 CI/CD 변수를 만들거나 값을 맞춥니다.
+# vars: var_project (gl_ids 키), var_key, var_value, var_masked(기본 false), var_protected(기본 true)
+- name: "CI 변수 조회 ({{ var_key }})"
+  ansible.builtin.uri:
+    url: "{{ gl_api }}/projects/{{ gl_ids[var_project] }}/variables/{{ var_key }}"
+    status_code: [200, 404]
+  register: civar_existing
+  no_log: true
+
+- name: "CI 변수 설정 ({{ var_key }})"
+  # protected 변수는 protected branch(develop/main) 파이프라인에만 노출됨
+  ansible.builtin.uri:
+    url: >-
+      {{ gl_api }}/projects/{{ gl_ids[var_project] }}/variables{{ ('/' ~ var_key) if civar_existing.status == 200 else '' }}
+    method: "{{ 'PUT' if civar_existing.status == 200 else 'POST' }}"
+    body:
+      key: "{{ var_key }}"
+      value: "{{ var_value }}"
+      masked: "{{ var_masked | default(false) }}"
+      protected: "{{ var_protected | default(true) }}"
+      raw: true
+    status_code: [200, 201]
+  when: >-
+    civar_existing.status == 404 or
+    civar_existing.json.value != var_value or
+    civar_existing.json.masked != (var_masked | default(false)) or
+    civar_existing.json.protected != (var_protected | default(true))
+  changed_when: true
+  no_log: true

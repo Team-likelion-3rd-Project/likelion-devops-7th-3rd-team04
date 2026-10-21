@@ -1,0 +1,3 @@
+---
+# tailscale0 에서만 허용할 TCP 포트 (group_vars 에서 지정)
+firewall_tailnet_tcp_ports: []

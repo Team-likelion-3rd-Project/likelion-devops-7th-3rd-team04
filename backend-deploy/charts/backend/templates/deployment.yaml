@@ -1,0 +1,101 @@
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+{{- $ctx := dict "root" $ "name" $name }}
+{{- $env := merge (dict) ($svc.env | default dict) $.Values.global.env }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "backend.labels" $ctx | nindent 4 }}
+spec:
+  {{- if not $svc.hpa.enabled }}
+  replicas: {{ $svc.replicas | default 1 }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "backend.selectorLabels" $ctx | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "backend.labels" $ctx | nindent 8 }}
+    spec:
+      {{- include "backend.imagePullSecrets" $ | trim | nindent 6 }}
+      {{- if $.Values.serviceAccounts.create }}
+      serviceAccountName: {{ $name }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with $.Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "backend.image" (dict "root" $ "image" $svc.image) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - name: app
+              containerPort: {{ $svc.port }}
+            {{- if ne (int $svc.healthPort) (int $svc.port) }}
+            - name: health
+              containerPort: {{ $svc.healthPort }}
+            {{- end }}
+          env:
+            {{- range $key := keys $env | sortAlpha }}
+            - name: {{ $key }}
+              value: {{ tpl (get $env $key | toString) $ | quote }}
+            {{- end }}
+            {{- range $key := $svc.secretEnv }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.secretName }}
+                  key: {{ $key }}
+            {{- end }}
+          # 기동(DB 연결 대기 포함)이 끝날 때까지 liveness/readiness 를 미룸
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ $svc.healthPort }}
+            periodSeconds: {{ $.Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ $svc.healthPort }}
+            periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ $svc.healthPort }}
+            periodSeconds: {{ $.Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ $.Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ $.Values.probes.liveness.failureThreshold }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ $.Values.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml ($svc.resources | default $.Values.defaultResources) | nindent 12 }}
+          {{- with $.Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+{{- end }}

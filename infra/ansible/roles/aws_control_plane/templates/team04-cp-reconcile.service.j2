@@ -1,0 +1,8 @@
+# Ansible(roles/aws_control_plane) 이 관리
+[Unit]
+Description=Reconcile control plane after replacement (etcd members, kubeadm-certs)
+After=network-online.target kubelet.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/team04-cp-reconcile

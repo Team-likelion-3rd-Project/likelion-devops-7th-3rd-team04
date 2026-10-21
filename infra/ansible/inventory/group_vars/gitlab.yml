@@ -1,0 +1,98 @@
+---
+# ── Tailscale: GitLab 노드 전용 태그 / OAuth client (all.yml 값을 그룹 단위로 덮어씀) ──
+ts_tags: "tag:gitlab"
+ts_oauth_secret: "{{ lookup('env', 'TS_GITLAB_OAUTH_CLIENT_SECRET') }}"
+
+# ── 이미지 버전 고정 (Runner 의 gitlab_runner_version 과 major.minor 를 맞춤) ──
+gitlab_image: "gitlab/gitlab-ce:19.4.2-ce.0"
+
+# ── 경로 ─────────────────────────────────────────────────
+gitlab_base_dir: /opt/gitlab      # compose / gitlab.rb / env (0700)
+gitlab_data_dir: /var/lib/gitlab  # GitLab config / logs / data 볼륨
+
+# ── 포트: 모두 127.0.0.1 에만 publish → tailscale serve 가 Tailnet 으로 노출 ──
+gitlab_http_port: 8080   # tailscale serve https:443 → 127.0.0.1:8080
+gitlab_ssh_port: 2222    # tailscale serve tcp:2222 → 127.0.0.1:2222 (git over SSH)
+gitlab_registry_port: 5050  # tailscale serve https:5050 → 127.0.0.1:5050 (Container Registry)
+
+# ── 방화벽: tailscale0 에서만 허용할 포트 (firewall role) ─────
+firewall_tailnet_tcp_ports:
+  - 443                    # HTTPS (tailscale serve)
+  - "{{ gitlab_ssh_port }}" # git SSH (tailscale serve)
+  - "{{ gitlab_registry_port }}" # Container Registry (tailscale serve)
+
+# ── 비밀값 ────────────────────────────────────────────────
+# 최초 초기화(빈 데이터 디렉토리) 시에만 반영 — 이후 변경은 UI 에서
+gitlab_root_password: "{{ lookup('env', 'GITLAB_ROOT_PASSWORD') }}"
+
+# ── 리소스 튜닝 (VM 8GB 기준) ─────────────────────────────
+gitlab_min_memory_mb: 3800   # 4GB VM 의 실제 인식량 고려 (미만이면 gitlab.yml 이 중단)
+gitlab_puma_workers: 2
+gitlab_sidekiq_concurrency: 10
+
+# ── Runner 자동 발급 (gitlab_runner_token role) ──────────────
+# instance runner 마다 접속 정보를 .secrets/<env_file> 로 저장. description 이 식별자 (같은 이름이면 재사용, 설정은 생성 때만 반영)
+#   access_level: not_protected(모든 브랜치) | ref_protected(보호 브랜치 · 태그 Job 만)
+gitlab_runners:
+  # 온프레미스 Runner 노드 (gitlab-runner.yml)
+  - description: gitlab-runner
+    tags: [docker]
+    run_untagged: true
+    access_level: not_protected
+    env_file: gitlab-runner.env
+  # AWS Runner (Terraform 40-cicd). 토큰은 12-secrets apply 로 Secrets Manager 에 등록 (README 13절)
+  - description: aws-ci-runner
+    tags: [aws, ecr]
+    run_untagged: false
+    access_level: ref_protected
+    env_file: aws-ci-runner.env
+
+# ── CI/CD 부트스트랩 (gitlab_bootstrap role, gitlab.yml --tags bootstrap) ──
+# ci_access 제약: 권한을 받을 프로젝트(team04/hotel)는 agent 설정 프로젝트와 같은 최상위 그룹 안에 있어야 함
+gitlab_group: team04
+gitlab_infra_subgroup: infra
+gitlab_app_project: hotel                # GitHub 모노레포 미러 대상 → team04/hotel
+gitlab_agents_project: k8s-agents        # → team04/infra/k8s-agents
+gitlab_gitops_project: backend-gitops    # → team04/infra/backend-gitops
+gitlab_app_project_path: "{{ gitlab_group }}/{{ gitlab_app_project }}"
+gitlab_agents_project_path: "{{ gitlab_group }}/{{ gitlab_infra_subgroup }}/{{ gitlab_agents_project }}"
+gitlab_gitops_project_path: "{{ gitlab_group }}/{{ gitlab_infra_subgroup }}/{{ gitlab_gitops_project }}"
+gitlab_default_branch: main
+
+# dev-agent = 온프레미스 클러스터. prod(EKS) 는 GitLab 이 배포하지 않으므로 agent 없음 (prod gitops 는 GitHub 별도 레포)
+gitlab_agents: [dev-agent]
+gitlab_agents_src_dir: "{{ playbook_dir }}/../gitlab/k8s-agents"
+gitlab_agents_files:
+  - {path: .gitlab/agents/dev-agent/config.yaml, src: "{{ gitlab_agents_src_dir }}/.gitlab/agents/dev-agent/config.yaml"}
+
+# backend-gitops 레포(dev 전용) 초기 내용 (레포가 비어 있을 때 1회만 — 이후 태그는 CI deploy-dev job 이 커밋)
+gitlab_gitops_seed_dir: "{{ playbook_dir }}/../../backend-deploy/gitops-seed"
+gitlab_gitops_seed_files:
+  - {path: README.md, src: "{{ gitlab_gitops_seed_dir }}/README.md"}
+  # values 는 GitLab 주소가 들어가는 템플릿 → 렌더링 후 커밋
+  - {path: envs/dev/values.yaml, src: "{{ gitlab_gitops_seed_dir }}/envs/dev/values.yaml.j2", render: true}
+
+gitlab_bootstrap_pat_name: ansible-bootstrap   # role 이 끝나면 폐기되는 1일짜리 root 토큰
+gitlab_access_token_days: 364                  # Project Access Token 유효기간 (만료 전 CI 변수/파일 삭제 후 재실행)
+gitlab_registry_deploy_token_name: k8s-registry-pull
+gitlab_payment_deploy_token_name: payment-node   # 결제 노드: 이미지 pull + gitops 태그 조회 (read_registry, read_repository)
+gitlab_protected_branches: [main, develop]
+
+# 레지스트리 cleanup: smoke test 전 후보 태그(ci-<sha>)와 kaniko 레이어 캐시(cache/*, sha256 태그)만 7일 뒤 삭제
+# 승격된 최종 태그(<short sha>)는 대상이 아님
+gitlab_registry_cleanup_policy:
+  enabled: true
+  cadence: 1d
+  keep_n: 1
+  older_than: 7d
+  name_regex_delete: "^(ci-.+|[0-9a-f]{64})$"
+  name_regex_keep: ""
+
+# 이미지 smoke test (CI test:image) 용 dev DB 접속 정보 → team04/hotel protected CI 변수
+#   DB 서버는 dev 것을 쓰되 database 는 파이프라인 전용(ci_<pipeline id>) — db.yml 이 만든 ci_smoke 계정
+smoke_db_host: "{{ lookup('env', 'DB_TS_IP') }}"                # DB 노드 Tailscale IP (db.yml 출력값)
+smoke_db_port: "3306"
+smoke_db_user: ci_smoke
+smoke_db_password: "{{ lookup('env', 'CI_SMOKE_DB_PASSWORD') }}"
+smoke_redis_port: "6379"
+smoke_redis_password: "{{ lookup('env', 'VALKEY_PASSWORD') }}"

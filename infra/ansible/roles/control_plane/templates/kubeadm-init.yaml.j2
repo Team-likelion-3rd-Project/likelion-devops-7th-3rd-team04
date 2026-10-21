@@ -1,0 +1,45 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+{% if kubeadm_bootstrap_token is defined %}
+bootstrapTokens:
+  - token: "{{ kubeadm_bootstrap_token }}"
+    ttl: "{{ kubeadm_token_ttl }}"
+{% endif %}
+{% if kubeadm_certificate_key is defined %}
+certificateKey: "{{ kubeadm_certificate_key }}"
+{% endif %}
+localAPIEndpoint:
+  advertiseAddress: "{{ node_ip }}"
+  bindPort: 6443
+nodeRegistration:
+  name: "{{ node_name }}"
+  criSocket: unix:///run/containerd/containerd.sock
+  kubeletExtraArgs:
+    - name: node-ip
+      value: "{{ node_ip }}"
+{% if kubelet_cloud_provider is defined %}
+    - name: cloud-provider
+      value: "{{ kubelet_cloud_provider }}"
+{% endif %}
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+controlPlaneEndpoint: "{{ k8s_control_plane_endpoint }}:6443"
+apiServer:
+  certSANs:
+{% for san in [node_ip, node_name, k8s_control_plane_endpoint] | unique %}
+    - "{{ san }}"
+{% endfor %}
+{% if k8s_service_account_issuer is defined %}
+  # IRSA: IAM 이 이 발급자 URL 의 문서 · keys.json 으로 SA 토큰을 검증한다 (AWS 만 지정)
+  extraArgs:
+    - name: service-account-issuer
+      value: "{{ k8s_service_account_issuer }}"
+{% endif %}
+networking:
+  podSubnet: "{{ pod_subnet }}"
+  serviceSubnet: "{{ service_subnet }}"
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd

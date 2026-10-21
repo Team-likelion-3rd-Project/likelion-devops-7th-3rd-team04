@@ -1,0 +1,47 @@
+#!/bin/bash
+# GitLab Runner 부트스트랩. S3 의 infra/ansible 묶음을 받아 aws-runner.yml 을 자기 자신에게 실행한다.
+# 진행 · 실패 로그는 /var/log/cloud-init-output.log (README 13절)
+set -Eeuo pipefail
+
+VENV=/opt/team04/venv
+ANSIBLE_DIR=/opt/team04/ansible
+
+IMDS=http://169.254.169.254/latest
+IMDS_TOKEN=$(curl -sf -X PUT "$IMDS/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 600")
+INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "$IMDS/meta-data/instance-id")
+# Tailscale · GitLab Runner 목록에 보이는 이름
+NODE_NAME="ci-runner-$INSTANCE_ID"
+
+# 실패하면 ASG 에 Unhealthy 를 보고해 교체되게 한다. aws CLI 설치 전에 실패했으면 인스턴스를 끈다
+# (stopped 인스턴스는 ASG EC2 헬스체크가 교체). 부트스트랩은 grace period 안에 끝나므로 grace period 를 무시한다
+report_unhealthy() {
+  echo "[bootstrap] 실패 → ASG 에 Unhealthy 보고 ($INSTANCE_ID)"
+  aws autoscaling set-instance-health --region "${region}" --instance-id "$INSTANCE_ID" --health-status Unhealthy \
+    --no-should-respect-grace-period ||
+    shutdown -h now
+}
+trap report_unhealthy ERR
+
+# preflight 가 바꾼 hostname 을 재부팅 때 cloud-init 이 되돌리지 않게 한다
+echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-team04-hostname.cfg
+
+echo "[bootstrap] ansible-core ${ansible_core_version} 설치"
+apt-get update -q
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q -o DPkg::Lock::Timeout=300 python3-venv
+python3 -m venv "$VENV"
+"$VENV/bin/pip" install -q "ansible-core==${ansible_core_version}.*" awscli
+ln -sf "$VENV/bin/aws" /usr/local/bin/aws
+
+echo "[bootstrap] Ansible 묶음 다운로드"
+aws s3 sync --only-show-errors --region "${region}" "s3://${bucket}/${prefix}/" "$ANSIBLE_DIR"
+
+cat > "$ANSIBLE_DIR/aws-bootstrap.json" <<'EOF'
+${extra_vars}
+EOF
+
+echo "[bootstrap] aws-runner.yml 실행 ($NODE_NAME)"
+cd "$ANSIBLE_DIR"
+ANSIBLE_CONFIG=./ansible.cfg ANSIBLE_NOCOLOR=1 \
+  "$VENV/bin/ansible-playbook" -i inventory/aws.ini aws-runner.yml -e @aws-bootstrap.json -e "node_name=$NODE_NAME"
+
+echo "[bootstrap] 완료"

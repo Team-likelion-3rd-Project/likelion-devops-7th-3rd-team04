@@ -1,0 +1,65 @@
+#!/bin/bash
+# Ansible(roles/aws_control_plane) 이 관리. CP 교체 뒷정리 (team04-cp-reconcile.timer, CP 3대 모두 주기 실행)
+#   1. 사라진 CP 의 etcd 멤버 제거: 멤버 이름(= 노드 이름 = private DNS) 의 pending · running 인스턴스가 없으면 remove
+#   2. kubeadm-certs Secret 유지: init 2시간 후 삭제되면 같은 certificate-key 로 다시 올려 교체된 CP 가 join 할 수 있게 한다
+# 장애 판단 · 교체는 ASG, Node 객체 삭제는 aws-cloud-controller-manager 가 한다. 고친 것이 있을 때만 로그를 남긴다
+set -euo pipefail
+
+export KUBECONFIG=/etc/kubernetes/admin.conf
+REGION={{ aws_region }}
+SELF={{ node_name }}
+
+# ── 1. etcd 멤버 ──
+# 호스트에 etcdctl 이 없어 로컬 etcd 컨테이너 안의 etcdctl 을 쓴다 (apiserver 를 거치지 않음, crictl 엔드포인트는 /etc/crictl.yaml)
+etcd_container=$(crictl ps --name '^etcd$' --state running -q | head -1)
+
+etcdctl() {
+  crictl exec "$etcd_container" etcdctl --endpoints https://127.0.0.1:2379 \
+    --cacert /etc/kubernetes/pki/etcd/ca.crt \
+    --cert /etc/kubernetes/pki/etcd/healthcheck-client.crt \
+    --key /etc/kubernetes/pki/etcd/healthcheck-client.key "$@"
+}
+
+if [ -n "$etcd_container" ]; then
+  # 형식: ID, 상태, 이름, peer URL, client URL, learner. join 중인 멤버(unstarted) 는 이름이 비어 있어 건너뛴다
+  while IFS=, read -r id _ name _; do
+    name=${name// /}
+    [ -z "$name" ] || [ "$name" = "$SELF" ] && continue
+
+    # 조회 실패를 "인스턴스 없음" 으로 착각해 지우지 않도록, 실패하면 이번 주기는 건너뛴다
+    if ! alive=$(aws ec2 describe-instances --region "$REGION" \
+      --filters "Name=private-dns-name,Values=$name" "Name=instance-state-name,Values=pending,running" \
+      --query 'length(Reservations[].Instances[])' --output text); then
+      echo "EC2 조회 실패, 건너뜀: $name"
+      continue
+    fi
+
+    if [ "$alive" = "0" ]; then
+      # 다른 CP 가 먼저 지웠거나 쿼럼이 없으면 실패한다 (쿼럼 상실 복구는 범위 밖)
+      if etcdctl member remove "$id" > /dev/null; then
+        echo "etcd 멤버 제거: $name ($id) — 인스턴스 없음"
+      fi
+    fi
+  done < <(etcdctl member list -w simple)
+fi
+
+# ── 2. kubeadm-certs Secret ──
+# API 조회 자체가 실패하면(rc != 0) 없는 것으로 보지 않는다
+if certs=$(kubectl -n kube-system get secret kubeadm-certs --ignore-not-found -o name) && [ -z "$certs" ]; then
+  # certificate-key 가 프로세스 인자(ps) 와 로그에 남지 않도록 설정 파일로 넘기고 출력을 끈다
+  tmp=$(mktemp)
+  trap 'rm -f "$tmp"' EXIT
+  key=$(aws ssm get-parameter --region "$REGION" --name {{ kubeadm_param_prefix }}/certificate-key \
+    --with-decryption --query Parameter.Value --output text)
+  cat > "$tmp" <<EOF
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+certificateKey: "$key"
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: $(kubeadm version -o short)
+EOF
+  kubeadm init phase upload-certs --upload-certs --skip-certificate-key-print --config "$tmp" > /dev/null
+  echo "kubeadm-certs Secret 다시 올림 (2시간 후 다시 삭제됨)"
+fi
