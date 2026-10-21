@@ -691,3 +691,30 @@
 .admin-table tr.is-selected td {
   background: rgba(59, 91, 253, 0.08);
 }
+
+/* 예약 관리 (AdminReservationsPage) */
+.admin-badge.is-warn {
+  background: rgba(217, 119, 6, 0.15);
+  color: #b45309;
+}
+
+.admin-reservation-note span {
+  display: block;
+  font-size: 12px;
+  color: var(--admin-text-muted, #6b7280);
+}
+
+.admin-unit-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--admin-text, #1f2430);
+}
+
+.admin-page-header.is-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
