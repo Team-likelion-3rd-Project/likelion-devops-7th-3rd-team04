@@ -8,7 +8,7 @@ export type PgConfirmOutcome = 'APPROVED' | 'DECLINED' | 'UNKNOWN';
 
 export interface PgConfirmResult {
   outcome: PgConfirmOutcome;
-  // APPROVED일 때 채워지는 값
+  // APPROVED일 때 채워지는 값. paymentKey는 UNKNOWN일 때도 채운다 — 대사 배치가 이 번호로 PG에 조회한다 (LDP-91)
   paymentKey?: string;
   approvalNumber?: string;
   approvedAt?: Date;

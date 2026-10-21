@@ -399,6 +399,51 @@ describe('PaymentServiceService', () => {
       expect(managerInsertMock).not.toHaveBeenCalled();
     });
 
+    it('결과를 모를 때도 PG 결제 번호를 남긴다 — 대사 배치가 이 번호로 조회한다 (LDP-91)', async () => {
+      pgMockConfirmMock.mockResolvedValue({
+        outcome: 'UNKNOWN',
+        paymentKey: 'pgmock_77',
+        pgMessage: 'timeout',
+      });
+
+      await service.approvePayment(request);
+
+      expect(managerUpdateMock).toHaveBeenCalledWith(
+        Payment,
+        { paymentId: 7, status: PaymentStatus.PROCESSING },
+        expect.objectContaining({
+          status: PaymentStatus.UNKNOWN,
+          paymentKey: 'pgmock_77',
+        }),
+      );
+    });
+
+    it('결제 번호가 다른 결제와 겹치면 번호 없이라도 UNKNOWN은 남긴다', async () => {
+      pgMockConfirmMock.mockResolvedValue({
+        outcome: 'UNKNOWN',
+        paymentKey: 'pgmock_77',
+      });
+      managerUpdateMock
+        .mockRejectedValueOnce(
+          new QueryFailedError('UPDATE', [], {
+            code: 'ER_DUP_ENTRY',
+          } as unknown as Error),
+        )
+        .mockResolvedValue({ affected: 1 });
+
+      const result = await service.approvePayment(request);
+
+      expect(result.result).toBe('UNKNOWN');
+      expect(managerUpdateMock).toHaveBeenLastCalledWith(
+        Payment,
+        { paymentId: 7, status: PaymentStatus.PROCESSING },
+        expect.objectContaining({
+          status: PaymentStatus.UNKNOWN,
+          paymentKey: null,
+        }),
+      );
+    });
+
     it('MOCK에서 paymentKey가 mock_fail_로 시작하면 pg-mock에 거절을 요청한다', async () => {
       pgMockConfirmMock.mockResolvedValue({ outcome: 'DECLINED' });
 
