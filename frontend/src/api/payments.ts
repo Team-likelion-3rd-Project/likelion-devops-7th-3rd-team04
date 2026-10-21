@@ -30,6 +30,10 @@ export async function fetchMyPayments(): Promise<Payment[]> {
 export type PaymentMode = 'MOCK' | 'TOSS'
 export const PAYMENT_MODE: PaymentMode = import.meta.env.VITE_PAYMENT_MODE === 'TOSS' ? 'TOSS' : 'MOCK'
 
+// 토스 결제위젯 클라이언트 키 ("결제위젯 연동 키", 공개용이라 프론트 빌드에 들어가도 된다). 백엔드 TOSS_SECRET_KEY와
+// 같은 줄의 한 쌍이어야 승인된다 — API 개별 연동 키(test_ck_)와 섞으면 실패한다 (LDP-119).
+export const TOSS_CLIENT_KEY: string = import.meta.env.VITE_TOSS_CLIENT_KEY ?? ''
+
 // 승인 요청 결과. UNKNOWN·PROCESSING은 서버가 아직 확정하지 못한 상태라 결과 화면에서 다시 확인한다.
 export type ConfirmResult = 'APPROVED' | 'FAILED' | 'UNKNOWN' | 'PROCESSING'
 
