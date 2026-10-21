@@ -39,3 +39,9 @@ variable "image_keep_count" {
   type        = number
   default     = 10
 }
+
+variable "ci_runner_role_name" {
+  description = "이미지를 push 하는 40-cicd Runner IAM Role 이름. 저장소 정책이 이 Role 과 관리자만 push 를 허용한다"
+  type        = string
+  default     = "team04-hotel-ci-runner"
+}

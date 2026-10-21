@@ -1,5 +1,5 @@
 # Runner Instance Profile. job 컨테이너도 IMDS(hop limit 2)로 이 Role 을 쓴다.
-#   SSM 접속, 부트스트랩(Ansible 묶음 S3 조회), Runner Secret 조회, ECR push(team04-hotel/* 만), 실패 시 ASG Unhealthy 보고
+#   SSM 접속, 부트스트랩(Ansible 묶음 S3 조회), Runner Secret · GitHub App 조회, ECR push(team04-hotel/* 만), 실패 시 ASG Unhealthy 보고
 # 이름은 12-secrets 의 Secret 리소스 정책(ci_runner_role_name)과 같아야 한다
 
 data "aws_caller_identity" "current" {}
@@ -56,7 +56,8 @@ data "aws_iam_policy_document" "runner" {
     resources = ["${aws_s3_bucket.ansible.arn}/${local.ansible_prefix}/*"]
   }
 
-  # 12-secrets 의 Runner Secret 2개만. ARN 끝의 무작위 6자는 ?????? 로 맞춘다
+  # 12-secrets 의 Runner Secret 3개만 (Tailscale · GitLab · GitHub App). ARN 끝의 무작위 6자는 ?????? 로 맞춘다.
+  # Parameter Store 쓰기 권한은 주지 않는다 — 결제 서버 태그는 gitops 승인 후 GitHub Actions 만 쓴다
   statement {
     sid     = "GetRunnerSecrets"
     actions = ["secretsmanager:GetSecretValue"]

@@ -1,0 +1,39 @@
+# main 으로 가는 PR 의 출발 브랜치 검사 — main ruleset 의 필수 status check("release-source")로 등록합니다.
+#
+# main 은 운영 릴리스 브랜치입니다. merge 되면 GitLab main 파이프라인이 ECR push 와 prod gitops 릴리스 PR 을 만듭니다
+# (infra/gitops/prod/README.md "릴리스"). 그래서 리뷰를 거친 develop 과 긴급 수정 hotfix/* 만 main 으로 들어오게 합니다.
+# 같은 이름의 브랜치를 포크에서 올리는 경우도 막도록 head 레포가 이 레포인지 함께 봅니다.
+name: release-source
+
+on:
+  pull_request:
+    branches: [main]
+    # base 를 main 으로 바꾸거나 새 커밋이 올라올 때도 다시 검사
+    types: [opened, reopened, synchronize, edited]
+
+permissions: {}
+
+jobs:
+  release-source:
+    name: release-source
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 출발 브랜치 확인 (develop · hotfix/*)
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+            echo "::error::main 으로는 이 레포의 브랜치만 merge 할 수 있습니다 (head: $HEAD_REPO)"
+            exit 1
+          fi
+          case "$HEAD_REF" in
+            develop|hotfix/*)
+              echo "OK: $HEAD_REF → main"
+              ;;
+            *)
+              echo "::error::main 으로는 develop(릴리스) 또는 hotfix/*(긴급 수정)만 merge 할 수 있습니다 (head: $HEAD_REF)"
+              exit 1
+              ;;
+          esac

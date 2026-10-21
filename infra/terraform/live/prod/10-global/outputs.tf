@@ -42,3 +42,8 @@ output "oidc_bucket_name" {
 # 계정 ID 가 로그에 찍히지 않도록 OIDC 공급자 ARN 은 output 하지 않는다.
 # IRSA Role 신뢰 정책의 Federated principal 은 사용하는 스택에서 만든다:
 #   arn:aws:iam::<data.aws_caller_identity 의 account_id>:oidc-provider/<oidc_issuer_url 에서 https:// 를 뗀 값>
+
+output "gitops_ssm_sync_role_name" {
+  description = "gitops 레포 GitHub Actions 가 assume 하는 Role 이름 (Actions 변수에는 계정 ID 를 붙인 ARN 을 넣는다)"
+  value       = aws_iam_role.gitops_ssm_sync.name
+}

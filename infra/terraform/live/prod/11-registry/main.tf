@@ -64,3 +64,49 @@ resource "aws_ssm_parameter" "image_tag" {
     ignore_changes = [value]
   }
 }
+
+# 이미지 push 는 Runner Role 과 관리자(이 스택을 apply 하는 주체)만 허용한다.
+# 공유 계정이라 넓은 ECR 권한을 가진 다른 주체가 같은 태그를 먼저 올리면(IMMUTABLE 이라 먼저 올린 쪽이 남음)
+# 검증되지 않은 이미지가 배포될 수 있다. IAM 정책으로 권한을 받은 주체도 저장소 정책의 Deny 가 우선한다.
+# pull 은 제한하지 않는다 (노드 · 결제 서버 Role 의 IAM 정책이 저장소 범위를 정함)
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
+
+data "aws_iam_session_context" "current" {
+  arn = data.aws_caller_identity.current.arn
+}
+
+data "aws_iam_policy_document" "push_only_ci" {
+  statement {
+    sid    = "DenyPushExceptCiAndAdmin"
+    effect = "Deny"
+    actions = [
+      "ecr:PutImage",
+      "ecr:InitiateLayerUpload",
+      "ecr:UploadLayerPart",
+      "ecr:CompleteLayerUpload",
+    ]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values = [
+        "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.ci_runner_role_name}",
+        data.aws_iam_session_context.current.issuer_arn,
+      ]
+    }
+  }
+}
+
+resource "aws_ecr_repository_policy" "service" {
+  for_each = aws_ecr_repository.service
+
+  repository = each.value.name
+  policy     = data.aws_iam_policy_document.push_only_ci.json
+}

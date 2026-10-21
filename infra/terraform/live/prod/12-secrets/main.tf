@@ -2,6 +2,8 @@
 #
 #   team04-hotel/prod/ci-runner-tailscale : {oauth_client_secret}  Tailscale OAuth client (tag:ci-runner)
 #   team04-hotel/prod/ci-runner-gitlab    : {url, token}           온프레미스 GitLab 의 AWS Runner(aws-ci-runner) 인증 토큰
+#   team04-hotel/prod/github-app          : {app_id, installation_id, private_key}
+#                                           gitops 레포 릴리스 PR 용 GitHub App (Runner 의 release:gitops-pr job 이 읽음)
 #
 # 값은 ephemeral 변수 → write-only(secret_string_wo) 로 넣어 state · plan 에 남지 않는다.
 # write-only 값은 생성 시와 *_version 이 바뀔 때만 전달되므로, 값을 바꿀 때는 env 를 불러온 뒤 version 을 올려 apply 한다 (README 5절).
@@ -20,6 +22,10 @@ locals {
     ci_runner_gitlab = {
       name        = "${local.secret_prefix}/ci-runner-gitlab"
       description = "AWS GitLab Runner URL and authentication token (aws-ci-runner)"
+    }
+    github_app = {
+      name        = "${local.secret_prefix}/github-app"
+      description = "GitHub App for gitops release PRs (contents, pull_requests write on gitops repo only)"
     }
   }
 }
@@ -52,6 +58,17 @@ resource "aws_secretsmanager_secret_version" "ci_runner_gitlab" {
   secret_string_wo_version = var.ci_runner_credentials_version
 }
 
+resource "aws_secretsmanager_secret_version" "github_app" {
+  secret_id = aws_secretsmanager_secret.this["github_app"].id
+
+  secret_string_wo = jsonencode({
+    app_id          = var.github_app_id
+    installation_id = var.github_app_installation_id
+    private_key     = var.github_app_private_key
+  })
+  secret_string_wo_version = var.github_app_credentials_version
+}
+
 # 값 조회(GetSecretValue)는 Runner Role 과 관리자(이 스택을 apply 하는 주체)만 허용한다 (41-main-data 와 같은 방식).
 # 공유 계정이라 관리자 ARN 을 레포에 적지 않고 실행 주체에서 읽는다. 계정 자리를 * 로 두지 않는다 (최소 권한)
 data "aws_caller_identity" "current" {}
@@ -62,6 +79,7 @@ data "aws_iam_session_context" "current" {
   arn = data.aws_caller_identity.current.arn
 }
 
+# 세 Secret 모두 Runner 만 읽는다 (github-app 은 release:gitops-pr job)
 data "aws_iam_policy_document" "ci_runner" {
   statement {
     sid       = "DenyGetSecretValueExceptAllowedPrincipals"

@@ -7,9 +7,11 @@
 #   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
 #   deploy      : (수동) deploy-dev: develop → GitLab gitops(envs/dev) 태그 커밋 → helm upgrade --atomic → rollout status
 #                 (온프레미스 dev-agent)
+#   release     : (main 만) AWS Runner 가 이미지 10개를 arm64 로 빌드 → ECR push(태그 = main 커밋 SHA)
+#                 → prod gitops 레포에 릴리스 PR 자동 생성 (GitHub App). 운영 반영은 사람이 그 PR 을 승인 · merge 할 때
 #
-# prod(EKS): 이 파이프라인은 main 에서 이미지 빌드 검증만 합니다 (ECR push 는 prod 구성 후 build job 에 추가).
-#   prod 배포 상태(values · 이미지 태그)는 GitHub 의 별도 prod gitops 레포가 PR 로 관리 — GitLab 은 prod 에 배포하지 않습니다.
+# prod: 배포 상태(values · 이미지 태그)는 GitHub 의 별도 prod gitops 레포가 PR 로 관리합니다.
+#   GitLab 은 ECR push 와 gitops 레포 PR 생성까지만 하고 prod 에 직접 배포하지 않습니다 (infra/gitops/prod/README.md "릴리스").
 #
 # 클러스터 접근은 GitLab Agent ci_access (kubeconfig 변수 없음). 자세한 구성은 infra/ansible/README.md 12절.
 
@@ -18,6 +20,8 @@ workflow:
     - if: $CI_PIPELINE_SOURCE != "push" && $CI_PIPELINE_SOURCE != "web"
       when: never
     - if: $CI_PIPELINE_SOURCE == "web"
+    # main 은 릴리스(ECR push · gitops PR) 경로라 변경 경로와 상관없이 항상 돈다 (infra/gitops/prod 만 바뀐 릴리스 포함)
+    - if: $CI_COMMIT_BRANCH == "main"
     - changes:
         - backend/**/*
         - backend-deploy/**/*
@@ -31,6 +35,7 @@ stages:
   - image-test
   - push
   - deploy
+  - release
 
 variables:
   # ── 이미지 버전 고정 ──
@@ -241,6 +246,103 @@ aws-runner:push:
       > /kaniko/push.log 2>&1; then rc=0; else rc=$?; fi;
       sed -E 's/[0-9]{12}/<account>/g' /kaniko/push.log;
       exit $rc
+
+# ── release: main → ECR push → prod gitops 릴리스 PR (AWS Runner, infra/gitops/prod/README.md "릴리스") ──
+# main 은 릴리스 PR(develop · hotfix → main, merge commit) 로만 바뀝니다. 태그 = main 커밋 SHA(40자) — chart revision 과 같은 값.
+# 계정 ID · ECR 토큰 · GitHub 토큰은 레포 · CI 변수에 두지 않습니다 (Runner Role 로 조회, 로그에서 가림).
+.release:
+  tags: [aws]
+  interruptible: false
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
+
+# ECR 주소와 이미 push 된 이미지 목록을 다음 job 에 넘깁니다 (재시도 때 IMMUTABLE 태그 push 실패 방지)
+release:prepare:
+  extends: .release
+  stage: release
+  image:
+    name: amazon/aws-cli:2.31.0
+    entrypoint: [""]
+  needs: [compile, helm-lint]
+  script:
+    - echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com" > release.env
+    - |
+      for svc in $IMAGES; do
+        if aws ecr describe-images --region us-east-1 --repository-name "team04-hotel/$svc" \
+             --image-ids imageTag="$CI_COMMIT_SHA" > /dev/null 2>&1; then
+          echo "이미 있음: $svc"
+          echo "RELEASE_SKIP_$(echo "$svc" | tr 'a-z-' 'A-Z_')=1" >> release.env
+        fi
+      done
+  artifacts:
+    reports:
+      dotenv: release.env
+    expire_in: 1 day
+
+release:build:
+  extends: .release
+  stage: release
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  needs: [release:prepare]
+  parallel:
+    matrix:
+      - SERVICE:
+          - api-gateway
+          - auth-service
+          - booking-service
+          - chat-bot-service
+          - hotel-service
+          - payment-service
+          - pg-mock-service
+          - user-service
+          - main-migrations
+          - payment-migrations
+  script:
+    - 'test -n "$ECR_REGISTRY" || { echo "ECR_REGISTRY 가 비었습니다 — release:prepare 의 dotenv 아티팩트를 확인하세요"; exit 1; }'
+    - 'eval "skip=\${RELEASE_SKIP_$(echo "$SERVICE" | tr "a-z-" "A-Z_"):-}"; if [ -n "$skip" ]; then echo "$SERVICE:$CI_COMMIT_SHA 는 이미 ECR 에 있어 건너뜀"; exit 0; fi'
+    - |
+      if [ "$SERVICE" = "main-migrations" ]; then
+        CONTEXT="$CI_PROJECT_DIR/backend/migrations"; DOCKERFILE="$CONTEXT/Dockerfile"
+      elif [ "$SERVICE" = "payment-migrations" ]; then
+        CONTEXT="$CI_PROJECT_DIR/backend/apps/payment-service/migrations"; DOCKERFILE="$CONTEXT/Dockerfile"
+      else
+        CONTEXT="$CI_PROJECT_DIR/backend"; DOCKERFILE="$CONTEXT/apps/$SERVICE/Dockerfile"
+      fi
+    # ECR 인증은 kaniko 내장 ecr-login 헬퍼가 Runner Role 로 받습니다. Runner 가 arm64 라 운영 워커(t4g) · 결제 서버용 이미지가 됩니다
+    - mkdir -p /kaniko/.docker
+    - printf '{"credHelpers":{"%s":"ecr-login"}}' "$ECR_REGISTRY" > /kaniko/.docker/config.json
+    # kaniko 로그의 ECR 주소(계정 ID)는 가립니다. 디버그 이미지에 /tmp 가 없어 /kaniko 아래 파일로 받고 종료 코드를 유지합니다
+    - >-
+      if /kaniko/executor
+      --context "$CONTEXT"
+      --dockerfile "$DOCKERFILE"
+      --destination "$ECR_REGISTRY/team04-hotel/$SERVICE:$CI_COMMIT_SHA"
+      --label "org.opencontainers.image.revision=$CI_COMMIT_SHA"
+      --label "org.opencontainers.image.source=https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04"
+      > /kaniko/build.log 2>&1; then rc=0; else rc=$?; fi;
+      sed -E 's/[0-9]{12}/<account>/g' /kaniko/build.log;
+      exit $rc
+
+# GitHub App 으로 prod gitops 레포에 릴리스 PR 을 만듭니다 (merge 는 사람 — gitops main ruleset).
+#   infra/gitops/prod/* 를 envs/prod/ 로 복사 (gitops 레포에만 있는 envs/prod/payment 는 유지)
+#   backend 이미지 태그 · chart revision · payment 이미지 태그 = 이 main 커밋 SHA
+#   같은 SHA 의 PR 이 이미 열려 있으면 건너뜁니다 (job 재시도 대비)
+release:gitops-pr:
+  extends: .release
+  stage: release
+  image:
+    name: $DEPLOY_IMAGE
+    entrypoint: [""]
+  needs: [release:build]
+  variables:
+    GITOPS_GITHUB_REPO: Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops
+    MONOREPO_GITHUB_URL: https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04
+    GITHUB_APP_SECRET: team04-hotel/prod/github-app
+  script:
+    - apk add --no-cache openssl > /dev/null
+    - sh infra/gitops/scripts/release-pr.sh
 
 # ── image-test: 후보 이미지 smoke test ─────────────────────────
 smoke:db-create:

@@ -4,6 +4,8 @@
 !.env.example
 !.env.*.example
 *.pem
+# 공개 CA 인증서 (AWS RDS 루트 CA, 비밀 아님) — prod gitops backend-secrets 차트가 ConfigMap 으로 씀
+!infra/gitops/prod/backend-secrets/chart/files/us-east-1-bundle.pem
 *.key
 *.p12
 *.jks
