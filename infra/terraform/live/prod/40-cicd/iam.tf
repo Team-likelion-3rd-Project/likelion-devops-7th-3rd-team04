@@ -74,7 +74,8 @@ data "aws_iam_policy_document" "runner" {
     resources = ["*"]
   }
 
-  # 11-registry 의 프로젝트 저장소(<project>/*)만. kaniko 는 push 전 레이어 존재 확인 · 기존 이미지 조회도 한다
+  # 11-registry 의 프로젝트 저장소(<project>/* — 서비스 이미지 + 빌드 캐시 <project>/cache)만.
+  # kaniko 는 push 전 레이어 존재 확인 · 기존 이미지 조회 · 캐시 조회도 한다
   statement {
     sid = "PushProjectImages"
     actions = [

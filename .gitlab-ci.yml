@@ -10,6 +10,9 @@
 #   release     : (main 만) AWS Runner 가 이미지 10개를 arm64 로 빌드 → ECR push(태그 = main 커밋 SHA)
 #                 → prod gitops 레포에 릴리스 PR 자동 생성 (GitHub App). 운영 반영은 사람이 그 PR 을 승인 · merge 할 때
 #
+# main 파이프라인에는 release job 만 있습니다. test · build 는 develop 파이프라인에서 이미 통과한 커밋만 릴리스하므로
+# 다시 돌리지 않고, 온프레미스 Runner 를 기다리지도 않습니다 (릴리스 전 확인: infra/gitops/prod/README.md "릴리스").
+#
 # prod: 배포 상태(values · 이미지 태그)는 GitHub 의 별도 prod gitops 레포가 PR 로 관리합니다.
 #   GitLab 은 ECR push 와 gitops 레포 PR 생성까지만 하고 prod 에 직접 배포하지 않습니다 (infra/gitops/prod/README.md "릴리스").
 #
@@ -86,6 +89,13 @@ default:
   rules:
     - if: $CI_COMMIT_BRANCH == "develop"
 
+# main 은 release job 만 돈다 (위 머리말)
+.rules-not-main:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: never
+    - when: on_success
+
 .backend-npm:
   image: $NODE_IMAGE
   variables:
@@ -102,7 +112,7 @@ default:
 # ── test ──────────────────────────────────────────────────
 # lint / jest 는 기존 코드의 실패가 남아 있어 우선 non-blocking. 정리되면 allow_failure 를 지웁니다.
 lint:
-  extends: .backend-npm
+  extends: [.backend-npm, .rules-not-main]
   stage: test
   needs: []
   script:
@@ -110,7 +120,7 @@ lint:
   allow_failure: true
 
 test:unit:
-  extends: .backend-npm
+  extends: [.backend-npm, .rules-not-main]
   stage: test
   needs: []
   script:
@@ -118,7 +128,7 @@ test:unit:
   allow_failure: true
 
 compile:
-  extends: .backend-npm
+  extends: [.backend-npm, .rules-not-main]
   stage: test
   needs: []
   script:
@@ -127,6 +137,7 @@ compile:
 
 # llm-service(Python) 단위 테스트 — 의도 검증 · 벡터 스토어 · LLM 공급자 선택 (외부 호출 없음)
 test:llm-service:
+  extends: .rules-not-main
   stage: test
   image: $PYTHON_IMAGE
   needs: []
@@ -142,6 +153,7 @@ test:llm-service:
     - python -m pytest tests -q
 
 helm-lint:
+  extends: .rules-not-main
   stage: test
   image: $DEPLOY_IMAGE
   needs: []
@@ -165,6 +177,7 @@ helm-lint:
 
 # ── build: kaniko (Docker 데몬 / DinD 불필요) ────────────────────
 build:
+  extends: .rules-not-main
   stage: build
   image:
     name: $KANIKO_IMAGE
@@ -206,7 +219,7 @@ build:
       printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY"
       "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
       > /kaniko/.docker/config.json
-    # develop 만 후보 태그로 push. main 은 빌드 검증만 — prod 구성 후 여기에 ECR push 를 추가
+    # develop 만 후보 태그로 push. 작업 브랜치는 빌드 검증만 (main 은 release:build 가 ECR 로 빌드)
     - |
       if [ "$CI_COMMIT_BRANCH" = "develop" ]; then
         set -- --destination "$CI_REGISTRY_IMAGE/$SERVICE:$CANDIDATE_TAG"
@@ -301,7 +314,7 @@ release:prepare:
   image:
     name: amazon/aws-cli:2.31.0
     entrypoint: [""]
-  needs: [compile, helm-lint]
+  needs: []
   script:
     - echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com" > release.env
     - |
@@ -351,16 +364,31 @@ release:build:
     # ECR 인증은 kaniko 내장 ecr-login 헬퍼가 Runner Role 로 받습니다. Runner 가 arm64 라 운영 워커(t4g) · 결제 서버용 이미지가 됩니다
     - mkdir -p /kaniko/.docker
     - printf '{"credHelpers":{"%s":"ecr-login"}}' "$ECR_REGISTRY" > /kaniko/.docker/config.json
+    # 레이어 캐시: ECR team04-hotel/cache (11-registry, 상시 유지 — 매일 재생성 후에도 남음). 서비스들이 같은 저장소를 써서
+    #   같은 builder 단계(npm ci · build common)는 서비스끼리도 재사용됩니다. --cache-ttl 은 저장소 수명 주기(14일)와 맞춤
     # kaniko 로그의 ECR 주소(계정 ID)는 가립니다. 디버그 이미지에 /tmp 가 없어 /kaniko 아래 파일로 받고 종료 코드를 유지합니다
-    - >-
-      if /kaniko/executor
-      --context "$CONTEXT"
-      --dockerfile "$DOCKERFILE"
-      --destination "$ECR_REGISTRY/team04-hotel/$SERVICE:$CI_COMMIT_SHA"
-      --label "org.opencontainers.image.revision=$CI_COMMIT_SHA"
-      --label "org.opencontainers.image.source=https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04"
-      > /kaniko/build.log 2>&1; then rc=0; else rc=$?; fi;
-      sed -E 's/[0-9]{12}/<account>/g' /kaniko/build.log;
+    # 메모리 기록(Runner 사양 판단용): 빌드 중 2초마다 호스트 MemAvailable(KiB) 과 이 job cgroup 의 memory.current(바이트, 페이지 캐시 포함)를 남겨
+    #   끝에 호스트 남은 메모리 최소 · job 사용량 최대를 출력합니다. kaniko 가 빌드 중 루트 파일시스템을 바꾸므로 명령은 /busybox 경로로 부릅니다
+    - |
+      ( while :; do
+          echo "$(/busybox/awk '/^MemAvailable:/ { print $2 }' /proc/meminfo) $(/busybox/cat /sys/fs/cgroup/memory.current 2>/dev/null || echo 0)" >> /kaniko/mem.log
+          /busybox/sleep 2
+        done ) &
+      sampler=$!
+      if /kaniko/executor \
+          --context "$CONTEXT" \
+          --dockerfile "$DOCKERFILE" \
+          --destination "$ECR_REGISTRY/team04-hotel/$SERVICE:$CI_COMMIT_SHA" \
+          --cache=true --cache-repo "$ECR_REGISTRY/team04-hotel/cache" --cache-ttl=336h \
+          --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
+          --label "org.opencontainers.image.source=https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04" \
+          > /kaniko/build.log 2>&1; then rc=0; else rc=$?; fi
+      kill "$sampler" 2>/dev/null || true
+      /busybox/sed -E 's/[0-9]{12}/<account>/g' /kaniko/build.log
+      echo "[캐시] 적중 $(/busybox/grep -c 'Using caching version of cmd' /kaniko/build.log) · 없음 $(/busybox/grep -c 'No cached layer found' /kaniko/build.log)"
+      /busybox/awk -v total="$(/busybox/awk '/^MemTotal:/ { print $2 }' /proc/meminfo)" \
+        'NR == 1 || $1 < min { min = $1 } $2 > max { max = $2 }
+         END { printf "[메모리] 호스트 %d MiB · 빌드 중 남은 메모리 최소 %d MiB · 이 job 사용량 최대 %d MiB (2초 간격 %d회)\n", total / 1024, min / 1024, max / 1048576, NR }' /kaniko/mem.log
       exit $rc
 
 # GitHub App 으로 prod gitops 레포에 릴리스 PR 을 만듭니다 (merge 는 사람 — gitops main ruleset).

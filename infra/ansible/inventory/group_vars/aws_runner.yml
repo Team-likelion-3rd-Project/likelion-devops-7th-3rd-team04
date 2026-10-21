@@ -17,7 +17,7 @@ ts_ephemeral: true
 
 # 이미지 빌드는 kaniko 라 docker.sock 이 필요 없다. job 에 호스트 root 권한을 주지 않는다
 gitlab_runner_mount_docker_sock: false
-# t4g.medium(2 vCPU) 기준
+# m7g.large(2 vCPU · 8 GiB, Terraform 40-cicd instance_type) 기준
 gitlab_runner_concurrent: 2
 
 # 온프레미스 GitLab 이 꺼져 있는 날도 부트스트랩을 실패시키지 않는다 (실패하면 ASG 가 Runner 를 계속 교체).

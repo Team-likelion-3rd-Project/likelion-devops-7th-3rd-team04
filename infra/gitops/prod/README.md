@@ -119,8 +119,8 @@ k -n gitops-sync patch configmap gitops-sync-config --type merge -p '{"data":{"B
 develop ──릴리스 PR (merge commit, release-source check · 승인)──▶ main
    │                                                            │ GitHub → GitLab 미러
    │                                                            ▼
-   │                         GitLab main 파이프라인 (AWS Runner, 보호 브랜치 · tags aws)
-   │                           compile · helm-lint → release:prepare → release:build ×10 → release:gitops-pr
+   │                         GitLab main 파이프라인 (AWS Runner, 보호 브랜치 · tags aws — release job 만)
+   │                           release:prepare → release:build ×10 (ECR 캐시) → release:gitops-pr
    │                           ECR team04-hotel/<서비스>:<main SHA> (arm64)      gitops 레포 PR release/<main SHA>
    │                                                                                    │ validate · 승인 (사람)
    ▼                                                                                    ▼ merge
@@ -129,7 +129,7 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
 
 | 단계 | 누가 · 무엇으로 | 할 수 있는 것 |
 |---|---|---|
-| 릴리스 PR merge | 사람 (모노레포 main ruleset: 승인 · `release-source` check) | main 갱신 |
+| 릴리스 PR merge | 사람 (모노레포 main ruleset: 승인 · `release-source` · GitHub CI check) | main 갱신 |
 | 이미지 빌드 · ECR push | GitLab main 파이프라인 — AWS Runner Role | `team04-hotel/*` push 만 (ECR 저장소 정책이 다른 주체의 push 거부) |
 | gitops 릴리스 PR 생성 | `release:gitops-pr` — GitHub App(`team04-hotel-release-bot`, gitops 레포에만 설치) | 브랜치 push · PR 생성까지. main merge 는 ruleset 이 막음 |
 | 운영 반영 | 사람이 gitops PR 승인 · merge | 메인: 배포 agent / 결제: Parameter Store 동기화(GitHub OIDC Role, 파라미터 하나) |
@@ -137,12 +137,17 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
 - 이미지 태그 = **main 커밋 SHA 40자**, backend `chart.yaml` 의 `revision` 과 같은 값입니다. ECR 은 IMMUTABLE 이라 같은 태그로 다시 push 할 수 없습니다.
 - Runner 에는 Parameter Store 쓰기 권한이 없습니다. 결제 서버 태그는 gitops PR 이 승인 · merge 된 뒤에만 바뀝니다.
 - GitLab 미러의 main 은 보호 브랜치여야 AWS Runner(protected)가 job 을 받습니다.
+- main 파이프라인은 lint · test · compile · dev 이미지 빌드를 다시 돌리지 않습니다. 그 검증은 같은 커밋의 **develop 파이프라인**이 맡으므로 아래 절차 1 에서 확인합니다.
+- 빌드 레이어 캐시는 ECR `team04-hotel/cache`(11-registry, 상시 유지, 14일 뒤 삭제)에 둡니다. 소스만 바뀐 릴리스는 `npm ci` 레이어를 캐시에서 가져옵니다 (job 로그 끝의 `[캐시] 적중 N`).
 
 ### 절차 (runbook)
 
 1. **준비**: develop 이 dev 에 배포 · 검증된 상태인지 확인합니다. 결제 쪽 계약(payment.proto · SQS 메시지 · 결제 마이그레이션)이 바뀌었으면 결제 서버를 먼저 반영할 계획을 세웁니다.
-2. **릴리스 PR**: GitHub 에서 `develop → main` PR 을 엽니다 (제목 예: `release: v1.0.0`). `release-source` check 와 승인 후 **merge commit** 으로 합칩니다.
-3. **파이프라인**: GitLab `team04/hotel` → Pipelines 의 main 파이프라인이 `release:gitops-pr` 까지 끝나는지 확인합니다. 소요 시간은 첫 릴리스 때 실측해 여기에 적습니다.
+   - **develop 파이프라인 성공 확인 (필수)**: 릴리스 PR 의 head 커밋(develop 최신 커밋)에 대한 GitLab `team04/hotel` develop 파이프라인이 **passed** 인지 확인합니다 (Pipelines → 브랜치 develop → 커밋 SHA 비교). 실행 중이면 끝날 때까지 기다리고, 실패했으면 develop 에서 고친 뒤 다시 확인합니다. main 파이프라인은 test · 이미지 smoke test 를 다시 돌리지 않습니다.
+2. **릴리스 PR**: GitHub 에서 `develop → main` PR 을 엽니다 (제목 예: `release: v1.0.0`). `release-source` · GitHub CI(`Backend Build & Test` 등) check 와 승인 후 **merge commit** 으로 합칩니다.
+3. **파이프라인**: GitLab `team04/hotel` → Pipelines 의 main 파이프라인이 `release:gitops-pr` 까지 끝나는지 확인합니다.
+   - 소요 시간 (merge → gitops PR 생성): rc.1(2026-10-21, t4g.medium · 캐시 없음 · main 에 dev job 포함) 약 28분 — 온프레미스 Runner 대기 + compile · helm-lint 17분, `release:build` 9분. 개선 후 실측은 rc.2 때 여기에 적습니다.
+   - `release:build` 로그 끝의 `[메모리]` 줄(호스트 남은 메모리 최소 · job 최대 사용량)로 Runner 사양을 판단합니다.
 4. **gitops PR**: gitops 레포에 `chore(prod): backend · payment → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
 5. **반영 확인**
    - 메인: CP 에서 `k -n gitops-sync get configmap gitops-sync-state -o yaml` 의 `applied_sha` 가 gitops merge 커밋인지, `k -n backend get pods` 가 새 이미지로 Running 인지 (위 "확인 · 운영")
