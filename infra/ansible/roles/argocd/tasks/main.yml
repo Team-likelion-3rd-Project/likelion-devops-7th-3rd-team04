@@ -1,0 +1,189 @@
+---
+# ArgoCD 설치 + 레포 자격증명 + AppProject / root app + tailscale serve (README 12-9).
+# 앱(Application) 목록은 gitops 레포 apps/dev/ 가 기준 — 이 role 은 backend 를 직접 배포하지 않습니다.
+- name: Tailscale 정보 조회 (UI 주소)
+  ansible.builtin.command: tailscale status --self --peers=false --json
+  register: argocd_ts_self
+  changed_when: false
+
+- name: argocd_fqdn / 레포 URL fact 등록
+  ansible.builtin.set_fact:
+    argocd_ts_ip: "{{ (argocd_ts_self.stdout | from_json).Self.TailscaleIPs | select('match', '^[0-9.]+$') | first }}"
+    argocd_fqdn: "{{ (argocd_ts_self.stdout | from_json).Self.DNSName | regex_replace('\\.$', '') }}"
+    argocd_app_repo_url: "https://{{ gitlab_fqdn }}/{{ gitlab_app_project_path }}.git"
+    argocd_gitops_repo_url: "https://{{ gitlab_fqdn }}/{{ gitlab_gitops_project_path }}.git"
+
+- name: 작업 디렉토리
+  ansible.builtin.file:
+    path: "{{ argocd_manifest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# helm upgrade 는 값이 같아도 revision 을 새로 만들기 때문에 (traefik role 과 같은 방식)
+# 설치된 chart 버전과 values 가 원하는 상태와 같으면 건너뜁니다.
+- name: values 파일
+  ansible.builtin.template:
+    src: argocd-values.yaml.j2
+    dest: "{{ argocd_manifest_dir }}/argocd-values.yaml"
+    mode: "0644"
+
+- name: 설치된 ArgoCD release 조회
+  ansible.builtin.command: >-
+    helm list -n {{ argocd_namespace }} --filter '^argocd$' -o json
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: argocd_release
+  changed_when: false
+
+- name: 적용된 values 조회
+  ansible.builtin.command: helm get values argocd -n {{ argocd_namespace }} -o json
+  environment: *kubeconfig
+  register: argocd_values_applied
+  changed_when: false
+  when: argocd_release.stdout | from_json | length > 0
+
+- name: ArgoCD 설치 / 업그레이드
+  ansible.builtin.command: >-
+    helm upgrade --install argocd argo-cd
+    --repo {{ argocd_chart_repo }}
+    --version {{ argocd_chart_version }}
+    -n {{ argocd_namespace }} --create-namespace
+    -f {{ argocd_manifest_dir }}/argocd-values.yaml
+    --wait --timeout 10m
+  environment: *kubeconfig
+  when: >-
+    (argocd_release.stdout | from_json | length == 0)
+    or ((argocd_release.stdout | from_json | first).chart != 'argo-cd-' ~ argocd_chart_version)
+    or ((argocd_values_applied.stdout | from_json) != (lookup('ansible.builtin.template', 'argocd-values.yaml.j2') | from_yaml))
+  changed_when: true
+
+- name: ArgoCD Ready 대기
+  ansible.builtin.command: >-
+    kubectl rollout status {{ item }} -n {{ argocd_namespace }} --timeout=300s
+  loop:
+    - statefulset/argocd-application-controller
+    - deployment/argocd-repo-server
+    - deployment/argocd-server
+    - deployment/argocd-redis
+  environment: *kubeconfig
+  changed_when: false
+
+# ── GitLab 레포 자격증명 (그룹 Deploy Token, read_repository) ──
+# url 이 prefix 인 repo-creds — team04 그룹 아래 레포(차트 미러, gitops) 모두에 적용.
+# 값은 stdin 으로 kubectl apply 에 넘겨 노드 디스크에 남기지 않습니다 (backend_namespace role 과 같은 방식)
+- name: 레포 자격증명 Secret ({{ argocd_namespace }}/gitlab-repo-creds)
+  vars:
+    manifest:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: gitlab-repo-creds
+        namespace: "{{ argocd_namespace }}"
+        labels:
+          argocd.argoproj.io/secret-type: repo-creds
+          app.kubernetes.io/managed-by: ansible
+      stringData:
+        type: git
+        url: "https://{{ gitlab_fqdn }}/{{ gitlab_group }}/"
+        username: "{{ argocd_repo_user }}"
+        password: "{{ argocd_repo_token }}"
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: "{{ manifest | to_json }}"
+  environment: *kubeconfig
+  register: argocd_creds_apply
+  changed_when: "'configured' in argocd_creds_apply.stdout or 'created' in argocd_creds_apply.stdout"
+  no_log: true
+
+# ── AppProject / root app ─────────────────────────────
+- name: AppProject / root app 매니페스트
+  ansible.builtin.template:
+    src: argocd-bootstrap.yaml.j2
+    dest: "{{ argocd_manifest_dir }}/argocd-bootstrap.yaml"
+    mode: "0644"
+
+- name: AppProject / root app 적용
+  ansible.builtin.command: kubectl apply -f {{ argocd_manifest_dir }}/argocd-bootstrap.yaml
+  environment: *kubeconfig
+  register: argocd_bootstrap_apply
+  changed_when: "'configured' in argocd_bootstrap_apply.stdout or 'created' in argocd_bootstrap_apply.stdout"
+
+# ── UI / API: tailscale serve HTTPS → argocd-server NodePort ──
+# 127.0.0.1 대신 노드 Tailscale IP — NodePort 의 loopback 동작은 kube-proxy 설정에 좌우됨 (README 11-4)
+- name: 현재 serve 설정 조회
+  ansible.builtin.command: tailscale serve status --json
+  register: argocd_serve_status
+  changed_when: false
+
+- name: HTTPS {{ argocd_serve_https_port }} → argocd-server
+  # HTTPS Certificates 가 꺼져 있으면 활성화 URL 을 띄우고 대기하므로 timeout 으로 끊음
+  ansible.builtin.command: >-
+    timeout 120 tailscale serve --bg --https={{ argocd_serve_https_port }}
+    http://{{ argocd_ts_ip }}:{{ argocd_server_nodeport_http }}
+  when: >-
+    argocd_serve_status.stdout is not search('"Proxy":\s*"http://' ~ (argocd_ts_ip | regex_escape)
+    ~ ':' ~ argocd_server_nodeport_http ~ '"')
+  changed_when: true
+
+- name: HTTPS 응답 확인 (첫 인증서 발급 대기 포함)
+  ansible.builtin.uri:
+    url: "https://{{ argocd_fqdn }}:{{ argocd_serve_https_port }}/healthz"
+    status_code: 200
+  register: argocd_https
+  until: argocd_https.status == 200
+  retries: 12
+  delay: 10
+
+# ── admin 초기 비밀번호 → 로컬 .secrets/argocd.env ─────────
+# UI 에서 비밀번호를 바꾸면 이 파일 값은 더 이상 맞지 않습니다 (initial secret 은 바뀌지 않음)
+- name: admin 초기 비밀번호 조회
+  ansible.builtin.command: >-
+    kubectl -n {{ argocd_namespace }} get secret argocd-initial-admin-secret
+    -o jsonpath={.data.password} --ignore-not-found
+  environment: *kubeconfig
+  register: argocd_initial_pw
+  changed_when: false
+  no_log: true
+
+- name: argocd.env 생성 (로컬)
+  ansible.builtin.copy:
+    dest: "{{ local_secrets_dir }}/argocd.env"
+    content: |
+      # k8s-cicd.yml(roles/argocd) 이 생성 — 커밋 금지, 팀 비밀 채널로만 공유
+      ARGOCD_URL=https://{{ argocd_fqdn }}:{{ argocd_serve_https_port }}
+      ARGOCD_ADMIN_USER=admin
+      ARGOCD_ADMIN_PASSWORD={{ argocd_initial_pw.stdout | b64decode }}
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: argocd_initial_pw.stdout | length > 0
+  no_log: true
+
+# ── 전환(cutover)용 backend Application — gitops 레포 apps/dev/backend.yaml 로 커밋할 파일 (비밀 아님) ──
+- name: apps/dev/backend.yaml 렌더링 (로컬)
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../../backend-deploy/gitops-seed/apps/dev/backend.yaml.j2"
+    dest: "{{ local_secrets_dir }}/argocd-apps-dev-backend.yaml"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: root app 상태 조회
+  ansible.builtin.command: >-
+    kubectl -n {{ argocd_namespace }} get application dev-apps
+    -o jsonpath={.status.sync.status}/{.status.health.status}
+  environment: *kubeconfig
+  register: argocd_root_status
+  changed_when: false
+  failed_when: false
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "ArgoCD UI: https://{{ argocd_fqdn }}:{{ argocd_serve_https_port }} (admin / {{ local_secrets_dir }}/argocd.env)"
+      - "레포: {{ argocd_app_repo_url }}, {{ argocd_gitops_repo_url }} — UI Settings → Repositories 에서 Successful 확인"
+      - "root app dev-apps: {{ argocd_root_status.stdout | default('?') }} (gitops 레포에 apps/dev 가 없으면 ComparisonError — gitlab.yml --tags bootstrap 으로 생성)"
+      - "전환 시 gitops 레포에 커밋할 파일: {{ local_secrets_dir }}/argocd-apps-dev-backend.yaml (targetRevision 을 배포된 커밋 SHA 로 — README 12-9)"

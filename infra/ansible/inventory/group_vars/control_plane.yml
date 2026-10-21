@@ -79,3 +79,24 @@ backend_secret_extra:
   VECTOR_OBJECT_SECRET_KEY: "{{ lookup('env', 'MINIO_RAG_SECRET_KEY') }}"
   DYNAMODB_ENDPOINT: "http://{{ db_ts_ip }}:{{ db_dynamodb_port }}"
   N8N_INIT_OWNER_PASSWORD: "{{ lookup('env', 'N8N_INIT_OWNER_PASSWORD') }}"
+
+# ── ArgoCD (k8s-cicd.yml → roles/argocd, README 12-9) ──────────
+# backend 차트를 gitops 레포(team04/infra/backend-gitops)에서 pull 배포. Traefik · Secret 은 계속 Ansible 이 관리
+argocd_namespace: argocd
+# 버전 고정 — 올릴 때는 argo-helm Changelog / ArgoCD upgrade 문서 확인 (chart 10.10.3 = ArgoCD v3.5.5)
+argocd_chart_version: "10.10.3"
+argocd_chart_repo: "https://argoproj.github.io/argo-helm"
+argocd_manifest_dir: /etc/kubernetes/argocd
+# UI/API: argocd-server(--insecure) NodePort ← CP 의 tailscale serve 가 HTTPS 로 노출
+#   https://<control plane>.<tailnet>.ts.net:8443 (ACL: autogroup:member → tag:k8s-node tcp:8443, README 1-1)
+argocd_server_nodeport_http: 30880
+argocd_server_nodeport_https: 30881   # 차트가 함께 만드는 포트 (같은 컨테이너 포트) — 다른 NodePort 와 겹치지 않게만 고정
+argocd_serve_https_port: 8443          # 443 은 Traefik HTTPS 용으로 비워 둠 (README 11-4)
+# ArgoCD 가 읽는 GitLab 레포 (그룹 Deploy Token read_repository — gitlab.yml --tags bootstrap 이 발급)
+argocd_repo_user: "{{ lookup('env', 'ARGOCD_REPO_USER') }}"
+argocd_repo_token: "{{ lookup('env', 'ARGOCD_REPO_TOKEN') }}"
+# gitlab.yml(group_vars/gitlab.yml) 과 같은 값
+gitlab_group: team04
+gitlab_app_project_path: team04/hotel                     # 차트 (GitHub 모노레포 미러)
+gitlab_gitops_project_path: team04/infra/backend-gitops   # values · 이미지 태그 · Application
+gitlab_default_branch: main

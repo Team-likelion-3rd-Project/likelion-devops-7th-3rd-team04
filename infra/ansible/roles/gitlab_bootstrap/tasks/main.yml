@@ -1,6 +1,6 @@
 ---
 # CI/CD 에 필요한 GitLab 리소스를 REST API 로 멱등하게 맞춥니다. (--tags bootstrap 단독 실행 가능)
-#   그룹/프로젝트 → agent 설정 커밋 → agent 등록·토큰 → gitops 초기 values → 레지스트리 Deploy Token(k8s / 결제 노드)
+#   그룹/프로젝트 → agent 설정 커밋 → agent 등록·토큰 → gitops 초기 values · apps/dev → Deploy Token(k8s 레지스트리 / ArgoCD 레포 / 결제 노드)
 #   → gitops push 토큰(CI 변수) → 미러 push 토큰 → 보호 브랜치 → smoke test CI 변수 → 레지스트리 cleanup policy
 # 발급된 토큰은 로컬 .secrets/gitlab-k8s.env, .secrets/github-mirror.env, .secrets/payment-node.env 에 저장 (이미 있으면 재사용)
 - name: Tailscale 정보 조회 (--tags bootstrap 단독 실행 대비)
@@ -177,6 +177,14 @@
         rf_seed_only: true
         rf_files: "{{ gitlab_gitops_seed_files }}"
 
+    # ArgoCD root app(dev-apps)이 바라보는 apps/dev 디렉터리 유지 (README 만 — Application 은 사람이/CI 가 커밋)
+    - name: gitops apps/dev README 커밋
+      ansible.builtin.include_tasks: repo_files.yml
+      vars:
+        rf_project: "{{ gitlab_gitops_project_path }}"
+        rf_message: "chore: apps/dev README (Ansible gitlab_bootstrap)"
+        rf_files: "{{ gitlab_gitops_managed_files }}"
+
     # ── 레지스트리 pull 용 그룹 Deploy Token ─────────────────
     - name: 레지스트리 Deploy Token 재발급
       when: gl_k8s_env.REGISTRY_DEPLOY_TOKEN | default('') | length == 0
@@ -214,6 +222,46 @@
             gl_k8s_env: >-
               {{ gl_k8s_env | combine({'REGISTRY_DEPLOY_USER': gl_deploy_token_new.json.username,
                                        'REGISTRY_DEPLOY_TOKEN': gl_deploy_token_new.json.token}) }}
+          no_log: true
+
+    # ── ArgoCD 용 그룹 Deploy Token (차트 미러 · gitops 레포 읽기) ──
+    # 레지스트리 pull 토큰과 분리 (따로 폐기 가능). team04 아래 레포 전체를 읽음 — ArgoCD AppProject 가 레포를 다시 좁힘
+    - name: ArgoCD Deploy Token 재발급
+      when: gl_k8s_env.ARGOCD_REPO_TOKEN | default('') | length == 0
+      block:
+        - name: 기존 ArgoCD Deploy Token 조회
+          ansible.builtin.uri:
+            url: "{{ gl_api }}/groups/{{ gl_ids[gitlab_group] }}/deploy_tokens?active=true"
+          register: gl_argocd_deploy_tokens
+
+        - name: 기존 ArgoCD Deploy Token 폐기
+          ansible.builtin.uri:
+            url: "{{ gl_api }}/groups/{{ gl_ids[gitlab_group] }}/deploy_tokens/{{ item.id }}"
+            method: DELETE
+            status_code: 204
+          loop: "{{ gl_argocd_deploy_tokens.json | selectattr('name', 'equalto', gitlab_argocd_deploy_token_name) | list }}"
+          loop_control:
+            label: "{{ item.id }}"
+          changed_when: true
+
+        - name: ArgoCD Deploy Token 발급 (read_repository)
+          ansible.builtin.uri:
+            url: "{{ gl_api }}/groups/{{ gl_ids[gitlab_group] }}/deploy_tokens"
+            method: POST
+            body:
+              name: "{{ gitlab_argocd_deploy_token_name }}"
+              username: "{{ gitlab_argocd_deploy_token_name }}"
+              scopes: [read_repository]
+            status_code: 201
+          register: gl_argocd_deploy_token_new
+          changed_when: true
+          no_log: true
+
+        - name: ArgoCD Deploy Token 기록
+          ansible.builtin.set_fact:
+            gl_k8s_env: >-
+              {{ gl_k8s_env | combine({'ARGOCD_REPO_USER': gl_argocd_deploy_token_new.json.username,
+                                       'ARGOCD_REPO_TOKEN': gl_argocd_deploy_token_new.json.token}) }}
           no_log: true
 
     # ── 결제 노드용 그룹 Deploy Token (이미지 pull + gitops 태그 조회) ──
@@ -389,6 +437,8 @@
           {% endfor %}
           REGISTRY_DEPLOY_USER={{ gl_k8s_env.REGISTRY_DEPLOY_USER | default('') }}
           REGISTRY_DEPLOY_TOKEN={{ gl_k8s_env.REGISTRY_DEPLOY_TOKEN | default('') }}
+          ARGOCD_REPO_USER={{ gl_k8s_env.ARGOCD_REPO_USER | default('') }}
+          ARGOCD_REPO_TOKEN={{ gl_k8s_env.ARGOCD_REPO_TOKEN | default('') }}
         mode: "0600"
       delegate_to: localhost
       become: false
