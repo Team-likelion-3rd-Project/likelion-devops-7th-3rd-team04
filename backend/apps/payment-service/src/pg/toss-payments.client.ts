@@ -4,6 +4,7 @@ import { AxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import { PgConfirmResult } from './pg-confirm-result';
 import { PgCancelResult } from './pg-cancel-result';
+import { PgLookupOutcome, PgLookupResult } from './pg-lookup-result';
 
 const DEFAULT_BASE_URL = 'https://api.tosspayments.com';
 // 토스 승인 API가 이 시간 안에 응답하지 않으면 UNKNOWN으로 두고 대사 배치가 조회로 확정합니다.
@@ -24,6 +25,22 @@ interface TossErrorResponse {
   code?: string;
   message?: string;
 }
+
+// 토스 결제 상태 → 조회 결과 (LDP-91). 목록에 없는 상태는 PENDING으로 두고 다시 조회하게 한다.
+const TOSS_STATUS_OUTCOME: Record<string, PgLookupOutcome> = {
+  DONE: 'APPROVED',
+  CANCELED: 'CANCELED',
+  PARTIAL_CANCELED: 'CANCELED',
+  ABORTED: 'FAILED',
+  EXPIRED: 'FAILED',
+  READY: 'PENDING',
+  IN_PROGRESS: 'PENDING',
+  WAITING_FOR_DEPOSIT: 'PENDING',
+};
+
+// 이미 승인된 결제에 승인을 다시 요청했을 때 토스가 주는 코드 — 거절이 아니라 "이미 처리됨"이라 조회로 확인한다
+const ALREADY_PROCESSED_PAYMENT = 'ALREADY_PROCESSED_PAYMENT';
+const CONFIG_ERROR_MESSAGE = '결제 설정 오류입니다. 관리자에게 문의해 주세요.';
 
 // 토스페이먼츠 결제 승인 API 클라이언트 (PAYMENT_PROVIDER=TOSS일 때만 사용).
 //   POST {TOSS_API_BASE_URL}/v1/payments/confirm
@@ -86,24 +103,51 @@ export class TossPaymentsClient {
         );
         return {
           outcome: 'UNKNOWN',
+          paymentKey: params.paymentKey,
           raw: data as unknown as Record<string, unknown>,
         };
       }
 
-      return {
-        outcome: 'APPROVED',
-        paymentKey: data.paymentKey,
-        approvalNumber: data.card?.approveNo,
-        approvedAt: data.approvedAt ? new Date(data.approvedAt) : new Date(),
-        method: data.method,
-        raw: data as unknown as Record<string, unknown>,
-      };
+      return this.approvedResult(data);
     } catch (error: unknown) {
       const err = error as AxiosError<TossErrorResponse>;
       const status = err.response?.status;
       const body = err.response?.data;
 
-      // 4xx: 토스가 요청을 받고 거절한 것 (카드 거절, 금액 불일치 등) → 돈이 안 움직였음이 확실
+      // "이미 처리된 결제": 거절이 아니라 이미 승인됐을 수 있다 → 조회로 실제 상태를 확인 (LDP-91)
+      if (body?.code === ALREADY_PROCESSED_PAYMENT) {
+        const lookup = await this.getPayment(params.paymentKey);
+        if (lookup.outcome === 'APPROVED') {
+          this.logger.warn(
+            `토스가 이미 처리된 결제라고 답해 조회해 보니 승인 완료 — 승인으로 반영 (orderId=${params.orderId})`,
+          );
+          return { ...lookup, outcome: 'APPROVED' };
+        }
+        // 승인이 아니면(조회 실패 포함) 확정하지 않고 대사 배치에 맡긴다
+        return {
+          outcome: 'UNKNOWN',
+          paymentKey: params.paymentKey,
+          pgCode: body.code,
+          pgMessage: body.message,
+          raw: { confirm: body, lookup: lookup.raw ?? {} },
+        };
+      }
+
+      // 401·403: 시크릿 키가 틀리거나 권한이 없음 — 토스가 요청을 처리하지 않았으므로 돈은 안 움직였다.
+      // 손님에게는 "설정 오류"로만 보이고, 원인은 서버 로그(알람)로 남긴다.
+      if (status === 401 || status === 403) {
+        this.logger.error(
+          `[알람] 토스 인증 실패 — TOSS_SECRET_KEY를 확인하세요 (status=${status}, code=${body?.code})`,
+        );
+        return {
+          outcome: 'DECLINED',
+          pgCode: body?.code,
+          pgMessage: CONFIG_ERROR_MESSAGE,
+          raw: (body ?? {}) as Record<string, unknown>,
+        };
+      }
+
+      // 그 밖의 4xx: 토스가 요청을 받고 거절한 것 (카드 거절, 금액 불일치, 결제창 시간 만료 등) → 돈이 안 움직였음이 확실
       if (status && status >= 400 && status < 500) {
         this.logger.warn(
           `토스 승인 거절 (orderId=${params.orderId}, status=${status}, code=${body?.code}): ${body?.message}`,
@@ -122,11 +166,88 @@ export class TossPaymentsClient {
       );
       return {
         outcome: 'UNKNOWN',
+        paymentKey: params.paymentKey,
         pgCode: body?.code,
         pgMessage: body?.message ?? err.message,
         raw: (body ?? {}) as Record<string, unknown>,
       };
     }
+  }
+
+  // 토스 결제 조회 API (LDP-91) — 대사 배치(LDP-97)·"이미 처리된 결제" 확인용.
+  //   GET {TOSS_API_BASE_URL}/v1/payments/{paymentKey}
+  // 주문번호(orderId) 조회(/v1/payments/orders/{orderId})는 토스 문서용 테스트 키에서 막혀 있어(NOT_FOUND_MERCHANT)
+  // 결제 번호로 조회한다. 조회는 결제를 바꾸지 않으므로 몇 번 불러도 안전하다.
+  async getPayment(paymentKey: string): Promise<PgLookupResult> {
+    const secretKey = process.env.TOSS_SECRET_KEY;
+    if (!secretKey) {
+      this.logger.error(
+        'TOSS_SECRET_KEY가 설정되지 않아 토스 결제를 조회할 수 없습니다.',
+      );
+      return {
+        outcome: 'UNKNOWN',
+        pgCode: 'TOSS_SECRET_KEY_MISSING',
+        pgMessage: CONFIG_ERROR_MESSAGE,
+      };
+    }
+    const baseUrl = process.env.TOSS_API_BASE_URL || DEFAULT_BASE_URL;
+    const authorization = `Basic ${Buffer.from(`${secretKey}:`).toString('base64')}`;
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get<TossPaymentResponse>(
+          `${baseUrl}/v1/payments/${encodeURIComponent(paymentKey)}`,
+          {
+            timeout: CONFIRM_TIMEOUT_MS,
+            headers: { Authorization: authorization },
+          },
+        ),
+      );
+      const outcome = TOSS_STATUS_OUTCOME[data.status] ?? 'PENDING';
+      if (outcome === 'APPROVED') {
+        return { ...this.approvedResult(data), outcome, pgStatus: data.status };
+      }
+      return {
+        outcome,
+        pgStatus: data.status,
+        paymentKey: data.paymentKey,
+        raw: data as unknown as Record<string, unknown>,
+      };
+    } catch (error: unknown) {
+      const err = error as AxiosError<TossErrorResponse>;
+      const body = err.response?.data;
+      if (err.response?.status === 404) {
+        return {
+          outcome: 'NOT_FOUND',
+          pgCode: body?.code,
+          pgMessage: body?.message,
+          raw: (body ?? {}) as Record<string, unknown>,
+        };
+      }
+      this.logger.error(
+        `토스 결제 조회 실패 (paymentKey=${paymentKey}, status=${err.response?.status ?? '응답 없음'}, code=${body?.code}): ${body?.message ?? err.message}`,
+      );
+      return {
+        outcome: 'UNKNOWN',
+        pgCode: body?.code,
+        pgMessage: body?.message ?? err.message,
+        raw: (body ?? {}) as Record<string, unknown>,
+      };
+    }
+  }
+
+  // 승인 완료(DONE) 응답 → 승인 결과 (승인 API·조회 API 공통)
+  private approvedResult(data: TossPaymentResponse): PgConfirmResult & {
+    outcome: 'APPROVED';
+  } {
+    return {
+      outcome: 'APPROVED',
+      paymentKey: data.paymentKey,
+      approvalNumber: data.card?.approveNo,
+      approvedAt: data.approvedAt ? new Date(data.approvedAt) : new Date(),
+      method: data.method,
+      raw: data as unknown as Record<string, unknown>,
+    };
   }
 
   // 토스 결제 취소(환불) API (LDP-28, ERD "환불").

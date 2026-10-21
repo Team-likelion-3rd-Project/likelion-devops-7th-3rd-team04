@@ -201,17 +201,7 @@ export class PaymentServiceService {
           '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
       };
     }
-    await this.dataSource.manager.update(
-      Payment,
-      { paymentId: payment.paymentId, status: PaymentStatus.PROCESSING },
-      {
-        status: PaymentStatus.UNKNOWN,
-        rawResponse: toJsonColumn({
-          ...(pgResult.raw ?? {}),
-          pgMessage: pgResult.pgMessage,
-        }),
-      },
-    );
+    await this.markUnknown(payment, pgResult);
     return {
       result: 'UNKNOWN',
       paymentId: payment.paymentId,
@@ -220,6 +210,38 @@ export class PaymentServiceService {
       message:
         '결제 결과를 확인하고 있습니다. 잠시 후 예약 내역에서 확인해 주세요.',
     };
+  }
+
+  // 결과 불명 반영: UNKNOWN + PG 결제 번호. 대사 배치(LDP-97)가 이 번호로 PG에 조회해 승인·실패를 확정한다 (LDP-91).
+  // 결제 번호는 UNIQUE라, 혹시 다른 결제가 이미 같은 번호를 갖고 있으면 번호 없이라도 UNKNOWN은 남긴다.
+  private async markUnknown(
+    payment: Payment,
+    pgResult: PgConfirmResult,
+  ): Promise<void> {
+    const update = (paymentKey: string | null) =>
+      this.dataSource.manager.update(
+        Payment,
+        { paymentId: payment.paymentId, status: PaymentStatus.PROCESSING },
+        {
+          status: PaymentStatus.UNKNOWN,
+          paymentKey,
+          rawResponse: toJsonColumn({
+            ...(pgResult.raw ?? {}),
+            pgMessage: pgResult.pgMessage,
+          }),
+        },
+      );
+    try {
+      await update(pgResult.paymentKey ?? null);
+    } catch (error: unknown) {
+      if (!isDuplicateKeyError(error) || !pgResult.paymentKey) {
+        throw error;
+      }
+      this.logger.error(
+        `[알람] 결과 불명 결제의 PG 결제 번호가 다른 결제와 겹칩니다 — 번호 없이 UNKNOWN으로 남김 (paymentId=${payment.paymentId}, paymentKey=${pgResult.paymentKey})`,
+      );
+      await update(null);
+    }
   }
 
   // 승인 반영: APPROVED 전환과 payment_outbox 기록을 한 트랜잭션으로 — 상태는 바뀌었는데 예약 쪽에

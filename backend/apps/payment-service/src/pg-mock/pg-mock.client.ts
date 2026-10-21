@@ -5,6 +5,7 @@ import { AxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import { PgConfirmResult } from '../pg/pg-confirm-result';
 import { PgCancelResult } from '../pg/pg-cancel-result';
+import { PgLookupOutcome, PgLookupResult } from '../pg/pg-lookup-result';
 
 export interface PgMockPaymentResult {
   paymentKey: string;
@@ -19,6 +20,13 @@ export interface PgMockPaymentResult {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+
+// pg-mock 결제 상태 → 조회 결과 (토스 클라이언트와 같은 형태, LDP-91)
+const MOCK_STATUS_OUTCOME: Record<string, PgLookupOutcome> = {
+  DONE: 'APPROVED',
+  CANCELED: 'CANCELED',
+  READY: 'PENDING',
+};
 const DEFAULT_BASE_URL = 'http://localhost:3007';
 
 // PG(mock) 서버를 호출하는 유일한 진입점입니다. 실제 PG로 교체할 때는 이 클라이언트의
@@ -90,8 +98,49 @@ export class PgMockClient {
           raw: err.response?.data ?? {},
         };
       }
-      // 승인 요청 후 응답을 못 받음 → 승인됐는지 알 수 없음 (실제 PG의 타임아웃과 같은 상황)
+      // 승인 요청 후 응답을 못 받음 → 승인됐는지 알 수 없음 (실제 PG의 타임아웃과 같은 상황).
+      // 생성 단계에서 받은 결제 번호를 남겨 대사 배치가 조회할 수 있게 한다 (LDP-91)
       this.logError('PG(mock) 결제 승인 결과 불명', error);
+      return {
+        outcome: 'UNKNOWN',
+        paymentKey: created.paymentKey,
+        pgMessage: err.message,
+      };
+    }
+  }
+
+  // 결제 조회 (LDP-91) — 토스 조회 API와 같은 결과 형태. pg-mock은 메모리에만 기록해서 재기동하면 NOT_FOUND가 된다.
+  async getPayment(paymentKey: string): Promise<PgLookupResult> {
+    const baseUrl = process.env.PG_MOCK_SERVICE_URL || DEFAULT_BASE_URL;
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.get<PgMockPaymentResult>(
+          `${baseUrl}/payments/${encodeURIComponent(paymentKey)}`,
+          { timeout: DEFAULT_TIMEOUT_MS },
+        ),
+      );
+      const outcome = MOCK_STATUS_OUTCOME[data.status] ?? 'PENDING';
+      return {
+        outcome,
+        pgStatus: data.status,
+        paymentKey: data.paymentKey,
+        ...(outcome === 'APPROVED'
+          ? {
+              approvalNumber: data.approvalNumber,
+              approvedAt: data.approvedAt
+                ? new Date(data.approvedAt)
+                : new Date(),
+              method: data.paymentMethod,
+            }
+          : {}),
+        raw: data as unknown as Record<string, unknown>,
+      };
+    } catch (error: unknown) {
+      const err = error as AxiosError<{ message?: string }>;
+      if (err.response?.status === 404) {
+        return { outcome: 'NOT_FOUND', pgMessage: err.response.data?.message };
+      }
+      this.logError('PG(mock) 결제 조회 실패', error);
       return { outcome: 'UNKNOWN', pgMessage: err.message };
     }
   }
