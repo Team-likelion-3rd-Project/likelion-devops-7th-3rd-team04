@@ -1,4 +1,4 @@
-import { authorizedFetch, parseJsonResponse } from './gateway'
+import { authorizedFetch, parseJsonResponse, type BookingStaffFields } from './gateway'
 
 // gateway CreateBookingDto와 1:1 대응. userId는 서버가 Authorization 헤더의 JWT에서 추출하므로 실어 보내지 않는다.
 export interface CreateBookingRequest {
@@ -13,7 +13,7 @@ export interface CreateBookingRequest {
 
 // proto의 Booking 메시지 / gateway BookingDto와 1:1 대응. 편의시설(수영장/라운지) 이용 여부/인원수는
 // 여기 담기지 않는다 — fetchReservationFacilities로 별도 조회한다.
-export interface Booking {
+export interface Booking extends BookingStaffFields {
   reservationId: number
   userId: number
   roomId: number

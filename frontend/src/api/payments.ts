@@ -64,19 +64,17 @@ export interface ConfirmPaymentResponse {
 
 // 명세 5.10 실패 응답: NestJS 기본 형식에 code(오류 종류)·retryable(같은 예약으로 다시 결제 가능 여부)이 더해진다.
 export class PaymentApiError extends ApiError {
-  readonly code?: string
   readonly retryable: boolean
 
   constructor(message: string, status: number, code?: string, retryable = false) {
-    super(message, status)
+    super(message, status, code)
     this.name = 'PaymentApiError'
-    this.code = code
     this.retryable = retryable
   }
 }
 
 // 서버 message가 비어 있을 때 쓸 안내 문구 (명세 5.8·5.9의 code 목록)
-const PAYMENT_ERROR_MESSAGE: Record<string, string> = {
+export const PAYMENT_ERROR_MESSAGE: Record<string, string> = {
   NOT_RESERVATION_OWNER: '본인 예약만 결제할 수 있습니다.',
   RESERVATION_NOT_FOUND: '예약을 찾을 수 없습니다.',
   INVALID_RESERVATION_STATUS: '결제할 수 없는 예약 상태입니다. 내 예약에서 상태를 확인해주세요.',
@@ -87,6 +85,7 @@ const PAYMENT_ERROR_MESSAGE: Record<string, string> = {
   PAYMENT_DECLINED: '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
   ALREADY_PAID: '이미 결제가 완료된 예약입니다. 내 예약에서 확인해주세요.',
   PAYMENT_SERVICE_UNAVAILABLE: '결제 서비스에 일시적으로 연결할 수 없습니다. 잠시 후 다시 시도해주세요.',
+  PAYMENT_CONFIRMING: '이전 결제 결과를 확인하고 있어요. 결과가 나오면 내 예약에서 확인할 수 있고, 10분이 지나도 결과가 없으면 다시 결제할 수 있어요.',
 }
 
 export function paymentErrorMessage(code: string | undefined, message: string | undefined, fallback: string): string {

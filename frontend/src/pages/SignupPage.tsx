@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { register } from '../api/gateway'
+import { ApiError, register } from '../api/gateway'
 import { loginRedirectPath, type LoginLocationState } from '../utils/loginRedirect'
 import './SignupPage.css'
 
@@ -38,6 +38,20 @@ function SignupPage() {
       await register({ email, password, name, phoneNumber })
       navigate(loginRedirectPath(from), { replace: true })
     } catch (err) {
+      // 가입은 끝났고 로그인 토큰만 못 받은 경우(503, #214) — 여기 남으면 다시 가입할 때 "이미 가입된 이메일"이 나오므로
+      // 로그인 화면으로 보낸다 (보던 화면 from은 그대로 넘겨 로그인 후 돌아가게 한다).
+      if (err instanceof ApiError && err.code === 'SIGNUP_COMPLETED_LOGIN_REQUIRED') {
+        navigate('/login', {
+          replace: true,
+          state: { from, message: '가입이 완료됐어요. 로그인해 주세요.' },
+        })
+        return
+      }
+      // SIGNUP_FAILED(503): 가입되지 않았고 남은 데이터도 없어 같은 이메일로 다시 가입할 수 있다.
+      if (err instanceof ApiError && err.code === 'SIGNUP_FAILED') {
+        setError('일시적인 오류로 가입하지 못했어요. 잠시 후 다시 시도해 주세요.')
+        return
+      }
       setError(err instanceof Error ? err.message : '회원가입에 실패했습니다.')
     } finally {
       setIsLoading(false)
