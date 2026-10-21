@@ -23,6 +23,11 @@ variable "main_vpc_id" {
   type        = string
 }
 
+variable "payment_vpc_id" {
+  description = "20-network 의 payment.vpc_id"
+  type        = string
+}
+
 variable "deployment_vpc_id" {
   description = "20-network 의 deployment.vpc_id (GitLab Runner)"
   type        = string
