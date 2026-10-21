@@ -47,17 +47,19 @@
   changed_when: "'configured' in pull_secret_apply.stdout or 'created' in pull_secret_apply.stdout"
   no_log: true
 
-- name: 챗봇 AI 스택 값 확인 (infra/ansible/.env)
+- name: 객실 이미지 · 챗봇 AI 스택 값 확인 (infra/ansible/.env)
   ansible.builtin.assert:
     that:
+      - lookup('env', 'MINIO_APP_ACCESS_KEY') | length > 0
+      - lookup('env', 'MINIO_APP_SECRET_KEY') | length > 0
       - gcp_sa_key_file | length > 0
       - lookup('env', 'MINIO_RAG_ACCESS_KEY') | length > 0
       - lookup('env', 'MINIO_RAG_SECRET_KEY') | length > 0
       - lookup('env', 'N8N_INIT_OWNER_PASSWORD') | length >= 8
       - db_ts_ip | length > 0
     fail_msg: >-
-      GCP_SA_KEY_FILE / MINIO_RAG_ACCESS_KEY / MINIO_RAG_SECRET_KEY / N8N_INIT_OWNER_PASSWORD(8자 이상) / DB_TS_IP 가
-      비어 있습니다. infra/ansible/.env 를 채우고 다시 source 하세요 (README 15절).
+      MINIO_APP_ACCESS_KEY / MINIO_APP_SECRET_KEY / GCP_SA_KEY_FILE / MINIO_RAG_ACCESS_KEY / MINIO_RAG_SECRET_KEY /
+      N8N_INIT_OWNER_PASSWORD(8자 이상) / DB_TS_IP 가 비어 있습니다. infra/ansible/.env 를 채우고 다시 source 하세요 (README 7-6, 15절).
     quiet: true
   no_log: true
 

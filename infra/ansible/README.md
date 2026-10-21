@@ -317,7 +317,7 @@ backend 서비스가 사용할 MariaDB와, 향후 Redis를 대체할 Valkey, 객
 |---|---|---|---|
 | MariaDB | `mariadb:11.4.13` (LTS) | `DB_PORT` (3306) | backend `DB_*` 와 동일한 계정/DB |
 | Valkey | `valkey/valkey:9.1.2` | 6379 | 기동만 — backend `REDIS_*` 연동은 추후 |
-| MinIO | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` | 9000 (S3 API) / 9001 (Console) | dev 용 S3 — 객실 이미지 버킷. backend 연동은 추후 ([7-6](#7-6-minio-dev-용-s3)) |
+| MinIO | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` | 9000 (S3 API) / 9001 (Console) | dev 용 S3 — 객실 이미지 버킷 (hotel-service, [7-6](#7-6-minio-dev-용-s3)) |
 
 - 모든 컨테이너가 `network_mode: host` 로 뜨고, **ufw 가 `tailscale0` 으로 들어오는 3306/6379/9000/9001 만 허용**합니다. (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
 - 데이터: `/var/lib/hotel-db/{mariadb,valkey,minio}`, 설정·자격증명: `/opt/hotel-db` (root 전용 0700)
@@ -348,7 +348,7 @@ DB 계정 정보는 **`backend/.env` 를 직접 읽습니다.** Ansible 쪽에 �
 | `TS_DB_OAUTH_CLIENT_SECRET` | `infra/ansible/.env` | 1-2 의 DB 용 OAuth client |
 | `VALKEY_PASSWORD` | `infra/ansible/.env` | 추후 backend `REDIS_PASSWORD` 와 같은 값으로 맞출 예정 |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | `infra/ansible/.env` | MinIO 관리자 (Console 로그인). 최초 기동 때만 반영 |
-| `MINIO_APP_ACCESS_KEY`, `MINIO_APP_SECRET_KEY` | `infra/ansible/.env` | 앱 전용 계정 (객실 이미지 버킷만). 추후 backend S3 접근 키와 같은 값으로 맞출 예정 |
+| `MINIO_APP_ACCESS_KEY`, `MINIO_APP_SECRET_KEY` | `infra/ansible/.env` | 앱 전용 계정 (객실 이미지 버킷만). `k8s-cicd.yml` 이 `backend-secrets` 의 `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` 로 넣음 (7-6) |
 | `BACKEND_ENV_FILE` (선택) | `infra/ansible/.env` | backend/.env 대신 다른 파일을 쓸 때 |
 
 - 비밀번호에는 공백, 따옴표, 역슬래시, `$`, `#`, `` ` `` 를 쓸 수 없습니다. (설정 파일에 그대로 들어가기 때문)
@@ -424,21 +424,38 @@ ansible-playbook db.yml -K --tags seed
 
 ### 7-6. MinIO (dev 용 S3)
 
-객실 이미지를 MariaDB 의 Base64 컬럼(`room_images.image_base64`) 대신 S3 에 저장하도록 바꾸기 위한 dev 저장소입니다. **온프레미스에서는 객실 이미지에 관한 S3 역할(저장 · presigned URL 발급 대상 · 삭제)을 모두 MinIO 가 맡습니다.** 이번 단계는 인프라만 준비합니다.
+객실 이미지를 MariaDB 의 Base64 컬럼(`room_images.image_base64`) 대신 S3 에 저장하도록 바꾸기 위한 dev 저장소입니다. **온프레미스에서는 객실 이미지에 관한 S3 역할(저장 · presigned URL 발급 대상 · 삭제)을 모두 MinIO 가 맡습니다.**
 
 - **이미지**: 업스트림 `minio/minio` 는 커뮤니티 이미지 배포가 끝나 Docker Hub 에서 내려갔습니다. 그래서 호환 포크 [Silo(`pgsty/minio`)](https://github.com/pgsty/minio) 를 버전을 고정해 씁니다. `MINIO_*` 환경변수, S3 API, Console 은 동일하고, 클라이언트는 `mcli`(`mc` 와 같음)입니다.
 - **버킷**: `room-images` (`group_vars/db.yml` 의 `minio_bucket`). playbook 이 매번 버킷이 있는지와 **익명 접근이 꺼져 있는지(private)**를 확인합니다.
 - **앱 계정**: `MINIO_APP_ACCESS_KEY` 에 `hotel-app` 정책을 붙입니다. 이 정책은 버킷 하나에 Get / Put / Delete / List 만 허용합니다. MariaDB 와 같은 방식으로, 앱 계정으로 접속을 검사해 **실패할 때만** 계정 생성 · secret 갱신 · 정책 부여를 다시 합니다.
 - **접근 방식: presigned URL** — backend 가 앱 키로 서명한 URL 을 발급하면, 브라우저와 Pod 가 tailnet 으로 `:9000` 에 직접 접근합니다. 서명에 Host 가 들어가므로 **backend 의 endpoint 와 브라우저가 접근하는 주소가 같아야** 합니다(DB 노드 Tailscale IP).
-- **환경변수 (예정, 이름은 backend 연동 때 확정)**
+- **hotel-service 환경변수 (확정)**
 
-  | 이름 | dev (MinIO) | prod (AWS S3) |
-  |---|---|---|
-  | `S3_ENDPOINT` | `http://<DB ts ip>:9000` | 비움 → AWS SDK 기본 엔드포인트 |
-  | `S3_REGION` | `ap-northeast-2` | 실제 리전 |
-  | `S3_BUCKET` | `room-images` | (미정) |
-  | `S3_FORCE_PATH_STYLE` | `true` | `false` |
-  | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `MINIO_APP_ACCESS_KEY` / `MINIO_APP_SECRET_KEY` | 넣지 않음 (IAM 역할) |
+  | 이름 | dev (MinIO) | 주입 위치 (dev) | prod (AWS S3) |
+  |---|---|---|---|
+  | `S3_ENDPOINT` | `http://<DB_TS_IP>:9000` | `backend-secrets` (`k8s-cicd.yml`) | 비움 → AWS SDK 기본 엔드포인트 |
+  | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `MINIO_APP_ACCESS_KEY` / `MINIO_APP_SECRET_KEY` | `backend-secrets` (`k8s-cicd.yml`) | 넣지 않음 (IAM 역할) |
+  | `S3_REGION` | `ap-northeast-2` (고정 — MinIO 에서는 의미 없지만 SDK 서명에 필요) | gitops `envs/dev/values.yaml` env | 실제 리전 |
+  | `S3_BUCKET` | `room-images` | gitops env | (미정) |
+  | `S3_FORCE_PATH_STYLE` | `true` | gitops env | `false` |
+
+- **반영 순서** (gitops seed 는 레포를 처음 만들 때만 들어가므로 기존 레포는 직접 커밋)
+  1. `.env` 에 `MINIO_APP_*` · `DB_TS_IP` 확인 → `ansible-playbook k8s-cicd.yml -K --tags backend_secrets`
+  2. 그다음 GitLab `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` 에 아래를 커밋 → ArgoCD sync (env 가 바뀌어 hotel-service Pod 가 새로 뜸).
+     순서를 바꾸면 Secret 에 key 가 없어 hotel-service 가 `CreateContainerConfigError` 로 멈춥니다.
+
+     ```yaml
+     services:
+       hotel-service:
+         env:
+           S3_REGION: ap-northeast-2
+           S3_BUCKET: room-images
+           S3_FORCE_PATH_STYLE: "true"
+         # 리스트는 차트 기본값을 덮어쓰므로 DB_* 도 다시 적음
+         secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY]
+     ```
+  3. 확인: `kubectl -n backend exec deploy/hotel-service -- printenv | grep ^S3_` → 관리자 화면에서 사진 업로드 → DB 노드에서 `sudo docker exec minio mcli ls app/room-images`
 
 - **CORS**: `minio_cors_allow_origin: "*"`(서버 전역)입니다.
 - **자동화하지 않는 것**: `MINIO_ROOT_PASSWORD` 변경. root 자격증명은 데이터 디렉토리가 빈 상태로 처음 기동할 때만 반영됩니다. 값을 바꾸려면 Console 이나 `mcli admin` 으로 직접 변경한 뒤 `.env` 를 맞춥니다.
@@ -789,7 +806,7 @@ ansible-playbook k8s-cicd.yml -K --tags backend_secrets   # backend/.env 를 바
 ansible-playbook k8s-cicd.yml -K --tags argocd            # ArgoCD 만 다시
 ```
 
-- `backend` 네임스페이스와 Secret `gitlab-registry`(Deploy Token), `backend-secrets`(`backend/.env` 에서 차트가 쓰는 key 만, `DB_HOST`·`REDIS_HOST` 는 `DB_TS_IP` 로 덮어씀)를 만듭니다. 차트 · ArgoCD 는 네임스페이스와 Secret 을 만들지 않습니다 (`CreateNamespace=false`).
+- `backend` 네임스페이스와 Secret `gitlab-registry`(Deploy Token), `backend-secrets`(`backend/.env` 에서 차트가 쓰는 key 만, `DB_HOST`·`REDIS_HOST` 는 `DB_TS_IP` 로 덮어씀. hotel-service 의 `S3_*`(7-6)와 챗봇 key(15절)는 `infra/ansible/.env` 에서)를 만듭니다. 차트 · ArgoCD 는 네임스페이스와 Secret 을 만들지 않습니다 (`CreateNamespace=false`).
 - `backend-secrets` 는 Pod 기동 때만 읽힙니다. 값을 바꿨으면 `kubectl -n backend rollout restart deployment` 로 재기동합니다 (selfHeal 이 되돌리지 않음).
 - ArgoCD 설치 · 구성은 12-9 입니다. 전환 전 클러스터에 남아 있는 GitLab Agent(agentk) · `cicd-deployer` Role 은 `argocd` role 이 지웁니다 (없으면 건너뜀).
 - **결제**: payment-service · 결제 DB · ElasticMQ 는 클러스터 밖 **결제 서버 노드**([14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq))에서 운영합니다. 그래서 `backend-secrets` 에는 `PAYMENT_DB_*` 를 넣지 않고(`backend/.env` 에 채워져 있어도 제외), gitops `envs/dev/values.yaml` 에서 `services.payment-service.enabled` 와 `migrations.payment.enabled` 는 `false` 로 둡니다(초기 seed 에 반영됨).
