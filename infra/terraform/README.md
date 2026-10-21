@@ -20,7 +20,7 @@ AWS 운영 환경(`us-east-1`)을 구성하는 Terraform 코드입니다.
 infra/terraform/
 ├── aws-login.sh
 ├── modules/                         # 재사용 모듈
-│   └── vpc/                         # VPC, 계층별 서브넷, IGW, NAT, 라우트 테이블, 게이트웨이 엔드포인트, Flow Logs
+│   └── vpc/                         # VPC, 계층별 서브넷, IGW, NAT, 라우트 테이블(선택: NFW 경유), 게이트웨이 엔드포인트, Flow Logs
 └── live/
     ├── bootstrap/                   🔒 state 버킷
     └── prod/
@@ -160,8 +160,8 @@ bootstrap                                  🔒 최초 1회 (terraform)
 
 | 스택 | 조건 | apply | destroy |
 |---|---|---|---|
-| `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
-| `20-network` | `single_nat_gateway = false` (NAT 5개) | 2분 27초 | 1분 23초 |
+| `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), 결제 VPC Network Firewall 엔드포인트 1개 (NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
+| `20-network` | `single_nat_gateway = false` (NAT 5개, NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
 | `30-security` | `enable_control_plane = true` (SG 10개, 규칙 34개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
 | `40-cicd` | GitLab Runner 1대 + Ansible 묶음 업로드 (t4g.medium 기준 실측, 2026-10-21 m7g.large 로 변경. 부트스트랩 별도: 시작부터 GitLab 등록까지 약 3분 30초 – 4분) | 54초 – 58초 | 1분 25초 |
 | `41-main-data` | RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
@@ -170,7 +170,8 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `44-payment-endpoints` | 인터페이스 엔드포인트 8종(AZ 2개), S3 게이트웨이 엔드포인트 정책 | 57초 – 1분 04초 | 2분 24초 |
 | `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
-| **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
+| **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 (NFW 도입 전) | **10분 06초** | **5분 01초** (10 · 11 제외) |
+| **`run --all` (10 · 11 포함, 20 · 30 · 40 – 44 · 70 · 80)** | 위 기본 조건, 2026-10-21 NFW 포함 | **20분 07초** | **12분 56초** (10 · 11 제외) |
 
 `70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, 배포 agent 의 Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
 
@@ -352,3 +353,47 @@ AWS_PROFILE=team04 aws elbv2 describe-target-health \
 - 본문 8KB 초과 요청은 `waf_large_body_path_regex`(기본: 객실 등록 · 수정 `/api/hotels/<id>/rooms[/<id>]`, Base64 이미지) 경로만 허용하고 나머지는 403 입니다. 큰 본문을 받는 API 가 생기면 이 정규식에 추가합니다.
 - 액세스 로그는 `10-global` 로그 버킷 `alb/` 에 5분 단위로 쌓입니다. Object Lock 버킷이라 잠금 기간(7일) 동안 지워지지 않습니다.
 - unhealthy 타깃이 있으면 그 워커가 클러스터에 join 했는지(`kubectl get nodes`) 먼저 봅니다 (6절). join 하지 못한 워커는 kube-proxy 가 없어 NodePort 가 응답하지 않습니다.
+
+---
+
+## 8. 결제 VPC egress 검사 (`20-network` Network Firewall)
+
+결제 앱 · lb 서브넷의 외부행 트래픽은 결제 VPC 안의 AWS Network Firewall(분산형)을 거쳐 NAT 로 나갑니다. 복귀 트래픽도 같은 엔드포인트를 거칩니다 (비대칭이면 NFW 가 흐름을 버립니다).
+
+```
+app · lb  ─ private-<az> RT 0.0.0.0/0 ─▶ NFW 엔드포인트(firewall 서브넷 /28) ─ firewall-<az> RT ─▶ NAT ─▶ IGW
+NAT 응답  ─ public RT <app · lb 서브넷 CIDR> ─▶ 같은 NFW 엔드포인트 ─▶ app · lb
+```
+
+- VPC 엔드포인트(ECR · SSM · SQS · Secrets Manager · Logs), S3 게이트웨이(prefix list), 결제 DB 는 더 구체적인 경로라 NFW 를 거치지 않습니다.
+- 엔드포인트 수는 NAT 와 맞춥니다. `single_nat_gateway = true` 면 a 하나, `false` 면 a · b.
+- Main · Deployment VPC 는 검사하지 않습니다 (`modules/vpc` 의 `firewall_endpoint_ids` 기본값 `{}`).
+
+| 계층 | 막는 것 |
+|---|---|
+| DNS Firewall (`dns-firewall.tf`) | 허용 목록(`payment_dns_allowed_domains`) 밖 도메인 이름 해석 → NXDOMAIN |
+| SG (`30-security` P5) | 443 외 포트, UDP |
+| Network Firewall (`network-firewall.tf`) | TLS SNI 가 `payment_egress_allowed_sni`(기본 `api.tosspayments.com`) 가 아닌 연결, SNI 없는 IP 직접 접속, 평문 HTTP |
+
+- 규칙은 STRICT_ORDER, 기본 동작은 `aws:drop_established` + `aws:alert_established` 입니다. `drop_strict` 는 SNI 를 보기 전 TCP 핸드셰이크부터 막아 허용 도메인도 연결되지 않으므로 쓰지 않습니다.
+- 허용 도메인 추가는 `payment_egress_allowed_sni` 와 `payment_dns_allowed_domains` 를 함께 고칩니다. rule group `capacity`(100) 는 바꾸면 교체되므로 그대로 둡니다.
+- **한계**: SNI 는 클라이언트가 보내는 값이라, 허용 도메인 이름을 SNI 에 넣고 다른 IP 로 접속하면(`curl --resolve api.tosspayments.com:443:<임의 IP>`) 통과합니다. 결제 서버 침해를 가정한 완전한 차단은 TLS inspection 이 필요합니다.
+- 로그: alert → CloudWatch Logs `/aws/vendedlogs/team04-hotel/payment-network-firewall/alert` (90일), flow → `10-global` 로그 버킷 `network-firewall/` (몇 분 단위로 적재).
+- 비용: 엔드포인트 1개 시간당 $0.395 (월 약 $290) + 처리량 GB 당 $0.065. NFW 요금은 그대로 내고, 같은 경로의 NAT Gateway 시간 요금 · 처리 요금이 NFW 엔드포인트 시간 · 처리량만큼 1:1 로 면제됩니다. 결제 VPC 는 NAT 트래픽이 모두 NFW 를 거치므로 NAT 요금이 0 이 되어, 늘어나는 비용은 월 약 $257 + GB 당 $0.02 입니다.
+
+```bash
+# 차단 alert 확인 (최근 15분)
+AWS_PROFILE=team04 aws logs filter-log-events \
+  --log-group-name /aws/vendedlogs/team04-hotel/payment-network-firewall/alert \
+  --start-time $(( ($(date +%s) - 900) * 1000 )) --query 'events[].message' --output text
+```
+
+결제 앱 서브넷에서 검증한 결과 (2026-10-21, `payment_app` SG 테스트 인스턴스):
+
+| 요청 | 결과 |
+|---|---|
+| `curl https://api.tosspayments.com/v1/payments` | 401 (도달) |
+| `curl --resolve one.one.one.one:443:1.1.1.1 https://one.one.one.one/` | timeout, alert `aws:alert_established` (SNI `one.one.one.one`) |
+| `curl -k https://1.1.1.1/` (SNI 없음) | timeout, alert |
+| `curl https://example.com/` | DNS Firewall NXDOMAIN |
+| `curl https://sqs.us-east-1.amazonaws.com/`, `dnf makecache` | 정상 (엔드포인트 · S3 게이트웨이, NFW 미경유) |

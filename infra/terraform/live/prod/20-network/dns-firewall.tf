@@ -1,6 +1,7 @@
 # 결제 VPC 의 Route53 Resolver DNS Firewall.
 # 허용 목록 외 도메인은 이름 해석 단계에서 막아, 결제 서버가 토스 API 외의 외부로 나가지 못하게 한다.
-# (IP 직접 접속은 30-security 의 결제 앱 SG egress 443 제한으로 막는다)
+# IP 직접 접속은 이름 해석을 거치지 않으므로 여기서 막을 수 없다. SG 는 포트(443)만 제한하므로
+# Network Firewall(network-firewall.tf) 이 TLS SNI 허용 목록으로 막는다.
 #
 # 규칙은 priority 오름차순으로 평가되고 처음 일치한 규칙에서 멈춘다.
 

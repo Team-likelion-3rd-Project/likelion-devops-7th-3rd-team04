@@ -1,6 +1,7 @@
 # Payment VPC SG 와 규칙 (설계 문서 4-2절 P3 – P5)
 #
-# 결제 앱은 아웃바운드를 443 과 결제 DB 3306 만 연다. 외부 도메인은 DNS Firewall(20-network) 이 한 번 더 제한한다.
+# 결제 앱은 아웃바운드를 443 과 결제 DB 3306 만 연다. 외부 도메인은 20-network 의 DNS Firewall(이름 해석)과
+# Network Firewall(TLS SNI) 이 한 번 더 제한한다.
 # DB · 엔드포인트 ENI 는 아웃바운드가 없다.
 # Amazon DNS(VPC+2) · IMDS · Time Sync(169.254.169.123) 는 SG 가 거르지 않으므로 규칙이 필요 없다.
 #

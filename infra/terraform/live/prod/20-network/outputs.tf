@@ -1,6 +1,6 @@
 # 다른 스택은 dependency.network.outputs.<vpc>.subnet_ids.<계층> 처럼 읽는다.
 #   main.subnet_ids       : public / worker / cp (enable_control_plane_subnets) / db
-#   payment.subnet_ids    : public / lb / app / db, payment.gateway_endpoint_ids.s3 는 44-payment-endpoints 가 정책을 붙인다
+#   payment.subnet_ids    : public / firewall (NFW 전용) / lb / app / db, payment.gateway_endpoint_ids.s3 는 44-payment-endpoints 가 정책을 붙인다
 #   deployment.subnet_ids : public / runner
 
 output "main" {
