@@ -910,6 +910,7 @@ job(kaniko) ─▶ IMDS(hop limit 2) ─▶ Runner Role ─▶ ECR push (team04-
 | docker.sock 바인드 | 켬 (`gitlab_runner_mount_docker_sock: true`) | 끔 — kaniko 로 빌드 |
 | 등록 확인 실패 | playbook 실패 | 진행 (`gitlab_runner_verify_required: false`) — GitLab 이 꺼진 날 ASG 가 계속 교체하지 않게. GitLab 이 켜지면 다시 연결 |
 | 이미지 아키텍처 | 노드 아키텍처 | arm64 (운영 워커 t4g 와 같음) |
+| 사양 · 동시 job | VM 사양 (9-1), `concurrent` 2 | m7g.large (2 vCPU · 8 GiB, 고정 성능 — Terraform `40-cicd` `instance_type`), `concurrent` 2 |
 
 **최초 1회 / 값 교체**
 1. Tailscale: 1-1 ACL 에 `tag:ci-runner` 추가, 1-2 OAuth client(`tag:ci-runner`) 생성 → `.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET`

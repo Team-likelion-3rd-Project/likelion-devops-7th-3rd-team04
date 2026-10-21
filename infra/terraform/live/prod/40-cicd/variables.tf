@@ -33,9 +33,9 @@ variable "sg_ids" {
 # ── Runner ──
 
 variable "instance_type" {
-  description = "Runner 인스턴스 타입 (Graviton). 빌드한 이미지 아키텍처가 운영 워커(arm64)와 같아야 한다"
+  description = "Runner 인스턴스 타입 (Graviton). 빌드한 이미지 아키텍처가 운영 워커(arm64)와 같아야 한다. 빌드가 CPU 를 계속 쓰므로 버스트(t 계열) 대신 고정 성능, 메모리는 동시 job 2개(gitlab_runner_concurrent) 기준"
   type        = string
-  default     = "t4g.medium"
+  default     = "m7g.large"
 }
 
 variable "root_volume_size" {
