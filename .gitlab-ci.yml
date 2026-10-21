@@ -5,8 +5,8 @@
 #   build       : kaniko 로 이미지 10개 빌드 → 후보 태그 ci-<sha> 로 push (develop 만, 그 외는 빌드만)
 #   image-test  : 파이프라인 전용 DB(ci_<id>, ci_main_<id>) 준비 → 후보 이미지를 띄워 /health smoke test
 #   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
-#   deploy      : (수동) deploy-dev: develop → GitLab gitops(envs/dev) 태그 커밋 → helm upgrade --atomic → rollout status
-#                 (온프레미스 dev-agent)
+#   deploy      : (수동) deploy-dev: develop → GitLab gitops 에 커밋 1개 (envs/dev 이미지 태그 + apps/dev 차트 revision)
+#                 → 온프레미스 ArgoCD 가 sync (클러스터에 직접 배포하지 않음)
 #   release     : (main 만) AWS Runner 가 이미지 10개를 arm64 로 빌드 → ECR push(태그 = main 커밋 SHA)
 #                 → prod gitops 레포에 릴리스 PR 자동 생성 (GitHub App). 운영 반영은 사람이 그 PR 을 승인 · merge 할 때
 #
@@ -16,7 +16,7 @@
 # prod: 배포 상태(values · 이미지 태그)는 GitHub 의 별도 prod gitops 레포가 PR 로 관리합니다.
 #   GitLab 은 ECR push 와 gitops 레포 PR 생성까지만 하고 prod 에 직접 배포하지 않습니다 (infra/gitops/prod/README.md "릴리스").
 #
-# 클러스터 접근은 GitLab Agent ci_access (kubeconfig 변수 없음). 자세한 구성은 infra/ansible/README.md 12절.
+# 파이프라인은 클러스터에 접근하지 않습니다 (kubeconfig · GitLab Agent 없음). 배포 구성은 infra/ansible/README.md 12절.
 
 workflow:
   rules:
@@ -64,12 +64,11 @@ variables:
   # build 와 push 가 같은 목록을 써야 함 (8 서비스 + llm-service + 메인 / 결제 DB 마이그레이션)
   IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations"
 
-  # ── 배포 ──
+  # ── 차트 (helm-lint) · 배포 ──
   CHART_PATH: backend-deploy/charts/backend
   HELM_RELEASE: backend
   K8S_NAMESPACE: backend
-  AGENT_PROJECT: team04/infra/k8s-agents
-  # dev 전용 gitops 레포 (prod 는 GitHub 별도 레포)
+  # dev 전용 gitops 레포 (prod 는 GitHub 별도 레포). ArgoCD 가 이 레포를 sync
   GITOPS_REPO: team04/infra/backend-gitops
 
   # ── smoke test: dev DB 서버를 쓰되 database 는 파이프라인 전용 ──
@@ -581,73 +580,54 @@ push:
       fi
 
 # ── deploy (수동) ─────────────────────────────────────────────
-# 1) gitops 레포(dev) envs/<env>/values.yaml 의 global.imageTag 커밋  2) helm upgrade --atomic  3) rollout status
-# 배포가 실패하면 1) 의 커밋을 revert 해서 gitops 레포 = 실제 배포 상태를 유지
+# gitops 레포(dev) 에 커밋 1개만 합니다. 클러스터 반영은 ArgoCD 의 backend Application(자동 sync)이 합니다 (infra/ansible README 12-9)
+#   envs/<env>/values.yaml    global.imageTag                 = 이 커밋 short SHA (이미지 태그)
+#   apps/<env>/backend.yaml   spec.sources[0].targetRevision  = 이 커밋 full SHA (차트도 이미지와 같은 커밋에 고정)
+# job 성공 = gitops 커밋 성공. 배포 결과(sync · health · 마이그레이션 hook)는 ArgoCD UI 에서 확인합니다.
+# 롤백: 이전 파이프라인의 deploy-dev 를 다시 실행 (그 SHA 로 다시 커밋)
 .deploy:
   stage: deploy
   image: $DEPLOY_IMAGE
   interruptible: false
   variables:
-    GIT_DEPTH: "1"
+    # 모노레포 체크아웃 불필요 (gitops 레포만 clone)
+    GIT_STRATEGY: none
   script:
     - |
       set -eu
       git config --global user.name "GitLab CI ($CI_PROJECT_PATH)"
       git config --global user.email "ci@$CI_SERVER_HOST"
-      git clone --depth 20 \
-        "$CI_SERVER_PROTOCOL://ci-gitops:${GITOPS_PUSH_TOKEN}@$CI_SERVER_HOST/$GITOPS_REPO.git" gitops
+      git clone --depth 20         "$CI_SERVER_PROTOCOL://ci-gitops:${GITOPS_PUSH_TOKEN}@$CI_SERVER_HOST/$GITOPS_REPO.git" gitops
       VALUES="gitops/envs/$GITOPS_ENV/values.yaml"
+      APP="gitops/apps/$GITOPS_ENV/backend.yaml"
 
-      push_gitops() {
-        for i in 1 2 3; do
-          git -C gitops push origin HEAD && return 0
-          git -C gitops pull --rebase origin "$(git -C gitops rev-parse --abbrev-ref HEAD)"
-        done
-        return 1
-      }
+      # sources[0] 이 차트 source 인지 확인 (순서가 바뀌면 values source 의 브랜치를 SHA 로 덮어쓰게 됨)
+      CHART_SOURCE_PATH="$(yq '.spec.sources[0].path' "$APP")"
+      if [ "$CHART_SOURCE_PATH" != "$CHART_PATH" ]; then
+        echo "$APP 의 sources[0].path 가 $CHART_PATH 가 아닙니다 ($CHART_SOURCE_PATH) — 차트 source 를 첫 번째로 두세요"; exit 1
+      fi
 
       yq -i ".global.imageTag = \"$IMAGE_TAG\"" "$VALUES"
-      COMMITTED=false
+      yq -i ".spec.sources[0].targetRevision = \"$CI_COMMIT_SHA\"" "$APP"
       if git -C gitops diff --quiet; then
-        echo "gitops 가 이미 $IMAGE_TAG — 커밋 없이 재배포"
-      else
-        git -C gitops commit -qam "chore(gitops): $GITOPS_ENV backend → $IMAGE_TAG" \
-          -m "pipeline: $CI_PIPELINE_URL" -m "commit: $CI_PROJECT_URL/-/commit/$CI_COMMIT_SHA"
-        push_gitops
-        COMMITTED=true
+        echo "gitops 가 이미 $IMAGE_TAG — 변경 없음 (ArgoCD 가 지금 상태를 유지)"
+        exit 0
       fi
+      git -C gitops commit -qam "chore(gitops): $GITOPS_ENV backend → $IMAGE_TAG"         -m "pipeline: $CI_PIPELINE_URL" -m "commit: $CI_PROJECT_URL/-/commit/$CI_COMMIT_SHA"
 
-      rollback_gitops() {
-        if [ "$COMMITTED" = true ]; then
-          echo "배포 실패 — gitops 커밋을 revert 합니다"
-          git -C gitops revert --no-edit HEAD
-          push_gitops || echo "⚠️ revert push 실패: $GITOPS_REPO 의 envs/$GITOPS_ENV 태그를 직접 되돌리세요"
-        fi
-      }
-
-      kubectl config use-context "$KUBE_CONTEXT"
-      if ! helm upgrade --install "$HELM_RELEASE" "$CHART_PATH" \
-          -n "$K8S_NAMESPACE" -f "$VALUES" \
-          --atomic --wait --timeout 10m --history-max 10; then
-        rollback_gitops; exit 1
-      fi
-
-      for d in $(kubectl -n "$K8S_NAMESPACE" get deployment -l "app.kubernetes.io/instance=$HELM_RELEASE" -o name); do
-        if ! kubectl -n "$K8S_NAMESPACE" rollout status "$d" --timeout=180s; then
-          kubectl -n "$K8S_NAMESPACE" get pods -o wide
-          helm rollback "$HELM_RELEASE" -n "$K8S_NAMESPACE" --wait || true
-          rollback_gitops; exit 1
-        fi
+      for i in 1 2 3; do
+        git -C gitops push origin HEAD && break
+        [ "$i" = 3 ] && { echo "gitops push 실패 (3회)"; exit 1; }
+        git -C gitops pull --rebase origin "$(git -C gitops rev-parse --abbrev-ref HEAD)"
       done
-      helm history "$HELM_RELEASE" -n "$K8S_NAMESPACE" --max 3
+      echo "gitops $GITOPS_REPO 커밋 완료 ($(git -C gitops rev-parse --short HEAD)) — ArgoCD 의 backend 앱이 최대 3분 안에 sync 합니다"
 
 deploy-dev:
   extends: .deploy
   needs: [push]
   variables:
     GITOPS_ENV: dev
-    KUBE_CONTEXT: $AGENT_PROJECT:dev-agent
-  # 같은 환경에 배포가 겹치지 않게 직렬화
+  # 같은 환경의 gitops 커밋이 겹치지 않게 직렬화
   resource_group: dev
   environment:
     name: dev

@@ -31,7 +31,7 @@ registry_nginx['proxy_set_headers'] = {
   "X-Forwarded-Ssl" => "on"
 }
 
-# ── KAS (GitLab Agent for Kubernetes): agentk 접속 + CI job 의 ci_access(k8s-proxy) ──
+# ── KAS (GitLab Agent for Kubernetes) — 현재 사용처 없음 (dev 배포는 ArgoCD, README 12-6) ──
 # 내장 nginx 가 /-/kubernetes-agent/ 를 WebSocket 업그레이드 포함해 KAS 로 프록시
 gitlab_kas['enable'] = true
 gitlab_kas_external_url 'wss://{{ gitlab_fqdn }}/-/kubernetes-agent/'

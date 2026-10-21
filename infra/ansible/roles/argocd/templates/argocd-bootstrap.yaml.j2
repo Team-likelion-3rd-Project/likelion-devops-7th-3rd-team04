@@ -38,7 +38,7 @@ spec:
   destinations:
     - server: https://kubernetes.default.svc
       namespace: {{ backend_namespace }}
-  # 차트는 namespaced 리소스만 만듦. Namespace 는 Ansible(gitlab_agent role)이 생성
+  # 차트는 namespaced 리소스만 만듦. Namespace 는 Ansible(backend_namespace role)이 생성
   clusterResourceWhitelist: []
 ---
 # root app — apps/dev/*.yaml 의 Application 을 만들고 지움 (파일 삭제 시 Application 만 삭제, 앱 리소스는 남음: finalizer 없음)

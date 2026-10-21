@@ -1,0 +1,32 @@
+---
+# ArgoCD 전환 전 CI 배포 경로(GitLab Agent agentk + cicd-deployer Role)를 지웁니다 (README 12-6).
+# 이미 없으면 아무것도 하지 않음 — 새 클러스터에서는 no-op.
+# GitLab 쪽 agent 등록 · team04/infra/k8s-agents 프로젝트는 UI 에서 사람이 지웁니다 (README 12-6).
+- name: agentk release 조회
+  ansible.builtin.command: helm list -n gitlab-agent --filter '^dev-agent$' -o json
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: legacy_agent_release
+  changed_when: false
+
+- name: agentk 삭제 (helm uninstall dev-agent)
+  ansible.builtin.command: helm uninstall dev-agent -n gitlab-agent --wait --timeout 5m
+  environment: *kubeconfig
+  when: legacy_agent_release.stdout | from_json | length > 0
+  changed_when: true
+
+- name: agentk 네임스페이스 · CI 배포 Role 삭제
+  ansible.builtin.command: >-
+    kubectl delete --ignore-not-found --wait=true {{ item }}
+  loop:
+    - namespace gitlab-agent
+    - -n {{ backend_namespace }} rolebinding cicd-deployer
+    - -n {{ backend_namespace }} role cicd-deployer
+  environment: *kubeconfig
+  register: legacy_agent_delete
+  changed_when: "'deleted' in legacy_agent_delete.stdout"
+
+- name: agentk 작업 디렉토리 삭제 (agent 토큰 포함 values)
+  ansible.builtin.file:
+    path: /etc/kubernetes/cicd
+    state: absent

@@ -162,14 +162,9 @@
   when: argocd_initial_pw.stdout | length > 0
   no_log: true
 
-# ── 전환(cutover)용 backend Application — gitops 레포 apps/dev/backend.yaml 로 커밋할 파일 (비밀 아님) ──
-- name: apps/dev/backend.yaml 렌더링 (로컬)
-  ansible.builtin.template:
-    src: "{{ playbook_dir }}/../../backend-deploy/gitops-seed/apps/dev/backend.yaml.j2"
-    dest: "{{ local_secrets_dir }}/argocd-apps-dev-backend.yaml"
-    mode: "0644"
-  delegate_to: localhost
-  become: false
+# ── 전환 전 배포 경로(agentk) 정리 ──────────────────────
+- name: GitLab Agent(agentk) 정리
+  ansible.builtin.include_tasks: cleanup_gitlab_agent.yml
 
 - name: root app 상태 조회
   ansible.builtin.command: >-
@@ -186,4 +181,4 @@
       - "ArgoCD UI: https://{{ argocd_fqdn }}:{{ argocd_serve_https_port }} (admin / {{ local_secrets_dir }}/argocd.env)"
       - "레포: {{ argocd_app_repo_url }}, {{ argocd_gitops_repo_url }} — 자격증명 템플릿(repo-creds)이라 Repositories 목록에는 안 나옴. dev-apps Synced 로 확인"
       - "root app dev-apps: {{ argocd_root_status.stdout | default('?') }} (gitops 레포에 apps/dev 가 없으면 ComparisonError — gitlab.yml --tags bootstrap 으로 생성)"
-      - "전환 시 gitops 레포에 커밋할 파일: {{ local_secrets_dir }}/argocd-apps-dev-backend.yaml (targetRevision 을 배포된 커밋 SHA 로 — README 12-9)"
+      - "배포 상태: UI 의 backend 앱 (gitops apps/dev/backend.yaml · envs/dev/values.yaml)"

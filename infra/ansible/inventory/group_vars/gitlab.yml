@@ -48,31 +48,25 @@ gitlab_runners:
     env_file: aws-ci-runner.env
 
 # ── CI/CD 부트스트랩 (gitlab_bootstrap role, gitlab.yml --tags bootstrap) ──
-# ci_access 제약: 권한을 받을 프로젝트(team04/hotel)는 agent 설정 프로젝트와 같은 최상위 그룹 안에 있어야 함
+# 온프레미스 ArgoCD 는 그룹 Deploy Token(argocd-repo-read) 하나로 team04 아래의 차트 미러 · gitops 레포를 읽음
 gitlab_group: team04
 gitlab_infra_subgroup: infra
 gitlab_app_project: hotel                # GitHub 모노레포 미러 대상 → team04/hotel
-gitlab_agents_project: k8s-agents        # → team04/infra/k8s-agents
 gitlab_gitops_project: backend-gitops    # → team04/infra/backend-gitops
 gitlab_app_project_path: "{{ gitlab_group }}/{{ gitlab_app_project }}"
-gitlab_agents_project_path: "{{ gitlab_group }}/{{ gitlab_infra_subgroup }}/{{ gitlab_agents_project }}"
 gitlab_gitops_project_path: "{{ gitlab_group }}/{{ gitlab_infra_subgroup }}/{{ gitlab_gitops_project }}"
 gitlab_default_branch: main
 
-# dev-agent = 온프레미스 클러스터. prod(EKS) 는 GitLab 이 배포하지 않으므로 agent 없음 (prod gitops 는 GitHub 별도 레포)
-gitlab_agents: [dev-agent]
-gitlab_agents_src_dir: "{{ playbook_dir }}/../gitlab/k8s-agents"
-gitlab_agents_files:
-  - {path: .gitlab/agents/dev-agent/config.yaml, src: "{{ gitlab_agents_src_dir }}/.gitlab/agents/dev-agent/config.yaml"}
-
-# backend-gitops 레포(dev 전용) 초기 내용 (레포가 비어 있을 때 1회만 — 이후 태그는 CI deploy-dev job 이 커밋)
+# backend-gitops 레포(dev 전용) 초기 내용 (레포가 비어 있을 때 1회만 — 이후 태그 · 차트 revision 은 CI deploy-dev job 이 커밋)
 gitlab_gitops_seed_dir: "{{ playbook_dir }}/../../backend-deploy/gitops-seed"
 gitlab_gitops_seed_files:
   - {path: README.md, src: "{{ gitlab_gitops_seed_dir }}/README.md"}
   # values 는 GitLab 주소가 들어가는 템플릿 → 렌더링 후 커밋
   - {path: envs/dev/values.yaml, src: "{{ gitlab_gitops_seed_dir }}/envs/dev/values.yaml.j2", render: true}
+  # ArgoCD backend Application — 첫 deploy-dev 전에는 imageTag 가 비어 ComparisonError (배포되지 않음, 정상)
+  - {path: apps/dev/backend.yaml, src: "{{ gitlab_gitops_seed_dir }}/apps/dev/backend.yaml.j2", render: true}
 # backend-gitops 레포에서 Ansible 이 계속 맞추는 파일 (seed 와 달리 매 실행 동기화)
-#   apps/dev/README.md: ArgoCD root app(dev-apps)의 경로를 유지. apps/dev/backend.yaml 은 전환 때 사람이 커밋 (README 12-9)
+#   apps/dev/README.md: ArgoCD root app(dev-apps)의 경로 설명 (apps/dev/backend.yaml 은 seed — 이후 CI 가 관리)
 gitlab_gitops_managed_files:
   - {path: apps/dev/README.md, src: "{{ gitlab_gitops_seed_dir }}/apps/dev/README.md"}
 

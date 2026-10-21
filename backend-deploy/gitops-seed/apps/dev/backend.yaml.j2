@@ -17,7 +17,7 @@ spec:
       path: backend-deploy/charts/backend
       targetRevision: develop
       helm:
-        # 기존 helm 릴리스(backend)와 같은 이름 — 라벨(app.kubernetes.io/instance)이 같아야 파드 재생성 없이 넘겨받음
+        # 릴리스 이름 고정 — 차트 라벨 app.kubernetes.io/instance=backend (ArgoCD 전환 때 helm 릴리스를 파드 재생성 없이 넘겨받은 이름)
         releaseName: backend
         valueFiles:
           - $values/envs/dev/values.yaml

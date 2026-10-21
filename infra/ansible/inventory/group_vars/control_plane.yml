@@ -12,24 +12,14 @@ traefik_http_nodeport: 30080
 
 # api-gateway Ingress(/api, /api-docs)는 backend Helm 차트가 관리 (gitops envs/dev/values.yaml 의 ingress)
 
-# ── CI/CD: GitLab Agent + backend 네임스페이스 (k8s-cicd.yml, README 12-3) ──
+# ── CI/CD: backend 네임스페이스 · Secret (k8s-cicd.yml, README 12-3) ──
 # GitLab 주소 / 토큰은 gitlab.yml --tags bootstrap 이 만든 .secrets/gitlab-k8s.env 에서
 gitlab_url: "{{ lookup('env', 'GITLAB_URL') }}"
 gitlab_ts_ip: "{{ lookup('env', 'GITLAB_TS_IP') }}"
 gitlab_fqdn: "{{ gitlab_url | urlsplit('hostname') }}"
 gitlab_registry: "{{ lookup('env', 'GITLAB_REGISTRY') }}"
-gitlab_agent_token: "{{ lookup('env', 'DEV_AGENT_TOKEN') }}"
 registry_deploy_user: "{{ lookup('env', 'REGISTRY_DEPLOY_USER') }}"
 registry_deploy_token: "{{ lookup('env', 'REGISTRY_DEPLOY_TOKEN') }}"
-
-gitlab_agent_name: dev-agent                       # gitlab.yml 의 gitlab_agents 중 이 클러스터 것
-gitlab_agents_project_path: team04/infra/k8s-agents
-gitlab_agent_namespace: gitlab-agent
-gitlab_agent_sa: gitlab-agent
-# 버전 고정 — agentk 는 GitLab(KAS) 과 major.minor 를 맞춤 (chart 2.32.0 = agentk v19.4.0)
-gitlab_agent_chart_version: "2.32.0"
-gitlab_agent_chart_repo: "https://charts.gitlab.io"
-cicd_manifest_dir: /etc/kubernetes/cicd
 
 # 앱 네임스페이스 — dev(온프레미스)·prod(EKS) 모두 같은 이름 (클러스터로 환경 구분)
 backend_namespace: backend

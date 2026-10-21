@@ -1,8 +1,9 @@
-# 온프레미스 dev 클러스터 (agent: team04/infra/k8s-agents:dev-agent, namespace: backend)
+# 온프레미스 dev 클러스터 (ArgoCD backend 앱 — apps/dev/backend.yaml, namespace: backend)
 # 차트: GitHub 모노레포 backend-deploy/charts/backend (기본값은 그 values.yaml)
 #
 # global.imageTag 는 CI deploy-dev job 이 커밋 SHA 로 갱신하고 커밋합니다 — 직접 고치지 마세요.
-# 나머지 값(리소스, env, Ingress 등)은 이 파일을 MR/커밋으로 고치면 다음 배포부터 반영됩니다.
+# main 에 커밋하면 ArgoCD 가 최대 3분 안에 클러스터에 반영합니다 (main 커밋 = 배포).
+# 배포 일정에 맞춰 반영할 변경은 브랜치 · MR 로 준비해 두고 배포 시점에 merge 하세요.
 global:
   imageRegistry: {{ gitlab_fqdn }}:{{ gitlab_registry_port }}
   imageRepositoryPrefix: {{ gitlab_app_project_path }}/
