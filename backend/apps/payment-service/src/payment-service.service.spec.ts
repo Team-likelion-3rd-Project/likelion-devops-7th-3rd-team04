@@ -511,4 +511,175 @@ describe('PaymentServiceService', () => {
       });
     });
   });
+  // LDP-97: 대사 배치가 쓰는 확정·재시도
+  describe('대사 배치용 (LDP-97)', () => {
+    const unknown = {
+      paymentId: 9,
+      reservationId: 3,
+      pgOrderId: 'rsv3-abc',
+      amount: 30000,
+      provider: PaymentProvider.TOSS,
+      paymentKey: 'tgen_9',
+      status: PaymentStatus.UNKNOWN,
+      rawResponse: { pgMessage: 'timeout' },
+    } as unknown as Payment;
+
+    beforeEach(() => {
+      managerUpdateMock.mockResolvedValue({ affected: 1 });
+      managerInsertMock.mockResolvedValue({});
+      repoUpdateMock.mockResolvedValue({ affected: 1 });
+    });
+
+    it('조회해 보니 승인 완료 → UNKNOWN·PROCESSING에서 APPROVED + PAYMENT_APPROVED 이벤트', async () => {
+      const settled = await service.settleFromPgLookup(unknown, {
+        outcome: 'APPROVED',
+        paymentKey: 'tgen_9',
+        approvalNumber: '0001',
+        method: '카드',
+      });
+
+      expect(settled).toBe('APPROVED');
+      const [, where, set] = managerUpdateMock.mock.calls[0] as [
+        unknown,
+        { paymentId: number; status: { _value: string[] } },
+        { status: string; approvalNumber: string },
+      ];
+      expect(where.paymentId).toBe(9);
+      expect(where.status._value).toEqual([
+        PaymentStatus.UNKNOWN,
+        PaymentStatus.PROCESSING,
+      ]);
+      expect(set).toMatchObject({
+        status: PaymentStatus.APPROVED,
+        approvalNumber: '0001',
+      });
+      expect(managerInsertMock).toHaveBeenCalledWith(
+        PaymentOutbox,
+        expect.objectContaining({
+          eventType: PaymentOutboxEventType.PAYMENT_APPROVED,
+        }),
+      );
+    });
+
+    it.each(['FAILED', 'NOT_FOUND', 'CANCELED'] as const)(
+      '조회 결과 %s → FAILED + PAYMENT_FAILED 이벤트 (돈이 남아 있지 않음)',
+      async (outcome) => {
+        expect(await service.settleFromPgLookup(unknown, { outcome })).toBe(
+          'FAILED',
+        );
+        expect(managerUpdateMock).toHaveBeenCalledWith(
+          Payment,
+          expect.objectContaining({ paymentId: 9 }),
+          expect.objectContaining({ status: PaymentStatus.FAILED }),
+        );
+        expect(managerInsertMock).toHaveBeenCalledWith(
+          PaymentOutbox,
+          expect.objectContaining({
+            eventType: PaymentOutboxEventType.PAYMENT_FAILED,
+          }),
+        );
+      },
+    );
+
+    it.each(['PENDING', 'UNKNOWN'] as const)(
+      '조회 결과 %s → 아무것도 바꾸지 않는다',
+      async (outcome) => {
+        expect(await service.settleFromPgLookup(unknown, { outcome })).toBe(
+          'PENDING',
+        );
+        expect(managerUpdateMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('환불 재시도: REFUND_FAILED → REFUND_REQUESTED 후 처음 환불 키 그대로 PG 취소, 시도 횟수 +1', async () => {
+      tossCancelMock.mockResolvedValue({ outcome: 'CANCELED' });
+      const refundFailed = {
+        ...unknown,
+        status: PaymentStatus.REFUND_FAILED,
+        refundIdempotencyKey: 'refund-key-1',
+        rawResponse: { refundAttempts: 2 },
+      } as unknown as Payment;
+
+      expect(await service.retryRefund(refundFailed)).toBe(true);
+
+      expect(repoUpdateMock).toHaveBeenCalledWith(
+        { paymentId: 9, status: PaymentStatus.REFUND_FAILED },
+        { status: PaymentStatus.REFUND_REQUESTED },
+      );
+      expect(tossCancelMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentKey: 'tgen_9',
+          idempotencyKey: 'refund-key-1',
+        }),
+      );
+      expect(managerUpdateMock).toHaveBeenCalledWith(
+        Payment,
+        { paymentId: 9, status: PaymentStatus.REFUND_REQUESTED },
+        expect.objectContaining({
+          status: PaymentStatus.REFUNDED,
+          rawResponse: expect.objectContaining({
+            refundAttempts: 3,
+          }) as unknown,
+        }),
+      );
+    });
+
+    it('환불 재시도: 오래 멈춘 REFUND_REQUESTED는 상태 전환 없이 바로 다시 요청', async () => {
+      tossCancelMock.mockResolvedValue({ outcome: 'FAILED', pgCode: 'X' });
+
+      const refunded = await service.retryRefund({
+        ...unknown,
+        status: PaymentStatus.REFUND_REQUESTED,
+        refundIdempotencyKey: 'refund-key-1',
+      });
+
+      expect(refunded).toBe(false);
+      expect(repoUpdateMock).not.toHaveBeenCalled();
+      expect(tossCancelMock).toHaveBeenCalled();
+    });
+
+    it('환불 재시도: 그 사이 다른 요청이 상태를 바꿨으면 시도하지 않는다', async () => {
+      repoUpdateMock.mockResolvedValue({ affected: 0 });
+
+      expect(
+        await service.retryRefund({
+          ...unknown,
+          status: PaymentStatus.REFUND_FAILED,
+          refundIdempotencyKey: 'refund-key-1',
+        }),
+      ).toBe(false);
+      expect(tossCancelMock).not.toHaveBeenCalled();
+    });
+
+    it('토스 승인은 처음 기록할 때부터 결제 번호를 남긴다 (승인 도중 서버가 죽어도 조회 가능)', async () => {
+      process.env.PAYMENT_PROVIDER = 'TOSS';
+      createMock.mockImplementation((value: unknown) => value);
+      saveMock.mockResolvedValue({
+        ...unknown,
+        status: PaymentStatus.PROCESSING,
+      });
+      tossConfirmMock.mockResolvedValue({
+        outcome: 'UNKNOWN',
+        paymentKey: 'tgen_9',
+      });
+
+      await service.approvePayment({
+        idempotencyKey: '22222222-2222-2222-2222-222222222222',
+        reservationId: 3,
+        userId: 1,
+        orderId: 'rsv3-abc',
+        paymentKey: 'tgen_9',
+        amount: 30000,
+        orderName: '호텔 예약 #3',
+      });
+      delete process.env.PAYMENT_PROVIDER;
+
+      expect(createMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: PaymentStatus.PROCESSING,
+          paymentKey: 'tgen_9',
+        }),
+      );
+    });
+  });
 });

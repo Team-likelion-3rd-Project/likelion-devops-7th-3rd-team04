@@ -16,6 +16,7 @@ import { PgWebhookInbox } from './entities/pg-webhook-inbox.entity';
 import { PgMockClient } from './pg-mock/pg-mock.client';
 import { TossPaymentsClient } from './pg/toss-payments.client';
 import { OutboxPublisherService } from './outbox/outbox-publisher.service';
+import { PaymentReconciliationService } from './reconciliation/payment-reconciliation.service';
 
 @Module({
   imports: [
@@ -66,6 +67,8 @@ import { OutboxPublisherService } from './outbox/outbox-publisher.service';
     TossPaymentsClient,
     // 결제 결과 이벤트 발행 (payment_outbox → SQS FIFO / ElasticMQ, LDP-26)
     OutboxPublisherService,
+    // 결제 대사 배치 — 결과 불명 결제 확정·환불 실패 재시도 (LDP-97)
+    PaymentReconciliationService,
     { provide: SQS_CLIENT, useFactory: createSqsClient },
   ],
 })
