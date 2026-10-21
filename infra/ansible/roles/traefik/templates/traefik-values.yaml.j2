@@ -22,6 +22,12 @@ ingressClass:
 providers:
   kubernetesIngress:
     enabled: true
+    # Ingress status(loadBalancer.ingress)에 진입 주소를 기록 — 비어 있으면 ArgoCD 가 Ingress 를 계속 Progressing 으로 표시.
+    # Service 가 NodePort 라 기본값(publishedService)으로는 주소가 채워지지 않음
+    publishedService:
+      enabled: false
+    ingressEndpoint:
+      ip: {{ traefik_ingress_endpoint_ip | to_json }}
   kubernetesCRD:
     enabled: true
 
