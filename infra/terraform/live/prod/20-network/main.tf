@@ -6,13 +6,16 @@
 #
 #   VPC          CIDR            계층 (AZ)
 #   Main         10.10.0.0/16    public(a·b) cp(a·b·c) db(a·b) worker(a·b, /19 — EKS VPC CNI 파드 IP 여유)
-#   Payment      10.20.0.0/16    public(a·b) lb(a·b) app(a·b) db(a·b)
+#   Payment      10.20.0.0/16    public(a·b) firewall(a·b, /28) lb(a·b) app(a·b) db(a·b)
 #   Deployment   10.30.0.0/16    public(a) runner(a)
 #
 # DB 계층은 NAT 경로 없이 isolated 라우트 테이블을 쓴다.
+# 결제 VPC 의 lb · app 계층 egress 는 Network Firewall(network-firewall.tf) 을 거쳐 NAT 로 나간다.
 
 locals {
   name = var.project
+
+  payment_firewall_cidrs = { a = "10.20.2.0/28", b = "10.20.2.16/28" }
 }
 
 module "main" {
@@ -59,6 +62,10 @@ module "payment" {
       public = true
       cidrs  = { a = "10.20.0.0/24", b = "10.20.1.0/24" }
     }
+    firewall = {
+      firewall = true
+      cidrs    = local.payment_firewall_cidrs
+    }
     lb = {
       cidrs = { a = "10.20.4.0/24", b = "10.20.5.0/24" }
     }
@@ -71,8 +78,9 @@ module "payment" {
     }
   }
 
-  single_nat_gateway = var.single_nat_gateway
-  gateway_endpoints  = ["s3"]
+  single_nat_gateway    = var.single_nat_gateway
+  gateway_endpoints     = ["s3"]
+  firewall_endpoint_ids = local.payment_firewall_endpoint_ids
 
   # 10-global 버킷 정책이 vpc-flow-logs/AWSLogs/<계정>/* 에만 쓰기를 허용한다
   flow_log_destination_arn = "${var.log_bucket_arn}/vpc-flow-logs/"
