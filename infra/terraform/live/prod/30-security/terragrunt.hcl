@@ -10,6 +10,9 @@ dependency "network" {
     main = {
       vpc_id = "vpc-00000000000000000"
     }
+    payment = {
+      vpc_id = "vpc-00000000000000002"
+    }
     deployment = {
       vpc_id = "vpc-00000000000000001"
     }
@@ -19,5 +22,6 @@ dependency "network" {
 
 inputs = {
   main_vpc_id       = dependency.network.outputs.main.vpc_id
+  payment_vpc_id    = dependency.network.outputs.payment.vpc_id
   deployment_vpc_id = dependency.network.outputs.deployment.vpc_id
 }

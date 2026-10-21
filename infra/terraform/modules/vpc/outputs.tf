@@ -39,3 +39,8 @@ output "nat_public_ips" {
   description = "AZ → NAT 공인 IP (외부 서비스 IP 허용 목록 등록용)"
   value       = { for az, eip in aws_eip.nat : az => eip.public_ip }
 }
+
+output "gateway_endpoint_ids" {
+  description = "게이트웨이 엔드포인트 서비스(s3, dynamodb) → 엔드포인트 ID (엔드포인트 정책을 다른 스택에서 붙일 때)"
+  value       = { for svc, ep in aws_vpc_endpoint.gateway : svc => ep.id }
+}

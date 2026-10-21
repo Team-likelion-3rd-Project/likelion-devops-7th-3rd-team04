@@ -1,0 +1,93 @@
+variable "project" {
+  description = "리소스 이름/태그에 사용할 프로젝트 이름"
+  type        = string
+  default     = "team04-hotel"
+}
+
+variable "environment" {
+  description = "환경 이름"
+  type        = string
+  default     = "prod"
+}
+
+variable "region" {
+  description = "리전"
+  type        = string
+  default     = "us-east-1"
+}
+
+# ── 다른 스택 output (terragrunt.hcl 의 dependency 가 넣는다) ──
+
+variable "db_subnet_ids" {
+  description = "20-network 의 payment.subnet_ids.db (DB 계층 서브넷, AZ 2개)"
+  type        = list(string)
+}
+
+variable "sg_ids" {
+  description = "30-security 의 sg_ids output (<vpc>_<역할> → SG ID). payment_db 를 쓴다"
+  type        = map(string)
+}
+
+# ── 비밀값 ──
+
+variable "credentials_version" {
+  description = "DB 비밀번호 · Secret 값을 다시 만들 때 올리는 번호. write-only 값은 생성 시와 이 값이 바뀔 때만 전달된다"
+  type        = number
+  default     = 1
+}
+
+variable "payment_app_role_name" {
+  description = "Secret 값을 읽는 결제 서버 인스턴스 Role 이름 (Role 은 60-payment-app 에서 생성)"
+  type        = string
+  default     = "team04-hotel-payment-app"
+}
+
+# ── RDS MariaDB ──
+
+variable "db_engine_version" {
+  description = "MariaDB 엔진 버전 (major.minor 만 지정하면 마이너 버전은 RDS 기본값 · 자동 업그레이드)"
+  type        = string
+  default     = "11.8"
+}
+
+variable "db_instance_class" {
+  description = "RDS 인스턴스 클래스"
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "db_allocated_storage" {
+  description = "RDS 스토리지 크기(GiB, gp3)"
+  type        = number
+  default     = 20
+}
+
+variable "db_multi_az" {
+  description = "RDS Multi-AZ 대기 인스턴스. true 면 비용 2배, 생성 시간 증가"
+  type        = bool
+  default     = false
+}
+
+variable "db_backup_retention_days" {
+  description = "자동 백업 보관 일수. 매일 재생성하므로 기본 0(백업 끔, 생성 시간 단축). 상시 운영 시 7 이상"
+  type        = number
+  default     = 0
+}
+
+variable "db_name" {
+  description = "처음 만들 데이터베이스 이름 (PAYMENT_DB_DATABASE)"
+  type        = string
+  default     = "payment_db"
+}
+
+variable "db_master_username" {
+  description = "RDS master 계정 이름. 배포 전에는 payment-service · Flyway 가 이 계정을 쓴다"
+  type        = string
+  default     = "payment_admin"
+}
+
+variable "db_require_secure_transport" {
+  description = "MariaDB require_secure_transport. true 면 TLS 가 아닌 접속을 거부한다 (payment-service 는 PAYMENT_DB_SSL=true 로 접속). 떠 있는 인스턴스에서 바꾸면 재부팅 후 반영"
+  type        = bool
+  default     = true
+}
