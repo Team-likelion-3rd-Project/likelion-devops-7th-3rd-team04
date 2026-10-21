@@ -896,7 +896,7 @@ kubectl -n argocd get pods -o wide                       # 모두 Running, NODE 
 kubectl -n argocd get application dev-apps               # Synced / Healthy (apps/dev 에 README 만 있으면 리소스 0개)
 ```
 
-브라우저에서 `https://<control-plane>.<tailnet>.ts.net:8443` → admin 로그인 → Settings → Repositories 에서 `team04/hotel`, `team04/infra/backend-gitops` 가 **Successful**.
+브라우저에서 `https://<control-plane>.<tailnet>.ts.net:8443` → admin 로그인. 레포 자격증명은 템플릿(repo-creds)이라 Settings → Repositories 목록에는 나오지 않습니다 — `dev-apps` 가 Synced 면 gitops 레포 접근(네트워크 · Deploy Token)이 정상이고, `team04/hotel` 은 전환(2단계) 때 `backend` 앱이 차트를 가져오면서 확인됩니다.
 
 #### 전환 (2단계, 수동)
 
@@ -914,7 +914,7 @@ kubectl -n argocd get application dev-apps               # Synced / Healthy (app
 
 #### 트러블슈팅
 
-- **Repositories 가 Failed**: `authentication required` 면 Deploy Token(`gitlab-k8s.env` 의 `ARGOCD_REPO_*`, 12-1 재발급 후 `--tags argocd`), `no such host`/timeout 이면 `hostAliases` 의 `GITLAB_TS_IP` 와 ACL `tag:k8s-node → tag:gitlab tcp:443` 을 확인합니다.
+- **레포 접근 실패** (`dev-apps` · `backend` 의 ComparisonError 메시지): `authentication required` 면 Deploy Token(`gitlab-k8s.env` 의 `ARGOCD_REPO_*`, 12-1 재발급 후 `--tags argocd`), `no such host`/timeout 이면 `hostAliases` 의 `GITLAB_TS_IP` 와 ACL `tag:k8s-node → tag:gitlab tcp:443` 을 확인합니다.
 - **dev-apps 가 `app path does not exist`**: gitops 레포에 `apps/dev` 가 없는 경우 → `gitlab.yml --tags bootstrap`.
 - **UI 접속이 안 됨**: control plane 에서 `tailscale serve status` 에 `:8443 → http://<CP Tailscale IP>:30880` 이 있는지, `curl -s http://<CP Tailscale IP>:30880/healthz` 가 `ok` 인지 확인합니다.
 

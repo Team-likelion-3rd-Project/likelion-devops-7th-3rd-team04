@@ -184,6 +184,6 @@
   ansible.builtin.debug:
     msg:
       - "ArgoCD UI: https://{{ argocd_fqdn }}:{{ argocd_serve_https_port }} (admin / {{ local_secrets_dir }}/argocd.env)"
-      - "레포: {{ argocd_app_repo_url }}, {{ argocd_gitops_repo_url }} — UI Settings → Repositories 에서 Successful 확인"
+      - "레포: {{ argocd_app_repo_url }}, {{ argocd_gitops_repo_url }} — 자격증명 템플릿(repo-creds)이라 Repositories 목록에는 안 나옴. dev-apps Synced 로 확인"
       - "root app dev-apps: {{ argocd_root_status.stdout | default('?') }} (gitops 레포에 apps/dev 가 없으면 ComparisonError — gitlab.yml --tags bootstrap 으로 생성)"
       - "전환 시 gitops 레포에 커밋할 파일: {{ local_secrets_dir }}/argocd-apps-dev-backend.yaml (targetRevision 을 배포된 커밋 SHA 로 — README 12-9)"
