@@ -1,5 +1,5 @@
 ---
-- name: CI/CD 클러스터 측 구성 (GitLab Agent + backend 네임스페이스 / RBAC / Secret)
+- name: CI/CD 클러스터 측 구성 (GitLab Agent + backend 네임스페이스 / RBAC / Secret + ArgoCD)
   hosts: control_plane
   become: true
   vars:
@@ -11,6 +11,8 @@
       DEV_AGENT_TOKEN: "{{ gitlab_agent_token }}"
       REGISTRY_DEPLOY_USER: "{{ registry_deploy_user }}"
       REGISTRY_DEPLOY_TOKEN: "{{ registry_deploy_token }}"
+      ARGOCD_REPO_USER: "{{ argocd_repo_user }}"
+      ARGOCD_REPO_TOKEN: "{{ argocd_repo_token }}"
   pre_tasks:
     - name: 필수 환경변수 확인
       ansible.builtin.assert:
@@ -59,3 +61,6 @@
     - gitlab_agent
     - role: backend_namespace
       tags: [backend_secrets]
+    # ArgoCD 만 다시: --tags argocd (README 12-9)
+    - role: argocd
+      tags: [argocd]

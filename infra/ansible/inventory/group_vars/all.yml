@@ -48,5 +48,5 @@ kubeadm_token_ttl: "72h"
 # ── 사설 CA (선택) ───────────────────────────────────────
 # GitLab / KAS / Registry 가 사설 인증서를 쓸 때만 로컬 PEM 경로 지정 (README 12-7).
 # 기본 구성(tailscale serve, *.ts.net Let's Encrypt)에서는 비워 둡니다.
-# 지정하면: containerd certs.d(모든 k8s 노드), agentk kasCaCert, Runner 의 /etc/gitlab-runner/certs 에 배포
+# 지정하면: containerd certs.d(모든 k8s 노드), agentk kasCaCert, ArgoCD repo-server(configs.tls), Runner 의 /etc/gitlab-runner/certs 에 배포
 private_ca_cert_file: "{{ lookup('env', 'PRIVATE_CA_CERT_FILE') }}"

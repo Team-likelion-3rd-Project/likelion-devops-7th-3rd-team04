@@ -1,0 +1,49 @@
+# 온프레미스 dev 클러스터의 backend Application — root app(dev-apps, Ansible roles/argocd)이 이 파일로 만듭니다.
+#   차트  : {{ gitlab_app_project_path }} 의 backend-deploy/charts/backend (GitHub 모노레포 미러)
+#   values: 이 레포의 envs/dev/values.yaml
+#
+# sources[0].targetRevision 은 CI deploy-dev job 이 global.imageTag 와 같은 커밋 SHA(40자)로 갱신합니다 — 직접 고치지 마세요.
+# 차트도 이미지와 같은 커밋에 고정해야 차트 변경이 이미지보다 먼저(미러 push 시점에) 배포되지 않습니다.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backend
+  namespace: argocd
+  # finalizer 를 두지 않음 — 이 파일이나 Application 을 지워도 backend 리소스는 남습니다 (실수로 dev 전체가 내려가지 않게)
+spec:
+  project: backend
+  sources:
+    - repoURL: https://{{ gitlab_fqdn }}/{{ gitlab_app_project_path }}.git
+      path: backend-deploy/charts/backend
+      targetRevision: develop
+      helm:
+        # 기존 helm 릴리스(backend)와 같은 이름 — 라벨(app.kubernetes.io/instance)이 같아야 파드 재생성 없이 넘겨받음
+        releaseName: backend
+        valueFiles:
+          - $values/envs/dev/values.yaml
+    - repoURL: https://{{ gitlab_fqdn }}/{{ gitlab_gitops_project_path }}.git
+      targetRevision: {{ gitlab_default_branch }}
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: backend
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # 네임스페이스와 Secret(backend-secrets, gitlab-registry)은 Ansible(k8s-cicd.yml)이 만듦
+      - CreateNamespace=false
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+  # HPA 를 켠 서비스의 replicas 는 HPA(kube-controller-manager)가 정함 — selfHeal 과 서로 되돌리지 않게 (2nd 프로젝트에서 겪은 문제)
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      managedFieldsManagers:
+        - kube-controller-manager

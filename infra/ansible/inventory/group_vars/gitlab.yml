@@ -71,10 +71,15 @@ gitlab_gitops_seed_files:
   - {path: README.md, src: "{{ gitlab_gitops_seed_dir }}/README.md"}
   # values 는 GitLab 주소가 들어가는 템플릿 → 렌더링 후 커밋
   - {path: envs/dev/values.yaml, src: "{{ gitlab_gitops_seed_dir }}/envs/dev/values.yaml.j2", render: true}
+# backend-gitops 레포에서 Ansible 이 계속 맞추는 파일 (seed 와 달리 매 실행 동기화)
+#   apps/dev/README.md: ArgoCD root app(dev-apps)의 경로를 유지. apps/dev/backend.yaml 은 전환 때 사람이 커밋 (README 12-9)
+gitlab_gitops_managed_files:
+  - {path: apps/dev/README.md, src: "{{ gitlab_gitops_seed_dir }}/apps/dev/README.md"}
 
 gitlab_bootstrap_pat_name: ansible-bootstrap   # role 이 끝나면 폐기되는 1일짜리 root 토큰
 gitlab_access_token_days: 364                  # Project Access Token 유효기간 (만료 전 CI 변수/파일 삭제 후 재실행)
 gitlab_registry_deploy_token_name: k8s-registry-pull
+gitlab_argocd_deploy_token_name: argocd-repo-read   # ArgoCD: 차트 미러 · gitops 레포 읽기 (read_repository)
 gitlab_payment_deploy_token_name: payment-node   # 결제 노드: 이미지 pull + gitops 태그 조회 (read_registry, read_repository)
 gitlab_protected_branches: [main, develop]
 
