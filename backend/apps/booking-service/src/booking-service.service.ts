@@ -25,9 +25,7 @@ import {
   PaymentResultInbox,
 } from './entities/payment-result-inbox.entity';
 import { ReservationFacilityService } from './reservation-facility.service';
-
-// 결제 마감: 예약 생성 후 이 시간 안에 결제가 끝나야 한다 (ERD 상태 모델, 위키 API 명세 5.1)
-export const PAYMENT_DUE_MINUTES = 30;
+import { computePaymentDueAt, PAYMENT_DUE_MINUTES } from './payment-due';
 // 예약 1건당 결제 시도(결제 준비 호출) 최대 횟수 (10/13 프론트 합의, 위키 API 명세 5.8)
 const MAX_PAYMENT_ATTEMPTS = 5;
 // 승인을 요청한 뒤 결과가 이 시간 안에 확정되지 않으면 CONFIRMING 대신 REQUESTED로 내려 재결제를 허용한다 (LDP-67).
@@ -158,7 +156,6 @@ const ACTIVE_RESERVATION_STATUSES = [
 export interface AdminBookingOptions {
   createdByAdminId: number;
   createdByAdminName: string;
-  paymentDueAt: Date;
   linkedReservationId?: number;
 }
 
@@ -374,10 +371,13 @@ export class BookingServiceService implements OnModuleInit {
       guestCount: data.guestCount,
       totalAmount,
       status: ReservationStatus.PENDING_PAYMENT,
-      // 이 시각까지 결제가 끝나지 않으면 결제할 수 없고, 만료 배치가 EXPIRED로 돌린다
-      paymentDueAt:
-        admin?.paymentDueAt ??
-        new Date(Date.now() + PAYMENT_DUE_MINUTES * 60 * 1000),
+      // 이 시각까지 결제가 끝나지 않으면 결제할 수 없고, 만료 배치가 EXPIRED로 돌린다.
+      // 회원·직원 예약 모두 같은 함수로 계산한다 (payment-due.ts, LDP-92)
+      paymentDueAt: computePaymentDueAt({
+        now: new Date(),
+        checkInDate: data.checkInDate,
+        createdByAdmin: !!admin,
+      }),
       linkedReservationId: admin?.linkedReservationId ?? null,
       createdByAdminId: admin?.createdByAdminId ?? null,
       createdByAdminName: admin?.createdByAdminName ?? null,
@@ -680,10 +680,12 @@ export class BookingServiceService implements OnModuleInit {
     // 결제 준비와 같은 예약 행 잠금 안에서 확인·기록해서, 다른 시도가 승인 확인 중이면 이 시도의 승인을 막는다
     // (LDP-85: 결제 준비를 여러 번 받아 둔 뒤 차례로 승인을 보내 이중 승인이 나는 경우). 같은 시도의 재호출은 허용.
     await this.dataSource.transaction(async (manager) => {
-      await manager.findOne(Reservation, {
+      // 잠근 뒤 다시 확인 — 그 사이 만료 배치가 EXPIRED로 바꿨으면 승인 요청을 보내지 않는다 (LDP-92)
+      const locked = await manager.findOne(Reservation, {
         where: { reservationId: data.reservationId },
         lock: { mode: 'pessimistic_write' },
       });
+      this.assertPayableReservation(locked, data.userId);
       if (
         await this.findConfirmingAttempt(
           manager,
@@ -795,6 +797,8 @@ export class BookingServiceService implements OnModuleInit {
   // 처리에 실패하면 에러를 그대로 던진다 — 수신기가 메시지를 지우지 않아 큐가 다시 보내고,
   // 5번 실패하면 DLQ(payment-result-dlq.fifo)로 옮겨진다.
   async applyPaymentResult(event: PaymentResultEvent): Promise<void> {
+    // 결제는 승인됐는데 예약이 이미 만료·취소·실패된 경우 → 트랜잭션 뒤에 환불 요청 (LDP-92)
+    let refundAfterApproval = false;
     const reservationToRelease = await this.dataSource.transaction(
       async (manager) => {
         const attempt = event.orderId
@@ -852,12 +856,13 @@ export class BookingServiceService implements OnModuleInit {
               const current = await manager.findOne(Reservation, {
                 where: { reservationId: event.reservationId },
               });
-              if (current?.status !== ReservationStatus.RESERVED) {
-                // 결제는 승인됐는데 예약이 이미 만료·취소·실패 상태 → 돈만 빠져나간 상태라 환불이 필요하다
-                // (토스 취소 연동 LDP-28 / 대사 배치에서 처리). 지금은 알람 로그로 남긴다.
-                this.logger.error(
-                  `[알람] 결제 승인 이벤트를 받았지만 예약(#${event.reservationId})이 ${current?.status} 상태입니다 — 환불 필요 (paymentId=${event.paymentId})`,
+              if (current && current.status !== ReservationStatus.RESERVED) {
+                // 결제는 승인됐는데 예약이 이미 만료·취소·실패 상태 → 돈만 빠져나간 상태라 자동 환불한다.
+                // (예: 결제창을 연 채 마감이 지나 만료 배치가 EXPIRED로 바꾼 뒤 승인이 도착)
+                this.logger.warn(
+                  `결제 승인 이벤트를 받았지만 예약(#${event.reservationId})이 ${current.status} 상태입니다 — 자동 환불 요청 (paymentId=${event.paymentId})`,
                 );
+                refundAfterApproval = true;
               }
             }
             break;
@@ -914,9 +919,13 @@ export class BookingServiceService implements OnModuleInit {
       },
     );
 
-    // 재고 반환은 다른 서비스(hotel) 호출이라 트랜잭션이 끝난 뒤에 한다
+    // 재고 반환·환불은 다른 서비스 호출이라 트랜잭션이 끝난 뒤에 한다
     if (reservationToRelease) {
       await this.releaseRoomAvailability(reservationToRelease, '결제 실패');
+    }
+    if (refundAfterApproval) {
+      // 예약 ID로 만든 같은 환불 키를 쓰므로, 취소 때 이미 환불을 요청했어도 한 번만 환불된다
+      await this.requestRefund(event.reservationId);
     }
   }
 
@@ -991,6 +1000,11 @@ export class BookingServiceService implements OnModuleInit {
 
   // 예약이 잡아둔 날짜(체크인~체크아웃 전날)의 예약 수를 1씩 돌려준다 (남은 방 +1, 판매 중지 여부는 그대로).
   // 실패해도 예약 상태 변경은 이미 끝났으므로 요청을 실패시키지 않고 로그만 남긴다(재고 동기화는 별도로 복구 가능).
+  // 예약이 잡고 있던 날짜별 재고를 돌려놓는다 — 만료 배치(LDP-92)가 쓴다. 실패해도 로그만 남긴다.
+  releaseInventory(reservation: Reservation, reason: string): Promise<void> {
+    return this.releaseRoomAvailability(reservation, reason);
+  }
+
   private async releaseRoomAvailability(
     reservation: Reservation,
     reason: string,
@@ -1036,7 +1050,7 @@ export class BookingServiceService implements OnModuleInit {
 
   // 승인 확인 중(CONFIRMING)인 시도 — 응답의 CONFIRMING(attemptStatusForResponse)과 같은 기준:
   // 아직 REQUESTED인데 승인 요청 후 CONFIRMING_MINUTES 안. exceptAttemptId는 결과 확인에서 뺄 시도(승인 재호출 중인 시도).
-  private findConfirmingAttempt(
+  findConfirmingAttempt(
     manager: EntityManager,
     reservationId: number,
     exceptAttemptId?: string,
