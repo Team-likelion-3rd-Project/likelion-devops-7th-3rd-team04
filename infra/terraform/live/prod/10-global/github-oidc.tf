@@ -31,7 +31,10 @@ resource "aws_iam_openid_connect_provider" "github" {
   }
 }
 
-# 신뢰 정책은 aud · sub 를 정확히 비교한다 — gitops 레포의 main 브랜치 실행만 (PR · 다른 브랜치 · 다른 레포 거부)
+# 신뢰 정책은 aud · sub 를 정확히 비교한다 — gitops 레포의 main 브랜치 실행만 (PR · 다른 브랜치 · 다른 레포 거부).
+# gitops 레포는 GitHub 의 immutable subject 형식(use_immutable_subject)이라 sub 에 조직 · 레포 숫자 ID 가 붙는다
+#   repo:<조직>@<조직 ID>/<레포>@<레포 ID>:ref:refs/heads/main
+# ID 는 바뀌지 않으므로 레포를 지우고 같은 이름으로 다시 만들거나 이름이 바뀌어도 다른 레포가 이 Role 을 받을 수 없다
 data "aws_iam_policy_document" "gitops_ssm_sync_assume" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -50,7 +53,7 @@ data "aws_iam_policy_document" "gitops_ssm_sync_assume" {
     condition {
       test     = "StringEquals"
       variable = "${local.github_oidc_host}:sub"
-      values   = ["repo:${var.gitops_repository}:ref:refs/heads/main"]
+      values   = ["${var.gitops_oidc_subject_prefix}:ref:refs/heads/main"]
     }
   }
 }

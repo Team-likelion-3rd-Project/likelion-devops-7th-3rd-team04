@@ -70,8 +70,8 @@ variable "create_github_oidc_provider" {
   default     = true
 }
 
-variable "gitops_repository" {
-  description = "결제 서버 이미지 태그를 Parameter Store 에 쓰는 GitHub 레포 (owner/name). 이 레포의 main 실행만 Role 을 받는다"
+variable "gitops_oidc_subject_prefix" {
+  description = "gitops 레포 GitHub OIDC 토큰 sub 의 앞부분 (immutable subject 형식). 이 레포의 main 실행만 Role 을 받는다. 확인: gh api repos/<owner>/<repo>/actions/oidc/customization/sub 의 sub_claim_prefix"
   type        = string
-  default     = "Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops"
+  default     = "repo:Team-likelion-3rd-Project@336729042/likelion-devops-7th-3rd-team04-gitops@1421753380"
 }
