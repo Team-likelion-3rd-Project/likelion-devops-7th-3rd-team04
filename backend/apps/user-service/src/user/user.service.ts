@@ -47,6 +47,14 @@ export class UserService {
     return this.toGrpcResponse(saved);
   }
 
+  // auth-service 회원가입 되돌리기 (LDP-96). 비밀번호 저장에 실패해 가입이 성립하지 않았을 때, 방금 만든 프로필을
+  // 지워서 같은 이메일로 다시 가입할 수 있게 합니다. 탈퇴가 아니므로 deleted_user 백업을 남기지 않습니다.
+  // 다른 회원을 지우지 않도록 id와 email이 모두 맞을 때만 지우고, 이미 없으면 그대로 성공입니다.
+  async cancelSignup(id: number, email: string): Promise<{ success: boolean }> {
+    await this.userRepository.delete({ id, email });
+    return { success: true };
+  }
+
   // auth-service 로그인 요청으로 이메일 기준 프로필 조회. 미가입 이메일이면 RpcException.
   async getUserByEmail(email: string): Promise<UserGrpcResponse> {
     const user = await this.userRepository.findOne({ where: { email } });
