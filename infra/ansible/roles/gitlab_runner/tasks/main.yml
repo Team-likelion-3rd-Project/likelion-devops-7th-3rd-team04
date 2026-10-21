@@ -68,15 +68,41 @@
     msg: "gitlab-runner verify 실패 — GitLab({{ gitlab_url }}) 이 켜지면 Runner 가 다시 연결합니다"
   when: runner_verify.rc != 0 or 'is valid' not in (runner_verify.stdout ~ runner_verify.stderr)
 
-- name: 빌드 캐시 / 오래된 이미지 주간 정리
-  # job / service 컨테이너 이미지와 (docker.sock 을 공유하면) job 의 빌드 결과물이 호스트 docker 에 계속 쌓임
+# job / service 이미지, runner cache 볼륨, (docker.sock 을 공유하면) job 의 빌드 결과물이 호스트 docker 에 계속 쌓임.
+# VM 을 일과 시간에만 켜므로 고정 시각 cron 대신 부팅 기준 + Persistent systemd timer 로 정리한다
+- name: 이전 주간 prune cron 제거 (VM 이 꺼져 있는 일요일 00:00 에 예약돼 실행되지 않았음)
   ansible.builtin.cron:
     name: gitlab-runner docker prune
-    special_time: weekly
-    job: >-
-      docker builder prune -af --filter until=168h >/dev/null 2>&1;
-      docker image prune -af --filter until=168h >/dev/null 2>&1
     user: root
+    state: absent
+
+- name: docker prune 스크립트
+  ansible.builtin.template:
+    src: runner-prune.sh.j2
+    dest: /usr/local/sbin/team04-runner-prune
+    mode: "0700"
+
+- name: docker prune systemd unit
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - team04-runner-prune@.service
+    - team04-runner-prune-light.timer
+    - team04-runner-prune-threshold.timer
+    - team04-runner-prune-weekly.timer
+
+- name: docker prune timer 활성화
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - team04-runner-prune-light.timer
+    - team04-runner-prune-threshold.timer
+    - team04-runner-prune-weekly.timer
 
 - name: 접속 정보
   ansible.builtin.debug:

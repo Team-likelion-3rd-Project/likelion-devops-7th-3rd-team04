@@ -1,0 +1,51 @@
+#!/bin/bash
+# Ansible(roles/gitlab_runner) 이 관리. Runner 호스트 docker 정리 (team04-runner-prune-*.timer 가 실행)
+#   light     : 종료된 컨테이너 · dangling 이미지 · 오래된 빌드 캐시 (부팅 후 · 하루 1회)
+#   threshold : 디스크 사용률이 기준을 넘을 때만 미사용 이미지 전체 + runner cache 볼륨 (켜져 있는 동안 주기 실행)
+#   weekly    : runner cache 볼륨 (lock 변경으로 남은 이전 캐시 zip 정리)
+# prune 은 사용 중인 컨테이너 · 이미지 · 볼륨을 지우지 않으므로 job 실행 중에 돌아도 된다.
+# 이미지 prune 의 until 필터는 pull 시각이 아니라 이미지 빌드 시각 기준이라, 베이스 이미지가 매일 지워지지 않게 -a 는 threshold 에서만 쓴다
+set -uo pipefail
+
+mode="${1:?usage: $0 light|threshold|weekly}"
+clear_cache=/usr/share/gitlab-runner/clear-docker-cache
+
+usage() { df --output=pcent /var/lib/docker | tail -1 | tr -dc 0-9; }
+
+prune_runner_cache() {
+  # Runner 가 만든 cache 볼륨(label com.gitlab.gitlab-runner.type=cache)만 지운다
+  if [ -x "$clear_cache" ]; then
+    "$clear_cache" prune
+  else
+    docker volume prune -f --filter label=com.gitlab.gitlab-runner.type=cache
+  fi
+}
+
+before=$(usage)
+
+case "$mode" in
+  light)
+    docker container prune -f
+    docker image prune -f
+    docker builder prune -f --filter until={{ gitlab_runner_prune_builder_until }}
+    ;;
+  threshold)
+    if [ "$before" -lt {{ gitlab_runner_prune_threshold }} ]; then
+      echo "disk ${before}% < {{ gitlab_runner_prune_threshold }}% — skip"
+      exit 0
+    fi
+    docker container prune -f
+    docker builder prune -af
+    docker image prune -af
+    prune_runner_cache
+    ;;
+  weekly)
+    prune_runner_cache
+    ;;
+  *)
+    echo "unknown mode: $mode" >&2
+    exit 2
+    ;;
+esac
+
+echo "mode=$mode disk ${before}% -> $(usage)%"
