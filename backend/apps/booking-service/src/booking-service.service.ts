@@ -9,6 +9,7 @@ import {
   In,
   IsNull,
   MoreThan,
+  MoreThanOrEqual,
   Not,
   QueryFailedError,
   Repository,
@@ -165,6 +166,12 @@ export interface AdminBookingOptions {
 export interface CancelRecord {
   cancelledByAdminId?: number;
   cancelReason?: string;
+}
+
+// 한국 날짜 'YYYY-MM-DD'. 손님이 보는 "오늘"과 맞춰야 하는 판단(이용 예정 예약 등)에 쓴다 —
+// 서버 시간(UTC)으로 계산하면 한국 새벽 0~9시에 하루 어긋난다.
+function todayKst(): string {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 // 서버 기준 오늘 날짜를 'YYYY-MM-DD'로 반환한다 (UTC 기준 — addDays/dayBefore와 동일한 원칙).
@@ -406,6 +413,22 @@ export class BookingServiceService implements OnModuleInit {
       order: { createdAt: 'DESC' },
     });
     return this.toGrpcResponsesWithLastAttempt(reservations);
+  }
+
+  // 회원의 이용 예정 예약 수 (LDP-95) — 1건 이상이면 auth-service가 탈퇴를 거절한다.
+  // 이용 예정 = 결제 대기(PENDING_PAYMENT) 전부 + 예약 확정(RESERVED) 중 체크아웃이 오늘(한국 날짜) 이후.
+  // 체크아웃 당일도 포함한다 — 그날 아침까지는 손님이 묵고 있다.
+  async countUpcomingReservations(userId: number): Promise<number> {
+    return this.reservationRepository.count({
+      where: [
+        { userId, status: ReservationStatus.PENDING_PAYMENT },
+        {
+          userId,
+          status: ReservationStatus.RESERVED,
+          checkOutDate: MoreThanOrEqual(todayKst()),
+        },
+      ],
+    });
   }
 
   // 단건 예약 조회. payment-service가 결제 요청을 검증(금액/소유자/상태)하기 위해 호출한다.

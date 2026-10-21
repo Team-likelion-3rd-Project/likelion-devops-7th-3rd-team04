@@ -165,6 +165,15 @@ export class BookingServiceController {
     return this.adminBookingService.cancel(data);
   }
 
+  // 회원의 이용 예정 예약 수 — auth-service가 회원 탈퇴 전에 확인 (LDP-95)
+  @GrpcMethod('BookingService', 'CountUpcomingReservations')
+  async countUpcomingReservations(data: { userId: number }) {
+    const count = await this.bookingServiceService.countUpcomingReservations(
+      data.userId,
+    );
+    return { count };
+  }
+
   // 투숙 연장 예약 생성 (LDP-90)
   @GrpcMethod('BookingService', 'CreateExtensionBooking')
   async createExtensionBooking(data: {

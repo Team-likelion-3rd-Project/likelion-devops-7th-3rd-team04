@@ -64,6 +64,10 @@ service BookingService {
   rpc AdminCancelBooking (AdminCancelBookingRequest) returns (Booking);
   // 연장 예약 생성 — 예약 확정 예약의 체크아웃부터 새 예약을 이어 붙인다 (linkedReservationId = 맨 처음 원래 예약)
   rpc CreateExtensionBooking (CreateExtensionBookingRequest) returns (Booking);
+
+  // 회원의 이용 예정 예약 수 (LDP-95). auth-service가 회원 탈퇴 전에 확인한다 — 1건 이상이면 탈퇴 거절.
+  // 이용 예정 = 결제 대기 전부 + 예약 확정 중 체크아웃이 오늘(한국 날짜) 이후 (체크아웃 당일 포함)
+  rpc CountUpcomingReservations (CountUpcomingReservationsRequest) returns (CountUpcomingReservationsResponse);
 }
 
 message Empty {}
@@ -141,6 +145,14 @@ message AdminCancelBookingRequest {
   int32 reservationId = 1;
   int32 adminId = 2; // 취소한 직원 (JWT)
   string cancelReason = 3; // 1~255자
+}
+
+message CountUpcomingReservationsRequest {
+  int32 userId = 1;
+}
+
+message CountUpcomingReservationsResponse {
+  int32 count = 1;
 }
 
 message CreateExtensionBookingRequest {

@@ -15,7 +15,15 @@ import { ClientGrpc } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam } from '@nestjs/swagger';
 import { ApiCommonResponses } from '@app/common/decorators/api-response.decorator';
-import { JwtAuthGuard, RolesGuard, Roles, CurrentUser, AuthenticatedUser } from '@app/common';
+import {
+  JwtAuthGuard,
+  RolesGuard,
+  Roles,
+  CurrentUser,
+  AuthenticatedUser,
+  parseApiRpcError,
+  toHttpException,
+} from '@app/common';
 import { UpdateMeDto } from './dto/update-me.dto';
 
 // proto의 User 메시지와 1:1 대응되는 응답 형태
@@ -174,8 +182,18 @@ export class UserController implements OnModuleInit {
     status: 404,
     description: '존재하지 않는 유저',
   })
+  @ApiResponse({
+    status: 409,
+    description: 'HAS_UPCOMING_RESERVATIONS — 이용 예정 예약(결제 대기, 체크아웃이 오늘 이후인 확정 예약)이 있어 탈퇴 불가',
+  })
+  @ApiResponse({ status: 503, description: 'BOOKING_SERVICE_UNAVAILABLE — 예약 확인 불가, 재시도' })
   async deleteMe(@CurrentUser() user: AuthenticatedUser): Promise<{ message: string }> {
     await firstValueFrom(this.authService.withdraw({ userId: user.userId })).catch((err) => {
+      // 이용 예정 예약 거절(409)·예약 확인 불가(503)는 실패 응답 형식 { statusCode, error, code, message, retryable }으로 (LDP-95)
+      const payload = parseApiRpcError(err);
+      if (payload) {
+        throw toHttpException(payload);
+      }
       throw new NotFoundException(err?.details || err?.message || '회원 탈퇴에 실패했습니다.');
     });
     return { message: '회원 탈퇴가 완료되었습니다.' };

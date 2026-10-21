@@ -6,7 +6,7 @@ import { Repository } from 'typeorm';
 import { Observable, firstValueFrom } from 'rxjs';
 import * as bcrypt from 'bcrypt';
 import Redis from 'ioredis';
-import { REDIS_CLIENT, JwtPayload, PrincipalType, getRequiredEnv } from '@app/common';
+import { REDIS_CLIENT, JwtPayload, PrincipalType, apiRpcException, getRequiredEnv } from '@app/common';
 import { Credential } from './entities/credential.entity';
 import { AdminCredential } from './entities/admin-credential.entity';
 
@@ -72,6 +72,11 @@ interface AdminGrpcService {
   getAdminByEmail(data: { email: string }): Observable<AdminGrpcResponse>;
 }
 
+// libs/common/src/proto/booking.proto의 BookingService / CountUpcomingReservations (LDP-95)
+interface BookingGrpcService {
+  countUpcomingReservations(data: { userId: number }): Observable<{ count: number }>;
+}
+
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
@@ -95,6 +100,7 @@ interface Principal {
 export class AuthServiceService implements OnModuleInit {
   private userService!: UserGrpcService;
   private adminService!: AdminGrpcService;
+  private bookingService!: BookingGrpcService;
 
   constructor(
     @InjectRepository(Credential)
@@ -103,6 +109,7 @@ export class AuthServiceService implements OnModuleInit {
     private readonly adminCredentialRepository: Repository<AdminCredential>,
     private readonly jwtService: JwtService,
     @Inject('USER_SERVICE') private readonly userClient: ClientGrpc,
+    @Inject('BOOKING_SERVICE') private readonly bookingClient: ClientGrpc,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
 
@@ -113,6 +120,8 @@ export class AuthServiceService implements OnModuleInit {
       this.userClient.getService<UserGrpcService>('UserService');
     this.adminService =
       this.userClient.getService<AdminGrpcService>('AdminService');
+    this.bookingService =
+      this.bookingClient.getService<BookingGrpcService>('BookingService');
   }
 
   // 회원가입: user-service에 프로필 생성 → 비밀번호 해시 저장 → 토큰 발급
@@ -343,7 +352,11 @@ export class AuthServiceService implements OnModuleInit {
 
   // 회원 탈퇴(고객 전용): user-service에 프로필 삭제(백업 테이블 이관 포함)를 요청한 뒤, 자격증명과 Redis의
   // 리프레시 토큰을 삭제해 더 이상 로그인/재발급이 불가능하도록 만듭니다.
+  // 이용 예정 예약이 있으면 아무것도 지우기 전에 거절합니다 (LDP-95, 10-19 결정) — 탈퇴해도 예약이 남아
+  // 재고를 차지하고, 직원은 누구 예약인지 알 수 없게 되기 때문입니다.
   async withdraw(data: { userId: number }): Promise<{ success: boolean }> {
+    await this.assertNoUpcomingReservations(data.userId);
+
     await firstValueFrom(this.userService.deleteUser({ id: data.userId })).catch((err) => {
       throw new RpcException(err?.details || err?.message || '회원 탈퇴에 실패했습니다.');
     });
@@ -354,6 +367,27 @@ export class AuthServiceService implements OnModuleInit {
     await this.redis.del(issuedAtKey('USER', data.userId));
 
     return { success: true };
+  }
+
+  // 이용 예정 예약(결제 대기 전부 + 체크아웃이 오늘 이후인 확정 예약)이 있으면 409.
+  // 예약 서비스에 연결할 수 없으면 확인하지 못한 채 지우지 않도록 503으로 멈춥니다.
+  private async assertNoUpcomingReservations(userId: number): Promise<void> {
+    const { count } = await firstValueFrom(this.bookingService.countUpcomingReservations({ userId })).catch(() => {
+      throw apiRpcException({
+        status: 503,
+        code: 'BOOKING_SERVICE_UNAVAILABLE',
+        message: '예약 정보를 확인할 수 없어 탈퇴를 진행하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+        retryable: true,
+      });
+    });
+    if (count > 0) {
+      throw apiRpcException({
+        status: 409,
+        code: 'HAS_UPCOMING_RESERVATIONS',
+        message: `이용 예정 예약이 ${count}건 있어 탈퇴할 수 없습니다. 예약을 먼저 취소해 주세요.`,
+        retryable: false,
+      });
+    }
   }
 
   private signAccessToken(principal: Principal): string {
