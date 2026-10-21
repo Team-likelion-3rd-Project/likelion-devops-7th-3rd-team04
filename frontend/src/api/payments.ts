@@ -178,12 +178,28 @@ export const PAYMENT_BLOCK_MESSAGE: Record<PaymentBlockReason, string> = {
   NOT_PAYABLE: PAYMENT_ERROR_MESSAGE.INVALID_RESERVATION_STATUS,
 }
 
-// "10월 19일 14:30까지" 형태의 결제 마감 안내. 마감 시각이 없거나 잘못된 값이면 null.
-export function formatPaymentDue(paymentDueAt?: string): string | null {
+// "10월 19일 14:30까지 (1시간 20분 남음)" 형태의 결제 마감 안내. 마감 시각이 없거나 잘못된 값이면 null.
+// 마감은 서버가 정한다(LDP-92 #226): 당일 체크인은 생성 후 30분, 내일 이후 체크인은 전날 자정, 직원이 만든 예약은 만든 날 밤 자정.
+// 자정 마감은 "다음 날 00:00"으로 쓰면 하루 늦게 읽히기 쉬워서 "그날 자정"으로 적는다. 아직 남아 있으면 남은 시간을 덧붙인다.
+export function formatPaymentDue(paymentDueAt?: string, now = Date.now()): string | null {
   const dueAt = paymentDueAt ? new Date(paymentDueAt) : null
   if (!dueAt || Number.isNaN(dueAt.getTime())) return null
-  const time = `${String(dueAt.getHours()).padStart(2, '0')}:${String(dueAt.getMinutes()).padStart(2, '0')}`
-  return `${dueAt.getMonth() + 1}월 ${dueAt.getDate()}일 ${time}까지`
+
+  let label: string
+  if (dueAt.getHours() === 0 && dueAt.getMinutes() === 0) {
+    const day = new Date(dueAt.getTime() - 1)
+    label = `${day.getMonth() + 1}월 ${day.getDate()}일 자정(밤 12시)까지`
+  } else {
+    const time = `${String(dueAt.getHours()).padStart(2, '0')}:${String(dueAt.getMinutes()).padStart(2, '0')}`
+    label = `${dueAt.getMonth() + 1}월 ${dueAt.getDate()}일 ${time}까지`
+  }
+
+  const leftMinutes = Math.floor((dueAt.getTime() - now) / 60000)
+  if (leftMinutes <= 0) return label
+  const hours = Math.floor(leftMinutes / 60)
+  const minutes = leftMinutes % 60
+  const left = hours > 0 ? `${hours}시간${minutes > 0 ? ` ${minutes}분` : ''}` : `${minutes}분`
+  return `${label} (${left} 남음)`
 }
 
 // 결제하기를 누른 순간의 최신 예약 상태. 화면이 들고 있는 예약 정보는 오래됐을 수 있어서
