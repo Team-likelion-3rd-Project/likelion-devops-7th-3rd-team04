@@ -112,6 +112,9 @@
         namespace: "{{ backend_namespace }}"
         labels:
           app.kubernetes.io/managed-by: ansible
+      # JSON 파일은 base64(data)로 — stringData 와 함께 쓰면 kubectl 이 합쳐서 저장
+      data:
+        GCP_SA_KEY_JSON: "{{ gcp_sa_key_b64 }}"
       stringData: "{{ backend_secret_data }}"
   ansible.builtin.command:
     cmd: kubectl apply -f -
