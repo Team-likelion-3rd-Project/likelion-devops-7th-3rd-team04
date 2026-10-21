@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
@@ -66,6 +66,7 @@ interface UserGrpcService {
   createUser(data: { email: string; name: string; phoneNumber: string }): Observable<UserGrpcResponse>;
   getUserByEmail(data: { email: string }): Observable<UserGrpcResponse>;
   deleteUser(data: { id: number }): Observable<{ success: boolean }>;
+  cancelSignup(data: { id: number; email: string }): Observable<{ success: boolean }>;
 }
 
 interface AdminGrpcService {
@@ -98,6 +99,7 @@ interface Principal {
 
 @Injectable()
 export class AuthServiceService implements OnModuleInit {
+  private readonly logger = new Logger(AuthServiceService.name);
   private userService!: UserGrpcService;
   private adminService!: AdminGrpcService;
   private bookingService!: BookingGrpcService;
@@ -144,20 +146,55 @@ export class AuthServiceService implements OnModuleInit {
       );
     });
 
-    const passwordHash = await bcrypt.hash(data.password, SALT_ROUNDS);
-    const credential = this.credentialRepository.create({
-      userId: user.id,
-      passwordHash,
-    });
-    await this.credentialRepository.save(credential);
+    // 프로필(user-service)과 비밀번호(이 서비스)는 DB가 달라 한 트랜잭션으로 묶을 수 없습니다 (LDP-96).
+    // 비밀번호 저장에 실패하면 방금 만든 프로필을 되돌려, 같은 이메일로 다시 가입할 수 있게 합니다.
+    try {
+      const passwordHash = await bcrypt.hash(data.password, SALT_ROUNDS);
+      await this.credentialRepository.save(
+        this.credentialRepository.create({ userId: user.id, passwordHash }),
+      );
+    } catch (error) {
+      this.logger.error(
+        `회원가입 비밀번호 저장 실패 (userId=${user.id}) — 프로필 되돌림`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      await firstValueFrom(this.userService.cancelSignup({ id: user.id, email: user.email })).catch((cancelError) => {
+        // 되돌리기도 실패하면 프로필만 남는다 — 이 이메일은 운영자가 정리해야 다시 가입할 수 있다
+        this.logger.error(
+          `[알람] 회원가입 프로필 되돌리기 실패 (userId=${user.id}, email=${user.email}) — 수동 정리 필요`,
+          cancelError instanceof Error ? cancelError.stack : String(cancelError),
+        );
+      });
+      throw apiRpcException({
+        status: 503,
+        code: 'SIGNUP_FAILED',
+        message: '회원가입을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+        retryable: true,
+      });
+    }
 
-    return this.issueTokens({
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      type: 'USER',
-    });
+    // 여기까지 오면 가입은 끝났습니다. 토큰 발급(Valkey 저장)만 실패하면 가입 실패가 아니라
+    // "가입 완료, 로그인 필요"로 알려 줍니다 — 같은 이메일로 다시 가입하면 "이미 가입된 이메일"이 되기 때문입니다.
+    try {
+      return await this.issueTokens({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        type: 'USER',
+      });
+    } catch (error) {
+      this.logger.error(
+        `회원가입 후 토큰 발급 실패 (userId=${user.id}) — 가입은 완료`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw apiRpcException({
+        status: 503,
+        code: 'SIGNUP_COMPLETED_LOGIN_REQUIRED',
+        message: '회원가입은 완료되었습니다. 잠시 후 로그인해 주세요.',
+        retryable: false,
+      });
+    }
   }
 
   // 로그인(고객): user-service에서 이메일로 프로필 조회 → 비밀번호 해시 검증 → 토큰 발급
@@ -350,23 +387,48 @@ export class AuthServiceService implements OnModuleInit {
     return { success: true };
   }
 
-  // 회원 탈퇴(고객 전용): user-service에 프로필 삭제(백업 테이블 이관 포함)를 요청한 뒤, 자격증명과 Redis의
-  // 리프레시 토큰을 삭제해 더 이상 로그인/재발급이 불가능하도록 만듭니다.
-  // 이용 예정 예약이 있으면 아무것도 지우기 전에 거절합니다 (LDP-95, 10-19 결정) — 탈퇴해도 예약이 남아
-  // 재고를 차지하고, 직원은 누구 예약인지 알 수 없게 되기 때문입니다.
+  // 회원 탈퇴(고객 전용). 이용 예정 예약이 있으면 아무것도 지우기 전에 거절합니다 (LDP-95, 10-19 결정) — 탈퇴해도
+  // 예약이 남아 재고를 차지하고, 직원은 누구 예약인지 알 수 없게 되기 때문입니다.
+  // 지우는 순서 (LDP-96): 로그인 세션(Valkey) → 비밀번호 → 프로필(deleted_user로 이관)을 마지막에.
+  //  - 서비스·저장소가 셋으로 나뉘어 한 번에 묶을 수 없으므로, 앞 단계부터 지우고 각 단계는 다시 실행해도 안전하게
+  //    했습니다(이미 지워졌으면 그냥 넘어감). 중간에 실패해도 같은 요청을 다시 보내면 끝까지 처리됩니다.
+  //  - 프로필을 마지막에 두는 이유: 프로필이 먼저 사라지면 남은 비밀번호·세션을 찾아 지울 근거가 없어집니다.
   async withdraw(data: { userId: number }): Promise<{ success: boolean }> {
     await this.assertNoUpcomingReservations(data.userId);
 
+    try {
+      await this.redis.del(refreshTokenKey('USER', data.userId));
+      await this.redis.del(refreshGraceKey('USER', data.userId));
+      await this.redis.del(issuedAtKey('USER', data.userId));
+      await this.credentialRepository.delete({ userId: data.userId });
+    } catch (error) {
+      this.logger.error(
+        `회원 탈퇴 중 세션·비밀번호 삭제 실패 (userId=${data.userId})`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw this.withdrawIncomplete();
+    }
+
     await firstValueFrom(this.userService.deleteUser({ id: data.userId })).catch((err) => {
-      throw new RpcException(err?.details || err?.message || '회원 탈퇴에 실패했습니다.');
+      // 이전 요청에서 프로필 이관까지 끝났는데 응답만 못 받은 경우 — 이미 탈퇴된 것이므로 성공으로 본다
+      if (err?.details?.includes('존재하지 않는')) {
+        return;
+      }
+      this.logger.error(`회원 탈퇴 중 프로필 이관 실패 (userId=${data.userId})`, err?.stack ?? String(err));
+      throw this.withdrawIncomplete();
     });
 
-    await this.credentialRepository.delete({ userId: data.userId });
-    await this.redis.del(refreshTokenKey('USER', data.userId));
-    await this.redis.del(refreshGraceKey('USER', data.userId));
-    await this.redis.del(issuedAtKey('USER', data.userId));
-
     return { success: true };
+  }
+
+  // 탈퇴가 중간에 멈춤 — 같은 요청을 다시 보내면 남은 단계부터 끝까지 처리된다
+  private withdrawIncomplete() {
+    return apiRpcException({
+      status: 503,
+      code: 'WITHDRAW_INCOMPLETE',
+      message: '탈퇴 처리를 마치지 못했습니다. 잠시 후 다시 시도해 주세요.',
+      retryable: true,
+    });
   }
 
   // 이용 예정 예약(결제 대기 전부 + 체크아웃이 오늘 이후인 확정 예약)이 있으면 409.

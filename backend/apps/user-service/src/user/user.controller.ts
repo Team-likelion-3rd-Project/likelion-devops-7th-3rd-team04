@@ -42,6 +42,12 @@ export class UserController {
 
   // auth-service가 "회원 탈퇴"(DELETE /api/users/me)에서 호출: users 레코드를 deleted_user 백업
   // 테이블로 옮긴 뒤 users 테이블에서 제거 (없으면 에러)
+  // 회원가입 도중 실패 시 프로필 되돌리기 — auth-service 전용 (LDP-96)
+  @GrpcMethod('UserService', 'CancelSignup')
+  async cancelSignup(data: { id: number; email: string }) {
+    return this.userService.cancelSignup(data.id, data.email);
+  }
+
   @GrpcMethod('UserService', 'DeleteUser')
   async deleteUser(data: { id: number }) {
     return this.userService.deleteUser(data.id);

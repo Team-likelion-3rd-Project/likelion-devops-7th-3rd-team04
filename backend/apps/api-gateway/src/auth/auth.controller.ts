@@ -29,6 +29,8 @@ import {
   AuthenticatedUser,
   PrincipalType,
   getRequiredEnv,
+  parseApiRpcError,
+  toHttpException,
 } from '@app/common';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -144,12 +146,24 @@ export class AuthController implements OnModuleInit {
     description:
       '회원가입 성공 (액세스 토큰은 응답 바디, 리프레시 토큰은 httpOnly 쿠키로 발급)',
   })
+  @ApiResponse({
+    status: 503,
+    description:
+      'SIGNUP_FAILED — 가입 도중 실패, 만든 프로필은 되돌림(같은 이메일로 재시도 가능) / ' +
+      'SIGNUP_COMPLETED_LOGIN_REQUIRED — 가입은 완료, 토큰 발급만 실패(로그인 화면으로 이동)',
+  })
   async register(
     @Body() dto: RegisterDto,
     @Res({ passthrough: true }) res: Response,
   ) {
     const tokens = await firstValueFrom(this.authService.register(dto)).catch(
       (err) => {
+        // 가입 도중 실패(SIGNUP_FAILED)·가입은 됐는데 토큰 발급만 실패(SIGNUP_COMPLETED_LOGIN_REQUIRED)는
+        // 실패 응답 형식 { statusCode, error, code, message, retryable }으로 (LDP-96). 이메일 중복 등은 기존대로 400
+        const payload = parseApiRpcError(err);
+        if (payload) {
+          throw toHttpException(payload);
+        }
         throw new BadRequestException(
           err?.details || err?.message || '회원가입에 실패했습니다.',
         );
