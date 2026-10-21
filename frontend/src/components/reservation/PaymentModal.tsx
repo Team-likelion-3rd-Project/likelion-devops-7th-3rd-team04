@@ -86,6 +86,12 @@ function PaymentModal({ reservationId, summary, onClose, onBookingChange }: Paym
       // 결제 기한 만료·시도 횟수 초과 등은 서버가 code와 안내 문구를 함께 준다 (명세 5.8·5.10).
       // retryable=false면 같은 예약으로 다시 눌러도 결과가 같으므로 버튼을 막고 예약 상태를 다시 불러온다.
       const message = err instanceof Error ? err.message : '결제를 시작하지 못했습니다.'
+      // 이전 결제 결과를 서버가 확인 중이면(409 PAYMENT_CONFIRMING, #200) 다시 눌러도 막히므로, 확인 중 안내로 버튼을 막고
+      // 예약을 다시 불러온다 (화면이 오래돼 승인 확인 중인 걸 몰랐던 경우).
+      if (err instanceof PaymentApiError && err.code === 'PAYMENT_CONFIRMING') {
+        blockWith(PAYMENT_BLOCK_MESSAGE.CONFIRMING, await fetchLatestBooking(reservationId))
+        return
+      }
       if (err instanceof PaymentApiError && err.code && !err.retryable) {
         blockWith(message, await fetchLatestBooking(reservationId))
         return

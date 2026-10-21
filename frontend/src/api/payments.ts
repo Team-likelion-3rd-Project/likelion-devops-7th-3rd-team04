@@ -64,19 +64,17 @@ export interface ConfirmPaymentResponse {
 
 // 명세 5.10 실패 응답: NestJS 기본 형식에 code(오류 종류)·retryable(같은 예약으로 다시 결제 가능 여부)이 더해진다.
 export class PaymentApiError extends ApiError {
-  readonly code?: string
   readonly retryable: boolean
 
   constructor(message: string, status: number, code?: string, retryable = false) {
-    super(message, status)
+    super(message, status, code)
     this.name = 'PaymentApiError'
-    this.code = code
     this.retryable = retryable
   }
 }
 
 // 서버 message가 비어 있을 때 쓸 안내 문구 (명세 5.8·5.9의 code 목록)
-const PAYMENT_ERROR_MESSAGE: Record<string, string> = {
+export const PAYMENT_ERROR_MESSAGE: Record<string, string> = {
   NOT_RESERVATION_OWNER: '본인 예약만 결제할 수 있습니다.',
   RESERVATION_NOT_FOUND: '예약을 찾을 수 없습니다.',
   INVALID_RESERVATION_STATUS: '결제할 수 없는 예약 상태입니다. 내 예약에서 상태를 확인해주세요.',
@@ -87,6 +85,7 @@ const PAYMENT_ERROR_MESSAGE: Record<string, string> = {
   PAYMENT_DECLINED: '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
   ALREADY_PAID: '이미 결제가 완료된 예약입니다. 내 예약에서 확인해주세요.',
   PAYMENT_SERVICE_UNAVAILABLE: '결제 서비스에 일시적으로 연결할 수 없습니다. 잠시 후 다시 시도해주세요.',
+  PAYMENT_CONFIRMING: '이전 결제 결과를 확인하고 있어요. 결과가 나오면 내 예약에서 확인할 수 있고, 10분이 지나도 결과가 없으면 다시 결제할 수 있어요.',
 }
 
 export function paymentErrorMessage(code: string | undefined, message: string | undefined, fallback: string): string {
@@ -179,12 +178,28 @@ export const PAYMENT_BLOCK_MESSAGE: Record<PaymentBlockReason, string> = {
   NOT_PAYABLE: PAYMENT_ERROR_MESSAGE.INVALID_RESERVATION_STATUS,
 }
 
-// "10월 19일 14:30까지" 형태의 결제 마감 안내. 마감 시각이 없거나 잘못된 값이면 null.
-export function formatPaymentDue(paymentDueAt?: string): string | null {
+// "10월 19일 14:30까지 (1시간 20분 남음)" 형태의 결제 마감 안내. 마감 시각이 없거나 잘못된 값이면 null.
+// 마감은 서버가 정한다(LDP-92 #226): 당일 체크인은 생성 후 30분, 내일 이후 체크인은 전날 자정, 직원이 만든 예약은 만든 날 밤 자정.
+// 자정 마감은 "다음 날 00:00"으로 쓰면 하루 늦게 읽히기 쉬워서 "그날 자정"으로 적는다. 아직 남아 있으면 남은 시간을 덧붙인다.
+export function formatPaymentDue(paymentDueAt?: string, now = Date.now()): string | null {
   const dueAt = paymentDueAt ? new Date(paymentDueAt) : null
   if (!dueAt || Number.isNaN(dueAt.getTime())) return null
-  const time = `${String(dueAt.getHours()).padStart(2, '0')}:${String(dueAt.getMinutes()).padStart(2, '0')}`
-  return `${dueAt.getMonth() + 1}월 ${dueAt.getDate()}일 ${time}까지`
+
+  let label: string
+  if (dueAt.getHours() === 0 && dueAt.getMinutes() === 0) {
+    const day = new Date(dueAt.getTime() - 1)
+    label = `${day.getMonth() + 1}월 ${day.getDate()}일 자정(밤 12시)까지`
+  } else {
+    const time = `${String(dueAt.getHours()).padStart(2, '0')}:${String(dueAt.getMinutes()).padStart(2, '0')}`
+    label = `${dueAt.getMonth() + 1}월 ${dueAt.getDate()}일 ${time}까지`
+  }
+
+  const leftMinutes = Math.floor((dueAt.getTime() - now) / 60000)
+  if (leftMinutes <= 0) return label
+  const hours = Math.floor(leftMinutes / 60)
+  const minutes = leftMinutes % 60
+  const left = hours > 0 ? `${hours}시간${minutes > 0 ? ` ${minutes}분` : ''}` : `${minutes}분`
+  return `${label} (${left} 남음)`
 }
 
 // 결제하기를 누른 순간의 최신 예약 상태. 화면이 들고 있는 예약 정보는 오래됐을 수 있어서

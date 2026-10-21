@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { isUnauthorized, refreshAccessToken } from '../api/gateway'
-import { PaymentApiError, confirmPayment, fetchPaymentProgress, paymentErrorMessage } from '../api/payments'
+import {
+  PAYMENT_ERROR_MESSAGE,
+  PaymentApiError,
+  confirmPayment,
+  fetchPaymentProgress,
+  paymentErrorMessage,
+} from '../api/payments'
 import { customerAuth } from '../api/tokenStore'
 import { CheckIcon } from '../components/reservation/icons'
 import './PaymentResultPage.css'
@@ -80,6 +86,12 @@ function PaymentSuccessPage() {
       } catch (err) {
         if (isUnauthorized(err)) {
           navigate('/login')
+          return
+        }
+        // 같은 예약의 이전 결제 결과를 아직 확인 중이라 이번 승인이 거절된 경우(409 PAYMENT_CONFIRMING, #200).
+        // 이번 시도는 결제되지 않았지만 이전 시도가 승인될 수 있으므로, 실패가 아니라 "확인 중"으로 안내한다.
+        if (err instanceof PaymentApiError && err.code === 'PAYMENT_CONFIRMING') {
+          setView({ kind: 'error', message: PAYMENT_ERROR_MESSAGE.PAYMENT_CONFIRMING })
           return
         }
         // 서버가 요청을 확인하고 거절한 경우(금액 불일치, 결제 기한 만료 등 4xx)는 결제가 안 된 것이 확실하다 (명세 5.10).
