@@ -549,7 +549,7 @@ Runner 전용 VM 1대에 GitLab Runner(apt 패키지)를 설치하고 8절에서
 | executor | `docker` + **`/var/run/docker.sock` 바인드** (job 안에서 `docker build/push` 가 호스트 Docker 로 실행) |
 | 동시 job | `gitlab_runner_concurrent: 2` |
 | GitLab 주소 | job / helper 컨테이너에 `extra_hosts` 로 `<gitlab fqdn>:<GitLab Tailscale IP>` 고정 (컨테이너 안의 MagicDNS 해석에 의존하지 않음) |
-| 정리 | 주간 cron 으로 7일 지난 빌드 캐시 / 이미지 prune |
+| 정리 | systemd timer 3개 (VM 을 일과 시간에만 켜므로 부팅 기준 + 놓친 실행 보충) — [9-5](#9-5-docker-정리-timer) |
 | ufw | SSH, 41641/udp 만 허용 (인바운드 서비스 없음) |
 
 > **docker.sock 바인드의 트레이드오프**: DinD(privileged) 없이 빠르고 레이어 캐시를 공유하지만, job 이 **호스트 Docker 전체 권한**(= 사실상 Runner VM root)을 가집니다.
@@ -594,6 +594,27 @@ sudo gitlab-runner list
 ### 9-4. 다음 단계
 
 - 미러링 workflow, `.gitlab-ci.yml`, 클러스터 agent 연결은 [12절](#12-cicd-kas--registry--agent--파이프라인) 참고
+
+### 9-5. docker 정리 timer
+
+job 이미지 · runner cache 볼륨(`node_modules` · npm 캐시 zip) · kaniko 빌드 결과가 호스트 docker 에 쌓여 `no space left on device` 로 job 이 실패합니다.
+VM 을 일과 시간에만 켜므로 고정 시각 cron 은 실행되지 않습니다 — 부팅 기준 + `Persistent=true` systemd timer 로 정리합니다 (값은 `group_vars/gitlab_runner.yml`).
+
+| timer | 시점 | 정리 대상 |
+|---|---|---|
+| `team04-runner-prune-light` | 부팅 10분 후 · 하루 1회 | 종료된 컨테이너, dangling 이미지, 24h 지난 빌드 캐시 |
+| `team04-runner-prune-threshold` | 30분마다 | 디스크 **80% 이상일 때만** 미사용 이미지 전체 + runner cache 볼륨 |
+| `team04-runner-prune-weekly` | 월 09:00 (꺼져 있었으면 다음 부팅 때) | runner cache 볼륨 (그 주 첫 파이프라인은 캐시 없이 실행) |
+
+prune 은 사용 중인 컨테이너 · 이미지 · 볼륨을 지우지 않아 job 실행 중에 돌아도 됩니다.
+`image prune -a` 의 `until` 은 이미지 빌드 시각 기준이라 매일 돌리면 베이스 이미지가 매번 다시 pull 되므로 threshold 에서만 씁니다.
+
+```bash
+systemctl list-timers 'team04-runner-prune-*'
+journalctl -u 'team04-runner-prune@*' -n 50            # mode=... disk N% -> M%
+sudo systemctl start team04-runner-prune@threshold     # 수동 실행 (80% 미만이면 skip)
+sudo /usr/local/sbin/team04-runner-prune light         # 직접 실행
+```
 
 ---
 
