@@ -7,23 +7,10 @@ import {
   BookingGrpcResponse,
   BookingServiceService,
   CancelRecord,
-  PAYMENT_DUE_MINUTES,
 } from './booking-service.service';
 import { RoomAssignmentService } from './room-assignment.service';
 
-const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const CANCEL_REASON_MAX_LENGTH = 255;
-
-// 직원이 만든 예약(대리 예약·연장 예약)의 결제 마감: 생성한 날 밤 자정(한국 시간).
-// 자정까지 30분이 안 남았으면 생성 + 30분 (회원이 결제할 최소 시간). — LDP-83 결정, LDP-90
-export function adminPaymentDueAt(now: Date = new Date()): Date {
-  const kst = new Date(now.getTime() + KST_OFFSET_MS);
-  const nextMidnight =
-    Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate() + 1) -
-    KST_OFFSET_MS;
-  const minimum = now.getTime() + PAYMENT_DUE_MINUTES * 60 * 1000;
-  return new Date(Math.max(nextMidnight, minimum));
-}
 
 // 관리자 예약 기능 — 대리 예약·직원 취소·투숙 연장 (LDP-90).
 // 예약은 회원만 할 수 있고, 직원이 만든 예약도 결제는 손님이 앱에서 한다(손님 앱 "결제 대기"에 보임).
@@ -41,6 +28,7 @@ export class AdminBookingService {
   ) {}
 
   // 대리 예약 생성. 회원 존재 확인과 직원 이름 조회는 api-gateway가 하고 넘긴다.
+  // 결제 마감(만든 날 밤 자정, 최소 30분)은 createBooking이 payment-due.ts로 계산한다.
   async createProxyBooking(data: {
     userId: number;
     roomId: number;
@@ -57,7 +45,6 @@ export class AdminBookingService {
     return this.bookingService.createBooking(booking, {
       createdByAdminId: adminId,
       createdByAdminName: adminName,
-      paymentDueAt: adminPaymentDueAt(),
     });
   }
 
@@ -132,7 +119,6 @@ export class AdminBookingService {
       {
         createdByAdminId: data.adminId,
         createdByAdminName: data.adminName,
-        paymentDueAt: adminPaymentDueAt(),
         linkedReservationId: base.linkedReservationId ?? base.reservationId,
       },
     );

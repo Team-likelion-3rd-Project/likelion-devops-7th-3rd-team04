@@ -1,9 +1,6 @@
 import { Repository } from 'typeorm';
 import { apiRpcException, parseApiRpcError } from '@app/common';
-import {
-  AdminBookingService,
-  adminPaymentDueAt,
-} from './admin-booking.service';
+import { AdminBookingService } from './admin-booking.service';
 import { BookingServiceService } from './booking-service.service';
 import { RoomAssignmentService } from './room-assignment.service';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
@@ -59,25 +56,6 @@ describe('AdminBookingService', () => {
     );
   });
 
-  describe('adminPaymentDueAt (결제 마감 = 생성한 날 밤 자정, 한국 시간)', () => {
-    it('오전 10시(KST)에 만들면 그날 자정(= UTC 15:00)', () => {
-      const due = adminPaymentDueAt(new Date('2026-11-01T01:00:00Z')); // KST 10:00
-      expect(due.toISOString()).toBe('2026-11-01T15:00:00.000Z'); // KST 11-02 00:00
-    });
-
-    it('자정 직전(KST 23:50)이면 최소 30분 보장', () => {
-      const now = new Date('2026-11-01T14:50:00Z'); // KST 23:50
-      expect(adminPaymentDueAt(now).toISOString()).toBe(
-        '2026-11-01T15:20:00.000Z',
-      );
-    });
-
-    it('한국 시간으로 날짜가 바뀐 새벽(UTC로는 전날)도 그날(KST) 자정', () => {
-      const due = adminPaymentDueAt(new Date('2026-11-01T16:00:00Z')); // KST 11-02 01:00
-      expect(due.toISOString()).toBe('2026-11-02T15:00:00.000Z');
-    });
-  });
-
   describe('createProxyBooking (대리 예약)', () => {
     it('회원 명의로 예약하고 만든 직원·결제 마감을 함께 넘긴다', async () => {
       await service.createProxyBooking({
@@ -95,7 +73,6 @@ describe('AdminBookingService', () => {
         {
           createdByAdminId: 3,
           createdByAdminName: '김직원',
-          paymentDueAt: expect.any(Date) as unknown,
         },
       );
       expect(createBooking).toHaveBeenCalledWith(
