@@ -1,5 +1,5 @@
 # Ansible(db_stack role)이 생성 — 직접 수정하지 마세요.
-# MariaDB · Valkey · MinIO 모두 network_mode: host + ufw 로 tailscale0 에서만 접근 허용 (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
+# MariaDB · Valkey · MinIO · DynamoDB Local 모두 network_mode: host + ufw 로 tailscale0 에서만 접근 허용 (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
 name: hotel-db
 
 services:
@@ -61,3 +61,16 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # chat-bot-service 대화 세션·이력 (AWS DynamoDB 대체). 테이블은 db_seed role 이 dynamodb-init.ts 로 생성.
+  # 인증이 없으므로 ufw 로 tailscale0 에서만 허용. 상태 확인용 HTTP 엔드포인트가 없어 healthcheck 는 두지 않음
+  dynamodb:
+    image: {{ dynamodb_image }}
+    container_name: dynamodb
+    network_mode: host
+    restart: unless-stopped
+    user: "{{ dynamodb_uid }}:{{ dynamodb_uid }}"
+    # 이미지 entrypoint 가 java 라 jar 인자만 넘김. -sharedDb: 자격 증명·리전과 관계없이 DB 파일 하나를 씀
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/data", "-port", "{{ dynamodb_port }}"]
+    volumes:
+      - {{ db_data_dir }}/dynamodb:/data

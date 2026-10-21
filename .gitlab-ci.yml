@@ -25,6 +25,7 @@ workflow:
     - changes:
         - backend/**/*
         - backend-deploy/**/*
+        - langchain_rag/**/*
         - .gitlab-ci.yml
   auto_cancel:
     on_new_commit: interruptible
@@ -48,12 +49,17 @@ variables:
   # DB 노드(infra/ansible group_vars/db.yml)와 같은 버전
   MARIADB_IMAGE: mariadb:11.4.13
   SMOKE_CLIENT_IMAGE: alpine:3.22
+  # llm-service(langchain_rag/llm-service/Dockerfile 의 베이스와 같은 버전)
+  PYTHON_IMAGE: python:3.12-slim
+  # n8n 은 빌드하지 않고 Docker Hub 이미지를 레지스트리로 미러링 (push job).
+  # 차트 n8n.image.tag · langchain_rag/docker-compose.yml 과 같은 값으로 올림
+  N8N_VERSION: "2.35.3"
 
   # ── 이미지 태그: 커밋 SHA (latest 미사용) ──
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
   CANDIDATE_TAG: ci-$CI_COMMIT_SHORT_SHA
-  # build 와 push 가 같은 목록을 써야 함 (8 서비스 + 메인 / 결제 DB 마이그레이션)
-  IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service main-migrations payment-migrations"
+  # build 와 push 가 같은 목록을 써야 함 (8 서비스 + llm-service + 메인 / 결제 DB 마이그레이션)
+  IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations"
 
   # ── 배포 ──
   CHART_PATH: backend-deploy/charts/backend
@@ -119,6 +125,22 @@ compile:
     - npx nest build common
     - for app in api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service; do npx nest build "$app"; done
 
+# llm-service(Python) 단위 테스트 — 의도 검증 · 벡터 스토어 · LLM 공급자 선택 (외부 호출 없음)
+test:llm-service:
+  stage: test
+  image: $PYTHON_IMAGE
+  needs: []
+  variables:
+    PIP_CACHE_DIR: $CI_PROJECT_DIR/.pip
+  cache:
+    key:
+      files: [langchain_rag/llm-service/requirements.txt]
+    paths: [.pip/]
+  script:
+    - cd langchain_rag/llm-service
+    - pip install -q -r requirements-dev.txt
+    - python -m pytest tests -q
+
 helm-lint:
   stage: test
   image: $DEPLOY_IMAGE
@@ -128,6 +150,18 @@ helm-lint:
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set ingress.enabled=true > /dev/null
     # dev 의 결제 노드 연동(booking-service / pg-mock-service NodePort) 렌더링
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set services.booking-service.nodePort=30303 > /dev/null
+    # dev 의 챗봇 AI 스택(llm-service · n8n) 렌더링
+    - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set services.llm-service.enabled=true --set n8n.enabled=true > /dev/null
+    # 차트의 n8n 워크플로 · 활성화 스크립트(files/n8n)는 langchain_rag/n8n 의 사본 — 원본만 고치고 복사를 잊지 않도록 검사
+    - |
+      for pair in "workflows/chat-orchestration.json:chat-orchestration.json" "scripts/activate-workflow.js:activate-workflow.js"; do
+        src="langchain_rag/n8n/${pair%%:*}"; dst="$CHART_PATH/files/n8n/${pair##*:}"
+        # 원본은 CRLF 로 커밋돼 있을 수 있어 줄끝을 맞춘 뒤 비교 (POSIX sh 라 프로세스 치환 대신 임시 파일)
+        tr -d '\r' < "$src" > /tmp/src; tr -d '\r' < "$dst" > /tmp/dst
+        if ! cmp -s /tmp/src /tmp/dst; then
+          echo "$dst 가 $src 와 다릅니다 — 원본을 복사해 커밋하세요"; exit 1
+        fi
+      done
 
 # ── build: kaniko (Docker 데몬 / DinD 불필요) ────────────────────
 build:
@@ -147,11 +181,15 @@ build:
           - payment-service
           - pg-mock-service
           - user-service
+          - llm-service
           - main-migrations
           - payment-migrations
   script:
     - |
-      if [ "$SERVICE" = "main-migrations" ]; then
+      if [ "$SERVICE" = "llm-service" ]; then
+        CONTEXT="$CI_PROJECT_DIR/langchain_rag/llm-service"
+        DOCKERFILE="$CONTEXT/Dockerfile"
+      elif [ "$SERVICE" = "main-migrations" ]; then
         CONTEXT="$CI_PROJECT_DIR/backend/migrations"
         DOCKERFILE="$CONTEXT/Dockerfile"
       elif [ "$SERVICE" = "payment-migrations" ]; then
@@ -402,6 +440,7 @@ test:image:
           - payment-service
           - pg-mock-service
           - user-service
+          - llm-service
   # job 변수는 service 컨테이너(app)에도 전달됨 → 앱 환경변수
   services:
     - name: $CI_REGISTRY_IMAGE/$SERVICE:$CANDIDATE_TAG
@@ -443,6 +482,9 @@ test:image:
     CHAT_BOT_SERVICE_HOST: chat-bot-service:3005
     AUTH_SERVICE_HOST: auth-service:3006
     PG_MOCK_SERVICE_URL: http://pg-mock-service:3007
+    # llm-service: 외부(Ollama · Vertex · 벡터 스토어) 없이 기동 · /health 만 확인 (클라이언트는 첫 요청 때 생성)
+    LLM_PROVIDER: ollama
+    VECTOR_STORE: none
   script:
     # 헬스체크 포트: HTTP 서비스는 서비스 포트, gRPC 서비스는 gRPC 포트 + 100 (차트 values.yaml 의 healthPort 와 같음)
     - |
@@ -455,6 +497,7 @@ test:image:
         chat-bot-service) HEALTH_PORT=3105 ;;
         auth-service)     HEALTH_PORT=3106 ;;
         pg-mock-service)  HEALTH_PORT=3007 ;;
+        llm-service)      HEALTH_PORT=8000 ;;
         *) echo "알 수 없는 서비스: $SERVICE"; exit 1 ;;
       esac
     - |
@@ -501,6 +544,13 @@ push:
         crane tag "$CI_REGISTRY_IMAGE/$svc:$CANDIDATE_TAG" "$IMAGE_TAG"
         echo "$CI_REGISTRY_IMAGE/$svc:$IMAGE_TAG  ($(crane digest "$CI_REGISTRY_IMAGE/$svc:$IMAGE_TAG"))"
       done
+    # n8n: Docker Hub 이미지를 버전 태그 그대로 미러링 (클러스터는 레지스트리에서만 pull). 이미 있으면 건너뜀
+    - |
+      if crane digest "$CI_REGISTRY_IMAGE/n8n:$N8N_VERSION" > /dev/null 2>&1; then
+        echo "$CI_REGISTRY_IMAGE/n8n:$N8N_VERSION 이미 있음"
+      else
+        crane copy "docker.io/n8nio/n8n:$N8N_VERSION" "$CI_REGISTRY_IMAGE/n8n:$N8N_VERSION" --platform linux/amd64
+      fi
 
 # ── deploy (수동) ─────────────────────────────────────────────
 # 1) gitops 레포(dev) envs/<env>/values.yaml 의 global.imageTag 커밋  2) helm upgrade --atomic  3) rollout status

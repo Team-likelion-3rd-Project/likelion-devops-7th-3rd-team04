@@ -35,11 +35,17 @@ services:
       - path: ./llm-service/.env
         required: false
     environment:
+      # 로컬 기본은 Ollama. Vertex AI로 돌리려면 호스트 셸에서 LLM_PROVIDER=vertex와
+      # GCP_SA_KEY_JSON(서비스 계정 키 JSON 문자열)을 지정하세요(dev·prod 클러스터는 vertex).
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-likelion-devops-7th-3rd-team4}
+      GCP_SA_KEY_JSON: ${GCP_SA_KEY_JSON:-}
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
-      # RAG 검색(app/retrieval.py) — S3 Vectors. 자격 증명이 없거나 조회가 실패하면
-      # 근거 없는 답변으로 넘어갑니다.
+      # RAG 검색(app/retrieval.py) — 로컬 기본은 S3 Vectors(VECTOR_STORE=s3vectors).
+      # 자격 증명이 없거나 조회가 실패하면 근거 없는 답변으로 넘어갑니다.
+      VECTOR_STORE: ${VECTOR_STORE:-s3vectors}
       VECTOR_BUCKET_NAME: ${VECTOR_BUCKET_NAME:-team04-dev-vector-bucket}
       VECTOR_INDEX_NAME: ${VECTOR_INDEX_NAME:-team04-chatbot-vector-index}
       AWS_REGION: ${AWS_REGION:-us-east-1}
@@ -59,7 +65,8 @@ services:
   # 오케스트레이션 워크플로(Webhook -> 역할 매핑 -> llm-service -> Respond to Webhook)를
   # 돌리는 n8n. RAG 검색은 llm-service 안에서 하므로 워크플로는 message/history만 넘깁니다.
   n8n:
-    image: n8nio/n8n:latest
+    # 버전 고정 — backend 차트(n8n.image.tag)·CI(N8N_VERSION)와 같은 값. activate-workflow.js가 이 버전에서 검증됨
+    image: n8nio/n8n:2.35.3
     ports:
       - "5678:5678"
     environment:
@@ -91,7 +98,7 @@ services:
   #      최초 실행 시 로컬 owner 계정을 만들어 세션을 얻습니다
   #      (N8N_INIT_OWNER_EMAIL/N8N_INIT_OWNER_PASSWORD로 변경 가능, 로컬 전용이라 기본값으로 충분).
   n8n-init:
-    image: n8nio/n8n:latest
+    image: n8nio/n8n:2.35.3
     entrypoint: ["sh", "-c"]
     command:
       - >

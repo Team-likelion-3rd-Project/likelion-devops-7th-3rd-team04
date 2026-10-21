@@ -1,0 +1,150 @@
+{{- if .Values.n8n.enabled }}
+{{- $ctx := dict "root" $ "name" "n8n" }}
+{{- $workflow := .Files.Get "files/n8n/chat-orchestration.json" }}
+{{- $activate := .Files.Get "files/n8n/activate-workflow.js" }}
+---
+# 챗봇 오케스트레이션 워크플로 (chat-bot-service → n8n webhook → llm-service).
+# 워크플로 · 활성화 스크립트는 langchain_rag/n8n 의 사본 (files/n8n). 2차 프로젝트 gitops/langchain/base/n8n 과 같은 구조
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n8n-workflow
+  labels:
+    {{- include "backend.labels" $ctx | nindent 4 }}
+data:
+  chat-orchestration.json: |-
+    {{- $workflow | nindent 4 }}
+  activate-workflow.js: |-
+    {{- $activate | nindent 4 }}
+---
+# 상태(SQLite)는 emptyDir — Pod 가 바뀔 때마다 initContainer 가 워크플로를 다시 import 하고 postStart 가 활성화.
+# 워크플로 외의 상태(실행 이력 등)는 보존하지 않음
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n8n
+  labels:
+    {{- include "backend.labels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  # emptyDir 단일 인스턴스라 동시에 2개를 띄우지 않음
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "backend.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "backend.labels" $ctx | nindent 8 }}
+      annotations:
+        # 워크플로가 바뀌면 Pod 를 다시 만들어 새로 import
+        checksum/workflow: {{ printf "%s%s" $workflow $activate | sha256sum }}
+    spec:
+      {{- include "backend.imagePullSecrets" $ | trim | nindent 6 }}
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with $.Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: n8n-data
+          emptyDir: {}
+        - name: n8n-workflow
+          configMap:
+            name: n8n-workflow
+      initContainers:
+        # import 는 워크플로를 항상 비활성으로 넣음 → 본 컨테이너 postStart 의 activate-workflow.js 가 활성화
+        - name: import-workflow
+          image: {{ include "backend.image" (dict "root" $ "image" .Values.n8n.image) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          command: ["sh", "-c"]
+          args: ["n8n import:workflow --input=/config/chat-orchestration.json"]
+          volumeMounts:
+            - name: n8n-data
+              mountPath: /home/node/.n8n
+            - name: n8n-workflow
+              mountPath: /config
+              readOnly: true
+          {{- with $.Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      containers:
+        - name: n8n
+          image: {{ include "backend.image" (dict "root" $ "image" .Values.n8n.image) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - name: app
+              containerPort: 5678
+          env:
+            - name: WEBHOOK_URL
+              value: "http://n8n:5678/"
+            - name: N8N_SECURE_COOKIE
+              value: "false"
+            - name: N8N_DIAGNOSTICS_ENABLED
+              value: "false"
+            - name: N8N_INIT_OWNER_EMAIL
+              value: {{ .Values.n8n.ownerEmail | quote }}
+            - name: N8N_INIT_OWNER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.secretName }}
+                  key: N8N_INIT_OWNER_PASSWORD
+          volumeMounts:
+            - name: n8n-data
+              mountPath: /home/node/.n8n
+            - name: n8n-workflow
+              mountPath: /config
+              readOnly: true
+          lifecycle:
+            # 컨테이너가 Ready 로 넘어가기 전에 워크플로를 활성화(웹훅 등록). 실패하면 컨테이너를 재시작해 다시 시도
+            # 로그는 kubectl logs 에서 보이도록 PID 1 의 stdout 으로 보냄
+            postStart:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - N8N_URL=http://localhost:5678 node /config/activate-workflow.js /config/chat-orchestration.json > /proc/1/fd/1 2>&1
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 5678
+            periodSeconds: {{ $.Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5678
+            periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5678
+            periodSeconds: {{ $.Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ $.Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ $.Values.probes.liveness.failureThreshold }}
+          resources:
+            {{- toYaml (.Values.n8n.resources | default $.Values.defaultResources) | nindent 12 }}
+          {{- with $.Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: n8n
+  labels:
+    {{- include "backend.labels" $ctx | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "backend.selectorLabels" $ctx | nindent 4 }}
+  ports:
+    - name: app
+      port: 5678
+      targetPort: app
+{{- end }}

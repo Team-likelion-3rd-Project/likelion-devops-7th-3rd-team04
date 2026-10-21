@@ -1,9 +1,13 @@
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-langchain-core==0.3.15
-langchain-ollama==0.2.0
+langchain-core==0.3.86
+# LLM_PROVIDER=ollama (local docker compose)
+langchain-ollama==0.3.10
+# LLM_PROVIDER=vertex (dev/prod): Gemini chat + text-multilingual-embedding-002
+langchain-google-vertexai==2.0.28
 pydantic==2.9.2
-# RAG retrieval (app/retrieval.py, scripts/ingest.py): AWS S3 Vectors client
-# (boto3.client("s3vectors")). Verified present in 1.43.73 - keep >= that.
+# Vector stores (app/vector_store.py): S3 Vectors (boto3.client("s3vectors")) and
+# S3-compatible object storage such as MinIO (boto3.client("s3")).
+# s3vectors verified present in 1.43.73 - keep >= that.
 # Keep this file ASCII-only: pip reads it with the OS locale (cp949 on Korean Windows).
 boto3>=1.43.73

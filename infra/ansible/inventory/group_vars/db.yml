@@ -9,6 +9,8 @@ valkey_image: "valkey/valkey:9.1.2"
 # 업스트림 minio/minio 는 커뮤니티 이미지 배포가 끝나 Docker Hub 에서 내려감 →
 # 호환 포크(Silo, github.com/pgsty/minio) 사용. MINIO_* 환경변수 / RELEASE.* 태그 / entrypoint 동일, 클라이언트는 mcli
 minio_image: "pgsty/minio:RELEASE.2026-08-04T00-00-00Z"
+# chat-bot-service 대화 세션·이력 저장소 (AWS DynamoDB 대체, 로컬 backend/docker-compose.yml 의 dynamodb-local 과 같은 이미지)
+dynamodb_image: "amazon/dynamodb-local:3.3.1"
 
 # ── 경로 ─────────────────────────────────────────────────
 db_base_dir: /opt/hotel-db        # compose / 설정 / client 자격증명 (0700)
@@ -62,6 +64,16 @@ minio_app_access_key: "{{ lookup('env', 'MINIO_APP_ACCESS_KEY') }}"
 minio_app_secret_key: "{{ lookup('env', 'MINIO_APP_SECRET_KEY') }}"
 minio_app_policy: hotel-app
 minio_cors_allow_origin: "*"
+# RAG 벡터 인덱스(llm-service VECTOR_STORE=object). 임베딩 JSON 파일 하나를 두고 llm-service 가 읽고,
+# ingest(llm-service 의 scripts.ingest)가 씀 — room-images 와 분리된 전용 버킷 · 계정
+minio_rag_bucket: rag-index
+minio_rag_access_key: "{{ lookup('env', 'MINIO_RAG_ACCESS_KEY') }}"
+minio_rag_secret_key: "{{ lookup('env', 'MINIO_RAG_SECRET_KEY') }}"
+minio_rag_policy: hotel-rag
+# ── DynamoDB Local: chat-bot-service 대화 이력 (README 7-7) ────────────
+# -dbPath 로 파일에 저장 (로컬 compose 의 -inMemory 와 달리 재시작해도 이력 유지). 인증이 없으므로 tailnet 에서만 허용
+dynamodb_port: 8000
+dynamodb_uid: 1000        # 컨테이너 실행 사용자 = 데이터 디렉토리 소유자
 
 # ── 방화벽: tailscale0 에서만 허용할 포트 (firewall role) ─────
 firewall_tailnet_tcp_ports:
@@ -69,6 +81,7 @@ firewall_tailnet_tcp_ports:
   - "{{ valkey_port }}"        # Valkey
   - "{{ minio_api_port }}"     # MinIO S3 API (presigned URL)
   - "{{ minio_console_port }}" # MinIO Console (팀원 PC)
+  - "{{ dynamodb_port }}"      # DynamoDB Local (chat-bot-service)
 
 # ── 튜닝 (k6 부하 테스트 대비) ─────────────────────────────
 # 커넥션: DB 사용 서비스 5개 × replica × TypeORM(mysql2) 기본 풀 10 → replica 3 기준 150, 여유 포함

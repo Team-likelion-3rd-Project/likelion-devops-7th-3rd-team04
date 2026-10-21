@@ -101,8 +101,8 @@ infra/ansible/
     { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:80", "tcp:443", "tcp:30000-32767"] },
 
     // ── DB ───────────────────────────────────────────────
-    // k8s Pod → DB · MinIO(S3 API 9000). Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
-    { "src": ["tag:k8s-node"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379", "tcp:9000"] },
+    // k8s Pod → DB · MinIO(S3 API 9000) · DynamoDB Local(8000, chat-bot-service). Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
+    { "src": ["tag:k8s-node"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379", "tcp:9000", "tcp:8000"] },
     // GitLab CI 이미지 smoke test → dev DB 서버 (파이프라인 전용 database ci_<id> 만 사용, 12절)
     { "src": ["tag:gitlab-runner"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379"] },
     // 팀원 PC → DB : SSH, DBeaver 등 DB 클라이언트, valkey-cli 디버깅, 브라우저 → MinIO presigned URL(9000) / Console(9001)
@@ -307,7 +307,7 @@ kubectl delete pod p1 p2
 
 ---
 
-## 7. DB 노드 구성 (MariaDB + Valkey + MinIO)
+## 7. DB 노드 구성 (MariaDB + Valkey + MinIO + DynamoDB Local)
 
 backend 서비스가 사용할 MariaDB와, 향후 Redis를 대체할 Valkey, 객실 이미지를 저장할 dev 용 S3(MinIO)를 DB 전용 VM 1대에 Docker Compose로 띄웁니다.
 
@@ -446,6 +446,24 @@ ansible-playbook db.yml -K --tags seed
   # 서명 Host 가 Tailscale IP 가 되도록 앱 키로 alias 를 잡아 발급 (127.0.0.1 로 발급하면 외부에서 못 씀)
   sudo docker exec -it minio sh -c 'mcli alias set ts http://<DB ts ip>:9000 <APP_KEY> <APP_SECRET> >/dev/null && mcli share download ts/room-images/test.txt'
   # 팀원 PC: 출력된 URL → 200, 서명 없이 http://<DB ts ip>:9000/room-images/test.txt → 403
+  ```
+
+### 7-7. DynamoDB Local · RAG 인덱스 버킷 (챗봇)
+
+챗봇 AI 스택(15절)이 쓰는 저장소 두 가지도 DB 노드에 둡니다. 둘 다 `db.yml` 이 만들고 맞춥니다.
+
+- **DynamoDB Local** (`dynamodb` 컨테이너, `:8000`): chat-bot-service 의 대화 세션·이력 저장소입니다. prod 는 AWS DynamoDB 를 쓰고, 온프레미스에는 AWS 자격 증명이 없어 같은 API 의 로컬 구현으로 대신합니다.
+  - 로컬 `backend/docker-compose.yml` 은 `-inMemory` 지만, 여기서는 `-dbPath` 로 `/var/lib/hotel-db/dynamodb` 에 저장해 **재시작해도 이력이 남습니다**.
+  - 테이블(ChatSessions / ChatMessages)은 `db_seed` role 이 시딩 이미지로 `scripts/dynamodb-init.ts` 를 실행해 만듭니다. 멱등이고, 메인 DB 스키마 유무와 관계없이 실행됩니다.
+  - **인증이 없습니다.** ufw 로 tailscale0 에서만 열고, Tailscale ACL 은 `tag:k8s-node → tag:db tcp:8000` 만 허용합니다(1-1).
+- **RAG 인덱스 버킷** (`rag-index`): llm-service 의 RAG 벡터 인덱스(임베딩 JSON 파일 하나)를 둡니다. 객실 이미지 버킷과 권한을 나누려고 **전용 계정(`MINIO_RAG_ACCESS_KEY`)과 정책(`hotel-rag`, 이 버킷만 읽기/쓰기)**을 따로 둡니다. 앱 계정과 같은 방식으로 접속이 실패할 때만 계정을 다시 맞춥니다.
+- 확인 (DB 노드):
+  ```bash
+  sudo docker ps --filter name=dynamodb                       # Up
+  sudo docker exec minio mcli ls rag/rag-index                # RAG 계정으로 접근 가능 (ingest 전에는 비어 있음)
+  # 팀원 PC / k8s 노드 (Tailnet 경유) — AWS CLI 가 있으면
+  AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local aws dynamodb list-tables \
+    --endpoint-url http://<DB ts ip>:8000 --region ap-northeast-2  # ChatMessages, ChatSessions
   ```
 
 ---
@@ -1065,3 +1083,86 @@ nc -zv <결제 노드 Tailscale IP> 3306                        # 실패해야 �
 - **Flyway 실패 (validate)**: 이미 적용된 SQL 파일이 바뀐 경우입니다. 파일을 되돌리고 새 버전(`V<n+1>__...sql`)으로 추가합니다. payment-service 는 이전 버전으로 계속 동작합니다.
 - **payment-service 가 healthy 가 안 됨**: playbook 이 마지막 로그 40줄을 출력합니다. `docker logs payment-service` 로 DB 접속 / 환경변수 누락을 확인합니다.
 - **booking-service 호출 timeout**: gitops 에 `booking-service.nodePort` 가 반영됐는지(`kubectl -n backend get svc booking-service` 가 `NodePort`), ACL `tag:payment → tag:k8s-node tcp:30303` 을 확인합니다.
+
+---
+
+## 15. 챗봇 AI 스택 (llm-service · n8n, Vertex AI)
+
+챗봇 응답 경로 `chat-bot-service → n8n(webhook) → llm-service → Vertex AI(Gemini)` 를 dev 클러스터에 올립니다. llm-service 와 n8n 은 backend Helm 차트에 들어 있고(기본 꺼짐), gitops `envs/dev` 에서 켭니다.
+
+| 구성 요소 | 위치 | 만드는 곳 |
+|---|---|---|
+| Vertex AI 호출용 서비스 계정 `llm-service-dev` · `roles/aiplatform.user` | GCP | `infra/gcp-terraform/dev` |
+| 서비스 계정 키(JSON) | `infra/ansible/.secrets/` (gitignore) | gcloud (`infra/gcp-terraform/README.md` 의 키 발급) |
+| 대화 이력 DynamoDB Local · RAG 인덱스 버킷 | DB 노드 | `db.yml` (7-7) |
+| `backend-secrets` 의 챗봇 key | 클러스터 | `k8s-cicd.yml` |
+| llm-service · n8n Deployment | 클러스터 | CI `deploy-dev` (차트) |
+
+### 15-1. 값 설정 (`infra/ansible/.env`)
+
+| 이름 | 설명 |
+|---|---|
+| `GCP_SA_KEY_FILE` | 서비스 계정 키 파일 경로 (기본 `.secrets/llm-service-dev-sa.json`, infra/ansible 기준 상대 경로). 키 JSON 은 여러 줄이라 .env 에 직접 넣지 않고 Ansible 이 파일을 읽어 Secret 의 `GCP_SA_KEY_JSON` 에 넣음 |
+| `MINIO_RAG_ACCESS_KEY` / `MINIO_RAG_SECRET_KEY` | RAG 인덱스 버킷 전용 계정 (7-7). Secret 의 `VECTOR_OBJECT_ACCESS_KEY` / `VECTOR_OBJECT_SECRET_KEY` |
+| `N8N_INIT_OWNER_PASSWORD` | n8n 이 워크플로를 활성화할 때 쓰는 로컬 owner 계정 비밀번호 (8자 이상, 클러스터 밖에 노출되지 않음) |
+| `DB_TS_IP` | (기존) Secret 의 `DYNAMODB_ENDPOINT=http://<DB_TS_IP>:8000`, `VECTOR_OBJECT_ENDPOINT=http://<DB_TS_IP>:9000` 에 쓰임 |
+
+### 15-2. 순서
+
+```bash
+# 1) GCP: 서비스 계정 + 키 (infra/gcp-terraform/README.md)
+# 2) DB 노드: DynamoDB Local · RAG 버킷 · 대화 이력 테이블
+cd infra/ansible && set -a; source .env; set +a
+ansible-playbook db.yml -K
+# 3) 클러스터: backend-secrets 에 챗봇 key 반영
+set -a; source .env; source .secrets/gitlab-k8s.env; set +a
+ansible-playbook k8s-cicd.yml -K --tags backend_secrets
+# 4) gitops envs/dev/values.yaml 반영 (15-3) → GitLab 파이프라인 deploy-dev
+# 5) RAG 인덱스 1회 적재 (corpus 가 바뀔 때마다 다시)
+kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
+```
+
+- Tailscale ACL 의 `tag:k8s-node → tag:db` 에 `tcp:8000`(DynamoDB Local)이 있어야 합니다(1-1).
+- k8s 노드가 인터넷(`aiplatform.googleapis.com`, `oauth2.googleapis.com`)에 나갈 수 있어야 Vertex AI 를 호출합니다.
+
+### 15-3. dev gitops 값 (최초 1회)
+
+`backend-deploy/gitops-seed` 는 gitops 레포를 **처음 만들 때만** 반영됩니다. 이미 있는 `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` 에는 아래를 직접 커밋합니다.
+
+```yaml
+services:
+  chat-bot-service:
+    secretEnv: [DYNAMODB_ENDPOINT]
+  llm-service:
+    enabled: true
+    env:
+      VECTOR_STORE: object
+      VECTOR_OBJECT_BUCKET: rag-index
+    secretEnv:
+      - GCP_SA_KEY_JSON
+      - VECTOR_OBJECT_ENDPOINT
+      - VECTOR_OBJECT_ACCESS_KEY
+      - VECTOR_OBJECT_SECRET_KEY
+n8n:
+  enabled: true
+```
+
+- llm-service 의 나머지 값(Vertex 모델 · 리전 · `LLM_PROVIDER=vertex`)과 chat-bot-service 의 `N8N_WEBHOOK_URL=http://n8n:5678/webhook/chat` 는 차트 기본값입니다.
+- n8n 이미지는 CI `push` job 이 Docker Hub `n8nio/n8n:<N8N_VERSION>` 을 레지스트리로 미러링한 것입니다.
+
+### 15-4. 검증
+
+```bash
+kubectl -n backend get pods -l 'app.kubernetes.io/name in (llm-service,n8n,chat-bot-service)'   # 모두 Running / Ready
+kubectl -n backend logs deploy/n8n | grep -E 'activated|already active'                          # 워크플로 활성화
+kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest                            # 20 documents indexed ...
+```
+
+프론트(`VITE_DEV_API_PROXY` 를 클러스터로)에서 챗봇에 정책 질문 → RAG 근거 답변, 예약·결제·취소 의사 → 액션 카드, 로그인 후 대화가 이어지는지(새로고침·Pod 재시작 후에도) 확인합니다.
+
+### 15-5. 트러블슈팅
+
+- **llm-service 가 `CreateContainerConfigError`**: `backend-secrets` 에 `GCP_SA_KEY_JSON` 등이 없는 경우 → 15-2 의 3) 재실행.
+- **챗봇이 "AI 응답 생성에 실패"**: `kubectl -n backend logs deploy/llm-service` — Vertex `403`(키·권한), `429`(쿼터. 채팅은 `VERTEX_CHAT_LOCATION=global`), `UNAUTHENTICATED`(키 폐기·교체 직후 전파 지연) 를 확인합니다.
+- **RAG 근거 없이 답변**: llm-service 로그의 `벡터 인덱스 로드` / `임베딩 모델 ... 달라` 를 확인하고 ingest 를 다시 실행합니다.
+- **대화가 이어지지 않음**: chat-bot-service 로그에서 DynamoDB 접속 오류 → DB 노드 `dynamodb` 컨테이너, ufw 8000, Tailscale ACL 확인.

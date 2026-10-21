@@ -59,3 +59,23 @@ backend_secret_optional_keys: []
 backend_secret_host_overrides:
   DB_HOST: "{{ db_ts_ip }}"
   REDIS_HOST: "{{ db_ts_ip }}"
+# ── 챗봇 AI 스택(llm-service · n8n, infra/ansible README 15절) — backend/.env 가 아니라 infra/ansible/.env 에서 ──
+# 서비스 계정 키(JSON, 여러 줄)는 .env 에 직접 넣을 수 없어 파일 경로만 받음 (infra/gcp-terraform/README 의 키 발급).
+# 상대 경로는 infra/ansible 기준
+gcp_sa_key_file: "{{ lookup('env', 'GCP_SA_KEY_FILE') }}"
+gcp_sa_key_path: >-
+  {{ gcp_sa_key_file if gcp_sa_key_file.startswith('/')
+     else (playbook_dir ~ '/' ~ gcp_sa_key_file) | realpath }}
+# DB 노드(db.yml)의 포트와 같은 값 — group_vars/db.yml 의 minio_api_port / dynamodb_port
+db_minio_api_port: 9000
+db_dynamodb_port: 8000
+# 서비스 계정 키(GCP_SA_KEY_JSON)는 base64 로 Secret 의 data 에 넣음 (backend_namespace role).
+# 문자열로 두면 Ansible 이 JSON 을 dict 로 바꿔 stringData(문자열만 허용)가 kubectl apply 에서 거절됨
+gcp_sa_key_b64: "{{ lookup('file', gcp_sa_key_path) | b64encode }}"
+# 차트(gitops envs/dev/values.yaml)의 llm-service · chat-bot-service · n8n secretEnv 에 나오는 key (GCP_SA_KEY_JSON 제외)
+backend_secret_extra:
+  VECTOR_OBJECT_ENDPOINT: "http://{{ db_ts_ip }}:{{ db_minio_api_port }}"
+  VECTOR_OBJECT_ACCESS_KEY: "{{ lookup('env', 'MINIO_RAG_ACCESS_KEY') }}"
+  VECTOR_OBJECT_SECRET_KEY: "{{ lookup('env', 'MINIO_RAG_SECRET_KEY') }}"
+  DYNAMODB_ENDPOINT: "http://{{ db_ts_ip }}:{{ db_dynamodb_port }}"
+  N8N_INIT_OWNER_PASSWORD: "{{ lookup('env', 'N8N_INIT_OWNER_PASSWORD') }}"
