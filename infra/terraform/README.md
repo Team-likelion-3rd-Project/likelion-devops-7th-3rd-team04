@@ -160,7 +160,8 @@ bootstrap                                  🔒 최초 1회 (terraform)
 
 | 스택 | 조건 | apply | destroy |
 |---|---|---|---|
-| `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), 결제 VPC Network Firewall 엔드포인트 1개 (NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
+| `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
+| `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개, NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
 | `30-security` | `enable_control_plane = true` (SG 10개, 규칙 34개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
 | `40-cicd` | GitLab Runner 1대 + Ansible 묶음 업로드 (t4g.medium 기준 실측, 2026-10-21 m7g.large 로 변경. 부트스트랩 별도: 시작부터 GitLab 등록까지 약 3분 30초 – 4분) | 54초 – 58초 | 1분 25초 |
@@ -170,8 +171,8 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `44-payment-endpoints` | 인터페이스 엔드포인트 8종(AZ 2개), S3 게이트웨이 엔드포인트 정책 | 57초 – 1분 04초 | 2분 24초 |
 | `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
-| **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 (NFW 도입 전) | **10분 06초** | **5분 01초** (10 · 11 제외) |
-| **`run --all` (10 · 11 포함, 20 · 30 · 40 – 44 · 70 · 80)** | 위 기본 조건, 2026-10-21 NFW 포함 | **20분 07초** | **12분 56초** (10 · 11 제외) |
+| **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
+| **`run --all` (10 · 11 포함, 20 · 30 · 40 – 44 · 70 · 80)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-21) | **20분 07초** | **12분 56초** (10 · 11 제외) |
 
 `70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, 배포 agent 의 Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
 
@@ -366,6 +367,21 @@ NAT 응답  ─ public RT <app · lb 서브넷 CIDR> ─▶ 같은 NFW 엔드포
 ```
 
 - VPC 엔드포인트(ECR · SSM · SQS · Secrets Manager · Logs), S3 게이트웨이(prefix list), 결제 DB 는 더 구체적인 경로라 NFW 를 거치지 않습니다.
+- **`enable_payment_network_firewall` 기본값은 `false`(개발 기간 비용 절감) 입니다.** 끄면 app · lb 가 NAT 로 바로 나가고 DNS Firewall · SG 만 남습니다 (IP 직접 접속은 막지 못함). firewall 서브넷 · 라우트 테이블은 무료라 남겨 둡니다. rc.3 전에 기본값을 `true` 로 바꿉니다.
+  ```bash
+  # 그날만 켜서 검증 (다음 재생성 때 기본값으로 꺼짐). 켜기 약 5분
+  AWS_PROFILE=team04 terragrunt apply -var enable_payment_network_firewall=true
+  ```
+- **켜진 상태에서 `false` 로 바로 apply 하면 실패합니다** (`DeleteFirewall ... VPC endpoint(s) still exist in route table(s)`). Terraform 이 private 라우트를 NAT 로 바꾸기 전에 NFW 삭제를 먼저 시도하기 때문입니다 (의존 리소스 수정과 의존 대상 삭제 사이의 순서를 보장하지 않음). 매일 destroy 로 내려가는 경우는 라우트가 먼저 삭제되므로 문제없습니다. 그날 바로 꺼야 하면 라우트를 먼저 NAT 로 돌리고 apply 합니다.
+  ```bash
+  # single_nat_gateway = false 면 AZ 마다 team04-hotel-payment-<az> NAT 로 바꾼다
+  NAT=$(AWS_PROFILE=team04 aws ec2 describe-nat-gateways --filter Name=tag:Name,Values=team04-hotel-payment-a Name=state,Values=available --query 'NatGateways[0].NatGatewayId' --output text)
+  for az in a b; do
+    RT=$(AWS_PROFILE=team04 aws ec2 describe-route-tables --filters Name=tag:Name,Values=team04-hotel-payment-private-$az --query 'RouteTables[0].RouteTableId' --output text)
+    AWS_PROFILE=team04 aws ec2 replace-route --route-table-id "$RT" --destination-cidr-block 0.0.0.0/0 --nat-gateway-id "$NAT"
+  done
+  AWS_PROFILE=team04 terragrunt apply     # NFW 삭제 약 3분 30초 (firewall 2분 18초 + 정책 · rule group)
+  ```
 - 엔드포인트 수는 NAT 와 맞춥니다. `single_nat_gateway = true` 면 a 하나, `false` 면 a · b.
 - Main · Deployment VPC 는 검사하지 않습니다 (`modules/vpc` 의 `firewall_endpoint_ids` 기본값 `{}`).
 

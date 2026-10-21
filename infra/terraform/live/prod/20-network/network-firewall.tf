@@ -12,19 +12,23 @@
 #
 # 엔드포인트 AZ 는 NAT 와 맞춘다 (single_nat_gateway = true 면 a 하나, false 면 a · b).
 # 매일 재생성 대상이라 삭제 보호를 끈다.
+#
+# enable_payment_network_firewall = false 면 NFW 관련 리소스를 만들지 않고 app · lb 는 NAT 로 바로 나간다.
+# firewall 서브넷 · 라우트 테이블은 무료라 남겨 두어, 다시 켤 때 NFW 만 생성한다.
 
 locals {
   payment_firewall_azs = var.single_nat_gateway ? [sort(keys(local.payment_firewall_cidrs))[0]] : sort(keys(local.payment_firewall_cidrs))
 
   # 키(AZ)는 plan 시점에 정해져 있어야 모듈의 for_each 가 동작한다. 값(엔드포인트 ID)은 apply 후 정해진다
-  payment_firewall_endpoint_by_subnet = {
-    for s in aws_networkfirewall_firewall.payment.firewall_status[0].sync_states :
+  # 끄면 {} 라 모듈이 NAT 경로를 만든다
+  payment_firewall_endpoint_by_subnet = var.enable_payment_network_firewall ? {
+    for s in aws_networkfirewall_firewall.payment[0].firewall_status[0].sync_states :
     s.attachment[0].subnet_id => s.attachment[0].endpoint_id
-  }
-  payment_firewall_endpoint_ids = {
+  } : {}
+  payment_firewall_endpoint_ids = var.enable_payment_network_firewall ? {
     for az in local.payment_firewall_azs :
     az => local.payment_firewall_endpoint_by_subnet[module.payment.subnet_ids_by_az.firewall[az]]
-  }
+  } : {}
 
   payment_egress_rules = join("\n", concat(
     [
@@ -39,6 +43,8 @@ locals {
 }
 
 resource "aws_networkfirewall_rule_group" "payment_egress" {
+  count = var.enable_payment_network_firewall ? 1 : 0
+
   name = "${local.name}-payment-egress"
   type = "STATEFUL"
 
@@ -66,6 +72,8 @@ resource "aws_networkfirewall_rule_group" "payment_egress" {
 }
 
 resource "aws_networkfirewall_firewall_policy" "payment" {
+  count = var.enable_payment_network_firewall ? 1 : 0
+
   name = "${local.name}-payment"
 
   firewall_policy {
@@ -79,14 +87,16 @@ resource "aws_networkfirewall_firewall_policy" "payment" {
 
     stateful_rule_group_reference {
       priority     = 100
-      resource_arn = aws_networkfirewall_rule_group.payment_egress.arn
+      resource_arn = aws_networkfirewall_rule_group.payment_egress[0].arn
     }
   }
 }
 
 resource "aws_networkfirewall_firewall" "payment" {
+  count = var.enable_payment_network_firewall ? 1 : 0
+
   name                = "${local.name}-payment"
-  firewall_policy_arn = aws_networkfirewall_firewall_policy.payment.arn
+  firewall_policy_arn = aws_networkfirewall_firewall_policy.payment[0].arn
   vpc_id              = module.payment.vpc_id
 
   delete_protection                 = false
@@ -107,19 +117,23 @@ resource "aws_networkfirewall_firewall" "payment" {
 #   FLOW  : 10-global 로그 버킷 network-firewall/ (장기 보관, 버킷 정책은 10-global 이 연다)
 
 resource "aws_cloudwatch_log_group" "payment_firewall_alert" {
+  count = var.enable_payment_network_firewall ? 1 : 0
+
   name              = "/aws/vendedlogs/${local.name}/payment-network-firewall/alert"
   retention_in_days = var.payment_firewall_alert_log_retention_days
 }
 
 resource "aws_networkfirewall_logging_configuration" "payment" {
-  firewall_arn = aws_networkfirewall_firewall.payment.arn
+  count = var.enable_payment_network_firewall ? 1 : 0
+
+  firewall_arn = aws_networkfirewall_firewall.payment[0].arn
 
   logging_configuration {
     log_destination_config {
       log_type             = "ALERT"
       log_destination_type = "CloudWatchLogs"
       log_destination = {
-        logGroup = aws_cloudwatch_log_group.payment_firewall_alert.name
+        logGroup = aws_cloudwatch_log_group.payment_firewall_alert[0].name
       }
     }
 

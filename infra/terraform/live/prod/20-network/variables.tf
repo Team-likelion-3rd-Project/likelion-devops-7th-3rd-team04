@@ -34,6 +34,16 @@ variable "single_nat_gateway" {
   default     = true
 }
 
+variable "enable_payment_network_firewall" {
+  description = <<-EOT
+    결제 VPC egress 를 Network Firewall 로 검사한다. false 면 app · lb 가 NAT 로 바로 나간다 (DNS Firewall · SG 는 유지).
+    개발 기간 비용 절감용으로 기본은 끄고(엔드포인트 1개 시간당 $0.395), rc.3 전에 기본값을 true 로 바꾼다.
+    하루만 켜서 검증할 때: terragrunt apply -var enable_payment_network_firewall=true
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "enable_control_plane_subnets" {
   description = "Main VPC 의 kubeadm 컨트롤 플레인 서브넷(a·b·c) 생성 여부. EKS 전환 후 false"
   type        = bool
