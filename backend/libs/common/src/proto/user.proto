@@ -28,6 +28,12 @@ service UserService {
   // 가입이 성립하지 않은 것이라 deleted_user 백업 없이 지웁니다. id와 email이 모두 맞을 때만 지우고,
   // 이미 없으면 그대로 성공으로 응답합니다(다시 호출해도 안전).
   rpc CancelSignup (CancelSignupRequest) returns (DeleteUserResponse);
+
+  // auth-service가 회원가입 전에 호출합니다 (LDP-111). 탈퇴가 중간에 멈춰 비밀번호 없이 남은 프로필을
+  // deleted_user로 옮긴 뒤 지워, 같은 이메일로 다시 가입할 수 있게 합니다. 비밀번호가 없는지는 auth-service가
+  // 확인하고, 여기서는 id·email이 맞고 만든 지 일정 시간이 지난 프로필만 정리합니다(가입 진행 중인 프로필 보호).
+  // 조건에 맞지 않거나 이미 없으면 success=false.
+  rpc ArchiveOrphanProfile (ArchiveOrphanProfileRequest) returns (DeleteUserResponse);
 }
 
 // 관리자 계정(admins 테이블)은 고객(users)과 완전히 다른 테이블로 관리합니다.
@@ -63,6 +69,11 @@ message GetUserByEmailRequest {
 }
 
 message CancelSignupRequest {
+  int32 id = 1;
+  string email = 2;
+}
+
+message ArchiveOrphanProfileRequest {
   int32 id = 1;
   string email = 2;
 }
