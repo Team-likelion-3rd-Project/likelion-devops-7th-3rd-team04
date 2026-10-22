@@ -99,6 +99,7 @@ message Payment {
   string status = 6; // PROCESSING | APPROVED | FAILED | UNKNOWN | REFUND_REQUESTED | REFUND_FAILED | REFUNDED
   string paidAt = 7; // 승인 시각 ISO 문자열 (승인 전이면 빈 문자열)
   int32 userId = 8;
+  string receiptUrl = 9; // PG 영수증 주소 (토스 결제만, 없으면 빈 문자열) — LDP-124
 }
 
 message PaymentListResponse {

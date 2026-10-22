@@ -275,6 +275,48 @@ describe('PaymentServiceService', () => {
     });
   });
 
+  // LDP-124: 결제 조회 응답의 영수증 주소 — 저장된 토스 응답(raw_response.receipt.url)에서
+  describe('결제 조회 응답 receiptUrl', () => {
+    it('토스 결제면 영수증 주소를 내려준다 (환불 뒤에도 그대로)', async () => {
+      findOneMock.mockResolvedValue({
+        paymentId: 1,
+        reservationId: 1,
+        approvalNumber: null,
+        amount: 380000,
+        paymentMethod: '간편결제 · 토스페이',
+        status: PaymentStatus.REFUNDED,
+        paidAt: new Date('2026-10-22T01:28:13Z'),
+        userId: 1,
+        rawResponse: {
+          receipt: { url: 'https://dashboard.tosspayments.com/receipt/x' },
+          cancel: { pgCode: undefined },
+        },
+      });
+
+      const result = await service.getPaymentById(1);
+
+      expect(result.receiptUrl).toBe(
+        'https://dashboard.tosspayments.com/receipt/x',
+      );
+      expect(result.approvalNumber).toBe('');
+    });
+
+    it('영수증이 없으면(pg-mock 등) 빈 문자열', async () => {
+      findOneMock.mockResolvedValue({
+        paymentId: 2,
+        reservationId: 1,
+        amount: 1000,
+        paymentMethod: 'CARD',
+        status: PaymentStatus.APPROVED,
+        paidAt: null,
+        userId: 1,
+        rawResponse: { approvalNumber: '123' },
+      });
+
+      expect((await service.getPaymentById(2)).receiptUrl).toBe('');
+    });
+  });
+
   describe('approvePayment', () => {
     const request = {
       idempotencyKey: '11111111-1111-1111-1111-111111111111',

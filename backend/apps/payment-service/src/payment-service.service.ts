@@ -77,6 +77,14 @@ export interface PaymentGrpcResponse {
   status: string;
   paidAt: string;
   userId: number;
+  receiptUrl: string; // PG 영수증 주소 (없으면 빈 문자열)
+}
+
+// 저장된 PG 응답(raw_response)에서 영수증 주소를 꺼낸다 — 토스 승인 응답의 receipt.url (LDP-124).
+// 환불 뒤에도 승인 응답 원본은 그대로 두고 cancel 아래에 덧붙이므로 같은 주소가 남는다. pg-mock은 영수증이 없다.
+function receiptUrlOf(rawResponse: Record<string, unknown> | null): string {
+  const receipt = rawResponse?.receipt as { url?: unknown } | null | undefined;
+  return typeof receipt?.url === 'string' ? receipt.url : '';
 }
 
 @Injectable()
@@ -591,6 +599,7 @@ export class PaymentServiceService {
       status: payment.status,
       paidAt: payment.paidAt ? payment.paidAt.toISOString() : '',
       userId: payment.userId,
+      receiptUrl: receiptUrlOf(payment.rawResponse),
     };
   }
 }
