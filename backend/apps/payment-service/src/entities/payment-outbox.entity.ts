@@ -54,4 +54,13 @@ export class PaymentOutbox {
     nullable: true,
   })
   publishedAt!: Date | null;
+
+  // 발행기가 이 행을 맡아 둔 기한 (lease, LDP-97). 지나면 다른 발행기가 다시 가져갈 수 있다.
+  @Column({
+    name: 'locked_until',
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+  })
+  lockedUntil!: Date | null;
 }

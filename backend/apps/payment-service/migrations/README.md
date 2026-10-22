@@ -15,7 +15,7 @@ payment-service는 `synchronize: false`라서 테이블을 직접 만들거나 �
 | V1 | `payments` 기준선 (2차 구조 그대로) |
 | V2 | `payments` 확장: 멱등 키·PG 주문번호·provider, 상태 7종 전환, 예약당 승인 1건 UNIQUE |
 | V3 | `payment_outbox`, `pg_webhook_inbox` 생성 |
-| V4 | 상태 `REFUND_MANUAL_REQUIRED` 추가 (환불 자동 재시도 중단 → 수동 처리), 예약당 승인 1건 생성 컬럼에 포함 |
+| V4 | 상태 `REFUND_MANUAL_REQUIRED`(환불 자동 재시도 중단 → 수동 처리, 예약당 승인 1건 생성 컬럼에 포함)·`UNKNOWN_MANUAL_REQUIRED`(결과 불명 확정 기한 초과) 추가, 대사 배치 조회 칸(`reconcile_attempts`, `next_reconcile_at`), `payment_outbox.locked_until`(발행 lease)·예약별 미발행 인덱스 (LDP-97) |
 
 ## 실행
 - 로컬: `docker compose --profile local-infra up` 하면 `payment-db-migration` 서비스가 자동 실행됩니다.

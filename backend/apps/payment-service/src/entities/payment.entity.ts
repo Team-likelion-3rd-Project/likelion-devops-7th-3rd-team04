@@ -6,10 +6,11 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
-// 결제 상태 8종 (ERD 위키 "결제 payments.status" 상태 모델).
+// 결제 상태 9종 (ERD 위키 "결제 payments.status" 상태 모델).
 //   PROCESSING -> APPROVED | FAILED | UNKNOWN(타임아웃, 토스 조회로 APPROVED/FAILED 확정)
 //   APPROVED -> REFUND_REQUESTED -> REFUNDED | REFUND_FAILED(-> 재시도 성공 시 REFUNDED)
 //   REFUND_FAILED·REFUND_REQUESTED -> REFUND_MANUAL_REQUIRED (대사 배치가 자동 재시도를 멈춤 → 운영자 수동 환불, LDP-97)
+//   UNKNOWN·PROCESSING -> UNKNOWN_MANUAL_REQUIRED (기한 안에 PG 조회로 확정하지 못함 → 운영자 확인, LDP-97)
 export enum PaymentStatus {
   PROCESSING = 'PROCESSING',
   APPROVED = 'APPROVED',
@@ -19,6 +20,7 @@ export enum PaymentStatus {
   REFUND_FAILED = 'REFUND_FAILED',
   REFUNDED = 'REFUNDED',
   REFUND_MANUAL_REQUIRED = 'REFUND_MANUAL_REQUIRED',
+  UNKNOWN_MANUAL_REQUIRED = 'UNKNOWN_MANUAL_REQUIRED',
 }
 
 // 어느 PG로 결제했는지. MOCK = pg-mock-service(부하테스트용), TOSS = 토스페이먼츠.
@@ -107,6 +109,19 @@ export class Payment {
   // PG 응답 원본 (장애 분석/대사용).
   @Column({ name: 'raw_response', type: 'json', nullable: true })
   rawResponse!: Record<string, unknown> | null;
+
+  // 결과 불명 결제를 대사 배치가 PG에 조회한 횟수 — 조회 간격을 늘리는 데 쓴다 (LDP-97)
+  @Column({ name: 'reconcile_attempts', type: 'int', default: 0 })
+  reconcileAttempts!: number;
+
+  // 대사 배치가 다음에 이 결제를 볼 시각. NULL이면 마지막 변경 시각(updatedAt) 기준으로 본다 (LDP-97)
+  @Column({
+    name: 'next_reconcile_at',
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+  })
+  nextReconcileAt!: Date | null;
 
   // 승인 시각. 승인 전에는 NULL.
   @Column({ name: 'paid_at', type: 'datetime', nullable: true })
