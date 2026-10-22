@@ -134,17 +134,18 @@ services:
         required: false
     restart: "no"
 
-  # 2. Redis (로컬 개발용. 운영에서는 AWS ElastiCache를 사용하며, 그때는 auth-service의
-  #    REDIS_HOST/REDIS_PORT/REDIS_PASSWORD/REDIS_TLS 값만 바꾸면 되고 코드 변경은 필요 없습니다.)
+  # 2. Valkey (Redis 호환 — 팀 서버·AWS와 같은 제품. auth-service는 ioredis 그대로, 코드 변경 없음)
+  #    운영에서는 AWS ElastiCache(Valkey)를 사용하며, 그때는 auth-service의
+  #    REDIS_HOST/REDIS_PORT/REDIS_PASSWORD/REDIS_TLS 값만 바꾸면 되고 코드 변경은 필요 없습니다.
   redis:
-    image: redis:7-alpine
+    image: valkey/valkey:9.1.2
     container_name: redis
     restart: always
     profiles: ["local-infra"]
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
