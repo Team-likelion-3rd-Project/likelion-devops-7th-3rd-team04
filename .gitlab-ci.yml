@@ -8,6 +8,7 @@
 #   deploy      : (수동) deploy-dev: develop → GitLab gitops 에 커밋 1개 (envs/dev 이미지 태그 + apps/dev 차트 revision)
 #                 → 온프레미스 ArgoCD 가 sync (클러스터에 직접 배포하지 않음)
 #   release     : (main 만) AWS Runner 가 이미지 10개를 arm64 로 빌드 → ECR push(태그 = main 커밋 SHA)
+#                 + 프론트 빌드 → S3 releases/<SHA>/
 #                 → prod gitops 레포에 릴리스 PR 자동 생성 (GitHub App). 운영 반영은 사람이 그 PR 을 승인 · merge 할 때
 #
 # main 파이프라인에는 release job 만 있습니다. test · build 는 develop 파이프라인에서 이미 통과한 커밋만 릴리스하므로
@@ -307,6 +308,7 @@ aws-runner:push:
     - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
 
 # ECR 주소와 이미 push 된 이미지 목록을 다음 job 에 넘깁니다 (재시도 때 IMMUTABLE 태그 push 실패 방지)
+# 프론트 빌드용 토스 클라이언트 키(공개용, 12-secrets Parameter Store)도 넘깁니다 — 레포에 두지 않으려고 SSM 에 둠
 release:prepare:
   extends: .release
   stage: release
@@ -316,6 +318,11 @@ release:prepare:
   needs: []
   script:
     - echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com" > release.env
+    # 없거나 읽지 못하면 비워 둡니다 — 백엔드 빌드는 계속하고, release:frontend-build 가 원인을 출력하며 실패합니다
+    - |
+      key="$(aws ssm get-parameter --region us-east-1 --name /team04-hotel/prod/frontend/toss-client-key \
+        --query Parameter.Value --output text 2>/dev/null)" || { key=""; echo "토스 클라이언트 키 Parameter 를 읽지 못했습니다 (release:frontend-build 가 실패합니다)"; }
+      echo "VITE_TOSS_CLIENT_KEY=$key" >> release.env
     - |
       for svc in $IMAGES; do
         if aws ecr describe-images --region us-east-1 --repository-name "team04-hotel/$svc" \
@@ -390,9 +397,59 @@ release:build:
          END { printf "[메모리] 호스트 %d MiB · 빌드 중 남은 메모리 최소 %d MiB · 이 job 사용량 최대 %d MiB (2초 간격 %d회)\n", total / 1024, min / 1024, max / 1048576, NR }' /kaniko/mem.log
       exit $rc
 
+# 프론트 빌드 (Terraform 13-frontend). 운영 반영은 gitops 릴리스 PR merge 후 GitHub Actions 가 CloudFront KeyValueStore 를 바꿀 때
+#   Vite 환경 변수 = infra/gitops/prod/frontend/values.yaml 의 build (공개 값만, VITE_* 키만 허용)
+#                    + VITE_TOSS_CLIENT_KEY (release:prepare 가 Parameter Store 에서 읽어 dotenv 로 넘김)
+#   npm ci --ignore-scripts: job 컨테이너도 IMDS 로 Runner Role 을 받으므로 의존성 설치 스크립트를 실행하지 않습니다
+release:frontend-build:
+  extends: .release
+  stage: release
+  image: $NODE_IMAGE
+  needs: [release:prepare]
+  variables:
+    FRONTEND_VALUES: infra/gitops/prod/frontend/values.yaml
+  script:
+    - apk add --no-cache yq-go > /dev/null
+    - |
+      bad="$(yq '.build | keys | .[] | select(test("^VITE_[A-Z0-9_]+$") | not)' "$FRONTEND_VALUES")"
+      if [ -n "$bad" ]; then echo "$FRONTEND_VALUES build 에는 VITE_* 키만 둡니다: $bad"; exit 1; fi
+      if [ -n "$(yq '.build.VITE_TOSS_CLIENT_KEY // ""' "$FRONTEND_VALUES")" ]; then
+        echo "VITE_TOSS_CLIENT_KEY 는 레포에 두지 않습니다 — 12-secrets Parameter Store 에서 읽습니다 ($FRONTEND_VALUES)"; exit 1
+      fi
+      set -a; eval "$(yq -o=shell '.build' "$FRONTEND_VALUES")"; set +a
+      if [ "${VITE_PAYMENT_MODE:-}" = "TOSS" ] && ! printf '%s' "${VITE_TOSS_CLIENT_KEY:-}" | grep -Eq '^(test|live)_gck_'; then
+        echo "VITE_PAYMENT_MODE=TOSS 는 토스 클라이언트 키가 필요합니다 — 12-secrets TOSS_CLIENT_KEY 등록 · release:prepare 로그 확인"; exit 1
+      fi
+      echo "VITE_API_URL=$VITE_API_URL VITE_PAYMENT_MODE=$VITE_PAYMENT_MODE"
+    - cd frontend
+    - npm ci --ignore-scripts --no-audit --no-fund
+    - npm run build
+  artifacts:
+    paths: [frontend/dist/]
+    expire_in: 1 day
+
+# 사이트 버킷 releases/<SHA>/ 에 업로드 (Runner Role 은 releases/* PutObject 만 — 운영 버전 전환 권한 없음).
+#   assets/  파일명에 해시가 붙어 내용이 바뀌지 않음 → 1년 immutable
+#   그 외    index.html · public/ 파일은 브라우저 주소가 버전과 무관(/favicon.svg) → no-cache (매번 재검증)
+# 같은 SHA 로 재시도하면 같은 내용을 덮어씁니다
+release:frontend:
+  extends: .release
+  stage: release
+  image:
+    name: amazon/aws-cli:2.31.0
+    entrypoint: [""]
+  needs: [release:frontend-build]
+  variables:
+    FRONTEND_BUCKET: team04-hotel-frontend
+  script:
+    - DEST="s3://$FRONTEND_BUCKET/releases/$CI_COMMIT_SHA"
+    - aws s3 cp frontend/dist/assets "$DEST/assets" --recursive --only-show-errors --cache-control "public, max-age=31536000, immutable"
+    - aws s3 cp frontend/dist "$DEST" --recursive --only-show-errors --exclude "assets/*" --cache-control "no-cache"
+    - echo "업로드 완료 — releases/$CI_COMMIT_SHA (gitops 릴리스 PR merge 후 운영 반영)"
+
 # GitHub App 으로 prod gitops 레포에 릴리스 PR 을 만듭니다 (merge 는 사람 — gitops main ruleset).
 #   infra/gitops/prod/* 를 envs/prod/ 로 복사 (gitops 레포에만 있는 envs/prod/payment 는 유지)
-#   backend 이미지 태그 · chart revision · payment 이미지 태그 = 이 main 커밋 SHA
+#   backend 이미지 태그 · chart revision · payment 이미지 태그 · frontend version = 이 main 커밋 SHA
 #   같은 SHA 의 PR 이 이미 열려 있으면 건너뜁니다 (job 재시도 대비)
 release:gitops-pr:
   extends: .release
@@ -400,7 +457,7 @@ release:gitops-pr:
   image:
     name: $DEPLOY_IMAGE
     entrypoint: [""]
-  needs: [release:build]
+  needs: [release:build, release:frontend]
   variables:
     GITOPS_GITHUB_REPO: Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops
     MONOREPO_GITHUB_URL: https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04

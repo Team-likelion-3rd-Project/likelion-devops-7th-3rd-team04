@@ -30,6 +30,11 @@ variable "sg_ids" {
   type        = map(string)
 }
 
+variable "frontend_bucket_name" {
+  description = "13-frontend 의 site_bucket_name output. Runner 가 프론트 빌드를 releases/ 에 올린다"
+  type        = string
+}
+
 # ── Runner ──
 
 variable "instance_type" {

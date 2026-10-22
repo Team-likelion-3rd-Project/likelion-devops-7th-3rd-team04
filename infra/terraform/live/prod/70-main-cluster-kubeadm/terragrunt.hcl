@@ -2,9 +2,13 @@ include "root" {
   path = find_in_parent_folders("root.hcl")
 }
 
-# 🔒 10-global 은 destroy 하지 않으므로 mock 없이 실제 output 을 읽는다
+# 🔒 10-global · 13-frontend 는 destroy 하지 않으므로 mock 없이 실제 output 을 읽는다
 dependency "global" {
   config_path = "../10-global"
+}
+
+dependency "frontend" {
+  config_path = "../13-frontend"
 }
 
 # mock_outputs: 인프라가 내려가 있을 때(output 없음) plan · validate · destroy 를 돌리기 위한 값
@@ -69,6 +73,8 @@ dependency "messaging" {
 inputs = {
   oidc_issuer_url  = dependency.global.outputs.oidc_issuer_url
   oidc_bucket_name = dependency.global.outputs.oidc_bucket_name
+
+  image_bucket_name = dependency.frontend.outputs.image_bucket_name
 
   main_network = dependency.network.outputs.main
   sg_ids       = dependency.security.outputs.sg_ids

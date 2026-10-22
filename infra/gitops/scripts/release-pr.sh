@@ -3,8 +3,8 @@
 #
 #   1) GitHub App 자격 증명(Secrets Manager) → JWT → 설치 토큰 (1시간, gitops 레포 contents · pull_requests 쓰기만)
 #   2) 같은 SHA 의 PR 이 이미 열려 있으면 종료 (job 재시도 대비)
-#   3) gitops 클론 → infra/gitops/prod/<앱> 을 envs/prod/<앱> 으로 복사 (gitops 에만 있는 envs/prod/payment 는 유지)
-#   4) backend 이미지 태그 · chart revision · payment 이미지 태그 = 이 main 커밋 SHA
+#   3) gitops 클론 → infra/gitops/prod/<앱> · frontend 를 envs/prod/ 로 복사 (gitops 에만 있는 envs/prod/payment 는 유지)
+#   4) backend 이미지 태그 · chart revision · payment 이미지 태그 · frontend version = 이 main 커밋 SHA
 #   5) release/<SHA> 브랜치 push → PR 생성. merge 는 사람 (gitops main ruleset — App 은 우회 불가)
 #
 # 키 · 토큰은 출력하지 않고, git 에는 URL 대신 HTTP 헤더로 넘긴다 (오류 메시지 · 원격 URL 에 남지 않게).
@@ -81,10 +81,15 @@ for dir in "$CI_PROJECT_DIR"/infra/gitops/prod/*/; do
   cp -R "$dir" "envs/prod/$app"
 done
 
-# ── 4) 이미지 태그 · chart revision = main 커밋 SHA ─────────────
+# 프론트는 앱 정의가 아니라(agent 가 읽지 않음) 위 반복에서 빠진다. merge 후 gitops sync-frontend-version 이 반영한다
+rm -rf envs/prod/frontend
+cp -R "$CI_PROJECT_DIR/infra/gitops/prod/frontend" envs/prod/frontend
+
+# ── 4) 이미지 태그 · chart revision · 프론트 버전 = main 커밋 SHA ──
 yq -i '.global.imageTag = strenv(SHA) | .global.imageTag line_comment = "릴리스 main 커밋 SHA (GitLab release:gitops-pr)"' envs/prod/backend/values.yaml
 yq -i '.revision = strenv(SHA) | .revision line_comment = "릴리스 main 커밋 SHA (GitLab release:gitops-pr)"' envs/prod/backend/chart.yaml
 yq -i '.image.imageTag = strenv(SHA) | .image.imageTag line_comment = "릴리스 main 커밋 SHA (GitLab release:gitops-pr)"' envs/prod/payment/values.yaml
+yq -i '.version = strenv(SHA) | .version line_comment = "릴리스 main 커밋 SHA (GitLab release:gitops-pr)"' envs/prod/frontend/values.yaml
 
 git add -A envs/prod
 if git diff --cached --quiet; then
@@ -93,19 +98,20 @@ if git diff --cached --quiet; then
 fi
 CHANGED="$(git diff --cached --stat | tail -n 30)"
 git -c user.name="team04-hotel-release-bot" -c user.email="release-bot@users.noreply.github.com" \
-  commit -q -m "chore(prod): backend · payment → $SHORT"
+  commit -q -m "chore(prod): backend · payment · frontend → $SHORT"
 
 # ── 5) push · PR 생성 ───────────────────────────────────────
 # 열린 PR 이 없는데 브랜치만 남아 있으면(이전 시도) 덮어쓴다
 git_auth push -q --force origin "$BRANCH"
 
 BODY="$(cat <<EOF
-GitLab main 파이프라인이 자동으로 만든 릴리스 PR 입니다. **리뷰 · 승인 후 merge 하면 운영에 반영됩니다** (메인 클러스터 배포 agent, 결제 서버는 Parameter Store 동기화 후 pull agent).
+GitLab main 파이프라인이 자동으로 만든 릴리스 PR 입니다. **리뷰 · 승인 후 merge 하면 운영에 반영됩니다** (메인 클러스터 배포 agent, 결제 서버는 Parameter Store 동기화 후 pull agent, 프론트는 CloudFront KeyValueStore 전환).
 
 ## 변경 대상
 
 - [x] backend 이미지 태그 · chart revision → \`$SHA\`
 - [x] 결제 서버 이미지 태그 → \`$SHA\`
+- [x] 프론트 version → \`$SHA\` (빌드는 S3 \`releases/$SHA/\` 에 업로드 완료)
 - [x] 클러스터 서비스 · backend 설정 (모노레포 \`infra/gitops/prod\` 복사)
 
 ## 무엇을 · 왜
@@ -113,6 +119,7 @@ GitLab main 파이프라인이 자동으로 만든 릴리스 PR 입니다. **리
 - 모노레포 main 커밋: $MONOREPO_GITHUB_URL/commit/$SHA
 - 이전 릴리스 대비 변경: $MONOREPO_GITHUB_URL/compare/$PREV_REVISION...$SHA
 - 이미지: ECR \`team04-hotel/<서비스>:$SHA\` (arm64, AWS Runner kaniko 빌드)
+- 프론트: S3 \`team04-hotel-frontend/releases/$SHA/\` (GitLab release:frontend 빌드)
 
 \`\`\`
 $CHANGED
@@ -122,10 +129,13 @@ $CHANGED
 
 - [ ] 결제 쪽 계약(payment.proto · SQS 메시지 · 결제 마이그레이션)이 바뀌는 배포라면 **결제 서버를 먼저** 반영합니다
 - [ ] 메인 DB 마이그레이션이 포함된 경우, 이전 버전 앱과 함께 동작 가능한 변경인지 확인했습니다 (롤백 대비)
+- [ ] API 응답 · 요청 형식을 바꾸거나 지운 경우, 이전 프론트와도 동작하는지 확인했습니다 (프론트만 롤백 대비)
 
 ## 롤백 방법
 
-- 이 PR revert
+- 전체: 이 PR revert
+- 프론트만: \`envs/prod/frontend/values.yaml\` 의 \`version\` 을 이전 릴리스 SHA 로 바꾸는 PR
+- 백엔드만: \`envs/prod/backend\` 의 \`imageTag\` · \`revision\` 을 이전 릴리스 SHA 로 바꾸는 PR
 
 ## 체크리스트
 
@@ -134,7 +144,7 @@ $CHANGED
 EOF
 )"
 
-PR_URL="$(jq -n --arg title "chore(prod): backend · payment → $SHORT" --arg head "$BRANCH" --arg body "$BODY" \
+PR_URL="$(jq -n --arg title "chore(prod): backend · payment · frontend → $SHORT" --arg head "$BRANCH" --arg body "$BODY" \
   '{title: $title, head: $head, base: "main", body: $body}' |
   gh_api -X POST "$API/repos/$GITOPS_GITHUB_REPO/pulls" -d @- | jq -r .html_url)"
 [ -n "$PR_URL" ] && [ "$PR_URL" != null ] || { log "PR 생성 응답에 URL 이 없습니다"; exit 1; }

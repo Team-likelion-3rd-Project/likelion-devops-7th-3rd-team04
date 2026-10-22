@@ -8,6 +8,7 @@
 # 리소스 정책이 Role 이름으로 허용하므로 이름(키)을 바꾸면 그쪽 변수도 바꾼다.
 #   external-secrets  41-main-data external_secrets_role_name (Secret 리소스 정책)
 #   booking-service   43-messaging booking_role_name (큐 정책)
+#   hotel-service     13-frontend image_writer_role_name (사진 버킷 정책의 쓰기 허용)
 
 data "aws_caller_identity" "current" {}
 
@@ -28,6 +29,11 @@ locals {
       description     = "booking-service (payment result queue receive)"
       namespace       = "backend"
       service_account = "booking-service"
+    }
+    hotel-service = {
+      description     = "hotel-service (room image presigned upload, delete)"
+      namespace       = "backend"
+      service_account = "hotel-service"
     }
   }
 }
@@ -96,4 +102,22 @@ resource "aws_iam_role_policy" "booking_service" {
   name   = "payment-result-consume"
   role   = aws_iam_role.irsa["booking-service"].id
   policy = data.aws_iam_policy_document.booking_service.json
+}
+
+# hotel-service: 13-frontend 사진 버킷의 room-types/* 만 (room-image.storage.ts).
+#   PutObject     Presigned PUT 서명 (브라우저가 이 Role 권한으로 올림)
+#   GetObject     HeadObject(업로드 확인) — 보기는 CloudFront 고정 URL 이라 서명하지 않음
+#   DeleteObject  DeleteObjects(사진 교체 · 객실 삭제)
+data "aws_iam_policy_document" "hotel_service" {
+  statement {
+    sid       = "RoomImages"
+    actions   = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.image_bucket_name}/room-types/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "hotel_service" {
+  name   = "room-images"
+  role   = aws_iam_role.irsa["hotel-service"].id
+  policy = data.aws_iam_policy_document.hotel_service.json
 }

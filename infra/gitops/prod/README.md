@@ -11,6 +11,7 @@
 - gitops 레포에만 있는 값을 만들지 않습니다. 두 곳이 다르면 이 폴더 기준으로 맞춥니다.
 - public 레포로 그대로 복사되므로 **비밀값을 넣지 않습니다** (AWS Secrets Manager → External Secrets).
 - 아직 옮기지 않은 `payment`(결제 서버 이미지 태그, 앱 정의 아님)는 gitops 레포 쪽이 기준입니다 (결제 단계에서 이관).
+- `frontend`(프론트 버전 · 빌드 설정)도 앱 정의가 아닙니다. agent 는 읽지 않고, merge 후 gitops `sync-frontend-version` workflow 가 CloudFront KeyValueStore 에 씁니다 (아래 "릴리스").
 
 ```
 infra/gitops/prod/          (= gitops 레포 envs/prod/)
@@ -21,7 +22,8 @@ infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── external-secrets/      chart.yaml · values.yaml          30  External Secrets Operator
 ├── cluster-secret-store/  chart.yaml · chart/               40  ClusterSecretStore aws-secrets-manager
 ├── backend-secrets/       chart.yaml · chart/               45  backend Secret(ExternalSecret) · RDS CA ConfigMap
-└── backend/               chart.yaml · values.yaml          50  backend (모노레포 backend-deploy/charts/backend, 커밋 SHA 고정)
+├── backend/               chart.yaml · values.yaml          50  backend (모노레포 backend-deploy/charts/backend, 커밋 SHA 고정)
+└── frontend/              values.yaml                       —   프론트 version(main SHA) · 빌드 설정 (앱 정의 아님, Terraform 13-frontend)
 ```
 
 ## IRSA · 비밀값
@@ -120,22 +122,27 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
    │                                                            │ GitHub → GitLab 미러
    │                                                            ▼
    │                         GitLab main 파이프라인 (AWS Runner, 보호 브랜치 · tags aws — release job 만)
-   │                           release:prepare → release:build ×10 (ECR 캐시) → release:gitops-pr
-   │                           ECR team04-hotel/<서비스>:<main SHA> (arm64)      gitops 레포 PR release/<main SHA>
-   │                                                                                    │ validate · 승인 (사람)
-   ▼                                                                                    ▼ merge
-(다음 개발)                         메인 클러스터 배포 agent (1분)  ·  결제 서버: GitHub Actions → Parameter Store → pull agent
+   │                           release:prepare → release:build ×10 (ECR 캐시) ─┐
+   │                           release:frontend-build → release:frontend ───────┴→ release:gitops-pr
+   │                           ECR team04-hotel/<서비스>:<main SHA> (arm64)          gitops 레포 PR release/<main SHA>
+   │                           S3 team04-hotel-frontend/releases/<main SHA>/              │ validate · 승인 (사람)
+   ▼                                                                                        ▼ merge
+(다음 개발)        메인 클러스터 배포 agent (1분)  ·  결제 서버: GitHub Actions → Parameter Store → pull agent
+                   프론트: GitHub Actions → CloudFront KeyValueStore version → CloudFront Function (수 초)
 ```
 
 | 단계 | 누가 · 무엇으로 | 할 수 있는 것 |
 |---|---|---|
 | 릴리스 PR merge | 사람 (모노레포 main ruleset: 승인 · `release-source` · GitHub CI check) | main 갱신 |
 | 이미지 빌드 · ECR push | GitLab main 파이프라인 — AWS Runner Role | `team04-hotel/*` push 만 (ECR 저장소 정책이 다른 주체의 push 거부) |
+| 프론트 빌드 · S3 업로드 | `release:frontend-build` · `release:frontend` — AWS Runner Role | 사이트 버킷 `releases/*` PutObject 만 (운영 버전 전환 불가, 버킷 정책이 다른 주체의 쓰기 거부) |
 | gitops 릴리스 PR 생성 | `release:gitops-pr` — GitHub App(`team04-hotel-release-bot`, gitops 레포에만 설치) | 브랜치 push · PR 생성까지. main merge 는 ruleset 이 막음 |
-| 운영 반영 | 사람이 gitops PR 승인 · merge | 메인: 배포 agent / 결제: Parameter Store 동기화(GitHub OIDC Role, 파라미터 하나) |
+| 운영 반영 | 사람이 gitops PR 승인 · merge | 메인: 배포 agent / 결제: Parameter Store 동기화(GitHub OIDC Role, 파라미터 하나) / 프론트: KeyValueStore `version` 갱신(같은 Role, 키 하나 — S3 쓰기 불가) |
 
 - 이미지 태그 = **main 커밋 SHA 40자**, backend `chart.yaml` 의 `revision` 과 같은 값입니다. ECR 은 IMMUTABLE 이라 같은 태그로 다시 push 할 수 없습니다.
-- Runner 에는 Parameter Store 쓰기 권한이 없습니다. 결제 서버 태그는 gitops PR 이 승인 · merge 된 뒤에만 바뀝니다.
+- Runner 에는 Parameter Store · KeyValueStore 쓰기 권한이 없습니다. 결제 서버 태그 · 프론트 버전은 gitops PR 이 승인 · merge 된 뒤에만 바뀝니다.
+- 프론트 빌드 설정(`VITE_*`)은 이 폴더의 `frontend/values.yaml` `build` 입니다. 토스 클라이언트 키(`VITE_TOSS_CLIENT_KEY`)만 레포에 두지 않고 Terraform `12-secrets` 의 Parameter Store 에서 `release:prepare` 가 읽어 넘깁니다. 빌드 결과에 들어가므로 gitops 레포에서 바꿔도 반영되지 않고, 여기서 고친 뒤 새 릴리스로 냅니다. 의존성 설치는 `npm ci --ignore-scripts` 입니다 (job 도 Runner Role 을 받음).
+- 프론트는 버전마다 경로(`releases/<SHA>/`)가 달라 전환 · 롤백에 재업로드 · CloudFront 무효화가 없습니다. `assets/` 는 1년 immutable, 그 외(`index.html` · `favicon.svg` 등)는 no-cache 로 올립니다.
 - GitLab 미러의 main 은 보호 브랜치여야 AWS Runner(protected)가 job 을 받습니다.
 - main 파이프라인은 lint · test · compile · dev 이미지 빌드를 다시 돌리지 않습니다. 그 검증은 같은 커밋의 **develop 파이프라인**이 맡으므로 아래 절차 1 에서 확인합니다.
 - 빌드 레이어 캐시는 ECR `team04-hotel/cache`(11-registry, 상시 유지, 14일 뒤 삭제)에 둡니다. 소스만 바뀐 릴리스는 `npm ci` 레이어를 캐시에서 가져옵니다 (job 로그 끝의 `[캐시] 적중 N`).
@@ -148,10 +155,11 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
 3. **파이프라인**: GitLab `team04/hotel` → Pipelines 의 main 파이프라인이 `release:gitops-pr` 까지 끝나는지 확인합니다.
    - 소요 시간 (merge → gitops PR 생성): rc.1(2026-10-21, t4g.medium · 캐시 없음 · main 에 dev job 포함) 약 28분 — 온프레미스 Runner 대기 + compile · helm-lint 17분, `release:build` 9분. 개선 후 실측은 rc.2 때 여기에 적습니다.
    - `release:build` 로그 끝의 `[메모리]` 줄(호스트 남은 메모리 최소 · job 최대 사용량)로 Runner 사양을 판단합니다.
-4. **gitops PR**: gitops 레포에 `chore(prod): backend · payment → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
+4. **gitops PR**: gitops 레포에 `chore(prod): backend · payment · frontend → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
 5. **반영 확인**
    - 메인: CP 에서 `k -n gitops-sync get configmap gitops-sync-state -o yaml` 의 `applied_sha` 가 gitops merge 커밋인지, `k -n backend get pods` 가 새 이미지로 Running 인지 (위 "확인 · 운영")
    - 결제: gitops 레포 Actions 의 Parameter Store 동기화 workflow 성공 → 결제 서버 pull agent 반영 (결제 단계에서 구성)
+   - 프론트: gitops 레포 Actions `sync-frontend-version` 성공(로그의 `갱신: <이전> → <SHA>`) → 브라우저 새로고침 후 개발자 도구 Network 에서 `index-*.js` 이름이 바뀌었는지
 6. **태그**: 모노레포 main 의 merge 커밋에 버전 태그를 붙입니다 (`git tag v1.0.0 <SHA> && git push origin v1.0.0`, 리허설은 `v1.0.0-rc.1`).
 
 ### 긴급 수정 (hotfix)
@@ -164,7 +172,11 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
 |---|---|
 | `release:build` 일부 실패 | 해당 job 을 재시도합니다. 이미 push 된 이미지는 `release:prepare` 가 건너뛰게 표시합니다 (IMMUTABLE 충돌 없음) |
 | `release:gitops-pr` 실패 · 재시도 | 같은 SHA 의 PR 이 열려 있으면 만들지 않고 끝납니다 |
-| 운영에서 문제 발견 | gitops 레포에서 그 릴리스 PR 을 revert 하는 PR → 승인 · merge (이전 이미지 · revision 으로 돌아감) |
+| 운영에서 문제 발견 | gitops 레포에서 그 릴리스 PR 을 revert 하는 PR → 승인 · merge (이전 이미지 · revision · 프론트 version 으로 돌아감) |
+| 프론트만 문제 | gitops `envs/prod/frontend/values.yaml` 의 `version` 을 이전 릴리스 SHA 로 바꾸는 PR (backend · payment 는 그대로). S3 수명 주기(180일) 안의 SHA 만 가능 |
+| 백엔드만 문제 | gitops `envs/prod/backend` 의 `imageTag` · `revision` 을 이전 릴리스 SHA 로 바꾸는 PR (프론트는 그대로) |
+| `release:frontend-build` 실패 | 로그 확인 (토스 클라이언트 키 Parameter 미등록이면 `12-secrets` 에 `TOSS_CLIENT_KEY` 등록 후 파이프라인 재실행 — `release:prepare` 부터) → 고친 뒤 재시도. gitops PR 은 프론트 업로드가 끝나야 만들어집니다 |
+| `sync-frontend-version` 실패 | gitops 레포 Actions 에서 재실행 (`workflow_dispatch`). `releases/<SHA>/index.html 이 없습니다` 면 그 SHA 의 `release:frontend` 를 확인 |
 | main 에 잘못 merge 됨 | gitops PR 을 merge 하지 않으면 운영은 바뀌지 않습니다. 모노레포는 revert PR(develop) → 다음 릴리스 |
 
 ## ArgoCD 전환
