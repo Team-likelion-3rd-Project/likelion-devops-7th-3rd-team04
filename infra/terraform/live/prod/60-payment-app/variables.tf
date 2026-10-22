@@ -19,10 +19,12 @@ variable "region" {
 # ── 다른 스택 output (terragrunt.hcl 의 dependency 가 넣는다) ──
 
 variable "payment_network" {
-  description = "20-network 의 payment output (vpc_id, subnet_ids). lb · app 서브넷을 쓴다"
+  description = "20-network 의 payment output (vpc_id, subnet_ids, subnet_ids_by_az, app_static_cidr). lb · app 서브넷, 배포 AZ 순서, pg-mock 고정 IP 대역을 쓴다"
   type = object({
-    vpc_id     = string
-    subnet_ids = map(list(string))
+    vpc_id           = string
+    subnet_ids       = map(list(string))
+    subnet_ids_by_az = map(map(string))
+    app_static_cidr  = string
   })
 }
 
@@ -62,13 +64,13 @@ variable "instance_type" {
 }
 
 variable "desired_capacity" {
-  description = "결제 서버 ASG 희망 대수. 2 이상은 LDP-116 순차 교체 검증 후 기본값으로 올린다"
+  description = "결제 서버 ASG 희망 대수. 배포 중 무중단은 2 이상일 때만 (1대면 교체 동안 결제 중단)"
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "min_size" {
-  description = "결제 서버 ASG 최소 대수"
+  description = "결제 서버 ASG 최소 대수. desired_capacity 보다 작아야 배포 때 Standby 로 뺄 수 있다 (같으면 Standby 없이 교체)"
   type        = number
   default     = 1
 }
@@ -80,9 +82,42 @@ variable "max_size" {
 }
 
 variable "health_check_grace_period" {
-  description = "ASG 가 새 인스턴스의 NLB 헬스체크 결과를 무시하는 시간(초). 부팅 · 부트스트랩 시간보다 길어야 한다"
+  description = "ASG 가 새 인스턴스의 NLB 헬스체크 결과를 무시하는 시간(초). 부팅 · 첫 배포(docker 설치 · 이미지 pull · Flyway) 시간보다 길어야 한다"
   type        = number
-  default     = 300
+  default     = 600
+}
+
+variable "deploy_stagger_seconds" {
+  description = "pull agent 가 AZ 순번마다 늦추는 배포 시작 시간(초). 서버 1대의 배포(pull · Flyway · drain · 헬스 확인)보다 길어야 2대가 동시에 빠지지 않는다"
+  type        = number
+  default     = 180
+}
+
+variable "deploy_health_timeout" {
+  description = "pull agent 가 새 payment-service 의 헬스 확인을 기다리는 시간(초). 넘으면 이전 release 로 되돌린다"
+  type        = number
+  default     = 120
+}
+
+variable "log_retention_days" {
+  description = "결제 서버 CloudWatch 로그 그룹(app · deploy) 보관 기간(일)"
+  type        = number
+  default     = 7
+}
+
+# ── pg-mock (61-payment-mock) ──
+# 61 은 60 과 같은 단계라 output 을 참조하지 않고 같은 규칙으로 주소를 만든다
+
+variable "pg_mock_private_ip_hostnum" {
+  description = "pg-mock 고정 IP 의 app_static_cidr 안 주소 번호. 61-payment-mock 의 private_ip_hostnum 과 같게"
+  type        = number
+  default     = 4
+}
+
+variable "pg_mock_port" {
+  description = "pg-mock-service HTTP 포트. 61-payment-mock 의 mock_port 와 같게"
+  type        = number
+  default     = 3007
 }
 
 variable "root_volume_size" {

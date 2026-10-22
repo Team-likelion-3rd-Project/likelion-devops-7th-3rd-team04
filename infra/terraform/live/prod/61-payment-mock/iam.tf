@@ -1,4 +1,4 @@
-# pg-mock Instance Profile. Session Manager 접속, pg-mock-service 이미지 pull · 태그 조회만 둔다.
+# pg-mock Instance Profile. Session Manager 접속, pg-mock-service 이미지 pull · release 파라미터 조회만 둔다.
 # 비밀값 · 큐 권한은 없다. enable_pg_mock = false 여도 Role 은 남긴다 (무료, 켤 때 바로 쓰도록)
 
 data "aws_iam_policy_document" "ec2_assume" {
@@ -46,9 +46,9 @@ data "aws_iam_policy_document" "mock" {
   }
 
   statement {
-    sid       = "GetImageTag"
+    sid       = "GetRelease"
     actions   = ["ssm:GetParameter"]
-    resources = ["${local.arn_prefix}:ssm:${var.region}:${local.account_id}:parameter/${var.project}/${var.environment}/image-tag/pg-mock-service"]
+    resources = ["${local.arn_prefix}:ssm:${var.region}:${local.account_id}:parameter${local.release_parameter}"]
   }
 }
 

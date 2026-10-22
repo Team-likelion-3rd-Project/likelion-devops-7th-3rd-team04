@@ -1,33 +1,66 @@
 #!/bin/bash
-# 결제 서버 최소 부트스트랩 (LDP-115). 진행 · 실패 로그는 /var/log/cloud-init-output.log
-#   - docker 설치 (AL2023 저장소, S3 게이트웨이 엔드포인트 경유)
-#   - 검증용 리스너: gRPC ${grpc_port} · 헬스체크 ${health_port}(GET /health) 자리에 python http.server
-# 실제 배포(pull agent · Flyway · payment-service)는 LDP-116 에서 이 파일을 바꾸면서 검증용 리스너를 뺀다.
+# 결제 서버 부트스트랩 (LDP-116). 진행 · 실패 로그는 /var/log/cloud-init-output.log
+#   - docker · jq 설치 (AL2023 저장소, S3 게이트웨이 엔드포인트 경유)
+#   - pull agent(/usr/local/bin/payment-deploy) · 설정 · RDS CA 번들 · systemd timer 설치
+#   - 첫 배포를 같은 agent 로 실행한 뒤 timer(1분) 를 켠다 → 부팅 · 교체 · 매일 재생성이 모두 같은 경로로 배포된다
+# Launch Template 은 이 내용을 gzip 으로 넣는다 (16KB 한도). cloud-init 이 풀어서 실행한다.
 set -Eeuo pipefail
 
-echo "[bootstrap] docker 설치"
-dnf install -y -q docker
+echo "[bootstrap] docker · jq 설치 (flock · ss 도 확인)"
+dnf install -y -q docker jq util-linux-core iproute
 systemctl enable --now docker
 
-echo "[bootstrap] 검증용 리스너 (${grpc_port}, ${health_port})"
-mkdir -p /opt/payment-placeholder
-echo ok > /opt/payment-placeholder/health
+echo "[bootstrap] pull agent 설치"
+install -d -m 0755 /etc/payment-deploy
 
-cat > /etc/systemd/system/payment-placeholder@.service <<'EOF'
+cat > /etc/payment-deploy/config.env <<'CONFIG_EOF'
+# Terraform 60-payment-app 이 만든 설정 (비밀값 없음). 바꾸려면 Terraform 을 고치고 인스턴스를 교체한다
+%{ for key, value in config ~}
+${key}=${jsonencode(value)}
+%{ endfor ~}
+CONFIG_EOF
+
+cat > ${rds_ca_path} <<'RDS_CA_EOF'
+${rds_ca_bundle}
+RDS_CA_EOF
+chmod 0644 ${rds_ca_path}
+
+cat > /usr/local/bin/payment-deploy <<'AGENT_EOF'
+${agent_script}
+AGENT_EOF
+chmod 0755 /usr/local/bin/payment-deploy
+
+cat > /etc/systemd/system/payment-deploy.service <<'UNIT_EOF'
 [Unit]
-Description=Payment placeholder listener on port %i (LDP-115, replaced by payment-service in LDP-116)
-After=network-online.target
+Description=Payment server pull agent (Parameter Store release -> payment-service)
+Requires=docker.service
+After=docker.service network-online.target
 
 [Service]
-DynamicUser=yes
-ExecStart=/usr/bin/python3 -m http.server %i --bind 0.0.0.0 --directory /opt/payment-placeholder
-Restart=always
+Type=oneshot
+ExecStart=/usr/local/bin/payment-deploy
+UNIT_EOF
+
+# 이전 실행이 끝나고 1분 뒤에 다시 실행한다 (배포가 길어져도 겹치지 않음)
+cat > /etc/systemd/system/payment-deploy.timer <<'UNIT_EOF'
+[Unit]
+Description=Run payment-deploy every minute
+
+[Timer]
+OnActiveSec=60
+OnUnitInactiveSec=60
+AccuracySec=5
 
 [Install]
-WantedBy=multi-user.target
-EOF
+WantedBy=timers.target
+UNIT_EOF
 
 systemctl daemon-reload
-systemctl enable --now payment-placeholder@${grpc_port}.service payment-placeholder@${health_port}.service
+
+echo "[bootstrap] 첫 배포"
+/usr/local/bin/payment-deploy --boot ||
+  echo "[bootstrap] 첫 배포 실패 — 일시 오류면 timer 가 다시 시도합니다 (journalctl -u payment-deploy)"
+
+systemctl enable --now payment-deploy.timer
 
 echo "[bootstrap] 완료"
