@@ -50,6 +50,10 @@ import { PaymentReconciliationService } from './reconciliation/payment-reconcili
         // 테이블 구조는 Flyway(apps/payment-service/migrations)만 바꿉니다. true로 두면 TypeORM이
         // 재기동 때마다 엔티티에 맞춰 테이블을 고치면서 Flyway가 만든 생성 컬럼/FK/인덱스를 지워버립니다.
         synchronize: false,
+        // 커넥션 풀 크기 (LDP-97). 결제 승인 요청 외에 발행기·대사 배치(잠금 1개 + PG 동시 호출 결과 기록)가 함께 쓴다.
+        // 드라이버 기본값(10)에 기대지 않고 명시 — 결제 DB max_connections(온프레미스 100)를 인스턴스 수로 나눠 넘지 않게
+        poolSize:
+          Number(configService.get<string>('PAYMENT_DB_POOL_SIZE')) || 10,
         logging: true, // SQL 실행 쿼리 로깅
       }),
     }),

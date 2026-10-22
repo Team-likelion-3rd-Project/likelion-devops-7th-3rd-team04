@@ -698,6 +698,39 @@ describe('PaymentServiceService', () => {
       expect(repoUpdateMock).not.toHaveBeenCalled();
     });
 
+    it('결과 불명 확인 중단: UNKNOWN에서만 UNKNOWN_MANUAL_REQUIRED로 바꾸고 사유를 남긴다 (예약 쪽 이벤트 없음)', async () => {
+      expect(
+        await service.markSettleManualRequired(
+          unknown,
+          '24시간 안에 확정하지 못함',
+        ),
+      ).toBe(true);
+
+      expect(repoUpdateMock).toHaveBeenCalledWith(
+        { paymentId: 9, status: PaymentStatus.UNKNOWN },
+        {
+          status: PaymentStatus.UNKNOWN_MANUAL_REQUIRED,
+          rawResponse: expect.objectContaining({
+            pgMessage: 'timeout',
+            manualSettle: expect.objectContaining({
+              reason: '24시간 안에 확정하지 못함',
+            }) as unknown,
+          }) as unknown,
+        },
+      );
+      expect(managerInsertMock).not.toHaveBeenCalled();
+    });
+
+    it('결과 불명 확인 중단: 이미 확정된 결제는 바꾸지 않는다', async () => {
+      expect(
+        await service.markSettleManualRequired(
+          { ...unknown, status: PaymentStatus.APPROVED },
+          '24시간 안에 확정하지 못함',
+        ),
+      ).toBe(false);
+      expect(repoUpdateMock).not.toHaveBeenCalled();
+    });
+
     it('토스 승인은 처음 기록할 때부터 결제 번호를 남긴다 (승인 도중 서버가 죽어도 조회 가능)', async () => {
       process.env.PAYMENT_PROVIDER = 'TOSS';
       createMock.mockImplementation((value: unknown) => value);

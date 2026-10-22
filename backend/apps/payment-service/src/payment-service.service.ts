@@ -447,6 +447,7 @@ export class PaymentServiceService {
             '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
         };
       case PaymentStatus.UNKNOWN:
+      case PaymentStatus.UNKNOWN_MANUAL_REQUIRED:
         return {
           ...base,
           result: 'UNKNOWN',
@@ -597,6 +598,39 @@ export class PaymentServiceService {
     }
     this.logger.error(
       `[알람] 환불 자동 재시도 중단 — PG 콘솔에서 수동 환불 필요 (paymentId=${payment.paymentId}, reservationId=${payment.reservationId}, 사유: ${reason})`,
+    );
+    return true;
+  }
+
+  // 결과 불명 확정 중단 — 대사 배치(LDP-97)가 호출. 기한 안에 PG 조회로 승인·실패를 확정하지 못한 결제를
+  // UNKNOWN_MANUAL_REQUIRED로 옮겨 자동 조회를 멈춘다. 운영자가 PG 콘솔에서 주문번호로 확인한다.
+  // 예약 쪽 상태는 바꿀 것이 없어(결제 확인 중 표시는 시간이 지나면 풀리고 예약은 만료 배치가 정리) 이벤트는 보내지 않는다.
+  // 읽었을 때 상태(UNKNOWN·PROCESSING)에서만 바꾸는 조건부. 옮겼으면 true — 알람은 옮길 때 한 번만 남는다.
+  async markSettleManualRequired(
+    payment: Payment,
+    reason: string,
+  ): Promise<boolean> {
+    if (
+      payment.status !== PaymentStatus.UNKNOWN &&
+      payment.status !== PaymentStatus.PROCESSING
+    ) {
+      return false;
+    }
+    const { affected } = await this.paymentRepository.update(
+      { paymentId: payment.paymentId, status: payment.status },
+      {
+        status: PaymentStatus.UNKNOWN_MANUAL_REQUIRED,
+        rawResponse: toJsonColumn({
+          ...(payment.rawResponse ?? {}),
+          manualSettle: { reason, at: new Date().toISOString() },
+        }),
+      },
+    );
+    if (!affected) {
+      return false;
+    }
+    this.logger.error(
+      `[알람] 결과 불명 결제 자동 확인 중단 — PG 콘솔에서 주문번호로 확인 필요 (paymentId=${payment.paymentId}, reservationId=${payment.reservationId}, orderId=${payment.pgOrderId}, 사유: ${reason})`,
     );
     return true;
   }

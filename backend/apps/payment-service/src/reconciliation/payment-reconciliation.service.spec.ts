@@ -1,5 +1,8 @@
 import { DataSource, Repository } from 'typeorm';
-import { PaymentReconciliationService } from './payment-reconciliation.service';
+import {
+  backoffSeconds,
+  PaymentReconciliationService,
+} from './payment-reconciliation.service';
 import {
   Payment,
   PaymentProvider,
@@ -23,8 +26,9 @@ describe('PaymentReconciliationService.reconcile', () => {
       ...overrides,
     }) as Payment;
 
-  // findStale이 상태별로 돌려줄 결제
+  // 대상 조회가 상태별로 돌려줄 결제 (stale: 다시 볼 때가 된 결제, expired: 만든 지 기한이 지난 결제)
   let stale: Record<string, Payment[]>;
+  let expired: Record<string, Payment[]>;
   const qbStatuses: string[][] = [];
   interface FakeQueryBuilder {
     where: jest.Mock;
@@ -35,18 +39,25 @@ describe('PaymentReconciliationService.reconcile', () => {
   }
   const queryBuilder = (): FakeQueryBuilder => {
     let statuses: string[] = [];
+    let byCreatedAt = false;
     const qb: FakeQueryBuilder = {
       where: jest.fn((_sql: string, params: { statuses: string[] }) => {
         statuses = params.statuses;
-        qbStatuses.push(statuses);
         return qb;
       }),
-      andWhere: jest.fn(() => qb),
+      andWhere: jest.fn((sql: string) => {
+        byCreatedAt ||= sql.includes('createdAt');
+        return qb;
+      }),
       orderBy: jest.fn(() => qb),
       take: jest.fn(() => qb),
-      getMany: jest.fn(() =>
-        Promise.resolve(statuses.flatMap((s) => stale[s] ?? [])),
-      ),
+      getMany: jest.fn(() => {
+        if (!byCreatedAt) {
+          qbStatuses.push(statuses);
+        }
+        const source = byCreatedAt ? expired : stale;
+        return Promise.resolve(statuses.flatMap((s) => source[s] ?? []));
+      }),
     };
     return qb;
   };
@@ -55,6 +66,7 @@ describe('PaymentReconciliationService.reconcile', () => {
   const settleFromPgLookup = jest.fn();
   const retryRefund = jest.fn();
   const markRefundManualRequired = jest.fn();
+  const markSettleManualRequired = jest.fn();
   const tossGet = jest.fn();
   const mockGet = jest.fn();
   let lockGranted: number;
@@ -64,6 +76,7 @@ describe('PaymentReconciliationService.reconcile', () => {
     jest.clearAllMocks();
     qbStatuses.length = 0;
     stale = {};
+    expired = {};
     lockGranted = 1;
     query.mockImplementation((sql: string) =>
       Promise.resolve(sql.includes('GET_LOCK') ? [{ ok: lockGranted }] : []),
@@ -74,6 +87,7 @@ describe('PaymentReconciliationService.reconcile', () => {
     settleFromPgLookup.mockResolvedValue('APPROVED');
     retryRefund.mockResolvedValue(true);
     markRefundManualRequired.mockResolvedValue(true);
+    markSettleManualRequired.mockResolvedValue(true);
     service = new PaymentReconciliationService(
       {
         createQueryBuilder: queryBuilder,
@@ -90,6 +104,7 @@ describe('PaymentReconciliationService.reconcile', () => {
         settleFromPgLookup,
         retryRefund,
         markRefundManualRequired,
+        markSettleManualRequired,
       } as unknown as PaymentServiceService,
       { getPayment: tossGet } as unknown as TossPaymentsClient,
       { getPayment: mockGet } as unknown as PgMockClient,
@@ -132,8 +147,8 @@ describe('PaymentReconciliationService.reconcile', () => {
       expect((await service.reconcile()).failed).toBe(1);
     });
 
-    it('아직 진행 중이면 마지막 조회 결과만 남기고 다음에 다시 (updatedAt이 바뀌어 뒤로 밀림)', async () => {
-      stale[PaymentStatus.UNKNOWN] = [payment()];
+    it('아직 진행 중이면 마지막 조회 결과를 남기고, 조회 횟수에 따라 간격을 늘려 다음 조회를 미룬다 (A3)', async () => {
+      stale[PaymentStatus.UNKNOWN] = [payment({ reconcileAttempts: 2 })];
       tossGet.mockResolvedValue({
         outcome: 'PENDING',
         pgStatus: 'IN_PROGRESS',
@@ -143,17 +158,38 @@ describe('PaymentReconciliationService.reconcile', () => {
       const result = await service.reconcile();
 
       expect(result.pending).toBe(1);
-      expect(repoUpdate).toHaveBeenCalledWith(
-        { paymentId: 1, status: PaymentStatus.UNKNOWN },
+      const [where, values] = repoUpdate.mock.calls[0] as [
+        unknown,
         {
-          rawResponse: {
-            reconcile: expect.objectContaining({
-              outcome: 'PENDING',
-              pgStatus: 'IN_PROGRESS',
-            }) as unknown,
-          },
+          rawResponse: unknown;
+          reconcileAttempts: number;
+          nextReconcileAt: () => string;
         },
+      ];
+      expect(where).toEqual({ paymentId: 1, status: PaymentStatus.UNKNOWN });
+      expect(values.rawResponse).toEqual({
+        reconcile: expect.objectContaining({
+          outcome: 'PENDING',
+          pgStatus: 'IN_PROGRESS',
+        }) as unknown,
+      });
+      expect(values.reconcileAttempts).toBe(3);
+      // 세 번째 조회 실패 → 2분 × 2² = 8분 뒤
+      expect(values.nextReconcileAt()).toBe('NOW(6) + INTERVAL 480 SECOND');
+    });
+
+    it('기한(24시간)이 지난 결과 불명 결제는 조회하지 않고 수동 확인(UNKNOWN_MANUAL_REQUIRED)으로 옮긴다 (A3)', async () => {
+      const old = payment({ paymentId: 5 });
+      expired[PaymentStatus.UNKNOWN] = [old];
+
+      const result = await service.reconcile();
+
+      expect(markSettleManualRequired).toHaveBeenCalledWith(
+        old,
+        expect.stringContaining('24시간'),
       );
+      expect(tossGet).not.toHaveBeenCalled();
+      expect(result.settleGaveUp).toBe(1);
     });
 
     it('결제 번호가 없는 건의 알람은 처음 발견했을 때만 남긴다', async () => {
@@ -223,6 +259,16 @@ describe('PaymentReconciliationService.reconcile', () => {
 
       expect(result.refundFailed).toBe(1);
       expect(markRefundManualRequired).not.toHaveBeenCalled();
+      // 네 번째 시도까지 실패 → 2분 × 2³ = 16분 뒤 다시 (토스 장애가 길어도 10번을 30분 안에 다 쓰지 않게)
+      const [where, values] = repoUpdate.mock.calls[0] as [
+        unknown,
+        { nextReconcileAt: () => string },
+      ];
+      expect(where).toEqual({
+        paymentId: 1,
+        status: PaymentStatus.REFUND_FAILED,
+      });
+      expect(values.nextReconcileAt()).toBe('NOW(6) + INTERVAL 960 SECOND');
     });
 
     it('최대 횟수(10번)에 닿은 환불은 더 시도하지 않고 수동 처리(REFUND_MANUAL_REQUIRED)로 옮긴다', async () => {
@@ -298,6 +344,81 @@ describe('PaymentReconciliationService.reconcile', () => {
       markRefundManualRequired.mockResolvedValue(false);
 
       expect((await service.reconcile()).refundGaveUp).toBe(0);
+    });
+  });
+
+  describe('실행 보호 (A1·A4)', () => {
+    it('PG 호출이 5번 연달아 실패하면 이번 실행을 멈춘다 (나머지는 다음 실행에서)', async () => {
+      stale[PaymentStatus.UNKNOWN] = Array.from({ length: 20 }, (_, i) =>
+        payment({ paymentId: 100 + i, paymentKey: `tgen_${i}` }),
+      );
+      tossGet.mockResolvedValue({ outcome: 'UNKNOWN', pgCode: 'TIMEOUT' });
+      settleFromPgLookup.mockResolvedValue('PENDING');
+
+      const result = await service.reconcile();
+
+      expect(result.stopped).toBe('PG_FAILURES');
+      // 동시에 4건씩 부르므로 멈추기 전까지 시작된 호출은 5~8건
+      expect(tossGet.mock.calls.length).toBeGreaterThanOrEqual(5);
+      expect(tossGet.mock.calls.length).toBeLessThan(20);
+      // 멈춘 뒤에는 환불 재시도도 시작하지 않는다
+      expect(retryRefund).not.toHaveBeenCalled();
+    });
+
+    it('진행 중(PENDING) 응답은 PG가 응답한 것이라 멈추지 않는다', async () => {
+      stale[PaymentStatus.UNKNOWN] = Array.from({ length: 10 }, (_, i) =>
+        payment({ paymentId: 100 + i, paymentKey: `tgen_${i}` }),
+      );
+      tossGet.mockResolvedValue({ outcome: 'PENDING', pgStatus: 'READY' });
+      settleFromPgLookup.mockResolvedValue('PENDING');
+
+      const result = await service.reconcile();
+
+      expect(result.stopped).toBeUndefined();
+      expect(tossGet).toHaveBeenCalledTimes(10);
+    });
+
+    it('PG 호출은 최대 4건까지만 동시에 한다', async () => {
+      stale[PaymentStatus.UNKNOWN] = Array.from({ length: 10 }, (_, i) =>
+        payment({ paymentId: 100 + i, paymentKey: `tgen_${i}` }),
+      );
+      let inFlight = 0;
+      let maxInFlight = 0;
+      tossGet.mockImplementation(async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight--;
+        return { outcome: 'APPROVED' };
+      });
+
+      const result = await service.reconcile();
+
+      expect(result.approved).toBe(10);
+      expect(maxInFlight).toBe(4);
+    });
+
+    it('한 건에서 예외가 나도 나머지는 계속 처리한다', async () => {
+      stale[PaymentStatus.UNKNOWN] = [
+        payment({ paymentId: 1 }),
+        payment({ paymentId: 2, paymentKey: 'tgen_2' }),
+      ];
+      jest
+        .spyOn(service['logger'], 'error')
+        .mockImplementation(() => undefined);
+      settleFromPgLookup
+        .mockRejectedValueOnce(new Error('db down'))
+        .mockResolvedValueOnce('APPROVED');
+
+      const result = await service.reconcile();
+
+      expect(result).toMatchObject({ errors: 1, approved: 1 });
+    });
+
+    it('재시도 간격은 2분부터 두 배씩, 최대 1시간', () => {
+      expect([1, 2, 3, 4, 5, 6, 7, 10].map(backoffSeconds)).toEqual([
+        120, 240, 480, 960, 1920, 3600, 3600, 3600,
+      ]);
     });
   });
 
