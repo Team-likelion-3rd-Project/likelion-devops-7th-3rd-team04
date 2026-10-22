@@ -327,6 +327,7 @@
       - "이미지 태그 : {{ payment_image_tag }} ({{ 'PAYMENT_IMAGE_TAG 지정' if payment_image_tag_override | length > 0 else 'gitops ' ~ payment_gitops_values ~ ' 와 같음' }})"
       - "결제 DB    : 127.0.0.1:{{ payment_db_port }} (노드 내부 전용, schema V{{ pay_schema_version.stdout | trim }})"
       - "payment    : {{ ts_ip }}:{{ payment_service_port }} (gRPC)"
+      - "결제 PG     : {{ payment_provider }}{{ ' (' ~ (toss_api_base_url or 'https://api.tosspayments.com') ~ ')' if payment_provider == 'TOSS' else '' }}"
       - "ElasticMQ  : {{ payment_result_queue_url }}  (DLQ {{ payment_result_dlq }})"
       - "── gitops {{ payment_gitops_repo }} {{ payment_gitops_values }} 에 아래 값이 있어야 합니다 (README 14-4) ──"
       - "services.api-gateway.env.PAYMENT_SERVICE_HOST: \"{{ ts_ip }}:{{ payment_service_port }}\""
