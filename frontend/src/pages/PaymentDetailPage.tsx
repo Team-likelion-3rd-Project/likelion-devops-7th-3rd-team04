@@ -204,10 +204,13 @@ function PaymentDetailPage() {
                   </span>
                 </div>
 
-                <div className="reservation-detail-row">
-                  <span className="reservation-detail-label">승인번호</span>
-                  <span className="reservation-detail-value">{payment.approvalNumber}</span>
-                </div>
+                {/* 간편결제(토스페이 등)는 카드 승인번호가 없어서 빈 값으로 온다 (#244) — 빈 줄은 보여주지 않는다 */}
+                {payment.approvalNumber && (
+                  <div className="reservation-detail-row">
+                    <span className="reservation-detail-label">승인번호</span>
+                    <span className="reservation-detail-value">{payment.approvalNumber}</span>
+                  </div>
+                )}
 
                 <div className="reservation-detail-row">
                   <span className="reservation-detail-label">결제일시</span>
@@ -247,6 +250,12 @@ function PaymentDetailPage() {
                 >
                   예약 상세보기
                 </Link>
+                {/* 토스 영수증 (토스 결제만 주소가 있고 MOCK 결제는 빈 값, #244) — 토스 페이지라 새 창으로 연다 */}
+                {payment.receiptUrl && (
+                  <a href={payment.receiptUrl} target="_blank" rel="noopener noreferrer" className="mypage-ghost-btn">
+                    영수증 보기
+                  </a>
+                )}
               </div>
             </div>
           )}
