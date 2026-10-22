@@ -1067,6 +1067,9 @@ InnoDB buffer pool 은 메모리의 25%(자동 계산), ElasticMQ JVM heap 은 2
 | 값 | 위치 | 비고 |
 |---|---|---|
 | `PAYMENT_DB_PORT`, `PAYMENT_DB_DATABASE`, `PAYMENT_DB_USERNAME`, `PAYMENT_DB_PASSWORD` | `backend/.env` | 결제 DB / 앱 계정. `PAYMENT_DB_HOST` 는 노드 안에서 `127.0.0.1` 로 덮어씀 |
+| `PAYMENT_PROVIDER` | `backend/.env` | `MOCK` / `TOSS`. 비우면 `MOCK` |
+| `TOSS_SECRET_KEY` | `backend/.env` | 결제위젯 연동 키의 시크릿 키(`test_gsk_…`). `TOSS` 일 때만 필요 · 기록 |
+| `TOSS_API_BASE_URL` (선택) | `backend/.env` | 비우면 앱 기본값 `https://api.tosspayments.com` |
 | `TS_PAYMENT_OAUTH_CLIENT_SECRET` | `infra/ansible/.env` | 1-2 의 결제 노드 용 OAuth client (`tag:payment`) |
 | `PAYMENT_DB_ROOT_PASSWORD` | `infra/ansible/.env` | 결제 MariaDB root. 최초 초기화 때만 반영 |
 | `CLUSTER_ENTRY_IP` | `infra/ansible/.env` | control plane Tailscale IP (booking / pg-mock NodePort 호출 대상) |
@@ -1074,6 +1077,8 @@ InnoDB buffer pool 은 메모리의 25%(자동 계산), ElasticMQ JVM heap 은 2
 | `GITLAB_URL`, `GITLAB_TS_IP`, `GITLAB_REGISTRY`, `PAYMENT_DEPLOY_USER`, `PAYMENT_DEPLOY_TOKEN` | `.secrets/payment-node.env` | `gitlab.yml --tags bootstrap` 이 생성 (12-1) |
 
 - 비밀번호에는 공백, 따옴표, 역슬래시, `$`, `#`, `` ` `` 를 쓸 수 없습니다.
+- `backend/.env` 의 `PAYMENT_DB_SSL*` 과 `SQS_*` 는 결제 노드에서 쓰지 않습니다. 결제 DB 는 같은 노드 loopback(평문)이고, 큐는 항상 노드의 ElasticMQ(`group_vars/payment.yml` 의 `payment_sqs_env`)입니다. 로컬 docker compose 용 값이 들어 있어도 영향이 없습니다.
+- 결제 PG 값은 실행 전에 검사합니다. `PAYMENT_PROVIDER` 가 `MOCK`/`TOSS`(대소문자 무관)가 아니거나, `TOSS` 인데 `TOSS_SECRET_KEY` 가 비었거나 `test_gsk_`/`live_gsk_` 형식이 아니면 중단합니다. 프론트의 `VITE_PAYMENT_MODE` · `VITE_TOSS_CLIENT_KEY`(같은 줄의 한 쌍)와 맞춥니다.
 - `hosts.ini` 의 `[payment]` 그룹에 VM 을 추가합니다. (예시: `inventory/hosts.example.ini`)
 - 결제 노드 Deploy Token(`payment-node`, read_registry + read_repository)은 k8s 용(`k8s-registry-pull`)과 별개라 따로 폐기할 수 있습니다. `.secrets/payment-node.env` 의 `PAYMENT_DEPLOY_TOKEN` 을 비우고 부트스트랩을 다시 실행하면 재발급됩니다.
 
@@ -1090,6 +1095,7 @@ PAYMENT_IMAGE_TAG=<short sha> ansible-playbook payment.yml -K --tags deploy   # 
 순서: 결제 DB · ElasticMQ 기동 → 결제 DB 계정 맞추기 → Flyway migrate → payment-service 갱신(healthy 대기). 마지막에 적용된 스키마 버전과 **gitops 에 넣을 값**(14-4)이 출력됩니다.
 
 - `backend/.env` 의 `PAYMENT_DB_*` 를 바꿨을 때도 다시 실행하면 됩니다 — 앱 계정 접속이 실패할 때만 DB / 계정 / 비밀번호 / 권한을 다시 맞춥니다 (`db.yml` 과 같은 방식).
+- `PAYMENT_PROVIDER` · `TOSS_*` 를 바꿨으면 `--tags deploy` 로 다시 실행합니다. env 파일이 바뀌어 payment-service 컨테이너만 다시 만들어집니다.
 - **`PAYMENT_DB_ROOT_PASSWORD` 변경은 자동화하지 않습니다.** 결제 노드에서 `docker exec -it payment-mariadb mariadb -uroot -p` → `ALTER USER 'root'@'localhost' IDENTIFIED BY '<새 값>';` 후 `.env` 를 바꿉니다.
 
 ### 14-4. dev gitops 값 (최초 1회)

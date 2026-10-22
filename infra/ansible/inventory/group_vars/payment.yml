@@ -40,6 +40,15 @@ payment_db_username: "{{ backend_env.PAYMENT_DB_USERNAME | default('') }}"
 payment_db_password: "{{ backend_env.PAYMENT_DB_PASSWORD | default('') }}"
 # 결제 DB root — 메인 DB(DB_ROOT_PASSWORD)와 분리. backend 서비스는 쓰지 않으므로 infra/ansible/.env 에 둠
 payment_db_root_password: "{{ lookup('env', 'PAYMENT_DB_ROOT_PASSWORD') }}"
+# 결제 DB TLS(PAYMENT_DB_SSL*)는 읽지 않음 — 같은 노드 loopback 이라 평문(앱 기본값)
+
+# ── 결제 PG: backend/.env 에서 (비운 값은 backend/.env.example 의 기본값과 같게) ──
+# 비우면 MOCK. 앱은 'TOSS' 와 정확히 같을 때만 토스를 쓰므로 대문자로 맞추고 payment.yml 에서 MOCK/TOSS 만 허용
+payment_provider: "{{ backend_env.PAYMENT_PROVIDER | default('MOCK', true) | trim | upper }}"
+# 결제위젯 시크릿 키(test_gsk_…). TOSS 일 때만 필수 · env 파일에 기록
+toss_secret_key: "{{ backend_env.TOSS_SECRET_KEY | default('') | trim }}"
+# 비우면 env 파일에 쓰지 않음 → 앱 기본값 https://api.tosspayments.com
+toss_api_base_url: "{{ backend_env.TOSS_API_BASE_URL | default('') | trim }}"
 
 # 결제 노드 2 vCPU / 4 GB 기준 (ElasticMQ JVM · payment-service 몫을 남김)
 payment_mariadb_max_connections: 100
