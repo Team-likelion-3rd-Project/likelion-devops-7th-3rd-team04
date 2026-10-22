@@ -37,8 +37,10 @@ infra/terraform/
         ├── 43-messaging/            🔁
         ├── 44-payment-endpoints/    🔁
         ├── 50-payment-webhook/      🔁
-        ├── 60-payment-app/          🔁
+        ├── 60-payment-app/          🔁 결제 서버 · NLB · Endpoint Service
+        ├── 61-payment-mock/         🔁 부하 테스트용 pg-mock 인스턴스
         ├── 70-main-cluster-kubeadm/ 🔁
+        ├── 71-payment-link/         🔁 메인 VPC 결제 PrivateLink 엔드포인트 · 고정 이름
         ├── 80-main-edge/            🔁
         ├── 81-frontend/             🔁
         ├── 82-gcp-llm/              🔁
@@ -144,8 +146,8 @@ bootstrap                                  🔒 최초 1회 (terraform)
 30-security
 40-cicd   41-main-data   42-payment-data   43-messaging   44-payment-endpoints
 50-payment-webhook
-60-payment-app
-70-main-cluster-kubeadm
+60-payment-app   61-payment-mock
+70-main-cluster-kubeadm   71-payment-link
 80-main-edge   81-frontend   82-gcp-llm
 90-observability-alarms
 ```
@@ -163,16 +165,28 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개, NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
-| `30-security` | `enable_control_plane = true` (SG 10개, 규칙 34개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
+| `30-security` | `enable_control_plane = true` (SG 13개, 규칙 43개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
 | `40-cicd` | GitLab Runner 1대 + Ansible 묶음 업로드 (t4g.medium 기준 실측, 2026-10-21 m7g.large 로 변경. 부트스트랩 별도: 시작부터 GitLab 등록까지 약 3분 30초 – 4분) | 54초 – 58초 | 1분 25초 |
 | `41-main-data` | RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
 | `42-payment-data` | 결제 RDS db.t4g.micro Single-AZ, Secret | 6분 37초 – 6분 39초 | 2분 13초 |
 | `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 38초 | 2분 10초 |
 | `44-payment-endpoints` | 인터페이스 엔드포인트 8종(AZ 2개), S3 게이트웨이 엔드포인트 정책 | 57초 – 1분 04초 | 2분 24초 |
+| `60-payment-app` | 결제 서버 1대(t4g.small) · 내부 NLB · Endpoint Service. 부팅 후 NLB healthy 까지 약 1분 30초 – 2분 (`desired_capacity` 1 → 2 는 약 1분 20초) | 2분 57초 – 3분 04초 | 1분 30초 |
+| `61-payment-mock` | pg-mock 인스턴스 1대. SSM 등록은 부팅 후 약 3분 (cloud-init 이 끝난 뒤 에이전트 기동) | 34초 – 42초 | 약 1분 |
+| `71-payment-link` | Interface Endpoint(AZ 2개) · private zone · 레코드 | 1분 44초 – 2분 07초 | 약 2분 |
 | `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
 | **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
 | **`run --all` (10 · 11 포함, 20 · 30 · 40 – 44 · 70 · 80)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-21) | **20분 07초** | **12분 56초** (10 · 11 제외) |
+| **`run --all` (10 포함, 20 · 30 · 41 – 44 · 60 · 61 · 70 · 71, 40 · 80 제외)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-22, 아래 `--filter`) | **19분 54초 – 21분 02초** | **11분 02초** (10 제외) |
+
+결제 쪽(`42` → `60` → `71`)이 메인 쪽(`41` → `70`)과 병렬이라 `60` · `61` · `71` 을 넣어도 전체 시간은 거의 늘지 않습니다. 가장 긴 경로는 `42` RDS(6분 40초 – 10분)에 따라 정해지고, `70` 은 `60` · `71` 을 기다리지 않습니다. 필요한 스택만 올릴 때는 `--filter '<스택>...'`(그 스택과 의존 스택)로 고릅니다.
+
+```bash
+# 결제 서버 · PrivateLink 검증 범위 (40 Runner · 80 ALB 제외). NFW 를 켤 때는 20 만 받는 변수를 환경변수로 넘긴다 (다른 스택은 무시)
+TF_VAR_enable_payment_network_firewall=true terragrunt run --all apply \
+  --filter './71-payment-link...' --filter './61-payment-mock...' --filter './70-main-cluster-kubeadm...'
+```
 
 `70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, 배포 agent 의 Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
 
@@ -208,27 +222,29 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 
 | Secret | 값 | 출처 | 읽는 쪽 |
 |---|---|---|---|
-| `team04-hotel/prod/ci-runner-tailscale` | `{oauth_client_secret}` | Tailscale 콘솔 OAuth client (`tag:ci-runner`) → `infra/ansible/.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET` | `40-cicd` Runner Role |
+| `team04-hotel/prod/ci-runner-tailscale` | `{oauth_client_secret}` | Tailscale 콘솔 OAuth client (`tag:ci-runner`, `infra/ansible/.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET` 과 같은 값) | `40-cicd` Runner Role |
 | `team04-hotel/prod/ci-runner-gitlab` | `{url, token}` | `gitlab.yml --tags runner_token` 이 만든 `infra/ansible/.secrets/aws-ci-runner.env` ([Ansible README](../ansible/README.md) 13절) | `40-cicd` Runner Role |
-| `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**(`~/.config/team04-hotel/github-app.pem`)에 두고 등록 후 지우거나 비밀번호 관리자로 옮김 | `40-cicd` Runner Role (`release:gitops-pr` job) |
+| `team04-hotel/prod/toss-payments` | `{secret_key}` | 토스페이먼츠 개발자센터 API 키 → 결제위젯 연동 키의 **시크릿 키**(테스트 `test_gsk_*`, 지금은 로컬 `backend/.env` 의 `TOSS_SECRET_KEY` 와 같은 값). 프론트 클라이언트 키(`test_gck_*`)와 같은 줄의 한 쌍 | `60-payment-app` 결제 서버 Role (`TOSS_SECRET_KEY`) |
+| `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `40-cicd` Runner Role (`release:gitops-pr` job) |
 
 처음 등록 · 값 교체 (온프레미스 GitLab 재생성으로 토큰이 바뀐 경우 등):
 
+값을 export 하지 않습니다. `terragrunt.hcl` 이 이 디렉터리의 `.env`(gitignore)를 읽어 넘깁니다. 운영 값은 이 파일에만 두고 `backend/.env` · `infra/ansible/.env` 같은 개발 설정을 읽지 않습니다 (개발 설정을 바꿔도 운영 값이 따라가지 않게). 같은 값이라도 여기에 따로 적습니다.
+
 ```bash
 cd infra/terraform/live/prod/12-secrets
-# 값을 화면에 출력하지 않고 환경변수로만 넘긴다
-set -a; source ../../../../ansible/.env; source ../../../../ansible/.secrets/aws-ci-runner.env; set +a
-export TF_VAR_ci_runner_tailscale_oauth_client_secret="$TS_CI_RUNNER_OAUTH_CLIENT_SECRET" \
-       TF_VAR_ci_runner_gitlab_url="$GITLAB_URL" TF_VAR_ci_runner_gitlab_token="$GITLAB_RUNNER_TOKEN" \
-       TF_VAR_github_app_id=<App ID> TF_VAR_github_app_installation_id=<Installation ID> \
-       TF_VAR_github_app_private_key="$(cat ~/.config/team04-hotel/github-app.pem)"   # 개인 키는 레포 밖
-# 변수는 모두 필요하다 (값을 바꾸지 않는 Secret 도 plan 에 값이 있어야 함). 실제로 다시 보내는 것은 version 이 바뀐 Secret 만
-# 교체할 때는 variables.tf 의 해당 version(ci_runner_credentials_version · github_app_credentials_version)을 올린 뒤
+cp .env.example .env   # 처음 한 번. 값을 채운다 (GitHub App 개인 키만 .pem 파일 경로)
+
+# 교체할 때는 variables.tf 의 해당 version(ci_runner_credentials_version · github_app_credentials_version · toss_credentials_version)을 올린 뒤
 AWS_PROFILE=team04 terragrunt apply
 ```
 
-- 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-`)이 다르면 변수 검증에서 막힙니다.
-- Secret 리소스 정책은 `GetSecretValue` 를 Runner Role(`team04-hotel-ci-runner`)과 apply 한 주체만 허용합니다.
+- 값은 모두 필요합니다 (값을 바꾸지 않는 Secret 도 plan 에 값이 있어야 함). 실제로 다시 보내는 것은 version 이 바뀐 Secret 만입니다.
+- `.env` 가 없거나 항목이 비면 값이 빈 문자열로 넘어가 변수 검증에서 막힙니다. 어떤 값이 비었는지는 검증 오류 메시지의 변수 이름으로 확인합니다.
+- `--inputs-debug` 는 값을 `terragrunt-debug.tfvars.json` 파일로 쓰므로 쓰지 않습니다. `terragrunt render` 도 값을 화면에 출력합니다.
+- 값이 바뀌면 `.env` 를 고치고 해당 version 을 올립니다. 예: 온프레미스 GitLab 재생성으로 `aws-ci-runner.env` 의 토큰이 바뀜 → `GITLAB_RUNNER_TOKEN` 수정 + `ci_runner_credentials_version` 증가.
+- 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-` · `test_gsk_` 등 시크릿 키)이 다르면 변수 검증에서 막힙니다.
+- Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(Runner Secret 은 `team04-hotel-ci-runner`, 토스는 `team04-hotel-payment-app`)과 apply 한 주체만 허용합니다.
 - GitHub App 개인 키(`.pem`)는 GitHub 에서 다시 받을 수 없습니다. 분실하면 새 키를 만들고 `github_app_credentials_version` 을 올려 다시 등록합니다.
 - 이미 떠 있는 Runner 는 부팅 때 값을 읽었으므로, 교체 후에는 Runner 를 다시 만듭니다 (`40-cicd` apply 또는 ASG 인스턴스 종료).
 
@@ -413,3 +429,53 @@ AWS_PROFILE=team04 aws logs filter-log-events \
 | `curl -k https://1.1.1.1/` (SNI 없음) | timeout, alert |
 | `curl https://example.com/` | DNS Firewall NXDOMAIN |
 | `curl https://sqs.us-east-1.amazonaws.com/`, `dnf makecache` | 정상 (엔드포인트 · S3 게이트웨이, NFW 미경유) |
+
+---
+
+## 9. 결제 서버 · PrivateLink (`60-payment-app` · `61-payment-mock` · `71-payment-link`)
+
+메인 → 결제는 PrivateLink 하나로만 연결하고, 결제 → 메인은 SQS(`43-messaging`) 로만 보냅니다. 두 VPC 사이에는 Peering · TGW 가 없습니다.
+
+```
+메인 파드 ─ payment.team04-hotel.internal:3004 ─▶ 71 Interface Endpoint (worker 서브넷 a · b, SG main_privatelink ← main_worker 3004)
+  ─▶ 60 Endpoint Service ─▶ 결제 NLB (lb 서브넷, TCP 3004, cross-zone) ─▶ 결제 서버 ASG (app 서브넷) 3004
+                                    └ 헬스체크 HTTP 3104 GET /health
+결제 서버 ─ 3007 ─▶ 61 pg-mock (app-a 고정 IP, PAYMENT_PROVIDER=MOCK 일 때)
+```
+
+- **고정 이름**: 엔드포인트 DNS 이름은 재생성마다 바뀌므로, 메인 VPC 에만 연결한 private zone `team04-hotel.internal` 의 `payment` 레코드(alias)로 부릅니다. gitops backend values `PAYMENT_SERVICE_HOST` 는 `payment.team04-hotel.internal:3004` 로 고정입니다 (`terragrunt output payment_service_host`).
+- **NLB SG**: PrivateLink 트래픽에는 SG 인바운드 규칙을 적용하지 않고(`enforce_security_group_inbound_rules_on_private_link_traffic = off`), `payment_nlb` 에 인바운드 규칙을 두지 않습니다. 결제 VPC 안에서는 NLB 에 붙을 수 없고 PrivateLink 만 통과합니다.
+- **Endpoint Service 허용 주체**: 공유 계정이라 계정 전체가 아니라 `60` 을 apply 한 주체만 허용하고 자동 수락합니다. `71` 도 같은 주체로 apply 합니다.
+- **결제 서버**: Amazon Linux 2023(arm64) `t4g.small`, 기본 1대(`desired_capacity`, `max_size = 2`). IMDSv2 hop limit 1 이라 컨테이너는 host 네트워크로 띄워야 인스턴스 Role 을 씁니다. Role 이름 `team04-hotel-payment-app` 은 42 · 12 Secret 정책과 43 큐 정책이 참조하므로 바꾸지 않습니다.
+- **user-data**: 지금은 docker 설치와 검증용 리스너(3004 · 3104, python http.server)까지입니다. 실제 배포(pull agent · Flyway · payment-service)는 LDP-116 에서 바꿉니다. docker compose 는 AL2023 저장소에 없고 결제 VPC 는 GitHub 로 나갈 수 없어 쓰지 않습니다.
+- **pg-mock**: 결제 서버와 분리한 인스턴스 1대입니다 (ASG 없음). 주소는 `20-network` 가 자동 할당에서 뺀 대역(`10.20.8.16/28`, subnet CIDR reservation) 안의 고정 IP 라 다른 ENI 와 겹치지 않습니다 (`terragrunt output pg_mock_url`). 필요 없으면 `enable_pg_mock = false`.
+- **`70` 과의 관계**: `71` 은 `70` 과 같은 단계라 서로 참조하지 않습니다. `run --all apply` 에서 `70` 은 `60` · `71` 을 기다리지 않습니다.
+- **알려진 제약**: 메인 → 결제 gRPC 는 평문입니다 (PrivateLink 는 AWS 내부망 · 단방향 · SG 제한). 도메인 구매 후 TLS 를 적용할 때 공인 인증서를 받을 수 있도록 고정 이름을 `payment.<도메인>` 으로 옮기고 gitops values 를 1회 고칩니다.
+
+```bash
+# 결제 서버 · pg-mock 인스턴스 → SSM 접속
+AWS_PROFILE=team04 aws ec2 describe-instances \
+  --filters Name=tag:Project,Values=team04-hotel Name=tag:Role,Values=payment-app,payment-mock Name=instance-state-name,Values=running \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId,PrivateIpAddress]' --output text
+AWS_PROFILE=team04 aws ssm start-session --target <인스턴스 ID>
+sudo tail -n 20 /var/log/cloud-init-output.log      # 마지막 줄 "[bootstrap] 완료"
+
+# NLB Target Group 상태 (healthy)
+AWS_PROFILE=team04 aws elbv2 describe-target-health \
+  --target-group-arn "$(AWS_PROFILE=team04 aws elbv2 describe-target-groups --names team04-hotel-payment-app --query 'TargetGroups[0].TargetGroupArn' --output text)" \
+  --query 'TargetHealthDescriptions[].[Target.Id,TargetHealth.State]' --output text
+
+# 메인 클러스터 테스트 파드 → PrivateLink (검증용 리스너가 /health 에 ok 응답)
+kubectl run pl-test --rm -it --restart=Never --image=busybox:1.36 -- \
+  sh -c 'nslookup payment.team04-hotel.internal && wget -qO- -T 5 http://payment.team04-hotel.internal:3004/health'
+```
+
+검증 결과 (2026-10-22, `enable_payment_network_firewall = true`, apply → destroy → apply 후 plan No changes):
+
+| 확인 | 결과 |
+|---|---|
+| 메인 테스트 파드 → `payment.team04-hotel.internal:3004` | 엔드포인트 ENI 2개(worker a · b)로 해석, 결제 서버 응답. 재생성 후 ENI IP 가 바뀌어도 같은 이름으로 연결 |
+| 결제 서버 → 메인 워커 10250 | 차단 (경로 없음) |
+| pg-mock → 결제 NLB IP 3004 · 결제 서버 3004 직접 | 차단 (`payment_nlb` 인바운드 규칙 없음, `payment_app` 은 NLB SG 만 허용) |
+| 결제 서버 · pg-mock 부팅 | NFW 를 켠 상태에서 docker 설치(S3 게이트웨이) · SSM 등록 정상 |
+| 결제 서버 2대 중 1대 종료 (`terminate-instance-in-auto-scaling-group`) | 1초 간격 150회 요청 실패 0. ASG 가 NLB 에서 먼저 빼고(deregistration 30초) 종료, 교체 인스턴스 healthy |

@@ -4,12 +4,15 @@
 #   team04-hotel/prod/ci-runner-gitlab    : {url, token}           온프레미스 GitLab 의 AWS Runner(aws-ci-runner) 인증 토큰
 #   team04-hotel/prod/github-app          : {app_id, installation_id, private_key}
 #                                           gitops 레포 릴리스 PR 용 GitHub App (Runner 의 release:gitops-pr job 이 읽음)
+#   team04-hotel/prod/toss-payments       : {secret_key}           토스페이먼츠 시크릿 키 → TOSS_SECRET_KEY (결제 서버가 읽음)
 #
 # 값은 ephemeral 변수 → write-only(secret_string_wo) 로 넣어 state · plan 에 남지 않는다.
-# write-only 값은 생성 시와 *_version 이 바뀔 때만 전달되므로, 값을 바꿀 때는 env 를 불러온 뒤 version 을 올려 apply 한다 (README 5절).
+# write-only 값은 생성 시와 *_version 이 바뀔 때만 전달되므로, 값을 바꿀 때는 version 을 올려 apply 한다 (README 5절).
+# 값은 terragrunt.hcl 이 이 디렉터리의 .env(gitignore)가 가리키는 파일에서 읽어 넘긴다.
 # 이 스택은 값 등록 때만 직접 apply 한다 (run --all 대상 아님, terragrunt.hcl).
 #
-# 읽는 쪽은 40-cicd 의 Runner Role(고정 이름 var.ci_runner_role_name)이다. 이름으로 ARN 을 만들므로 40 과 의존 관계가 없다.
+# 읽는 쪽은 40-cicd 의 Runner Role(var.ci_runner_role_name), 60-payment-app 의 결제 서버 Role(var.payment_app_role_name)이다.
+# 고정 이름으로 ARN 을 만들므로 40 · 60 과 의존 관계가 없다.
 
 locals {
   secret_prefix = "${var.project}/${var.environment}"
@@ -18,14 +21,22 @@ locals {
     ci_runner_tailscale = {
       name        = "${local.secret_prefix}/ci-runner-tailscale"
       description = "AWS GitLab Runner Tailscale OAuth client (tag:ci-runner)"
+      reader      = var.ci_runner_role_name
     }
     ci_runner_gitlab = {
       name        = "${local.secret_prefix}/ci-runner-gitlab"
       description = "AWS GitLab Runner URL and authentication token (aws-ci-runner)"
+      reader      = var.ci_runner_role_name
     }
     github_app = {
       name        = "${local.secret_prefix}/github-app"
       description = "GitHub App for gitops release PRs (contents, pull_requests write on gitops repo only)"
+      reader      = var.ci_runner_role_name
+    }
+    toss_payments = {
+      name        = "${local.secret_prefix}/toss-payments"
+      description = "Toss Payments secret key (TOSS_SECRET_KEY) for payment servers"
+      reader      = var.payment_app_role_name
     }
   }
 }
@@ -69,7 +80,14 @@ resource "aws_secretsmanager_secret_version" "github_app" {
   secret_string_wo_version = var.github_app_credentials_version
 }
 
-# 값 조회(GetSecretValue)는 Runner Role 과 관리자(이 스택을 apply 하는 주체)만 허용한다 (41-main-data 와 같은 방식).
+resource "aws_secretsmanager_secret_version" "toss_payments" {
+  secret_id = aws_secretsmanager_secret.this["toss_payments"].id
+
+  secret_string_wo         = jsonencode({ secret_key = var.toss_secret_key })
+  secret_string_wo_version = var.toss_credentials_version
+}
+
+# 값 조회(GetSecretValue)는 Secret 별 읽는 Role(reader)과 관리자(이 스택을 apply 하는 주체)만 허용한다 (41-main-data 와 같은 방식).
 # 공유 계정이라 관리자 ARN 을 레포에 적지 않고 실행 주체에서 읽는다. 계정 자리를 * 로 두지 않는다 (최소 권한)
 data "aws_caller_identity" "current" {}
 
@@ -79,8 +97,10 @@ data "aws_iam_session_context" "current" {
   arn = data.aws_caller_identity.current.arn
 }
 
-# 세 Secret 모두 Runner 만 읽는다 (github-app 은 release:gitops-pr job)
-data "aws_iam_policy_document" "ci_runner" {
+# Runner Secret 3개는 Runner 만 (github-app 은 release:gitops-pr job), 토스 시크릿 키는 결제 서버만 읽는다
+data "aws_iam_policy_document" "secret" {
+  for_each = local.secrets
+
   statement {
     sid       = "DenyGetSecretValueExceptAllowedPrincipals"
     effect    = "Deny"
@@ -96,7 +116,7 @@ data "aws_iam_policy_document" "ci_runner" {
       test     = "StringNotEquals"
       variable = "aws:PrincipalArn"
       values = [
-        "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.ci_runner_role_name}",
+        "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${each.value.reader}",
         data.aws_iam_session_context.current.issuer_arn,
       ]
     }
@@ -107,6 +127,6 @@ resource "aws_secretsmanager_secret_policy" "this" {
   for_each = aws_secretsmanager_secret.this
 
   secret_arn          = each.value.arn
-  policy              = data.aws_iam_policy_document.ci_runner.json
+  policy              = data.aws_iam_policy_document.secret[each.key].json
   block_public_policy = true
 }

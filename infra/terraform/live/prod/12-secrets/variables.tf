@@ -22,7 +22,13 @@ variable "ci_runner_role_name" {
   default     = "team04-hotel-ci-runner"
 }
 
-# ── 비밀값 (ephemeral: state · plan 에 남지 않음). 환경변수 TF_VAR_* 로 넘긴다 (README 5절) ──
+variable "payment_app_role_name" {
+  description = "토스 시크릿 키 Secret 을 읽는 60-payment-app 결제 서버 Role 이름 (Role 은 60 에서 생성)"
+  type        = string
+  default     = "team04-hotel-payment-app"
+}
+
+# ── 비밀값 (ephemeral: state · plan 에 남지 않음). terragrunt.hcl 이 .env 를 읽어 TF_VAR_* 로 넘긴다 (README 5절) ──
 
 variable "ci_runner_credentials_version" {
   description = "Runner Secret 값을 다시 넣을 때 올리는 번호. write-only 값은 생성 시와 이 값이 바뀔 때만 전달된다"
@@ -31,7 +37,7 @@ variable "ci_runner_credentials_version" {
 }
 
 variable "ci_runner_tailscale_oauth_client_secret" {
-  description = "Tailscale OAuth client secret (tag:ci-runner). infra/ansible/.env 의 TS_CI_RUNNER_OAUTH_CLIENT_SECRET"
+  description = "Tailscale OAuth client secret (tag:ci-runner). 12-secrets/.env 의 TS_CI_RUNNER_OAUTH_CLIENT_SECRET"
   type        = string
   ephemeral   = true
   sensitive   = true
@@ -43,7 +49,7 @@ variable "ci_runner_tailscale_oauth_client_secret" {
 }
 
 variable "ci_runner_gitlab_url" {
-  description = "온프레미스 GitLab URL (https://<gitlab>.<tailnet>.ts.net). infra/ansible/.secrets/aws-ci-runner.env 의 GITLAB_URL"
+  description = "온프레미스 GitLab URL (https://<gitlab>.<tailnet>.ts.net). 12-secrets/.env 의 GITLAB_URL"
   type        = string
   ephemeral   = true
   sensitive   = true
@@ -55,7 +61,7 @@ variable "ci_runner_gitlab_url" {
 }
 
 variable "ci_runner_gitlab_token" {
-  description = "AWS Runner(aws-ci-runner) 인증 토큰. infra/ansible/.secrets/aws-ci-runner.env 의 GITLAB_RUNNER_TOKEN"
+  description = "AWS Runner(aws-ci-runner) 인증 토큰. 12-secrets/.env 의 GITLAB_RUNNER_TOKEN"
   type        = string
   ephemeral   = true
   sensitive   = true
@@ -66,7 +72,7 @@ variable "ci_runner_gitlab_token" {
   }
 }
 
-# ── GitHub App (gitops 릴리스 PR). App ID · Installation ID 는 App 설정 화면, 개인 키는 레포 밖 파일에서 넘긴다 (Terraform README 5절) ──
+# ── GitHub App (gitops 릴리스 PR). App ID · Installation ID 는 App 설정 화면, 개인 키는 레포 밖 파일(12-secrets/.env 의 GITHUB_APP_PRIVATE_KEY_FILE)에서 넘긴다 (Terraform README 5절) ──
 
 variable "github_app_credentials_version" {
   description = "GitHub App Secret 값을 다시 넣을 때 올리는 번호 (개인 키 교체 등)"
@@ -105,5 +111,25 @@ variable "github_app_private_key" {
   validation {
     condition     = startswith(var.github_app_private_key, "-----BEGIN")
     error_message = "TF_VAR_github_app_private_key 가 비었거나 PEM 형식이 아닙니다."
+  }
+}
+
+# ── 토스페이먼츠 (결제 서버 TOSS_SECRET_KEY). 결제위젯 연동 키의 시크릿 키 — 테스트 test_gsk_*, 라이브 live_gsk_* (API 개별 연동 키는 *_sk_*) ──
+
+variable "toss_credentials_version" {
+  description = "토스 시크릿 키 Secret 값을 다시 넣을 때 올리는 번호 (테스트 → 라이브 전환, 키 재발급 등)"
+  type        = number
+  default     = 1
+}
+
+variable "toss_secret_key" {
+  description = "토스페이먼츠 시크릿 키. 클라이언트 키(*_gck_*)는 프론트에만 두고 여기에 넣지 않는다"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^(test|live)_g?sk_", var.toss_secret_key))
+    error_message = "TF_VAR_toss_secret_key 가 비었거나 시크릿 키(test_sk_ · live_sk_ · test_gsk_ · live_gsk_) 형식이 아닙니다."
   }
 }

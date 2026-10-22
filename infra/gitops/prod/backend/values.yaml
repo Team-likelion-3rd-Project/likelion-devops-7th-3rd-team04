@@ -36,12 +36,13 @@ services:
     replicas: 2
     env:
       CORS_ORIGIN: "https://www.example.com"   # TODO: 프론트 도메인 (81-frontend, 도메인 구매 후)
-      # 결제 서버는 결제 VPC — 메인 VPC 의 PrivateLink 엔드포인트 Route 53 고정 이름으로 호출 (2-3, 60-payment-app)
-      # TODO(2-3): PAYMENT_SERVICE_HOST
+      # 결제 서버는 결제 VPC — 메인 VPC 의 PrivateLink 엔드포인트 고정 이름으로 호출 (Terraform 71-payment-link, 재생성해도 같음)
+      PAYMENT_SERVICE_HOST: "payment.team04-hotel.internal:3004"
   booking-service:
     replicas: 2
     env:
-      # TODO(2-3): PAYMENT_SERVICE_HOST (PrivateLink)
+      # 결제 서버 gRPC (PrivateLink, Terraform 71-payment-link)
+      PAYMENT_SERVICE_HOST: "payment.team04-hotel.internal:3004"
       # 결제 결과 이벤트 (SQS FIFO, 43-messaging). SQS_ENDPOINT 비움 = AWS 기본 주소, 자격 증명은 IRSA(team04-hotel-booking-service)
       SQS_ENDPOINT: ""
       SQS_REGION: us-east-1
