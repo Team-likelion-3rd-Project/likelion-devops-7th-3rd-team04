@@ -75,6 +75,28 @@ describe('TossPaymentsClient', () => {
       expect(config.headers['Idempotency-Key']).toBe('key-1');
     });
 
+    it('간편결제는 결제 수단을 "간편결제 · 토스페이"로, 카드 정보가 없으면 승인 번호는 비운다 (LDP-124)', async () => {
+      post.mockReturnValue(
+        ok({
+          paymentKey: 'tgen_2',
+          orderId: 'rsv2-abc',
+          status: 'DONE',
+          method: '간편결제',
+          approvedAt: '2026-10-22T10:28:13+09:00',
+          card: null,
+          easyPay: { provider: '토스페이', amount: 180000, discountAmount: 0 },
+        }),
+      );
+
+      const result = await confirm();
+
+      expect(result).toMatchObject({
+        outcome: 'APPROVED',
+        method: '간편결제 · 토스페이',
+      });
+      expect(result.approvalNumber).toBeUndefined();
+    });
+
     it('카드 거절 등 4xx는 거절 — 토스 메시지를 그대로', async () => {
       post.mockReturnValue(
         fail(400, { code: 'REJECT_CARD_COMPANY', message: '카드사 거절' }),

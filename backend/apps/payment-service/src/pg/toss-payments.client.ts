@@ -17,7 +17,15 @@ interface TossPaymentResponse {
   status: string; // 승인 완료면 'DONE'
   method?: string; // '카드', '간편결제' 등
   approvedAt?: string;
-  card?: { approveNo?: string };
+  card?: { approveNo?: string } | null; // 카드 결제일 때만 (간편결제는 없을 수 있음)
+  easyPay?: { provider?: string } | null; // 간편결제일 때 — '토스페이', '카카오페이' 등
+  receipt?: { url?: string } | null; // 토스 영수증 주소 (raw_response에 그대로 저장되어 결제 조회 응답의 receiptUrl로 나감)
+}
+
+// 결제 수단 표시: 간편결제는 어느 간편결제인지까지 ("간편결제 · 토스페이") — LDP-124
+function paymentMethodOf(data: TossPaymentResponse): string | undefined {
+  const provider = data.easyPay?.provider;
+  return provider && data.method ? `${data.method} · ${provider}` : data.method;
 }
 
 // 토스 에러 응답 형식: { code: 'REJECT_CARD_COMPANY', message: '...' }
@@ -243,9 +251,10 @@ export class TossPaymentsClient {
     return {
       outcome: 'APPROVED',
       paymentKey: data.paymentKey,
+      // 승인 번호는 카드 결제에만 있다 — 간편결제(토스페이 등)는 토스 응답에 card가 없어 비워 둔다 (LDP-124)
       approvalNumber: data.card?.approveNo,
       approvedAt: data.approvedAt ? new Date(data.approvedAt) : new Date(),
-      method: data.method,
+      method: paymentMethodOf(data),
       raw: data as unknown as Record<string, unknown>,
     };
   }
