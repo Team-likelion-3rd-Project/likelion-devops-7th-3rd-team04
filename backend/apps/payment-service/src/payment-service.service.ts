@@ -511,6 +511,14 @@ export class PaymentServiceService {
       // 다른 요청이 지금 PG 취소 중 — 결과는 그쪽이 기록하고 이벤트로 알린다
       return { refunded: false, status: PaymentStatus.REFUND_REQUESTED };
     }
+    if (payment.status === PaymentStatus.REFUND_MANUAL_REQUIRED) {
+      // 자동 재시도를 멈춘 환불 (LDP-97) — PG를 다시 부르지 않고 상태만 알려 준다.
+      // booking은 이 응답으로 손님에게 결제사·고객센터 문의를 안내한다.
+      return {
+        refunded: false,
+        status: PaymentStatus.REFUND_MANUAL_REQUIRED,
+      };
+    }
 
     // 한 번 정한 환불 멱등 키는 바꾸지 않는다 (REFUND_FAILED 재시도도 같은 키 → PG가 한 번만 취소)
     const refundKey =
@@ -570,9 +578,11 @@ export class PaymentServiceService {
   }
 
   // 환불 자동 재시도 중단 — 대사 배치(LDP-97)가 호출. 최대 횟수만큼 실패했거나 환불 키가 없어 다시 시도할 수 없는 환불을
-  // REFUND_MANUAL_REQUIRED로 옮긴다. 이 상태는 대사 배치·환불 요청 모두 다시 건드리지 않고, 운영자가 PG 콘솔에서 처리한다.
+  // REFUND_MANUAL_REQUIRED로 옮긴다. 이 상태는 대사 배치·환불 요청 모두 다시 건드리지 않는다.
+  // 예약 쪽으로 따로 알리지는 않고 상태로만 남긴다 — 손님이 취소(환불)를 다시 요청하면 이 상태를 응답으로 받고
+  // 결제사·고객센터에 문의하게 된다 (refundPayment → booking cancelBooking).
   // 읽었을 때 상태(REFUND_FAILED·REFUND_REQUESTED)에서만 바꾸는 조건부라, 그 사이 다른 경로가 처리했으면 아무것도 하지 않는다.
-  // 옮겼으면 true — 알람은 옮길 때 한 번만 남는다.
+  // 옮겼으면 true — 로그는 옮길 때 한 번만 남는다.
   async markRefundManualRequired(
     payment: Payment,
     reason: string,

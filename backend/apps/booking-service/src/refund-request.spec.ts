@@ -1,5 +1,6 @@
 import { of, throwError } from 'rxjs';
 import { DataSource, Repository } from 'typeorm';
+import { parseApiRpcError } from '@app/common';
 import { BookingServiceService } from './booking-service.service';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
 import { PaymentAttempt } from './entities/payment-attempt.entity';
@@ -144,6 +145,107 @@ describe('환불 요청 대기열 (pending_refunds)', () => {
 
       expect(await service.cancelReservation(reservation())).toBe(false);
       expect(managerQuery).not.toHaveBeenCalled();
+      expect(refundPayment).not.toHaveBeenCalled();
+    });
+  });
+
+  // 이미 끝난 예약에 취소를 다시 요청 = 환불 재요청 (자동 환불을 멈춘 건은 손님이 이 응답으로 알게 된다)
+  describe('cancelBooking 재호출 — 환불 상태 안내', () => {
+    const closed = (status: ReservationStatus) => ({
+      reservationId: 1,
+      userId: 10,
+      status,
+    });
+    const recancel = async () => {
+      const error = await service.cancelBooking(1, 10).catch((e: unknown) => e);
+      return parseApiRpcError(error);
+    };
+
+    it.each([
+      ['REFUND_MANUAL_REQUIRED', 409, 'REFUND_MANUAL_REQUIRED', false],
+      ['REFUNDED', 409, 'ALREADY_REFUNDED', false],
+      ['REFUND_REQUESTED', 409, 'REFUND_IN_PROGRESS', true],
+      ['REFUND_FAILED', 409, 'REFUND_IN_PROGRESS', true],
+      ['NO_PAYMENT', 409, 'ALREADY_CANCELLED', false],
+    ])(
+      '결제 쪽 환불 상태 %s → %d %s',
+      async (paymentStatus, httpStatus, code, retryable) => {
+        reservationFindOne.mockResolvedValue(
+          closed(ReservationStatus.CANCELLED),
+        );
+        refundPayment.mockReturnValue(
+          of({ refunded: paymentStatus === 'REFUNDED', status: paymentStatus }),
+        );
+
+        expect(await recancel()).toMatchObject({
+          status: httpStatus,
+          code,
+          retryable,
+        });
+        // 같은 환불 키·기한으로 결제 쪽에 다시 요청한다 (실패로 남은 환불이면 그 자리에서 재시도)
+        expect(refundPayment).toHaveBeenCalledWith(
+          {
+            reservationId: 1,
+            refundIdempotencyKey: expect.any(String) as string,
+          },
+          expect.anything(),
+          { deadline: expect.any(Date) as Date },
+        );
+      },
+    );
+
+    it('REFUND_MANUAL_REQUIRED면 결제사·고객센터 문의를 안내한다', async () => {
+      reservationFindOne.mockResolvedValue(closed(ReservationStatus.CANCELLED));
+      refundPayment.mockReturnValue(
+        of({ refunded: false, status: 'REFUND_MANUAL_REQUIRED' }),
+      );
+
+      expect((await recancel())?.message).toContain('문의');
+    });
+
+    it.each([ReservationStatus.EXPIRED, ReservationStatus.PAYMENT_FAILED])(
+      '%s 예약도 "예약이 끝난 뒤 승인" 환불이 있을 수 있어 같은 방식으로 확인한다',
+      async (status) => {
+        reservationFindOne.mockResolvedValue(closed(status));
+        refundPayment.mockReturnValue(
+          of({ refunded: false, status: 'REFUND_MANUAL_REQUIRED' }),
+        );
+
+        expect((await recancel())?.code).toBe('REFUND_MANUAL_REQUIRED');
+      },
+    );
+
+    it('결제 서비스 호출이 실패하면 503 PAYMENT_SERVICE_UNAVAILABLE (다시 시도 가능)', async () => {
+      reservationFindOne.mockResolvedValue(closed(ReservationStatus.CANCELLED));
+      refundPayment.mockReturnValue(
+        throwError(() => new Error('DEADLINE_EXCEEDED')),
+      );
+
+      expect(await recancel()).toMatchObject({
+        status: 503,
+        code: 'PAYMENT_SERVICE_UNAVAILABLE',
+        retryable: true,
+      });
+    });
+
+    it('완료(COMPLETED)된 예약은 환불을 확인하지 않고 지금처럼 거절한다', async () => {
+      reservationFindOne.mockResolvedValue(closed(ReservationStatus.COMPLETED));
+
+      await expect(service.cancelBooking(1, 10)).rejects.toThrow(
+        '이미 취소되었거나 완료된 예약입니다.',
+      );
+      expect(refundPayment).not.toHaveBeenCalled();
+    });
+
+    it('본인 예약이 아니면 환불 상태도 알려 주지 않는다', async () => {
+      reservationFindOne.mockResolvedValue({
+        ...closed(ReservationStatus.CANCELLED),
+        userId: 99,
+      });
+
+      await expect(service.cancelBooking(1, 10)).rejects.toThrow(
+        '본인의 예약만 취소할 수 있습니다.',
+      );
       expect(refundPayment).not.toHaveBeenCalled();
     });
   });

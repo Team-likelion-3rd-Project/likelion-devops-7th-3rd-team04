@@ -165,6 +165,26 @@ describe('PaymentServiceService', () => {
       expect(pgMockRefundMock).not.toHaveBeenCalled();
     });
 
+    it('자동 재시도를 멈춘 환불(REFUND_MANUAL_REQUIRED)은 PG를 부르지 않고 상태만 알려 준다 — 손님이 재요청하면 문의 안내 (LDP-97)', async () => {
+      findOneMock.mockResolvedValue({
+        ...approved,
+        status: PaymentStatus.REFUND_MANUAL_REQUIRED,
+        refundIdempotencyKey: refundKey,
+      });
+
+      const result = await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: refundKey,
+      });
+
+      expect(result).toEqual({
+        refunded: false,
+        status: PaymentStatus.REFUND_MANUAL_REQUIRED,
+      });
+      expect(repoUpdateMock).not.toHaveBeenCalled();
+      expect(pgMockRefundMock).not.toHaveBeenCalled();
+    });
+
     it('동시에 다른 요청이 먼저 상태를 바꿨으면(조건부 UPDATE 0건) PG를 부르지 않는다', async () => {
       findOneMock.mockResolvedValueOnce(approved).mockResolvedValueOnce({
         ...approved,
@@ -651,7 +671,7 @@ describe('PaymentServiceService', () => {
       expect(tossCancelMock).not.toHaveBeenCalled();
     });
 
-    it('수동 처리 전환: 읽었을 때 상태(REFUND_FAILED)에서만 REFUND_MANUAL_REQUIRED로 바꾸고 사유를 남긴다', async () => {
+    it('수동 처리 전환: 읽었을 때 상태(REFUND_FAILED)에서만 REFUND_MANUAL_REQUIRED로 바꾸고 사유를 남긴다 — 예약 쪽 이벤트는 보내지 않음', async () => {
       const gaveUp = {
         ...unknown,
         status: PaymentStatus.REFUND_FAILED,
@@ -675,6 +695,8 @@ describe('PaymentServiceService', () => {
           }) as unknown,
         },
       );
+      // 상태로만 남긴다 — 손님이 취소를 다시 요청하면 응답으로 알게 된다
+      expect(managerInsertMock).not.toHaveBeenCalled();
     });
 
     it('수동 처리 전환: 그 사이 상태가 바뀌었으면(조건부 UPDATE 0건) false', async () => {

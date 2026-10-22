@@ -341,7 +341,15 @@ export class BookingController implements OnModuleInit {
   @ApiResponse({ status: 200, description: '예약 취소 성공' })
   @ApiResponse({ status: 403, description: '본인의 예약이 아님' })
   @ApiResponse({ status: 404, description: '존재하지 않는 예약' })
-  @ApiResponse({ status: 409, description: '이미 취소되었거나 완료된 예약' })
+  @ApiResponse({
+    status: 409,
+    description:
+      '이미 취소되었거나 완료된 예약. 이미 끝난 예약에 다시 요청하면 환불 상태를 code로 알려 준다 — REFUND_MANUAL_REQUIRED(자동 환불 중단, 결제사·고객센터 문의) / ALREADY_REFUNDED / REFUND_IN_PROGRESS / ALREADY_CANCELLED',
+  })
+  @ApiResponse({
+    status: 503,
+    description: '환불 상태를 확인할 수 없음 (PAYMENT_SERVICE_UNAVAILABLE)',
+  })
   async cancelBooking(
     @Param('reservationId', ParseIntPipe) reservationId: number,
     @CurrentUser() user: AuthenticatedUser,
@@ -349,6 +357,11 @@ export class BookingController implements OnModuleInit {
     const booking = await firstValueFrom(
       this.bookingService.cancelBooking({ reservationId, userId: user.userId }),
     ).catch((err) => {
+      // 환불 재요청 결과(api-error 형식)는 code·retryable까지 그대로 전달한다 (LDP-97)
+      const payload = parseApiRpcError(err);
+      if (payload) {
+        throw toHttpException(payload);
+      }
       const message =
         err?.details || err?.message || '예약 취소에 실패했습니다.';
       if (message.includes('본인의 예약만')) {

@@ -186,6 +186,14 @@ const ACTIVE_RESERVATION_STATUSES = [
   ReservationStatus.RESERVED,
 ];
 
+// 끝난 예약 중 환불이 남아 있을 수 있는 상태 — 여기에 취소를 다시 요청하면 환불 상태를 확인해 알려 준다 (LDP-97).
+// 만료·결제 실패도 "예약이 끝난 뒤 승인"이 오면 자동 환불 대상이 된다.
+const REFUNDABLE_CLOSED_STATUSES = [
+  ReservationStatus.CANCELLED,
+  ReservationStatus.EXPIRED,
+  ReservationStatus.PAYMENT_FAILED,
+];
+
 // 관리자 기능(대리 예약·연장)이 createBooking에 함께 넘기는 값 (LDP-90). 넘기면 실패도 api-error 형식으로 낸다.
 export interface AdminBookingOptions {
   createdByAdminId: number;
@@ -493,6 +501,8 @@ export class BookingServiceService implements OnModuleInit {
   //    무관하게 항상 호출한다 — PAID 결제가 실제로 있는지 판단은 payment-service가 스스로 하도록
   //    맡긴다(RefundPayment 주석 참고). 이 호출도 hotel-service와 동일하게 실패해도 예약취소
   //    자체는 막지 않고 로그만 남긴다.
+  // 이미 끝난 예약(취소·만료·결제 실패)에 취소를 다시 요청하면 "환불 재요청"으로 보고 결제 쪽 환불 상태를 확인해 알려 준다 (LDP-97).
+  // 자동 환불을 멈춘 결제(REFUND_MANUAL_REQUIRED)는 이 응답으로 손님이 알게 되고, 결제사·고객센터에 문의하도록 안내한다.
   async cancelBooking(
     reservationId: number,
     userId: number,
@@ -505,6 +515,9 @@ export class BookingServiceService implements OnModuleInit {
     }
     if (reservation.userId !== userId) {
       throw new RpcException('본인의 예약만 취소할 수 있습니다.');
+    }
+    if (REFUNDABLE_CLOSED_STATUSES.includes(reservation.status)) {
+      return this.refundStatusOnRecancel(reservationId);
     }
     if (
       reservation.status !== ReservationStatus.PENDING_PAYMENT &&
@@ -558,6 +571,70 @@ export class BookingServiceService implements OnModuleInit {
     // 취소한 사람이 바로 환불 결과를 볼 수 있게 한 번은 바로 요청한다 (실패하면 워커가 이어 받음)
     await this.deliverRefund(reservation.reservationId);
     return true;
+  }
+
+  // 이미 끝난 예약에 취소를 다시 요청함 = 환불 재요청 (LDP-97). 결제 쪽에 같은 환불 키로 환불을 다시 요청하고
+  // (실패로 남은 환불이면 그 자리에서 다시 시도, 이미 끝났거나 진행 중이면 상태만 돌려줌), 결과를 api-error로 알려 준다.
+  // 예약은 이미 끝난 상태라 성공 응답(예약)이 아니라 항상 409/503으로 상태를 전한다.
+  private async refundStatusOnRecancel(reservationId: number): Promise<never> {
+    let status: string;
+    try {
+      ({ status } = await firstValueFrom(
+        this.paymentService.refundPayment(
+          {
+            reservationId,
+            refundIdempotencyKey: refundIdempotencyKey(reservationId),
+          },
+          new Metadata(),
+          grpcDeadline(PAYMENT_REFUND_DEADLINE_MS),
+        ),
+      ));
+    } catch (error) {
+      this.logger.error(
+        `예약(#${reservationId}) 환불 재요청 — 결제 서비스 호출 실패`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw apiRpcException({
+        status: 503,
+        code: 'PAYMENT_SERVICE_UNAVAILABLE',
+        message: '환불 상태를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+        retryable: true,
+      });
+    }
+
+    switch (status) {
+      case 'REFUND_MANUAL_REQUIRED':
+        throw apiRpcException({
+          status: 409,
+          code: 'REFUND_MANUAL_REQUIRED',
+          message:
+            '자동 환불이 완료되지 않았습니다. 결제사(토스페이먼츠) 또는 고객센터로 문의해 주세요.',
+          retryable: false,
+        });
+      case 'REFUNDED':
+        throw apiRpcException({
+          status: 409,
+          code: 'ALREADY_REFUNDED',
+          message: '이미 취소되고 환불이 완료된 예약입니다.',
+          retryable: false,
+        });
+      case 'REFUND_REQUESTED':
+      case 'REFUND_FAILED':
+        throw apiRpcException({
+          status: 409,
+          code: 'REFUND_IN_PROGRESS',
+          message: '환불을 처리하고 있습니다. 잠시 후 다시 확인해 주세요.',
+          retryable: true,
+        });
+      default:
+        // NO_PAYMENT(결제 전 취소·실패) 등 — 환불할 것이 없다
+        throw apiRpcException({
+          status: 409,
+          code: 'ALREADY_CANCELLED',
+          message: '이미 취소되었거나 완료된 예약입니다.',
+          retryable: false,
+        });
+    }
   }
 
   // 원래 예약에 연결된 연장 예약(결제 대기·예약 확정)을 함께 취소한다 — 각각 재고 반환·환불 (LDP-90).
