@@ -48,6 +48,7 @@ variable "interface_endpoints" {
       sqs                             결제 결과 발행
       secretsmanager                  결제 DB 접속 정보 · 토스 시크릿 키
       logs                            CloudWatch Logs
+      autoscaling                     배포 중 결제 서버 Standby 진입 · 해제 (60 pull agent)
   EOT
   type        = set(string)
   default = [
@@ -59,5 +60,6 @@ variable "interface_endpoints" {
     "sqs",
     "secretsmanager",
     "logs",
+    "autoscaling",
   ]
 }

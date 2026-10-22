@@ -170,8 +170,8 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `41-main-data` | RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
 | `42-payment-data` | 결제 RDS db.t4g.micro Single-AZ, Secret | 6분 37초 – 6분 39초 | 2분 13초 |
 | `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 38초 | 2분 10초 |
-| `44-payment-endpoints` | 인터페이스 엔드포인트 8종(AZ 2개), S3 게이트웨이 엔드포인트 정책 | 57초 – 1분 04초 | 2분 24초 |
-| `60-payment-app` | 결제 서버 1대(t4g.small) · 내부 NLB · Endpoint Service. 부팅 후 NLB healthy 까지 약 1분 30초 – 2분 (`desired_capacity` 1 → 2 는 약 1분 20초) | 2분 57초 – 3분 04초 | 1분 30초 |
+| `44-payment-endpoints` | 인터페이스 엔드포인트 9종(AZ 2개, `autoscaling` 포함 — 시간은 8종 때 실측, 1종 추가 apply 55초), S3 게이트웨이 엔드포인트 정책 | 57초 – 1분 04초 | 2분 24초 |
+| `60-payment-app` | 결제 서버 2대(t4g.small) · 내부 NLB · Endpoint Service (시간은 1대 때 실측). 부팅 후 첫 배포(docker 설치 · pull · Flyway · 기동)까지 약 2분, 2대 동시 교체 후 둘 다 healthy 까지 4분 34초. 갱신 배포는 서버당 약 2분 40초, 2대 순차 약 6분 (AZ 시차 180초) | 2분 57초 – 3분 04초 | 1분 30초 |
 | `61-payment-mock` | pg-mock 인스턴스 1대. SSM 등록은 부팅 후 약 3분 (cloud-init 이 끝난 뒤 에이전트 기동) | 34초 – 42초 | 약 1분 |
 | `71-payment-link` | Interface Endpoint(AZ 2개) · private zone · 레코드 | 1분 44초 – 2분 07초 | 약 2분 |
 | `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
@@ -446,9 +446,9 @@ AWS_PROFILE=team04 aws logs filter-log-events \
 - **고정 이름**: 엔드포인트 DNS 이름은 재생성마다 바뀌므로, 메인 VPC 에만 연결한 private zone `team04-hotel.internal` 의 `payment` 레코드(alias)로 부릅니다. gitops backend values `PAYMENT_SERVICE_HOST` 는 `payment.team04-hotel.internal:3004` 로 고정입니다 (`terragrunt output payment_service_host`).
 - **NLB SG**: PrivateLink 트래픽에는 SG 인바운드 규칙을 적용하지 않고(`enforce_security_group_inbound_rules_on_private_link_traffic = off`), `payment_nlb` 에 인바운드 규칙을 두지 않습니다. 결제 VPC 안에서는 NLB 에 붙을 수 없고 PrivateLink 만 통과합니다.
 - **Endpoint Service 허용 주체**: 공유 계정이라 계정 전체가 아니라 `60` 을 apply 한 주체만 허용하고 자동 수락합니다. `71` 도 같은 주체로 apply 합니다.
-- **결제 서버**: Amazon Linux 2023(arm64) `t4g.small`, 기본 1대(`desired_capacity`, `max_size = 2`). IMDSv2 hop limit 1 이라 컨테이너는 host 네트워크로 띄워야 인스턴스 Role 을 씁니다. Role 이름 `team04-hotel-payment-app` 은 42 · 12 Secret 정책과 43 큐 정책이 참조하므로 바꾸지 않습니다.
-- **user-data**: 지금은 docker 설치와 검증용 리스너(3004 · 3104, python http.server)까지입니다. 실제 배포(pull agent · Flyway · payment-service)는 LDP-116 에서 바꿉니다. docker compose 는 AL2023 저장소에 없고 결제 VPC 는 GitHub 로 나갈 수 없어 쓰지 않습니다.
-- **pg-mock**: 결제 서버와 분리한 인스턴스 1대입니다 (ASG 없음). 주소는 `20-network` 가 자동 할당에서 뺀 대역(`10.20.8.16/28`, subnet CIDR reservation) 안의 고정 IP 라 다른 ENI 와 겹치지 않습니다 (`terragrunt output pg_mock_url`). 필요 없으면 `enable_pg_mock = false`.
+- **결제 서버**: Amazon Linux 2023(arm64) `t4g.small`, 기본 2대(AZ a · b, `desired_capacity = 2`, `min_size = 1`). IMDSv2 hop limit 1 이라 컨테이너는 host 네트워크로 띄워 인스턴스 Role 을 씁니다. Role 이름 `team04-hotel-payment-app` 은 42 · 12 Secret 정책과 43 큐 정책이 참조하므로 바꾸지 않습니다.
+- **배포**: 결제 서버 안의 pull agent 가 합니다 (아래 [결제 서버 배포](#결제-서버-배포-pull-agent)). docker compose 는 AL2023 저장소에 없고 결제 VPC 는 GitHub 로 나갈 수 없어 쓰지 않습니다.
+- **pg-mock**: 결제 서버와 분리한 인스턴스 1대입니다 (ASG 없음). 주소는 `20-network` 가 자동 할당에서 뺀 대역(`10.20.8.16/28`, subnet CIDR reservation) 안의 고정 IP 라 다른 ENI 와 겹치지 않습니다 (`terragrunt output pg_mock_url`). 결제 서버와 같은 release 태그로 스스로 갱신합니다. 필요 없으면 `enable_pg_mock = false`.
 - **`70` 과의 관계**: `71` 은 `70` 과 같은 단계라 서로 참조하지 않습니다. `run --all apply` 에서 `70` 은 `60` · `71` 을 기다리지 않습니다.
 - **알려진 제약**: 메인 → 결제 gRPC 는 평문입니다 (PrivateLink 는 AWS 내부망 · 단방향 · SG 제한). 도메인 구매 후 TLS 를 적용할 때 공인 인증서를 받을 수 있도록 고정 이름을 `payment.<도메인>` 으로 옮기고 gitops values 를 1회 고칩니다.
 
@@ -458,16 +458,17 @@ AWS_PROFILE=team04 aws ec2 describe-instances \
   --filters Name=tag:Project,Values=team04-hotel Name=tag:Role,Values=payment-app,payment-mock Name=instance-state-name,Values=running \
   --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId,PrivateIpAddress]' --output text
 AWS_PROFILE=team04 aws ssm start-session --target <인스턴스 ID>
-sudo tail -n 20 /var/log/cloud-init-output.log      # 마지막 줄 "[bootstrap] 완료"
+sudo tail -n 20 /var/log/cloud-init-output.log      # 첫 배포 결과와 마지막 줄 "[bootstrap] 완료"
 
 # NLB Target Group 상태 (healthy)
 AWS_PROFILE=team04 aws elbv2 describe-target-health \
   --target-group-arn "$(AWS_PROFILE=team04 aws elbv2 describe-target-groups --names team04-hotel-payment-app --query 'TargetGroups[0].TargetGroupArn' --output text)" \
   --query 'TargetHealthDescriptions[].[Target.Id,TargetHealth.State]' --output text
 
-# 메인 클러스터 테스트 파드 → PrivateLink (검증용 리스너가 /health 에 ok 응답)
-kubectl run pl-test --rm -it --restart=Never --image=busybox:1.36 -- \
-  sh -c 'nslookup payment.team04-hotel.internal && wget -qO- -T 5 http://payment.team04-hotel.internal:3004/health'
+# 메인 클러스터 테스트 파드 → PrivateLink (gRPC 포트 TCP 연결)
+kubectl run pl-test --restart=Never --image=busybox:1.36 -- \
+  sh -c 'nslookup payment.team04-hotel.internal && nc -z -w 5 payment.team04-hotel.internal 3004 && echo connected'
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/pl-test --timeout=60s; kubectl logs pl-test; kubectl delete pod pl-test
 ```
 
 검증 결과 (2026-10-22, `enable_payment_network_firewall = true`, apply → destroy → apply 후 plan No changes):
@@ -479,3 +480,80 @@ kubectl run pl-test --rm -it --restart=Never --image=busybox:1.36 -- \
 | pg-mock → 결제 NLB IP 3004 · 결제 서버 3004 직접 | 차단 (`payment_nlb` 인바운드 규칙 없음, `payment_app` 은 NLB SG 만 허용) |
 | 결제 서버 · pg-mock 부팅 | NFW 를 켠 상태에서 docker 설치(S3 게이트웨이) · SSM 등록 정상 |
 | 결제 서버 2대 중 1대 종료 (`terminate-instance-in-auto-scaling-group`) | 1초 간격 150회 요청 실패 0. ASG 가 NLB 에서 먼저 빼고(deregistration 30초) 종료, 교체 인스턴스 healthy |
+
+### 결제 서버 배포 (pull agent)
+
+결제 서버는 GitHub · Runner 가 명령을 보낼 수 없습니다. 서버가 Parameter Store 를 읽어 스스로 바꿉니다.
+
+```
+gitops envs/prod/payment/values.yaml merge (사람 승인)
+  └▶ GitHub Actions sync-payment-tag (OIDC, 10-global gitops_ssm_sync Role)
+       └▶ Parameter Store /team04-hotel/prod/payment/release  {"env": {...}, "image_tag": "<sha>"}   (11-registry, 쓰기는 이 Role 하나)
+            └▶ 결제 서버 payment-deploy.timer (1분) · pg-mock pg-mock-deploy.timer (1분, image_tag 만)
+```
+
+결제 서버 agent(`60-payment-app/templates/payment-deploy.sh`) 순서:
+
+1. release 가 현재 적용값과 같거나, 이미 실패한 값이면 아무것도 하지 않습니다.
+2. 검증: `image_tag` 는 커밋 SHA, `env` 는 한 줄 문자열 값만. 인프라가 넣는 키(`PAYMENT_DB_*` · `TOSS_SECRET_KEY` · `SQS_*` · `PAYMENT_RESULT_QUEUE_URL` · `PG_MOCK_SERVICE_URL` · `AWS_*` · `HEALTH_PORT`)는 거부합니다 (gitops validate 도 같은 규칙).
+3. 순서 맞추기: 첫 AZ(a)가 먼저, 다음 AZ 는 release 를 처음 본 뒤 `deploy_stagger_seconds`(180초) 뒤에 합니다. 다른 서버가 InService 가 아니면(배포 · 부팅 중) 다음 주기로 미룹니다.
+4. ECR pull (`payment-service` · `payment-migrations`, 같은 태그) → 결제 DB · 토스 Secret 을 읽어 `/run`(tmpfs)의 0600 env 파일로
+5. Flyway migrate (`useSsl=true&serverSslCert=<RDS CA>` — 이미지의 드라이버가 Connector/J 2.x 라 3.x 옵션 `sslMode` 는 무시되고 평문 접속됨. 호스트 이름 검증은 기본 켜짐). 이전 버전이 아직 서비스 중이므로 마이그레이션은 추가만 합니다
+6. 자기 자신을 ASG Standby 로 → NLB 에서 빠지고 30초 drain (`connection_termination` 으로 남은 gRPC 연결을 끊어 다른 서버로 재연결)
+7. payment-service 교체 → `/health` · gRPC 포트가 연속 3번 응답하면 성공 → Standby 해제
+8. 실패하면 이전 release 로 되돌리고 Standby 를 해제합니다. 실패한 release 는 Parameter Store 값이 바뀔 때까지 다시 시도하지 않습니다
+
+| 상황 | 동작 |
+|---|---|
+| 부팅 (최초 · ASG 교체 · 매일 재생성) | user-data 가 같은 agent 를 `--boot` 로 실행 (시차 · Standby 없음) → Parameter Store 의 현재 release 로 기동 |
+| 존재하지 않는 태그 | pull 단계에서 실패 기록. 실행 중인 버전은 그대로 |
+| Flyway 실패 | 실패 기록. payment-service 는 바꾸지 않음 |
+| 헬스 확인 실패 | 이전 release 로 롤백. 부팅 때라 이전 release 가 없으면 NLB 헬스체크 실패로 ASG 가 교체 → gitops 를 revert 해야 멈춤 |
+| ECR · Secrets Manager 일시 오류 | 실패로 기록하지 않고 다음 주기에 다시 시도 |
+| 1대만 운영 (`desired_capacity = min_size`) | Standby 로 뺄 수 없어 그대로 교체 (교체 동안 결제 실패) |
+
+설정 원본: 비밀 아닌 설정은 gitops `env`, 접속 정보 · 포트 · 큐 · pg-mock 주소는 Terraform(`/etc/payment-deploy/config.env`), 비밀값은 Secrets Manager 입니다. `PAYMENT_PROVIDER=TOSS` 일 때만 토스 시크릿 키를 읽습니다.
+
+**RDS CA 번들**: 원본은 모노레포 `infra/gitops/prod/backend-secrets/chart/files/us-east-1-bundle.pem` 하나이고, 전달 경로만 다릅니다.
+
+| | 전달 | 반영 시점 |
+|---|---|---|
+| 메인 파드 | 릴리스 PR 이 gitops `envs/prod/backend-secrets` 로 복사 → 배포 agent → ConfigMap 마운트 | gitops merge 후 1분 |
+| 결제 서버 | `60` apply 때 Terraform 이 파일을 읽어 user-data 에 넣음 (결제 VPC 는 GitHub 로 나갈 수 없음) → `/etc/payment-deploy/rds-ca-bundle.pem` | 새로 뜨는 인스턴스부터 (매일 재생성 · instance refresh) |
+
+- `60` 은 develop 또는 main 을 checkout 한 상태에서 apply 합니다. 작업 트리의 파일이 그대로 결제 서버에 들어갑니다.
+- CA 교체 순서: 모노레포 파일 갱신 → 릴리스(메인 반영) → `60` apply → `aws autoscaling start-instance-refresh --auto-scaling-group-name team04-hotel-payment-app`. 번들에는 이전 · 새 CA 가 함께 들어 있어 반영 시점이 달라도 접속은 끊기지 않습니다.
+
+```bash
+# 결제 서버 안에서 (SSM 접속 후)
+systemctl list-timers payment-deploy.timer
+sudo journalctl -u payment-deploy --since -30min --no-pager      # agent 실행 로그
+sudo cat /var/lib/payment-deploy/current.json                   # 적용된 release (previous.json = 롤백 대상, failed = 실패한 release 해시)
+sudo docker ps --format '{{.Names}} {{.Image}} {{.Status}}'
+
+# 배포 이벤트 (deploy_start · deploy_success · deploy_failed · rollback_*) — 로컬에서
+AWS_PROFILE=team04 aws logs tail /team04-hotel/prod/payment/deploy --since 1h
+AWS_PROFILE=team04 aws logs tail /team04-hotel/prod/payment/app --since 10m      # payment-service 출력
+
+# 현재 release
+AWS_PROFILE=team04 aws ssm get-parameter --name /team04-hotel/prod/payment/release --query Parameter.Value --output text
+```
+
+- **모드 전환 (TOSS ↔ MOCK)**: gitops `envs/prod/payment/values.yaml` 의 `env.PAYMENT_PROVIDER` 를 바꾸는 PR. 태그가 같아도 release 가 바뀌므로 위 순서로 재배포됩니다. MOCK 은 `61-payment-mock` 이 떠 있어야 합니다.
+- **롤백**: 자동 롤백은 그 서버의 이전 release 로만 합니다. 버전을 되돌리려면 gitops 해당 PR 을 revert 하는 PR 을 merge 합니다 (사람 승인 경로 그대로).
+- **실패한 release 를 같은 값으로 다시 시도**: 서버 안에서 `sudo rm /var/lib/payment-deploy/failed` (원인을 고친 뒤, 예: Secret 값 등록).
+- **agent · 설정 변경**: user-data 는 첫 부팅에만 실행됩니다. 시작 템플릿만 바뀌고 떠 있는 서버는 그대로이므로 `aws autoscaling start-instance-refresh` 또는 매일 재생성 때 반영됩니다.
+
+검증 결과 (2026-10-22, 결제 서버 2대, 메인 클러스터 파드에서 `payment.team04-hotel.internal:3004` 로 `GetHello` 를 0.5초 간격 호출하며 측정):
+
+| 확인 | 결과 |
+|---|---|
+| 부팅 배포 (2대 동시 교체) | 두 서버 모두 `deploy_success`, 결제 DB 스키마 V1 – V3 적용, 앱 DB 세션 TLS(`TLS_AES_256_GCM_SHA384`) |
+| Flyway TLS | `useSsl=true&serverSslCert` 로 접속, IP 로 접속하면 호스트 이름 검증 실패로 거부 (중간자 차단) |
+| 갱신 MOCK → TOSS (같은 태그) | a → 180초 뒤 b 순서, Standby 구간 겹침 없음. 호출 916회 실패 0. TOSS 일 때만 컨테이너에 `TOSS_SECRET_KEY` |
+| 헬스 실패 이미지 (테스트 이미지, 시험 후 삭제) | 서버마다 헬스 확인 실패 → 이전 release 로 롤백 (12초). b 는 a 가 InService 로 돌아온 뒤 시작. 호출 1,176회 실패 0 |
+| 존재하지 않는 태그 | pull 단계에서 실패 기록, 실행 중인 버전 유지. 호출 517회 실패 0 |
+| 실패한 release 재시도 | 같은 값이면 다시 시도하지 않음 (이후 이벤트 0) |
+| 서버 1대 종료 → ASG 교체 | 교체 서버가 같은 release 로 부팅 배포 (종료 후 2분 06초에 성공). 호출 403회 실패 0 |
+| gitops PR merge → 자동 교체 (MOCK → TOSS) | sync-payment-tag 가 OIDC 로 release 갱신 → 50초 뒤 a 시작, b 까지 5분 39초에 완료. 사람 개입 없음. 호출 830회 실패 0 |
+| 로그 · 이벤트 | 비밀값 없음, 이벤트의 이미지 이름에 레지스트리(계정 ID) 없음 |

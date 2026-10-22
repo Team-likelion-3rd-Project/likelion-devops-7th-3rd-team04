@@ -31,8 +31,12 @@ resource "aws_lb_target_group" "app" {
   # PrivateLink 트래픽은 어차피 메인 쪽 IP 가 보존되지 않는다
   preserve_client_ip = false
 
-  # 매일 destroy 시간을 줄인다. 진행 중 gRPC 호출은 이 시간 안에 끝난다
+  # 매일 destroy 시간 · 배포 drain 시간을 줄인다. 진행 중 gRPC 호출은 이 시간 안에 끝난다
   deregistration_delay = 30
+
+  # drain 이 끝나면 남은 연결(gRPC 는 연결을 오래 유지)을 끊어 클라이언트가 다른 서버로 다시 연결하게 한다.
+  # 끄면 Standby 뒤 컨테이너를 내릴 때 그 연결의 요청이 실패한다 (payment-deploy.sh)
+  connection_termination = true
 
   # payment-service 의 HTTP 헬스체크 (GET /health). 프로세스 생존만 보고 DB 는 확인하지 않는다 (libs/common health)
   health_check {

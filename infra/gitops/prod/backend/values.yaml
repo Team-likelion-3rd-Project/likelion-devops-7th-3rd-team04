@@ -66,10 +66,12 @@ services:
 
 migrations:
   # 메인 DB(RDS, 41-main-data) — 배포 직전 hook 으로 Flyway 적용. RDS 서버 인증서를 검증하는 TLS 로 접속
+  # Flyway 이미지의 드라이버는 MariaDB Connector/J 2.x 라 3.x 옵션 sslMode 는 무시되고 평문으로 붙는다.
+  # 2.x 는 useSsl + serverSslCert 이고 호스트 이름 검증은 기본으로 켜져 있다
   main:
     enabled: true
     db:
-      jdbcParams: "sslMode=verify-full&serverSslCert=/flyway/certs/us-east-1-bundle.pem"
+      jdbcParams: "useSsl=true&serverSslCert=/flyway/certs/us-east-1-bundle.pem"
       caConfigMap: rds-ca-bundle   # backend-secrets 앱
   # 결제 DB 는 결제 서버 쪽에서 적용 (클러스터에서 결제 DB 에 접근하지 않음)
   payment:

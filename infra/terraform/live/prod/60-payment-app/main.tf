@@ -7,7 +7,9 @@
 #   결제 서버 → 메인 VPC 는 경로가 없다 (Peering · TGW 없음, 결과는 SQS 로 보냄)
 #
 # 결제 서버는 Amazon Linux 2023(Graviton). 패키지 저장소가 S3 라 S3 게이트웨이 엔드포인트로 받고, NAT 로는 토스만 나간다.
-# 이 스택의 user-data 는 docker 설치와 검증용 리스너까지다. 실제 배포(pull agent · Flyway)는 LDP-116 에서 user-data 를 바꾼다.
+# 배포는 결제 서버 안의 pull agent 가 한다 (server.tf, templates/payment-deploy.sh, README 결제 서버 배포 절).
+#   gitops envs/prod/payment/values.yaml merge → GitHub Actions(OIDC) → Parameter Store release → agent(1분) → ECR pull · Flyway · 교체
+#   GitHub · Runner 는 결제 서버에 명령을 실행할 수 없다 (agent 가 읽기만 한다).
 # 접속은 SSM Session Manager 로 한다 (22 포트, 키 페어 없음).
 
 data "aws_ssm_parameter" "al2023_ami" {
@@ -41,7 +43,13 @@ locals {
   account_id    = data.aws_caller_identity.current.account_id
   secret_prefix = "${var.project}/${var.environment}"
 
-  # IMDSv2 강제, hop limit 1. 컨테이너는 host 네트워크로 띄워야 인스턴스 Role 자격 증명을 받는다 (LDP-116)
+  # 12-secrets 의 토스 시크릿 키 Secret (고정 이름, 스택 의존 없음)
+  toss_secret_name = "${local.secret_prefix}/toss-payments"
+
+  # 11-registry 의 결제 서버 release 파라미터 {image_tag, env} (같은 이름 규칙, 스택 의존 없음)
+  release_parameter = "/${var.project}/${var.environment}/payment/release"
+
+  # IMDSv2 강제, hop limit 1. 컨테이너는 host 네트워크로 띄워 인스턴스 Role 자격 증명을 받는다 (payment-deploy.sh)
   metadata_options = {
     http_endpoint               = "enabled"
     http_tokens                 = "required"

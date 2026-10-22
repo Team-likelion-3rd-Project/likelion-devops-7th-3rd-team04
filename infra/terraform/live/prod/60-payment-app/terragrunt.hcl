@@ -18,6 +18,11 @@ dependency "network" {
         lb  = ["subnet-00000000000000001", "subnet-00000000000000002"]
         app = ["subnet-00000000000000003", "subnet-00000000000000004"]
       }
+      subnet_ids_by_az = {
+        lb  = { a = "subnet-00000000000000001", b = "subnet-00000000000000002" }
+        app = { a = "subnet-00000000000000003", b = "subnet-00000000000000004" }
+      }
+      app_static_cidr = "10.20.8.16/28"
     }
   }
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]

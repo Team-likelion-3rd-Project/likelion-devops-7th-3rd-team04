@@ -1,4 +1,4 @@
-# gitops 레포의 GitHub Actions 가 결제 서버 이미지 태그를 Parameter Store 에 쓰기 위한 OIDC 연동.
+# gitops 레포의 GitHub Actions 가 결제 서버 release(이미지 태그 + 비밀 아닌 설정)를 Parameter Store 에 쓰기 위한 OIDC 연동.
 #
 #   gitops 릴리스 PR merge (사람 승인) → GitHub Actions(main) → OIDC 토큰 → 이 Role → SSM PutParameter
 #   결제 서버 pull agent 가 VPC 엔드포인트로 같은 파라미터를 읽어 갱신한다 (결제 VPC 는 GitHub 로 나가지 않음).
@@ -15,8 +15,8 @@ locals {
   # 공급자를 직접 만들든 기존 것을 쓰든 ARN 은 같다
   github_oidc_provider_arn = "arn:${data.aws_partition.current.partition}:iam::${local.account_id}:oidc-provider/${local.github_oidc_host}"
 
-  # 11-registry 의 결제 서버 이미지 태그 파라미터 (같은 이름 규칙, 스택 의존 없음)
-  payment_image_tag_parameter = "/${var.project}/${var.environment}/image-tag/payment-service"
+  # 11-registry 의 결제 서버 release 파라미터 {image_tag, env} (같은 이름 규칙, 스택 의존 없음)
+  payment_release_parameter = "/${var.project}/${var.environment}/payment/release"
 }
 
 # GitHub 발급자는 AWS 가 신뢰하는 루트 CA 로 검증하므로 thumbprint 를 지정하지 않는다
@@ -60,7 +60,7 @@ data "aws_iam_policy_document" "gitops_ssm_sync_assume" {
 
 resource "aws_iam_role" "gitops_ssm_sync" {
   name                 = "${var.project}-gitops-ssm-sync"
-  description          = "gitops main GitHub Actions: payment image tag to Parameter Store"
+  description          = "gitops main GitHub Actions: payment release to Parameter Store"
   assume_role_policy   = data.aws_iam_policy_document.gitops_ssm_sync_assume.json
   max_session_duration = 3600
 
@@ -68,17 +68,17 @@ resource "aws_iam_role" "gitops_ssm_sync" {
   depends_on = [aws_iam_openid_connect_provider.github]
 }
 
-# 결제 서버 이미지 태그 파라미터 하나만 쓴다
+# 결제 서버 release 파라미터 하나만 쓴다
 data "aws_iam_policy_document" "gitops_ssm_sync" {
   statement {
-    sid       = "PutPaymentImageTag"
+    sid       = "PutPaymentRelease"
     actions   = ["ssm:PutParameter", "ssm:GetParameter"]
-    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.region}:${local.account_id}:parameter${local.payment_image_tag_parameter}"]
+    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.region}:${local.account_id}:parameter${local.payment_release_parameter}"]
   }
 }
 
 resource "aws_iam_role_policy" "gitops_ssm_sync" {
-  name   = "payment-image-tag"
+  name   = "payment-release"
   role   = aws_iam_role.gitops_ssm_sync.id
   policy = data.aws_iam_policy_document.gitops_ssm_sync.json
 }
