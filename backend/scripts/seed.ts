@@ -1,6 +1,10 @@
 import 'reflect-metadata';
+import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Between, DataSource, In } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Admin } from '../apps/user-service/src/admin/entities/admin.entity';
 import { AdminCredential } from '../apps/auth-service/src/entities/admin-credential.entity';
 import { Hotel } from '../apps/hotel-service/src/entities/hotel.entity';
@@ -10,6 +14,7 @@ import {
   RoomUnitStatus,
 } from '../apps/hotel-service/src/entities/room-unit.entity';
 import { RoomAvailability } from '../apps/hotel-service/src/entities/room-availability.entity';
+import { RoomImage } from '../apps/hotel-service/src/entities/room-image.entity';
 import { Facility } from '../apps/hotel-service/src/entities/facility.entity';
 import { mariaDbSslOptions } from '../libs/common/src/db/mariadb-ssl';
 
@@ -50,7 +55,10 @@ const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME ?? '관리자';
 
 interface HotelSeed {
   hotel: Pick<Hotel, 'name' | 'address' | 'phoneNumber' | 'description'>;
-  rooms: Pick<RoomType, 'name' | 'capacity' | 'totalCount' | 'description'>[];
+  // images: scripts/seed-images/ 안의 사진 파일 이름 (배열 순서 = 노출 순서, 첫 번째가 대표 사진) — seedRoomImages()
+  rooms: (Pick<RoomType, 'name' | 'capacity' | 'totalCount' | 'description'> & {
+    images: string[];
+  })[];
 }
 
 // 객실 설명에 소개 문구 + 침실/침대 구성 + 최대 인원 + 제공 어메니티를 한 항목씩 줄바꿈해서 정리한다.
@@ -89,6 +97,10 @@ const HOTEL_SEEDS: HotelSeed[] = [
     rooms: [
       {
         name: '디럭스 더블룸',
+        images: [
+          '01-seoul-deluxe-double-1.jpg',
+          '01-seoul-deluxe-double-2.jpg',
+        ],
         capacity: 2,
         totalCount: 10,
         description: describeRoom({
@@ -110,6 +122,10 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '스탠다드 트윈룸',
+        images: [
+          '02-seoul-standard-twin-1.jpg',
+          '02-seoul-standard-twin-2.jpg',
+        ],
         capacity: 2,
         totalCount: 5,
         description: describeRoom({
@@ -122,6 +138,10 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '프리미어 스위트룸',
+        images: [
+          '03-seoul-premier-suite-1.jpg',
+          '03-seoul-premier-suite-2.jpg',
+        ],
         capacity: 3,
         totalCount: 2,
         description: describeRoom({
@@ -143,6 +163,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '패밀리룸',
+        images: ['04-seoul-family-1.jpg', '04-seoul-family-2.jpg'],
         capacity: 4,
         totalCount: 3,
         description: describeRoom({
@@ -173,6 +194,10 @@ const HOTEL_SEEDS: HotelSeed[] = [
     rooms: [
       {
         name: '오션뷰 스위트룸',
+        images: [
+          '05-busan-oceanview-suite-1.jpg',
+          '05-busan-oceanview-suite-2.jpg',
+        ],
         capacity: 2,
         totalCount: 5,
         description: describeRoom({
@@ -193,6 +218,10 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '스탠다드 더블룸',
+        images: [
+          '06-busan-standard-double-1.jpg',
+          '06-busan-standard-double-2.jpg',
+        ],
         capacity: 2,
         totalCount: 5,
         description: describeRoom({
@@ -205,6 +234,10 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '프리미엄 오션뷰룸',
+        images: [
+          '07-busan-premium-oceanview-1.jpg',
+          '07-busan-premium-oceanview-2.jpg',
+        ],
         capacity: 3,
         totalCount: 5,
         description: describeRoom({
@@ -225,6 +258,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '패밀리 트윈룸',
+        images: ['08-busan-family-twin-1.jpg', '08-busan-family-twin-2.jpg'],
         capacity: 4,
         totalCount: 5,
         description: describeRoom({
@@ -254,6 +288,10 @@ const HOTEL_SEEDS: HotelSeed[] = [
     rooms: [
       {
         name: '가든뷰 트윈룸',
+        images: [
+          '09-jeju-gardenview-twin-1.jpg',
+          '09-jeju-gardenview-twin-2.jpg',
+        ],
         capacity: 2,
         totalCount: 5,
         description: describeRoom({
@@ -266,6 +304,10 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '스탠다드 더블룸',
+        images: [
+          '10-jeju-standard-double-1.jpg',
+          '10-jeju-standard-double-2.jpg',
+        ],
         capacity: 2,
         totalCount: 10,
         description: describeRoom({
@@ -278,6 +320,10 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '프라이빗 풀빌라룸',
+        images: [
+          '11-jeju-private-poolvilla-1.jpg',
+          '11-jeju-private-poolvilla-2.jpg',
+        ],
         capacity: 3,
         totalCount: 3,
         description: describeRoom({
@@ -297,6 +343,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '패밀리 스위트룸',
+        images: ['12-jeju-family-suite-1.jpg', '12-jeju-family-suite-2.jpg'],
         capacity: 4,
         totalCount: 2,
         description: describeRoom({
@@ -341,6 +388,7 @@ async function createDataSourceWithRetry(
       RoomType,
       RoomUnit,
       RoomAvailability,
+      RoomImage,
       Facility,
     ],
     synchronize: false,
@@ -414,8 +462,14 @@ async function seedHotelsAndRooms(dataSource: DataSource): Promise<void> {
       hotelRepository.create(seed.hotel),
     );
     await roomRepository.save(
-      seed.rooms.map((room) =>
-        roomRepository.create({ hotelId: hotel.hotelId, ...room }),
+      seed.rooms.map(({ name, capacity, totalCount, description }) =>
+        roomRepository.create({
+          hotelId: hotel.hotelId,
+          name,
+          capacity,
+          totalCount,
+          description,
+        }),
       ),
     );
     console.log(
@@ -618,6 +672,100 @@ async function seedFacilities(dataSource: DataSource): Promise<void> {
   }
 }
 
+// 객실 사진 시딩 (LDP-126): 사진이 하나도 없는 시드 객실 종류에만 scripts/seed-images/의 사진을 저장소
+// (로컬·dev MinIO / 운영 S3)에 올리고 room_images에 경로(object_key)를 저장한다. 경로 규칙은
+// hotel-service RoomImageStorage와 같다(room-types/{객실 종류 ID}/{uuid}.jpg) — 화면은 Presigned URL로 보여준다.
+// - 이미 사진이 있는 객실 종류(관리자가 올렸거나 이전 시딩)는 건너뛴다 → 여러 번 실행해도 늘어나지 않음
+// - 한 객실의 사진 파일이 하나라도 없으면 그 객실은 건너뛴다(일부만 올라가면 나머지를 다시 채울 수 없어서)
+// - 저장소 설정(S3_BUCKET)이 없는 환경에서는 사진 단계만 건너뛴다
+const SEED_IMAGES_DIR = join(__dirname, 'seed-images');
+
+function createSeedS3Client(): S3Client {
+  const credentials =
+    process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY
+      ? {
+          accessKeyId: process.env.S3_ACCESS_KEY_ID,
+          secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+        }
+      : undefined; // 키가 없으면(운영) SDK 기본 자격 증명 체인 → IAM 역할
+  return new S3Client({
+    endpoint: process.env.S3_ENDPOINT || undefined,
+    region: process.env.S3_REGION || 'ap-northeast-2',
+    forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+    credentials,
+  });
+}
+
+async function seedRoomImages(dataSource: DataSource): Promise<void> {
+  const bucket = process.env.S3_BUCKET;
+  if (!bucket) {
+    console.log(
+      '[seed] S3_BUCKET이 설정되지 않아 객실 사진 시딩을 건너뜁니다.',
+    );
+    return;
+  }
+
+  const hotelRepository = dataSource.getRepository(Hotel);
+  const roomRepository = dataSource.getRepository(RoomType);
+  const imageRepository = dataSource.getRepository(RoomImage);
+  const s3 = createSeedS3Client();
+  let seededRooms = 0;
+
+  for (const seed of HOTEL_SEEDS) {
+    const hotel = await hotelRepository.findOne({
+      where: { name: seed.hotel.name },
+    });
+    if (!hotel) continue;
+
+    for (const roomSeed of seed.rooms) {
+      const room = await roomRepository.findOne({
+        where: { hotelId: hotel.hotelId, name: roomSeed.name },
+      });
+      if (!room) continue;
+      if (
+        (await imageRepository.count({ where: { roomId: room.roomId } })) > 0
+      ) {
+        continue;
+      }
+
+      const files = roomSeed.images.map((file) => join(SEED_IMAGES_DIR, file));
+      const missing = roomSeed.images.filter((_, i) => !existsSync(files[i]));
+      if (missing.length > 0) {
+        console.warn(
+          `[seed] ${seed.hotel.name} ${roomSeed.name}: 사진 파일이 없어 건너뜁니다 (${missing.join(', ')})`,
+        );
+        continue;
+      }
+
+      const objectKeys: string[] = [];
+      for (const file of files) {
+        const objectKey = `room-types/${room.roomId}/${randomUUID()}.jpg`;
+        await s3.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: objectKey,
+            Body: readFileSync(file),
+            ContentType: 'image/jpeg',
+          }),
+        );
+        objectKeys.push(objectKey);
+      }
+      await imageRepository.save(
+        objectKeys.map((objectKey, sortOrder) =>
+          imageRepository.create({
+            roomId: room.roomId,
+            mimeType: 'image/jpeg',
+            objectKey,
+            sortOrder,
+          }),
+        ),
+      );
+      seededRooms += 1;
+    }
+  }
+  console.log(`[seed] 객실 사진 시딩 완료: 객실 종류 ${seededRooms}개`);
+}
+
 async function main(): Promise<void> {
   const dataSource = await createDataSourceWithRetry();
   try {
@@ -626,6 +774,7 @@ async function main(): Promise<void> {
     await seedRoomUnits(dataSource);
     await seedFacilities(dataSource);
     await seedRoomAvailabilities(dataSource);
+    await seedRoomImages(dataSource);
     console.log('[seed] 시딩 완료');
   } finally {
     await dataSource.destroy();
