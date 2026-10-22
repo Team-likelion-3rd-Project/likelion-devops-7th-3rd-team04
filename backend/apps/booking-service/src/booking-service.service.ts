@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
+import { CallOptions, Metadata } from '@grpc/grpc-js';
 import { Observable, firstValueFrom } from 'rxjs';
 import {
   DataSource,
@@ -32,6 +33,18 @@ const MAX_PAYMENT_ATTEMPTS = 5;
 // 결과를 PG 조회로 확정해 주는 대사 배치가 아직 없어서, 확정되지 않은 시도가 결제 버튼을 계속 막지 않게 하려는 것.
 // 그 사이 재결제로 이중 승인이 나도 payment-service가 ALREADY_PAID로 자동 취소한다.
 const CONFIRMING_MINUTES = 10;
+
+// payment-service gRPC 호출 기한 (LDP-97). 기한이 없으면 결제 서버까지 가는 망(운영: PrivateLink)이 응답 없이 끊겼을 때
+// 호출이 끝나지 않아 결제 요청·결제 결과 수신이 멈춘다.
+//  - 승인: 토스 승인 10초 + "이미 처리된 결제" 조회 10초 + 여유. 넘기면 결과 불명(UNKNOWN)으로 응답하고,
+//    결제 쪽은 하던 승인을 마저 기록하거나 대사 배치가 PG 조회로 확정해 결과 이벤트로 알려 준다.
+//  - 환불: 토스 취소 10초 + 여유. 넘겨도 결제 쪽이 결과를 기록하고(REFUND_FAILED면 대사 배치가 재시도) 이벤트로 알려 준다.
+const PAYMENT_APPROVE_DEADLINE_MS = 25_000;
+const PAYMENT_REFUND_DEADLINE_MS = 15_000;
+
+function grpcDeadline(ms: number): CallOptions {
+  return { deadline: new Date(Date.now() + ms) };
+}
 
 // 예약 취소 시 결제 서비스에 보내는 환불 멱등 키. 예약 ID로 항상 같은 값을 만들어서, 취소가 재시도되거나
 // 두 번 들어와도 같은 키로 요청한다 → payments.refund_idempotency_key UNIQUE·토스 Idempotency-Key로 환불 1번.
@@ -116,20 +129,29 @@ interface HotelGrpcService {
 }
 
 // libs/common/src/proto/payment.proto의 PaymentService / RefundPayment, ApprovePayment와 1:1 대응
+// (metadata·options는 grpc-js 호출에 그대로 넘어간다 — options.deadline으로 호출 기한을 건다)
 interface PaymentGrpcService {
-  refundPayment(data: {
-    reservationId: number;
-    refundIdempotencyKey: string;
-  }): Observable<{ refunded: boolean; status: string }>;
-  approvePayment(data: {
-    idempotencyKey: string;
-    reservationId: number;
-    userId: number;
-    orderId: string;
-    paymentKey: string;
-    amount: number;
-    orderName: string;
-  }): Observable<{
+  refundPayment(
+    data: {
+      reservationId: number;
+      refundIdempotencyKey: string;
+    },
+    metadata?: Metadata,
+    options?: CallOptions,
+  ): Observable<{ refunded: boolean; status: string }>;
+  approvePayment(
+    data: {
+      idempotencyKey: string;
+      reservationId: number;
+      userId: number;
+      orderId: string;
+      paymentKey: string;
+      amount: number;
+      orderName: string;
+    },
+    metadata?: Metadata,
+    options?: CallOptions,
+  ): Observable<{
     result: ConfirmResultType;
     paymentId: number;
     retryable: boolean;
@@ -538,10 +560,14 @@ export class BookingServiceService implements OnModuleInit {
   private async requestRefund(reservationId: number): Promise<void> {
     try {
       const refund = await firstValueFrom(
-        this.paymentService.refundPayment({
-          reservationId,
-          refundIdempotencyKey: refundIdempotencyKey(reservationId),
-        }),
+        this.paymentService.refundPayment(
+          {
+            reservationId,
+            refundIdempotencyKey: refundIdempotencyKey(reservationId),
+          },
+          new Metadata(),
+          grpcDeadline(PAYMENT_REFUND_DEADLINE_MS),
+        ),
       );
       if (refund.status === 'REFUND_FAILED') {
         this.logger.error(
@@ -711,17 +737,21 @@ export class BookingServiceService implements OnModuleInit {
     });
 
     const approved = await firstValueFrom(
-      this.paymentService.approvePayment({
-        idempotencyKey: attempt.idempotencyKey,
-        reservationId: data.reservationId,
-        userId: data.userId,
-        orderId: data.orderId,
-        paymentKey: data.paymentKey,
-        amount: attempt.amount,
-        orderName: this.orderName(data.reservationId),
-      }),
+      this.paymentService.approvePayment(
+        {
+          idempotencyKey: attempt.idempotencyKey,
+          reservationId: data.reservationId,
+          userId: data.userId,
+          orderId: data.orderId,
+          paymentKey: data.paymentKey,
+          amount: attempt.amount,
+          orderName: this.orderName(data.reservationId),
+        },
+        new Metadata(),
+        grpcDeadline(PAYMENT_APPROVE_DEADLINE_MS),
+      ),
     ).catch((error: unknown) => {
-      // payment-service 호출 자체가 실패 — 승인 요청이 처리됐는지 알 수 없으므로 시도는 REQUESTED로 두고 UNKNOWN.
+      // payment-service 호출 자체가 실패(기한 초과 포함) — 승인 요청이 처리됐는지 알 수 없으므로 시도는 REQUESTED로 두고 UNKNOWN.
       // 같은 orderId로 다시 호출하면 같은 멱등 키로 재요청되어 결제가 중복으로 생기지 않는다.
       this.logger.error(
         `결제 승인 요청 실패 (reservationId=${data.reservationId}, orderId=${data.orderId})`,

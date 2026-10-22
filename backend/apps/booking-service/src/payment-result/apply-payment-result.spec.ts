@@ -161,10 +161,15 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
         service.applyPaymentResult(event()),
       ).resolves.toBeUndefined();
 
-      expect(refundPayment).toHaveBeenCalledWith({
-        reservationId: 1,
-        refundIdempotencyKey: expect.any(String) as string,
-      });
+      // 결제 서버 호출에는 기한(deadline)을 건다 — 결제 서버가 응답 없이 멈춰도 수신기가 같이 멈추지 않게
+      expect(refundPayment).toHaveBeenCalledWith(
+        {
+          reservationId: 1,
+          refundIdempotencyKey: expect.any(String) as string,
+        },
+        expect.anything(),
+        { deadline: expect.any(Date) as Date },
+      );
     },
   );
 

@@ -223,6 +223,22 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
       expect(result.result).toBe('UNKNOWN');
     });
 
+    it('승인 호출에는 기한(deadline)을 건다 — 결제 서버가 응답 없이 멈춰도 요청이 끝나지 않는 일이 없게 (LDP-97)', async () => {
+      approvePayment.mockReturnValue(of({ result: 'UNKNOWN', message: '' }));
+      const before = Date.now();
+
+      await confirm();
+
+      const [, , options] = approvePayment.mock.calls[0] as [
+        unknown,
+        unknown,
+        { deadline: Date },
+      ];
+      const remaining = options.deadline.getTime() - before;
+      expect(remaining).toBeGreaterThan(20_000);
+      expect(remaining).toBeLessThanOrEqual(30_000);
+    });
+
     it('payment-service 호출이 실패해도 승인 요청 시각은 남는다 (돈이 빠졌을 수도 있음)', async () => {
       approvePayment.mockReturnValue(throwError(() => new Error('timeout')));
 
