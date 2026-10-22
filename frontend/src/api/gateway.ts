@@ -166,16 +166,35 @@ export async function register(payload: RegisterRequest): Promise<AuthResponse> 
 
 // 액세스 토큰(메모리)을 Authorization 헤더에 실어 보내는 공통 fetch. 마이페이지 등 로그인 필요한 API에서 사용.
 // bookings.ts/payments.ts도 각자 fetch를 직접 구현하지 않고 이 함수를 재사용한다(429 재시도 포함).
+//
+// 액세스 토큰(15분)이 만료돼 401이 오면 리프레시 토큰(쿠키)으로 한 번 갱신하고 원래 요청을 한 번만 다시 보낸다
+// (LDP-128, 관리자 adminApi.authedFetch와 같은 방식). 401은 인증 가드가 핸들러 전에 거절한 것이라 예약 취소·결제처럼
+// 상태를 바꾸는 요청도 다시 보내도 두 번 처리되지 않는다. 갱신까지 실패하면 원래 401을 그대로 돌려줘서
+// 각 화면의 기존 처리(isUnauthorized → 로그인 안내)로 이어진다. 동시에 여러 요청이 401을 받아도 갱신은 한 번만 한다
+// (refreshAccessToken의 refreshInFlight 공유).
 export async function authorizedFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const token = customerAuth.getAccessToken()
-  return fetchWithRateLimitRetry(`${BASE_URL}${path}`, {
-    ...options,
-    credentials: 'include',
-    headers: {
-      ...options.headers,
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  })
+  const send = () => {
+    const token = customerAuth.getAccessToken()
+    return fetchWithRateLimitRetry(`${BASE_URL}${path}`, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        ...options.headers,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    })
+  }
+
+  const res = await send()
+  // 로그인·갱신 요청 자체의 401은 다시 갱신하지 않는다 (무한 반복 방지)
+  if (res.status !== 401 || path.startsWith('/api/auth/')) return res
+
+  try {
+    await refreshAccessToken()
+  } catch {
+    return res
+  }
+  return send()
 }
 
 export async function parseJsonResponse<T>(res: Response): Promise<T> {
