@@ -1,0 +1,33 @@
+#!/bin/bash
+# 결제 서버 최소 부트스트랩 (LDP-115). 진행 · 실패 로그는 /var/log/cloud-init-output.log
+#   - docker 설치 (AL2023 저장소, S3 게이트웨이 엔드포인트 경유)
+#   - 검증용 리스너: gRPC ${grpc_port} · 헬스체크 ${health_port}(GET /health) 자리에 python http.server
+# 실제 배포(pull agent · Flyway · payment-service)는 LDP-116 에서 이 파일을 바꾸면서 검증용 리스너를 뺀다.
+set -Eeuo pipefail
+
+echo "[bootstrap] docker 설치"
+dnf install -y -q docker
+systemctl enable --now docker
+
+echo "[bootstrap] 검증용 리스너 (${grpc_port}, ${health_port})"
+mkdir -p /opt/payment-placeholder
+echo ok > /opt/payment-placeholder/health
+
+cat > /etc/systemd/system/payment-placeholder@.service <<'EOF'
+[Unit]
+Description=Payment placeholder listener on port %i (LDP-115, replaced by payment-service in LDP-116)
+After=network-online.target
+
+[Service]
+DynamicUser=yes
+ExecStart=/usr/bin/python3 -m http.server %i --bind 0.0.0.0 --directory /opt/payment-placeholder
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now payment-placeholder@${grpc_port}.service payment-placeholder@${health_port}.service
+
+echo "[bootstrap] 완료"

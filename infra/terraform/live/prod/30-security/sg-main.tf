@@ -1,10 +1,10 @@
-# Main VPC SG 와 규칙 (설계 문서 4-1절 M1 – M12, M14, M15)
+# Main VPC SG 와 규칙 (설계 문서 4-1절 M1 – M15)
 #
 # 노드(워커 · CP) 는 아웃바운드 전체 허용(M14) 이라 노드에서 출발하는 흐름은 대상 SG 인바운드만 만든다.
 # 아웃바운드가 제한된 LB(ALB, 내부 NLB) 에서 출발하는 흐름은 인바운드 · 아웃바운드 양쪽을 만든다.
 # 파드 → DB · Valkey 는 Calico natOutgoing 으로 출처가 워커 노드 IP 다 (M11, M12).
 #
-# M13 (워커 → main-privatelink 3004) 은 결제 앱 + PrivateLink 이슈에서 추가한다.
+# M13 워커 → 결제 PrivateLink 엔드포인트 ENI(71-payment-link) → 결제 VPC. 엔드포인트 ENI 는 아웃바운드가 없다.
 
 locals {
   main_security_groups = merge(
@@ -13,6 +13,8 @@ locals {
       main_worker = { vpc = "main", description = "Main kubernetes worker nodes" }
       main_db     = { vpc = "main", description = "Main RDS MariaDB" }
       main_valkey = { vpc = "main", description = "Main ElastiCache Valkey" }
+
+      main_privatelink = { vpc = "main", description = "Main payment PrivateLink interface endpoint" }
     },
     var.enable_control_plane ? {
       main_cp           = { vpc = "main", description = "Main kubeadm control plane nodes" }
@@ -39,6 +41,9 @@ locals {
       # M11 · M12 파드 → Main DB, Valkey
       m11_db_from_worker     = { sg = "main_db", source = "main_worker", port = 3306, description = "M11 MariaDB from workers" }
       m12_valkey_from_worker = { sg = "main_valkey", source = "main_worker", port = 6379, description = "M12 Valkey from workers" }
+
+      # M13 파드(api-gateway · booking-service) → 결제 gRPC. 파드 출처는 Calico natOutgoing 으로 워커 노드 IP
+      m13_privatelink_from_worker = { sg = "main_privatelink", source = "main_worker", port = var.payment_grpc_port, description = "M13 payment gRPC from workers" }
     },
     var.enable_control_plane ? {
       # M3 · M4 kubelet · 파드 · CP 컴포넌트 → 내부 NLB → kube-apiserver

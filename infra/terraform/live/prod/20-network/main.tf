@@ -16,6 +16,9 @@ locals {
   name = var.project
 
   payment_firewall_cidrs = { a = "10.20.2.0/28", b = "10.20.2.16/28" }
+
+  # 결제 app-a 서브넷에서 고정 IP 를 쓰는 인스턴스용 대역 (61-payment-mock). 아래 예약 참고
+  payment_app_static_cidr = "10.20.8.16/28"
 }
 
 module "main" {
@@ -106,4 +109,13 @@ module "deployment" {
   # 무료라 둔다. AL2023 패키지 저장소·ECR pull 레이어(S3) 트래픽만 NAT 를 우회한다
   # (ECR push 는 레이어도 dkr 엔드포인트로 올라가므로 NAT 를 거친다)
   gateway_endpoints = ["s3"]
+}
+
+# 결제 app-a 서브넷의 고정 IP 대역. explicit 예약 대역은 AWS 가 자동 할당하지 않으므로
+# 44 인터페이스 엔드포인트 · 60 결제 서버 ENI 가 먼저 떠도 고정 IP(61 pg-mock) 와 겹치지 않는다
+resource "aws_ec2_subnet_cidr_reservation" "payment_app_static" {
+  subnet_id        = module.payment.subnet_ids_by_az.app.a
+  cidr_block       = local.payment_app_static_cidr
+  reservation_type = "explicit"
+  description      = "Static IPs for payment VPC instances (PG mock)"
 }
