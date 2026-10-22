@@ -14,11 +14,13 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
   const managerFindOne = jest.fn();
   const managerSave = jest.fn();
   const managerUpdate = jest.fn();
+  const managerQuery = jest.fn();
   const manager = {
     findOne: managerFindOne,
     save: managerSave,
     create: (_entity: unknown, value: unknown) => value,
     update: managerUpdate,
+    query: managerQuery,
   };
   const releaseRoomAvailability = jest.fn();
   const refundPayment = jest.fn();
@@ -146,7 +148,7 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
     ReservationStatus.CANCELLED,
     ReservationStatus.PAYMENT_FAILED,
   ])(
-    '승인 이벤트인데 예약이 이미 %s면 예약은 그대로 두고 자동 환불을 요청한다',
+    '승인 이벤트인데 예약이 이미 %s면 예약은 그대로 두고, 같은 트랜잭션에 "환불 필요"를 남긴다 (환불 호출은 워커가)',
     async (status) => {
       managerFindOne
         .mockResolvedValueOnce(attempt)
@@ -161,15 +163,12 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
         service.applyPaymentResult(event()),
       ).resolves.toBeUndefined();
 
-      // 결제 서버 호출에는 기한(deadline)을 건다 — 결제 서버가 응답 없이 멈춰도 수신기가 같이 멈추지 않게
-      expect(refundPayment).toHaveBeenCalledWith(
-        {
-          reservationId: 1,
-          refundIdempotencyKey: expect.any(String) as string,
-        },
-        expect.anything(),
-        { deadline: expect.any(Date) as Date },
+      expect(managerQuery).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO pending_refunds'),
+        [1, 'APPROVED_AFTER_CLOSE'],
       );
+      // 수신기는 결제 서버를 직접 부르지 않는다 — 결제 서버가 느려도 큐 처리가 밀리지 않게 (LDP-97)
+      expect(refundPayment).not.toHaveBeenCalled();
     },
   );
 
@@ -178,6 +177,7 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
 
     await service.applyPaymentResult(event());
 
+    expect(managerQuery).not.toHaveBeenCalled();
     expect(refundPayment).not.toHaveBeenCalled();
   });
 });
