@@ -152,7 +152,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 90-observability-alarms
 ```
 
-- `10-global` 은 도메인 없이 apply 할 수 있습니다. 도메인 구매 후 절차는 구매 계정(운영 계정 / 다른 계정)에 따라 다르며 [`dns.tf`](live/prod/10-global/dns.tf) 상단 주석을 따릅니다.
+- 서비스 도메인은 운영 계정 Route53 에서 등록한 `meomulm.click` 이고, `10-global` 의 `domain_name` · `enable_certificate` 기본값에 들어 있습니다. 등록 시 자동 생성된 Zone 을 import 해 씁니다 ([`dns.tf`](live/prod/10-global/dns.tf) 상단 주석 [A] 절차). `domain_name = null` 로 두면 도메인 없이도 apply 할 수 있습니다.
 - `bootstrap`, `10-global`, `11-registry`, `12-secrets` 는 **destroy 하지 않습니다.**
   Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 합니다.
 
@@ -176,8 +176,10 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `71-payment-link` | Interface Endpoint(AZ 2개) · private zone · 레코드 | 1분 44초 – 2분 07초 | 약 2분 |
 | `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
+| `80-main-edge` | 인증서 발급 후 (HTTPS 리스너, `api.<도메인>` 레코드. ALB 3분 17초, 레코드 32초. 2026-10-22) | 4분 05초 | |
 | **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
 | **`run --all` (10 · 11 포함, 20 · 30 · 40 – 44 · 70 · 80)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-21) | **20분 07초** | **12분 56초** (10 · 11 제외) |
+| **`run --all` (10 포함, 20 · 30 · 41 · 43 · 70 · 80)** | 위 기본 조건, 인증서 발급 후 (2026-10-22, `--filter './80-main-edge...' --filter './41-main-data...' --filter './43-messaging...'`) | **18분 16초** | |
 | **`run --all` (10 포함, 20 · 30 · 41 – 44 · 60 · 61 · 70 · 71, 40 · 80 제외)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-22, 아래 `--filter`) | **19분 54초 – 21분 02초** | **11분 02초** (10 제외) |
 
 결제 쪽(`42` → `60` → `71`)이 메인 쪽(`41` → `70`)과 병렬이라 `60` · `61` · `71` 을 넣어도 전체 시간은 거의 늘지 않습니다. 가장 긴 경로는 `42` RDS(6분 40초 – 10분)에 따라 정해지고, `70` 은 `60` · `71` 을 기다리지 않습니다. 필요한 스택만 올릴 때는 `--filter '<스택>...'`(그 스택과 의존 스택)로 고릅니다.
@@ -367,7 +369,7 @@ AWS_PROFILE=team04 aws elbv2 describe-target-health \
 ```
 
 - WAF 차단 응답은 403 입니다. IP 당 rate limit 은 기본 60초에 300회(`waf_rate_limit`, `waf_rate_limit_window_sec`)이고, 넘은 뒤 차단까지 수십 초 걸립니다.
-- 본문 8KB 초과 요청은 `waf_large_body_path_regex`(기본: 객실 등록 · 수정 `/api/hotels/<id>/rooms[/<id>]`, Base64 이미지) 경로만 허용하고 나머지는 403 입니다. 큰 본문을 받는 API 가 생기면 이 정규식에 추가합니다.
+- 본문 8KB 초과 요청은 경로와 관계없이 403 입니다 (관리형 규칙 `SizeRestrictions_BODY`). 객실 이미지는 Presigned PUT 으로 S3 에 직접 올리므로 API 본문이 크지 않습니다. 큰 파일은 API 대신 Presigned URL 로 받습니다.
 - 액세스 로그는 `10-global` 로그 버킷 `alb/` 에 5분 단위로 쌓입니다. Object Lock 버킷이라 잠금 기간(7일) 동안 지워지지 않습니다.
 - unhealthy 타깃이 있으면 그 워커가 클러스터에 join 했는지(`kubectl get nodes`) 먼저 봅니다 (6절). join 하지 못한 워커는 kube-proxy 가 없어 NodePort 가 응답하지 않습니다.
 
