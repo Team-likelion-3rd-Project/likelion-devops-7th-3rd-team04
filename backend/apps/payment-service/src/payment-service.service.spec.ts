@@ -651,6 +651,53 @@ describe('PaymentServiceService', () => {
       expect(tossCancelMock).not.toHaveBeenCalled();
     });
 
+    it('수동 처리 전환: 읽었을 때 상태(REFUND_FAILED)에서만 REFUND_MANUAL_REQUIRED로 바꾸고 사유를 남긴다', async () => {
+      const gaveUp = {
+        ...unknown,
+        status: PaymentStatus.REFUND_FAILED,
+        refundIdempotencyKey: 'refund-key-1',
+        rawResponse: { refundAttempts: 10 },
+      } as unknown as Payment;
+
+      expect(
+        await service.markRefundManualRequired(gaveUp, '10번 시도해도 실패'),
+      ).toBe(true);
+
+      expect(repoUpdateMock).toHaveBeenCalledWith(
+        { paymentId: 9, status: PaymentStatus.REFUND_FAILED },
+        {
+          status: PaymentStatus.REFUND_MANUAL_REQUIRED,
+          rawResponse: expect.objectContaining({
+            refundAttempts: 10,
+            manualRefund: expect.objectContaining({
+              reason: '10번 시도해도 실패',
+            }) as unknown,
+          }) as unknown,
+        },
+      );
+    });
+
+    it('수동 처리 전환: 그 사이 상태가 바뀌었으면(조건부 UPDATE 0건) false', async () => {
+      repoUpdateMock.mockResolvedValue({ affected: 0 });
+
+      expect(
+        await service.markRefundManualRequired(
+          { ...unknown, status: PaymentStatus.REFUND_FAILED },
+          '환불 키 없음',
+        ),
+      ).toBe(false);
+    });
+
+    it('수동 처리 전환: 환불 실패·진행 중이 아닌 결제는 바꾸지 않는다', async () => {
+      expect(
+        await service.markRefundManualRequired(
+          { ...unknown, status: PaymentStatus.APPROVED },
+          '환불 키 없음',
+        ),
+      ).toBe(false);
+      expect(repoUpdateMock).not.toHaveBeenCalled();
+    });
+
     it('토스 승인은 처음 기록할 때부터 결제 번호를 남긴다 (승인 도중 서버가 죽어도 조회 가능)', async () => {
       process.env.PAYMENT_PROVIDER = 'TOSS';
       createMock.mockImplementation((value: unknown) => value);

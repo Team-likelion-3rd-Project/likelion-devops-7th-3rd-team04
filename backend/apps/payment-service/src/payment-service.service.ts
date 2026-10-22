@@ -431,6 +431,7 @@ export class PaymentServiceService {
       case PaymentStatus.REFUND_REQUESTED:
       case PaymentStatus.REFUND_FAILED:
       case PaymentStatus.REFUNDED:
+      case PaymentStatus.REFUND_MANUAL_REQUIRED:
         return {
           ...base,
           result: 'APPROVED',
@@ -565,6 +566,39 @@ export class PaymentServiceService {
       return false;
     }
     return this.cancelAtPgAndRecord(payment, payment.refundIdempotencyKey);
+  }
+
+  // 환불 자동 재시도 중단 — 대사 배치(LDP-97)가 호출. 최대 횟수만큼 실패했거나 환불 키가 없어 다시 시도할 수 없는 환불을
+  // REFUND_MANUAL_REQUIRED로 옮긴다. 이 상태는 대사 배치·환불 요청 모두 다시 건드리지 않고, 운영자가 PG 콘솔에서 처리한다.
+  // 읽었을 때 상태(REFUND_FAILED·REFUND_REQUESTED)에서만 바꾸는 조건부라, 그 사이 다른 경로가 처리했으면 아무것도 하지 않는다.
+  // 옮겼으면 true — 알람은 옮길 때 한 번만 남는다.
+  async markRefundManualRequired(
+    payment: Payment,
+    reason: string,
+  ): Promise<boolean> {
+    if (
+      payment.status !== PaymentStatus.REFUND_FAILED &&
+      payment.status !== PaymentStatus.REFUND_REQUESTED
+    ) {
+      return false;
+    }
+    const { affected } = await this.paymentRepository.update(
+      { paymentId: payment.paymentId, status: payment.status },
+      {
+        status: PaymentStatus.REFUND_MANUAL_REQUIRED,
+        rawResponse: toJsonColumn({
+          ...(payment.rawResponse ?? {}),
+          manualRefund: { reason, at: new Date().toISOString() },
+        }),
+      },
+    );
+    if (!affected) {
+      return false;
+    }
+    this.logger.error(
+      `[알람] 환불 자동 재시도 중단 — PG 콘솔에서 수동 환불 필요 (paymentId=${payment.paymentId}, reservationId=${payment.reservationId}, 사유: ${reason})`,
+    );
+    return true;
   }
 
   // 결과 불명 결제 확정 — 대사 배치(LDP-97)가 PG 조회 결과로 호출 (ERD "UNKNOWN → 토스 조회로 확정").

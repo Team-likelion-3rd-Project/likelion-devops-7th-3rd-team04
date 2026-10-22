@@ -547,6 +547,10 @@ export class BookingServiceService implements OnModuleInit {
         this.logger.error(
           `[알람] 예약(#${reservationId}) 취소 후 환불 실패 — 결제 쪽에서 재시도 필요`,
         );
+      } else if (refund.status === 'REFUND_MANUAL_REQUIRED') {
+        this.logger.error(
+          `[알람] 예약(#${reservationId}) 환불이 자동 재시도 중단 상태 — PG 콘솔에서 수동 환불 필요`,
+        );
       }
     } catch (error) {
       this.logger.error(

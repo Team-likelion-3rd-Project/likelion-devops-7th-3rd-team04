@@ -6,9 +6,10 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
-// 결제 상태 7종 (ERD 위키 "결제 payments.status" 상태 모델).
+// 결제 상태 8종 (ERD 위키 "결제 payments.status" 상태 모델).
 //   PROCESSING -> APPROVED | FAILED | UNKNOWN(타임아웃, 토스 조회로 APPROVED/FAILED 확정)
 //   APPROVED -> REFUND_REQUESTED -> REFUNDED | REFUND_FAILED(-> 재시도 성공 시 REFUNDED)
+//   REFUND_FAILED·REFUND_REQUESTED -> REFUND_MANUAL_REQUIRED (대사 배치가 자동 재시도를 멈춤 → 운영자 수동 환불, LDP-97)
 export enum PaymentStatus {
   PROCESSING = 'PROCESSING',
   APPROVED = 'APPROVED',
@@ -17,6 +18,7 @@ export enum PaymentStatus {
   REFUND_REQUESTED = 'REFUND_REQUESTED',
   REFUND_FAILED = 'REFUND_FAILED',
   REFUNDED = 'REFUNDED',
+  REFUND_MANUAL_REQUIRED = 'REFUND_MANUAL_REQUIRED',
 }
 
 // 어느 PG로 결제했는지. MOCK = pg-mock-service(부하테스트용), TOSS = 토스페이먼츠.

@@ -54,6 +54,7 @@ describe('PaymentReconciliationService.reconcile', () => {
   const query = jest.fn();
   const settleFromPgLookup = jest.fn();
   const retryRefund = jest.fn();
+  const markRefundManualRequired = jest.fn();
   const tossGet = jest.fn();
   const mockGet = jest.fn();
   let lockGranted: number;
@@ -72,6 +73,7 @@ describe('PaymentReconciliationService.reconcile', () => {
     mockGet.mockResolvedValue({ outcome: 'APPROVED', paymentKey: 'pgmock_1' });
     settleFromPgLookup.mockResolvedValue('APPROVED');
     retryRefund.mockResolvedValue(true);
+    markRefundManualRequired.mockResolvedValue(true);
     service = new PaymentReconciliationService(
       {
         createQueryBuilder: queryBuilder,
@@ -84,7 +86,11 @@ describe('PaymentReconciliationService.reconcile', () => {
           query,
         }),
       } as unknown as DataSource,
-      { settleFromPgLookup, retryRefund } as unknown as PaymentServiceService,
+      {
+        settleFromPgLookup,
+        retryRefund,
+        markRefundManualRequired,
+      } as unknown as PaymentServiceService,
       { getPayment: tossGet } as unknown as TossPaymentsClient,
       { getPayment: mockGet } as unknown as PgMockClient,
     );
@@ -183,10 +189,18 @@ describe('PaymentReconciliationService.reconcile', () => {
   describe('② 환불 재시도', () => {
     it('REFUND_FAILED와 오래 멈춘 REFUND_REQUESTED를 같은 환불 키로 다시 요청한다', async () => {
       stale[PaymentStatus.REFUND_FAILED] = [
-        payment({ paymentId: 2, status: PaymentStatus.REFUND_FAILED }),
+        payment({
+          paymentId: 2,
+          status: PaymentStatus.REFUND_FAILED,
+          refundIdempotencyKey: 'refund-key-2',
+        }),
       ];
       stale[PaymentStatus.REFUND_REQUESTED] = [
-        payment({ paymentId: 3, status: PaymentStatus.REFUND_REQUESTED }),
+        payment({
+          paymentId: 3,
+          status: PaymentStatus.REFUND_REQUESTED,
+          refundIdempotencyKey: 'refund-key-3',
+        }),
       ];
 
       const result = await service.reconcile();
@@ -199,26 +213,91 @@ describe('PaymentReconciliationService.reconcile', () => {
       stale[PaymentStatus.REFUND_FAILED] = [
         payment({
           status: PaymentStatus.REFUND_FAILED,
+          refundIdempotencyKey: 'refund-key-1',
           rawResponse: { refundAttempts: 3 },
         }),
       ];
       retryRefund.mockResolvedValue(false);
 
-      expect((await service.reconcile()).refundFailed).toBe(1);
+      const result = await service.reconcile();
+
+      expect(result.refundFailed).toBe(1);
+      expect(markRefundManualRequired).not.toHaveBeenCalled();
     });
 
-    it('최대 횟수(10번)에 닿은 환불은 더 시도하지 않는다 (수동 처리)', async () => {
+    it('최대 횟수(10번)에 닿은 환불은 더 시도하지 않고 수동 처리(REFUND_MANUAL_REQUIRED)로 옮긴다', async () => {
+      const gaveUp = payment({
+        status: PaymentStatus.REFUND_FAILED,
+        refundIdempotencyKey: 'refund-key-1',
+        rawResponse: { refundAttempts: 10 },
+      });
+      stale[PaymentStatus.REFUND_FAILED] = [gaveUp];
+
+      const result = await service.reconcile();
+
+      expect(retryRefund).not.toHaveBeenCalled();
+      expect(markRefundManualRequired).toHaveBeenCalledWith(
+        gaveUp,
+        expect.stringContaining('10번'),
+      );
+      expect(result.refundGaveUp).toBe(1);
+    });
+
+    it('환불 키가 없으면 다시 시도할 수 없으므로 수동 처리로 옮긴다', async () => {
       stale[PaymentStatus.REFUND_FAILED] = [
-        payment({
-          status: PaymentStatus.REFUND_FAILED,
-          rawResponse: { refundAttempts: 10 },
-        }),
+        payment({ status: PaymentStatus.REFUND_FAILED }),
       ];
 
       const result = await service.reconcile();
 
       expect(retryRefund).not.toHaveBeenCalled();
+      expect(markRefundManualRequired).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentId: 1 }),
+        '환불 키 없음',
+      );
       expect(result.refundGaveUp).toBe(1);
+    });
+
+    it('포기한 환불이 대상 자리를 차지해도 새 환불 실패 건은 재시도된다 (A2)', async () => {
+      // 포기 건은 수동 처리로 옮겨져 다음 조회부터 빠지고, 같은 실행 안의 다른 건도 그대로 재시도한다
+      stale[PaymentStatus.REFUND_FAILED] = [
+        ...Array.from({ length: 3 }, (_, i) =>
+          payment({
+            paymentId: 100 + i,
+            status: PaymentStatus.REFUND_FAILED,
+            refundIdempotencyKey: `refund-key-${i}`,
+            rawResponse: { refundAttempts: 10 },
+          }),
+        ),
+        payment({
+          paymentId: 200,
+          status: PaymentStatus.REFUND_FAILED,
+          refundIdempotencyKey: 'refund-key-new',
+          rawResponse: { refundAttempts: 1 },
+        }),
+      ];
+
+      const result = await service.reconcile();
+
+      expect(markRefundManualRequired).toHaveBeenCalledTimes(3);
+      expect(retryRefund).toHaveBeenCalledTimes(1);
+      expect(retryRefund).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentId: 200 }),
+      );
+      expect(result).toMatchObject({ refundGaveUp: 3, refunded: 1 });
+    });
+
+    it('그 사이 다른 경로가 상태를 바꿔 수동 처리로 옮기지 못했으면 세지 않는다', async () => {
+      stale[PaymentStatus.REFUND_FAILED] = [
+        payment({
+          status: PaymentStatus.REFUND_FAILED,
+          refundIdempotencyKey: 'refund-key-1',
+          rawResponse: { refundAttempts: 10 },
+        }),
+      ];
+      markRefundManualRequired.mockResolvedValue(false);
+
+      expect((await service.reconcile()).refundGaveUp).toBe(0);
     });
   });
 

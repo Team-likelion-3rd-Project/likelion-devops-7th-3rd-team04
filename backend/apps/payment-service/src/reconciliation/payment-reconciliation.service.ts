@@ -25,7 +25,7 @@ const SETTLE_AFTER_SECONDS = 120;
 const REFUND_RETRY_AFTER_SECONDS = 120;
 // REFUND_REQUESTED가 이만큼 그대로면 환불 도중 서버가 죽은 것으로 보고 다시 시도한다 (PG 취소는 10초 안에 끝남)
 const REFUND_STUCK_AFTER_SECONDS = 600;
-// 환불을 이만큼 시도해도 실패하면 자동 재시도를 멈추고 수동 처리로 넘긴다
+// 환불을 이만큼 시도해도 실패하면 자동 재시도를 멈추고 수동 처리(REFUND_MANUAL_REQUIRED)로 옮긴다
 const MAX_REFUND_ATTEMPTS = 10;
 // 여러 대가 떠 있어도 한 대만 배치를 돌리게 하는 DB 잠금 이름 (MariaDB GET_LOCK)
 const LOCK_NAME = 'payment:reconciliation';
@@ -37,7 +37,7 @@ export interface ReconciliationResult {
   noPaymentKey: number; // 결제 번호가 없어 조회할 수 없음 → 수동 확인
   refunded: number; // 환불 재시도 성공
   refundFailed: number; // 환불 재시도 실패 (다음에 다시)
-  refundGaveUp: number; // 최대 횟수 초과로 자동 재시도 중단 → 수동 처리
+  refundGaveUp: number; // 최대 횟수 초과·환불 키 없음 → REFUND_MANUAL_REQUIRED로 옮김 (수동 처리)
   skipped: boolean; // 다른 인스턴스가 실행 중이라 건너뜀
 }
 
@@ -45,7 +45,7 @@ export interface ReconciliationResult {
 //  ① 결과를 모르는 결제(UNKNOWN, 오래된 PROCESSING)를 PG에 결제 번호로 조회해 승인·실패로 확정하고,
 //     결과 이벤트(Outbox → SQS)로 예약에 알린다. 승인이 늦게 확정돼 예약이 이미 만료됐으면 예약 쪽이 자동 환불한다(LDP-92).
 //  ② 환불 실패(REFUND_FAILED)와 오래 멈춘 환불(REFUND_REQUESTED)을 처음 정한 환불 키 그대로 다시 요청한다.
-//     MAX_REFUND_ATTEMPTS번 실패하면 자동 재시도를 멈추고 알람 — 운영자가 PG 콘솔에서 확인한다.
+//     MAX_REFUND_ATTEMPTS번 실패하면 REFUND_MANUAL_REQUIRED로 옮겨 자동 재시도를 멈추고 알람 — 운영자가 PG 콘솔에서 처리한다.
 //  - 1분마다 (RECONCILIATION_INTERVAL_SECONDS, 0이면 끔). (status, updatedAt) Index(결제 V2)로 대상을 찾는다.
 //    시간 비교는 DB 시계(NOW)로 해서 서버 시간대와 상관없다.
 //  - 여러 대가 떠 있으면 GET_LOCK을 잡은 한 대만 돈다. 상태 변경은 모두 조건부라 겹쳐도 한 번만 반영된다.
@@ -202,10 +202,19 @@ export class PaymentReconciliationService
       )),
     ];
     for (const payment of payments) {
-      const attempts = Number(payment.rawResponse?.refundAttempts);
-      if (attempts >= MAX_REFUND_ATTEMPTS) {
-        result.refundGaveUp++;
-        continue; // 최대 횟수에 닿을 때 이미 알람을 남겼다
+      // 더 시도할 수 없는 건은 REFUND_MANUAL_REQUIRED로 옮겨 조회 대상에서 뺀다. 그대로 두면 updatedAt이 안 바뀌어
+      // 매번 맨 앞에 다시 조회되고, BATCH_SIZE만큼 쌓이면 새 환불 실패 건이 재시도되지 못한다.
+      const gaveUpReason = this.refundGaveUpReason(payment);
+      if (gaveUpReason) {
+        if (
+          await this.paymentService.markRefundManualRequired(
+            payment,
+            gaveUpReason,
+          )
+        ) {
+          result.refundGaveUp++;
+        }
+        continue;
       }
       const refunded = await this.paymentService.retryRefund(payment);
       if (refunded) {
@@ -215,16 +224,21 @@ export class PaymentReconciliationService
         );
         continue;
       }
+      // 이번이 마지막 시도였으면 다음 실행에서 수동 처리로 옮긴다
       result.refundFailed++;
-      if (
-        (Number.isFinite(attempts) ? attempts : 0) + 1 >=
-        MAX_REFUND_ATTEMPTS
-      ) {
-        this.logger.error(
-          `[알람] 환불을 ${MAX_REFUND_ATTEMPTS}번 시도해도 실패 — 자동 재시도 중단, PG 콘솔에서 수동 환불 필요 (paymentId=${payment.paymentId}, reservationId=${payment.reservationId})`,
-        );
-      }
     }
+  }
+
+  // 자동 재시도를 멈출 이유. 계속 시도할 건이면 null
+  private refundGaveUpReason(payment: Payment): string | null {
+    if (!payment.refundIdempotencyKey) {
+      return '환불 키 없음';
+    }
+    const attempts = Number(payment.rawResponse?.refundAttempts);
+    if (attempts >= MAX_REFUND_ATTEMPTS) {
+      return `${MAX_REFUND_ATTEMPTS}번 시도해도 실패`;
+    }
+    return null;
   }
 
   private lookup(payment: Payment): Promise<PgLookupResult> {
