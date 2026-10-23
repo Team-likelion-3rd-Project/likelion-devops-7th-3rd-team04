@@ -1,19 +1,27 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useHotels } from '../data/hotelStore'
-import { searchRooms } from '../api/hotels'
+import { fetchRoomAvailability, searchRooms } from '../api/hotels'
 import type { Room, RoomSearchResult } from '../api/hotels'
 import ReservationSteps from '../components/reservation/ReservationSteps'
 import RoomDetailModal from '../components/reservation/RoomDetailModal'
 import { sumGuests } from '../components/reservation/guestTypes'
 import { CalendarIcon, PersonIcon, PinIcon, RefreshIcon } from '../components/reservation/icons'
-import { diffDays, formatDateISO, formatDateWithWeekday } from '../utils/date'
+import { addDays, diffDays, formatDateISO, formatDateWithWeekday } from '../utils/date'
 import { parseReservationSearchParams, toReservationSearchParams } from '../utils/reservationQuery'
 import './RoomSelectionPage.css'
 
 type ListStatus = 'loading' | 'success' | 'error'
 
 type SortOrder = 'price-asc' | 'price-desc'
+
+// 숙박 기간 중 가장 적게 남은 날의 방 수 = 이 기간에 예약할 수 있는 방 수.
+// 판매 중지된 날이 있으면 0. 응답에 남은 수가 없으면 null(표시 안 함).
+function remainingRoomsOf(days: { remainingCount?: number; isSaleStopped?: boolean }[]): number | null {
+  if (days.some((day) => day.isSaleStopped)) return 0
+  const counts = days.map((day) => day.remainingCount).filter((count): count is number => count != null)
+  return counts.length === days.length && counts.length > 0 ? Math.min(...counts) : null
+}
 
 function RoomSelectionPage() {
   // 호텔 이름·소개는 API(GET /api/hotels) 응답으로 갱신된다 (data/hotelStore.ts)
@@ -39,6 +47,36 @@ function RoomSelectionPage() {
       navigate('/reservation', { replace: true })
     }
   }, [search, hotel, navigate])
+
+  // 객실별 남은 방 수 (검색 결과가 나온 뒤 객실마다 날짜별 가용성을 불러와 계산). 못 불러온 객실은 표시하지 않는다.
+  const [remainingByRoomId, setRemainingByRoomId] = useState<Map<number, number>>(new Map())
+
+  useEffect(() => {
+    if (!search || !hotel || results.length === 0) return
+    let cancelled = false
+    // 체크아웃 당일은 묵지 않으므로 체크아웃 전날까지 조회한다
+    const startDate = formatDateISO(search.checkIn)
+    const endDate = formatDateISO(addDays(search.checkOut, -1))
+
+    Promise.allSettled(
+      results.map(({ room }) =>
+        fetchRoomAvailability(hotel.hotelId, room.roomId, startDate, endDate).then(
+          (availability) => [room.roomId, remainingRoomsOf(availability.availabilities)] as const,
+        ),
+      ),
+    ).then((settled) => {
+      if (cancelled) return
+      const next = new Map<number, number>()
+      for (const item of settled) {
+        if (item.status === 'fulfilled' && item.value[1] != null) next.set(item.value[0], item.value[1])
+      }
+      setRemainingByRoomId(next)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [results, search, hotel])
 
   useEffect(() => {
     if (!search || !hotel) return
@@ -122,6 +160,8 @@ function RoomSelectionPage() {
             <ul className="room-select-list">
               {sortedResults.map(({ room, minPrice }) => {
                 const thumbnail = room.images[0]
+                const remaining = remainingByRoomId.get(room.roomId)
+                const isSoldOut = remaining === 0
 
                 return (
                   <li className="room-select-card" key={room.roomId}>
@@ -143,6 +183,11 @@ function RoomSelectionPage() {
                         </button>
                       </div>
                       <p className="room-select-capacity">기준 인원 {room.capacity}명</p>
+                      {remaining != null && (
+                        <p className={`room-select-remaining${isSoldOut ? ' is-sold-out' : ''}`}>
+                          {isSoldOut ? '매진' : `남은 객실 ${remaining}개`}
+                        </p>
+                      )}
 
                       <div className="room-select-inline-price">
                         <p>
@@ -152,8 +197,13 @@ function RoomSelectionPage() {
                       </div>
                     </div>
 
-                    <button type="button" className="room-select-button" onClick={() => handleSelectRoom(room)}>
-                      선택
+                    <button
+                      type="button"
+                      className="room-select-button"
+                      onClick={() => handleSelectRoom(room)}
+                      disabled={isSoldOut}
+                    >
+                      {isSoldOut ? '매진' : '선택'}
                     </button>
                   </li>
                 )
