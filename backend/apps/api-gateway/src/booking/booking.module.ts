@@ -25,6 +25,15 @@ import { AdminBookingController } from './admin-booking.controller';
           process.env.USER_SERVICE_HOST || 'localhost:3001',
         ),
       },
+      // 관리자 예약 목록의 방 번호 검색 (LDP-136)
+      {
+        name: 'HOTEL_SERVICE',
+        ...getGrpcOptions(
+          'hotel',
+          'hotel.proto',
+          process.env.HOTEL_SERVICE_HOST || 'localhost:3002',
+        ),
+      },
     ]),
   ],
   controllers: [BookingController, AdminBookingController],

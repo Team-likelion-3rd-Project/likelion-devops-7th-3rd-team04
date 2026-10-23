@@ -56,6 +56,7 @@ interface AdminBookingGrpcService {
     keywordReservationId: number;
     keywordUserIds: number[];
     linkedTo: number;
+    keywordRoomUnitIds: number[];
   }): Observable<{ bookings?: BookingDto[]; total?: number }>;
   createAdminBooking(data: {
     userId: number;
@@ -93,6 +94,16 @@ interface UserLookupGrpcService {
   }): Observable<{ users?: { id: number }[] }>;
 }
 
+// proto(hotel.proto)의 HotelService / GetHotels, ListRoomUnits — 방 번호 검색 (LDP-136)
+interface RoomLookupGrpcService {
+  getHotels(data: object): Observable<{ hotels?: { hotelId: number }[] }>;
+  listRoomUnits(data: {
+    hotelId: number;
+    roomId: number;
+    status: string;
+  }): Observable<{ units?: { roomUnitId: number; roomNumber: string }[] }>;
+}
+
 // proto(user.proto)의 AdminService / GetAdminById — 회원(UserService)과 다른 서비스다
 interface AdminLookupGrpcService {
   getAdminById(data: { id: number }): Observable<{ id: number; name: string }>;
@@ -118,10 +129,12 @@ export class AdminBookingController implements OnModuleInit {
   private bookingService!: AdminBookingGrpcService;
   private userService!: UserLookupGrpcService;
   private adminService!: AdminLookupGrpcService;
+  private hotelService!: RoomLookupGrpcService;
 
   constructor(
     @Inject('BOOKING_SERVICE') private readonly bookingClient: ClientGrpc,
     @Inject('USER_SERVICE') private readonly userClient: ClientGrpc,
+    @Inject('HOTEL_SERVICE') private readonly hotelClient: ClientGrpc,
   ) {}
 
   onModuleInit() {
@@ -131,6 +144,8 @@ export class AdminBookingController implements OnModuleInit {
       this.userClient.getService<UserLookupGrpcService>('UserService');
     this.adminService =
       this.userClient.getService<AdminLookupGrpcService>('AdminService');
+    this.hotelService =
+      this.hotelClient.getService<RoomLookupGrpcService>('HotelService');
   }
 
   /**
@@ -143,14 +158,15 @@ export class AdminBookingController implements OnModuleInit {
     summary: '예약 목록 조회 (관리자 전용)',
     description:
       '최신순. page를 주면 그 페이지만, 생략하면 조건에 맞는 전체를 돌려줍니다. total은 조건에 맞는 전체 개수입니다. ' +
-      'keyword는 예약번호(숫자) 또는 회원 이름·이메일·연락처 일부로 찾고, linkedTo는 그 예약과 연장 예약만 돌려줍니다.',
+      'keyword는 예약번호(숫자)·회원 이름·이메일·연락처·방 번호 일부로 찾고, linkedTo는 그 예약과 연장 예약만 돌려줍니다.',
   })
   @ApiResponse({ status: 200, description: '{ bookings, total }' })
   @ApiResponse({ status: 400, description: '조건 값이 잘못됨' })
   @ApiResponse({ status: 403, description: '관리자 권한이 없음' })
   @ApiResponse({
     status: 503,
-    description: 'USER_SERVICE_UNAVAILABLE / BOOKING_SERVICE_UNAVAILABLE',
+    description:
+      'USER_SERVICE_UNAVAILABLE / HOTEL_SERVICE_UNAVAILABLE / BOOKING_SERVICE_UNAVAILABLE',
   })
   async getBookings(
     @Query() query: AdminBookingListQueryDto,
@@ -158,6 +174,7 @@ export class AdminBookingController implements OnModuleInit {
     const keyword = query.keyword?.trim() ?? '';
     let keywordReservationId = 0;
     let keywordUserIds: number[] = [];
+    let keywordRoomUnitIds: number[] = [];
     if (keyword) {
       if (/^\d+$/.test(keyword) && Number(keyword) <= MAX_INT32) {
         keywordReservationId = Number(keyword);
@@ -178,6 +195,15 @@ export class AdminBookingController implements OnModuleInit {
           '회원 정보를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
         );
       }
+      try {
+        keywordRoomUnitIds = await this.findRoomUnitIds(keyword, query.hotelId);
+      } catch (err) {
+        throw toHttpError(
+          err,
+          'HOTEL_SERVICE_UNAVAILABLE',
+          '호실 정보를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+        );
+      }
     }
 
     try {
@@ -191,6 +217,7 @@ export class AdminBookingController implements OnModuleInit {
           keywordReservationId,
           keywordUserIds,
           linkedTo: query.linkedTo ?? 0,
+          keywordRoomUnitIds,
         }),
       );
       return { bookings: bookings.map(toBooking), total };
@@ -201,6 +228,35 @@ export class AdminBookingController implements OnModuleInit {
         '예약 목록을 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.',
       );
     }
+  }
+
+  // 방 번호에 검색어가 들어 있는 호실 ID (LDP-136). 방 번호는 hotel-service에 있어 지점별 호실 목록에서 찾는다 —
+  // 지점 조건이 없으면 모든 지점을 본다 (지점 수·호실 수가 적어 목록을 받아 거르는 편이 간단하다).
+  private async findRoomUnitIds(
+    keyword: string,
+    hotelId?: number,
+  ): Promise<number[]> {
+    const hotelIds = hotelId
+      ? [hotelId]
+      : (
+          (await firstValueFrom(this.hotelService.getHotels({}))).hotels ?? []
+        ).map((hotel) => hotel.hotelId);
+    const lists = await Promise.all(
+      hotelIds.map((id) =>
+        firstValueFrom(
+          this.hotelService.listRoomUnits({
+            hotelId: id,
+            roomId: 0,
+            status: '',
+          }),
+        ),
+      ),
+    );
+    const lowered = keyword.toLowerCase();
+    return lists
+      .flatMap(({ units = [] }) => units)
+      .filter((unit) => unit.roomNumber.toLowerCase().includes(lowered))
+      .map((unit) => unit.roomUnitId);
   }
 
   /**

@@ -86,6 +86,18 @@ describe('관리자 예약 목록 getBookings', () => {
     expect(createQueryBuilder).not.toHaveBeenCalled();
   });
 
+  it('검색어가 방 번호에만 맞아도(호실 ID) 조회한다', async () => {
+    await service.getBookings({
+      hasKeyword: true,
+      keywordReservationId: 0,
+      keywordUserIds: [],
+      keywordRoomUnitIds: [5],
+    });
+
+    expect(createQueryBuilder).toHaveBeenCalled();
+    expect(qb.andWhere).toHaveBeenCalledTimes(1);
+  });
+
   it('검색어 조건(예약번호 또는 회원)은 하나의 묶음으로 건다 — 다른 조건과는 AND', async () => {
     await service.getBookings({
       hotelId: 1,

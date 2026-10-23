@@ -13,6 +13,7 @@ describe('AdminBookingController', () => {
   };
   const user = { getUserById: jest.fn(), getUsers: jest.fn() };
   const adminLookup = { getAdminById: jest.fn() };
+  const hotel = { getHotels: jest.fn(), listRoomUnits: jest.fn() };
   const admin = {
     userId: 3,
     email: 'staff@hotel.com',
@@ -62,6 +63,7 @@ describe('AdminBookingController', () => {
         getService: (name: string) =>
           name === 'AdminService' ? adminLookup : user,
       } as never,
+      { getService: () => hotel } as never,
     );
     controller.onModuleInit();
   });
@@ -73,6 +75,21 @@ describe('AdminBookingController', () => {
         of({ bookings: [grpcBooking], total: 37 }),
       );
       user.getUsers.mockReturnValue(of({ users: [{ id: 7 }, { id: 9 }] }));
+      hotel.getHotels.mockReturnValue(
+        of({ hotels: [{ hotelId: 1 }, { hotelId: 2 }] }),
+      );
+      hotel.listRoomUnits.mockImplementation(
+        ({ hotelId }: { hotelId: number }) =>
+          of({
+            units:
+              hotelId === 1
+                ? [
+                    { roomUnitId: 3, roomNumber: '201' },
+                    { roomUnitId: 4, roomNumber: '1201' },
+                  ]
+                : [{ roomUnitId: 8, roomNumber: 'B101' }],
+          }),
+      );
     });
 
     it('조건이 없으면 페이지를 나누지 않고 전체를 요청한다 (예전과 같은 목록) — 응답에 total', async () => {
@@ -87,8 +104,10 @@ describe('AdminBookingController', () => {
         keywordReservationId: 0,
         keywordUserIds: [],
         linkedTo: 0,
+        keywordRoomUnitIds: [],
       });
       expect(user.getUsers).not.toHaveBeenCalled();
+      expect(hotel.listRoomUnits).not.toHaveBeenCalled();
       expect(result.total).toBe(37);
       expect(result.bookings[0]).toMatchObject({
         reservationId: 12,
@@ -143,6 +162,44 @@ describe('AdminBookingController', () => {
           keywordUserIds: [7, 9],
         }),
       );
+    });
+
+    it('방 번호로도 찾는다 — 지점 조건이 없으면 모든 지점의 호실에서 (대소문자 무시)', async () => {
+      await controller.getBookings({ keyword: '201' });
+
+      expect(hotel.listRoomUnits).toHaveBeenCalledTimes(2);
+      expect(booking.getBookings).toHaveBeenCalledWith(
+        expect.objectContaining({ keywordRoomUnitIds: [3, 4] }),
+      );
+
+      await controller.getBookings({ keyword: 'b1' });
+      expect(booking.getBookings).toHaveBeenLastCalledWith(
+        expect.objectContaining({ keywordRoomUnitIds: [8] }),
+      );
+    });
+
+    it('지점 조건이 있으면 그 지점 호실만 본다', async () => {
+      await controller.getBookings({ keyword: '201', hotelId: 1 });
+
+      expect(hotel.getHotels).not.toHaveBeenCalled();
+      expect(hotel.listRoomUnits).toHaveBeenCalledWith({
+        hotelId: 1,
+        roomId: 0,
+        status: '',
+      });
+    });
+
+    it('호실 조회가 실패하면 503 HOTEL_SERVICE_UNAVAILABLE', async () => {
+      hotel.getHotels.mockReturnValue(
+        throwError(() => ({ code: 14, details: 'No connection established' })),
+      );
+
+      const { status, body } = await httpError(
+        controller.getBookings({ keyword: '201' }),
+      );
+
+      expect(status).toBe(503);
+      expect(body).toMatchObject({ code: 'HOTEL_SERVICE_UNAVAILABLE' });
     });
 
     it('회원 검색이 실패하면 503 USER_SERVICE_UNAVAILABLE', async () => {

@@ -198,6 +198,7 @@ export interface BookingListQuery {
   keywordReservationId?: number;
   keywordUserIds?: number[];
   linkedTo?: number;
+  keywordRoomUnitIds?: number[];
 }
 
 // 끝난 예약 중 환불이 남아 있을 수 있는 상태 — 여기에 취소를 다시 요청하면 환불 상태를 확인해 알려 준다 (LDP-97).
@@ -455,17 +456,19 @@ export class BookingServiceService implements OnModuleInit {
 
   // 전체 예약 목록 조회 (관리자 전용, 권한 검증은 api-gateway에서 수행)
   // 관리자 예약 목록 (LDP-136). 조건이 없으면 전체(예전과 같음), page가 1 이상이면 그 페이지만. 최신순.
-  // 검색어는 api-gateway가 예약번호·회원 ID로 바꿔서 넘긴다 — 회원 이름·이메일은 이 서비스 DB에 없다.
+  // 검색어는 api-gateway가 예약번호·회원 ID·호실 ID로 바꿔서 넘긴다 — 회원 이름·방 번호는 이 서비스 DB에 없다.
   async getBookings(
     query: BookingListQuery = {},
   ): Promise<{ bookings: BookingGrpcResponse[]; total: number }> {
     const keywordUserIds = query.keywordUserIds ?? [];
+    const keywordRoomUnitIds = query.keywordRoomUnitIds ?? [];
     if (
       query.hasKeyword &&
       !query.keywordReservationId &&
-      keywordUserIds.length === 0
+      keywordUserIds.length === 0 &&
+      keywordRoomUnitIds.length === 0
     ) {
-      // 검색어에 맞는 예약번호도 회원도 없음
+      // 검색어에 맞는 예약번호도 회원도 호실도 없음
       return { bookings: [], total: 0 };
     }
 
@@ -487,6 +490,11 @@ export class BookingServiceService implements OnModuleInit {
           if (keywordUserIds.length > 0) {
             keyword.orWhere('r.userId IN (:...keywordUserIds)', {
               keywordUserIds,
+            });
+          }
+          if (keywordRoomUnitIds.length > 0) {
+            keyword.orWhere('r.roomUnitId IN (:...keywordRoomUnitIds)', {
+              keywordRoomUnitIds,
             });
           }
         }),

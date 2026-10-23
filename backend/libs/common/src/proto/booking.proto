@@ -83,11 +83,12 @@ message GetBookingsRequest {
   int32 size = 2; // 한 페이지 개수 (page가 1 이상일 때)
   int32 hotelId = 3; // 0 = 전체 지점
   repeated string statuses = 4; // 비면 전체 상태
-  // 검색어가 있으면 true — 아래 예약번호·회원 중 하나라도 맞는 예약만 (둘 다 비면 결과 없음)
+  // 검색어가 있으면 true — 아래 예약번호·회원·호실 중 하나라도 맞는 예약만 (모두 비면 결과 없음)
   bool hasKeyword = 5;
   int32 keywordReservationId = 6; // 검색어가 숫자면 그 예약번호 (0 = 없음)
   repeated int32 keywordUserIds = 7; // 검색어로 찾은 회원(이름·이메일·연락처) — api-gateway가 user-service에서 찾는다
   int32 linkedTo = 8; // 0이 아니면 이 예약과 그 연장 예약만 (연장 묶음 표시용)
+  repeated int32 keywordRoomUnitIds = 9; // 검색어가 방 번호에 들어 있는 호실 — api-gateway가 hotel-service에서 찾는다
 }
 
 message GetBookingsByUserIdRequest {
