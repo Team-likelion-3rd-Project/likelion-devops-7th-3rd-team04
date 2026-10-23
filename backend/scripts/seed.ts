@@ -49,6 +49,60 @@ const FACILITY_SEEDS: Pick<Facility, 'name' | 'price'>[] = [
   { name: '라운지', price: 50000 },
 ];
 
+// 첫 공지 (LDP-147) — 프론트가 직접 적어 두던 frontend/src/data/notices.ts의 6건 그대로.
+// date는 작성일(created_at)로 넣는다 (한국 날짜가 같게 보이도록 UTC 자정).
+const NOTICE_SEEDS: {
+  date: string;
+  category: 'NOTICE' | 'EVENT' | 'MAINTENANCE';
+  title: string;
+  body: string;
+  pinned: boolean;
+}[] = [
+  {
+    date: '2026-10-01',
+    category: 'NOTICE',
+    title: '머묾 온라인 예약 오픈',
+    body: '서울점·부산점·제주점의 객실을 홈페이지에서 바로 예약하고 결제할 수 있습니다. 예약 내역과 결제 내역은 마이페이지에서 확인하세요.',
+    pinned: false,
+  },
+  {
+    date: '2026-10-05',
+    category: 'NOTICE',
+    title: '제주점 라운지 리뉴얼 오픈',
+    body: '제주점 라운지가 새 단장을 마치고 문을 열었습니다. 오름이 보이는 창가 좌석과 지역 재료로 만든 다과를 준비했습니다.',
+    pinned: false,
+  },
+  {
+    date: '2026-10-10',
+    category: 'MAINTENANCE',
+    title: '예약 시스템 점검 안내 (10월 12일 02:00~04:00)',
+    body: '더 안정적인 서비스를 위해 시스템 점검을 진행합니다. 점검 시간에는 예약·결제가 잠시 중단되며, 이미 완료된 예약에는 영향이 없습니다.',
+    pinned: false,
+  },
+  {
+    date: '2026-10-15',
+    category: 'EVENT',
+    title: '가을 시즌 수영장 야간 운영 연장',
+    body: '10월 한 달 동안 세 지점 수영장을 밤 11시까지 운영합니다. 예약 시 수영장 옵션을 선택하시면 이용하실 수 있습니다.',
+    pinned: false,
+  },
+  {
+    date: '2026-10-20',
+    category: 'NOTICE',
+    title:
+      '결제 기한 안내 — 결제 대기 예약은 기한이 지나면 자동으로 만료됩니다',
+    body: '오늘 체크인하는 예약은 예약 후 30분, 내일 이후 체크인하는 예약은 체크인 전날 자정까지 결제해 주세요. 기한은 마이페이지의 예약 상세와 결제 대기 화면에서 확인할 수 있습니다.',
+    pinned: true,
+  },
+  {
+    date: '2026-10-23',
+    category: 'NOTICE',
+    title: '호텔 브랜드명이 "머묾(MEOMULM)"으로 바뀌었습니다',
+    body: '머무는 순간을 온전히 손님의 시간으로 만들겠다는 뜻을 담아, 브랜드명을 "머묾"으로 정했습니다. 예약 내역과 회원 정보는 그대로 이용하실 수 있습니다.',
+    pinned: true,
+  },
+];
+
 const SEED_ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL;
 const SEED_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD;
 const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME ?? '관리자';
@@ -672,6 +726,34 @@ async function seedFacilities(dataSource: DataSource): Promise<void> {
   }
 }
 
+// 공지 시딩 (LDP-147): notices 테이블이 비어 있을 때만 첫 공지 6건을 넣는다 —
+// 관리자가 공지를 올리거나 고친 뒤 시드를 다시 실행해도 덮어쓰거나 늘어나지 않는다.
+async function seedNotices(dataSource: DataSource): Promise<void> {
+  const [{ count }]: { count: number | string }[] = await dataSource.query(
+    'SELECT COUNT(*) AS count FROM notices',
+  );
+  if (Number(count) > 0) {
+    console.log('[seed] 공지(notices)가 이미 있습니다 — 건너뜁니다.');
+    return;
+  }
+  for (const notice of NOTICE_SEEDS) {
+    const createdAt = `${notice.date} 00:00:00`;
+    await dataSource.query(
+      `INSERT INTO notices (title, body, category, is_pinned, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        notice.title,
+        notice.body,
+        notice.category,
+        notice.pinned ? 1 : 0,
+        createdAt,
+        createdAt,
+      ],
+    );
+  }
+  console.log(`[seed] 공지 ${NOTICE_SEEDS.length}건 생성 완료`);
+}
+
 // 객실 사진 시딩 (LDP-126): 사진이 하나도 없는 시드 객실 종류에만 scripts/seed-images/의 사진을 저장소
 // (로컬·dev MinIO / 운영 S3)에 올리고 room_images에 경로(object_key)를 저장한다. 경로 규칙은
 // hotel-service RoomImageStorage와 같다(room-types/{객실 종류 ID}/{uuid}.jpg) — 화면은 Presigned URL로 보여준다.
@@ -775,6 +857,7 @@ async function main(): Promise<void> {
     await seedFacilities(dataSource);
     await seedRoomAvailabilities(dataSource);
     await seedRoomImages(dataSource);
+    await seedNotices(dataSource);
     console.log('[seed] 시딩 완료');
   } finally {
     await dataSource.destroy();

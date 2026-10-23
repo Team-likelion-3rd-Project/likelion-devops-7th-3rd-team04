@@ -7,12 +7,15 @@ import { RoomService } from './room.service';
 import { RoomImageStorage } from './room-image.storage';
 import { FacilityService } from './facility.service';
 import { RoomUnitService } from './room-unit.service';
+import { NoticeService } from './notice.service';
+import { NoticeController } from './notice.controller';
 import { Hotel } from './entities/hotel.entity';
 import { RoomType } from './entities/room-type.entity';
 import { RoomUnit } from './entities/room-unit.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
 import { Facility } from './entities/facility.entity';
+import { Notice } from './entities/notice.entity';
 import { HealthModule, mariaDbSslOptions } from '@app/common';
 
 @Module({
@@ -47,6 +50,7 @@ import { HealthModule, mariaDbSslOptions } from '@app/common';
           RoomAvailability,
           RoomImage,
           Facility,
+          Notice,
         ],
         // 테이블 구조는 Flyway(backend/migrations)만 바꿉니다. true로 두면 TypeORM이
         // 재기동 때마다 엔티티에 맞춰 테이블을 고치면서 Flyway가 만든 FK를 지워버립니다.
@@ -63,15 +67,17 @@ import { HealthModule, mariaDbSslOptions } from '@app/common';
       RoomAvailability,
       RoomImage,
       Facility,
+      Notice,
     ]),
   ],
-  controllers: [HotelServiceController],
+  controllers: [HotelServiceController, NoticeController],
   providers: [
     HotelServiceService,
     RoomService,
     RoomImageStorage,
     FacilityService,
     RoomUnitService,
+    NoticeService,
   ],
 })
 export class HotelServiceModule {}

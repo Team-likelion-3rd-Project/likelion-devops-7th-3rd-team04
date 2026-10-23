@@ -12,6 +12,7 @@ import { ChatBotController } from './chat-bot/chat-bot.controller';
 import { ChatBotModule } from './chat-bot/chat-bot.module';
 import { PaymentModule } from './payment/payment.module';
 import { BookingModule } from './booking/booking.module';
+import { NoticeModule } from './notice/notice.module';
 import { HealthModule } from '@app/common';
 
 @Module({
@@ -33,6 +34,7 @@ import { HealthModule } from '@app/common';
     ChatBotModule,
     PaymentModule,
     BookingModule,
+    NoticeModule,
   ],
   controllers: [ApiGatewayController],
   providers: [
