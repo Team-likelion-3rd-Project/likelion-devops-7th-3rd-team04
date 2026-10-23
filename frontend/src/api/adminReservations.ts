@@ -1,5 +1,6 @@
 import { authedFetch, authedJsonFetch } from './adminApi'
 import { ApiError, type Booking } from './gateway'
+import type { Payment } from './payments'
 
 // ─── 관리자 예약 관리 — 예약 목록, 대리 예약·직원 취소·투숙 연장 (LDP-90 #172, PR #204) ─────────────
 // 대리 예약·연장 예약은 손님 앱의 "결제 대기"에 나타나고, 손님이 결제해야 확정된다.
@@ -59,6 +60,23 @@ export async function fetchAdminBookings(): Promise<AdminBooking[]> {
   const res = await authedFetch('/api/bookings')
   const data = await parseAdminResponse<{ bookings?: AdminBooking[] }>(res)
   return data.bookings ?? []
+}
+
+// GET /api/payments/users/{userId} (관리자 전용) - 회원의 결제 목록 (결제 상태·금액·환불 시각)
+export async function fetchAdminUserPayments(userId: number): Promise<Payment[]> {
+  const res = await authedFetch(`/api/payments/users/${userId}`)
+  const data = await parseAdminResponse<{ payments?: Payment[] }>(res)
+  return data.payments ?? []
+}
+
+// 예약별 가장 최근 결제(결제 번호가 큰 것) — 한 예약에 결제 시도가 여러 번이면 마지막 것이 지금 상태다
+export function latestPaymentByReservation(payments: Payment[]): Map<number, Payment> {
+  const map = new Map<number, Payment>()
+  for (const p of payments) {
+    const prev = map.get(p.reservationId)
+    if (!prev || p.paymentId > prev.paymentId) map.set(p.reservationId, p)
+  }
+  return map
 }
 
 // POST /api/bookings/admin (관리자 전용) - 대리 예약 생성 (만든 직원이 기록됨)
