@@ -17,10 +17,12 @@ async function bootstrap() {
   // terminationGracePeriodSeconds/preStop과 세트로 동작).
   app.enableShutdownHooks();
 
-  // Express 기본 body 파서 용량 제한(100kb)을 상향합니다.
-  // Base64로 인코딩한 객실 이미지처럼 큰 JSON 바디를 받을 때 413(Payload Too Large)이 나는 것을 방지합니다.
-  app.use(json({ limit: '20mb' }));
-  app.use(urlencoded({ extended: true, limit: '20mb' }));
+  // 요청 본문 최대 크기 1MB (LDP-134). 넘으면 413(Payload Too Large).
+  // 예전에는 객실 사진을 base64 JSON으로 받느라 20MB까지 열어 두었지만, 지금 사진은 브라우저가 Presigned URL로
+  // 저장소(MinIO·S3)에 직접 올리므로(LDP-88) gateway에는 몇 KB짜리 JSON만 온다. 큰 본문을 받아 메모리를 쓰지 않게 줄인다.
+  // (운영은 앞단 WAF가 본문을 더 작게 막는다 — infra/terraform/live/prod/80-main-edge/waf.tf)
+  app.use(json({ limit: '1mb' }));
+  app.use(urlencoded({ extended: true, limit: '1mb' }));
 
   // 로그인 시 발급되는 httpOnly 쿠키(refreshToken)를 req.cookies로 파싱합니다.
   app.use(cookieParser());
