@@ -61,6 +61,7 @@ export class PaymentServiceController {
   async refundPayment(data: {
     reservationId: number;
     refundIdempotencyKey: string;
+    skipFailedRetry?: boolean;
   }) {
     return this.paymentServiceService.refundPayment(data);
   }

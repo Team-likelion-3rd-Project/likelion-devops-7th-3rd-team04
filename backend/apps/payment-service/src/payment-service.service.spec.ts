@@ -254,6 +254,49 @@ describe('PaymentServiceService', () => {
       expect(pgMockRefundMock).not.toHaveBeenCalled();
     });
 
+    // LDP-137: 손님이 끝난 예약에 취소를 연달아 다시 요청해도 실패한 환불을 그 자리에서 재시도하지 않는다
+    it('skipFailedRetry면 REFUND_FAILED를 다시 시도하지 않고 상태만 돌려준다 — 여러 번 불러도 PG 호출·시도 횟수 그대로', async () => {
+      findOneMock.mockResolvedValue({
+        ...approved,
+        status: PaymentStatus.REFUND_FAILED,
+        refundIdempotencyKey: refundKey,
+        rawResponse: { refundAttempts: 3 },
+      });
+
+      for (let i = 0; i < 5; i++) {
+        const result = await service.refundPayment({
+          reservationId: 1,
+          refundIdempotencyKey: refundKey,
+          skipFailedRetry: true,
+        });
+        expect(result).toEqual({
+          refunded: false,
+          status: PaymentStatus.REFUND_FAILED,
+        });
+      }
+
+      expect(repoUpdateMock).not.toHaveBeenCalled();
+      expect(managerUpdateMock).not.toHaveBeenCalled();
+      expect(pgMockRefundMock).not.toHaveBeenCalled();
+    });
+
+    it('skipFailedRetry여도 아직 환불을 시작하지 않은 승인 결제(APPROVED)는 환불을 시작한다 (첫 시도)', async () => {
+      findOneMock.mockResolvedValue(approved);
+      pgMockRefundMock.mockResolvedValue({ outcome: 'CANCELED' });
+
+      const result = await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: refundKey,
+        skipFailedRetry: true,
+      });
+
+      expect(pgMockRefundMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        refunded: true,
+        status: PaymentStatus.REFUNDED,
+      });
+    });
+
     it('REFUND_FAILED 재시도는 처음 기록한 환불 키를 그대로 쓴다 (PG가 한 번만 취소)', async () => {
       findOneMock.mockResolvedValue({
         ...approved,
