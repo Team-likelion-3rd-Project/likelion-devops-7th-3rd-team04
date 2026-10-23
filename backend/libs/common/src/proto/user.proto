@@ -18,6 +18,10 @@ service UserService {
   // api-gateway가 "내 정보 조회"(JWT의 userId) 및 관리자 "특정 유저 조회"에서 호출합니다. (없으면 에러)
   rpc GetUserById (GetUserByIdRequest) returns (User);
 
+  // api-gateway가 관리자 예약 목록에 예약자 이름·이메일을 붙일 때 한 번에 조회합니다 (LDP-150).
+  // 없는 ID(탈퇴 등)는 결과에서 빠집니다. total은 찾은 회원 수
+  rpc GetUsersByIds (GetUsersByIdsRequest) returns (UserListResponse);
+
   // api-gateway가 "내 정보 수정"(JWT의 userId)에서 호출합니다. (없으면 에러)
   rpc UpdateUser (UpdateUserRequest) returns (User);
 
@@ -84,6 +88,10 @@ message CancelSignupRequest {
 message ArchiveOrphanProfileRequest {
   int32 id = 1;
   string email = 2;
+}
+
+message GetUsersByIdsRequest {
+  repeated int32 ids = 1; // 최대 100개 (관리자 예약 목록 한 페이지 기준)
 }
 
 message GetUserByIdRequest {
