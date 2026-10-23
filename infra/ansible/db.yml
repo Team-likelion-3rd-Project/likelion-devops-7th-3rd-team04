@@ -1,5 +1,9 @@
 ---
-- name: DB 노드 구성 (MariaDB + Valkey + MinIO, Docker Compose)
+# DB 노드: OpenBao(dev 비밀값 단일 소스) → MariaDB + Valkey + MinIO + DynamoDB Local (README 7절, 16절)
+#   전체           : ansible-playbook db.yml -K
+#   OpenBao 만     : ansible-playbook db.yml -K --tags openbao
+#   .env 값 이관만 : ansible-playbook db.yml -K --tags openbao_import
+- name: DB 노드 구성 (OpenBao + MariaDB + Valkey + MinIO, Docker Compose)
   hosts: db
   become: true
   vars:
@@ -7,8 +11,11 @@
     secret_charset_regex: '^[^\s''"\\$#`]+$'
     # MinIO 키는 MC_HOST_<alias>=http://<key>:<secret>@host URL 에 들어가므로 URL 에 안전한 문자만
     minio_key_charset_regex: '^[A-Za-z0-9._~-]+$'
+    # preflight(OpenBao 기동 전)는 Tailscale 값만 확인
     required_env:
       TS_DB_OAUTH_CLIENT_SECRET: "{{ ts_oauth_secret }}"
+    # OpenBao 를 읽은 뒤 확인 (OpenBao 도입 전에는 .env · backend/.env 값)
+    required_values:
       VALKEY_PASSWORD: "{{ valkey_password }}"
       MINIO_ROOT_USER: "{{ minio_root_user }}"
       MINIO_ROOT_PASSWORD: "{{ minio_root_password }}"
@@ -16,24 +23,52 @@
       MINIO_APP_SECRET_KEY: "{{ minio_app_secret_key }}"
       MINIO_RAG_ACCESS_KEY: "{{ minio_rag_access_key }}"
       MINIO_RAG_SECRET_KEY: "{{ minio_rag_secret_key }}"
-      DB_USERNAME (backend/.env): "{{ db_username }}"
-      DB_PASSWORD (backend/.env): "{{ db_password }}"
-      DB_ROOT_PASSWORD (backend/.env): "{{ db_root_password }}"
+      DB_USERNAME: "{{ db_username }}"
+      DB_PASSWORD: "{{ db_password }}"
+      DB_ROOT_PASSWORD: "{{ db_root_password }}"
   pre_tasks:
-    - name: backend env 파일 확인
-      ansible.builtin.stat:
-        path: "{{ backend_env_file }}"
-      register: backend_env_stat
-      run_once: true
-      delegate_to: localhost
-      become: false
+    - name: 선행 패키지 설치
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, python3-debian, ufw]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
 
-    - name: backend env 파일 없음 안내
-      ansible.builtin.fail:
-        msg: >-
-          {{ backend_env_file }} 가 없습니다. backend/.env.example 을 backend/.env 로 복사해 값을 채우거나,
-          BACKEND_ENV_FILE 로 다른 경로를 지정하세요.
-      when: not backend_env_stat.stat.exists
+  roles:
+    - preflight
+    - tailscale
+    - docker
+    - firewall
+    - role: openbao
+      tags: [openbao]
+
+  tasks:
+    - name: .env 값 → OpenBao 이관 (없는 경로만)
+      ansible.builtin.import_role:
+        name: openbao
+        tasks_from: import
+      tags: [openbao, openbao_import]
+
+    - name: OpenBao 값 읽기
+      ansible.builtin.import_role:
+        name: openbao_kv
+        tasks_from: read
+      vars:
+        openbao_read_paths: "{{ db_openbao_paths }}"
+      # --tags seed · openbao_import 단독 실행에서도 OpenBao 값을 쓰도록
+      tags: [always]
+
+    - name: 필수 값 확인
+      ansible.builtin.assert:
+        that: item.value | length > 0
+        fail_msg: >-
+          {{ item.key }} 가 비어 있습니다. OpenBao({{ openbao_kv_prefix }}/*)에 값을 넣거나,
+          OpenBao 도입 전이면 infra/ansible/.env · backend/.env 를 채우고 다시 실행하세요 (README 7-2, 16-3).
+        quiet: true
+      loop: "{{ required_values | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
       run_once: true
 
     - name: DB 계정 정책 확인
@@ -79,19 +114,12 @@
       delegate_to: localhost
       become: false
 
-    - name: 선행 패키지 설치
-      ansible.builtin.apt:
-        name: [ca-certificates, curl, python3-debian, ufw]
-        state: present
-        update_cache: true
-        cache_valid_time: 3600
+    - name: DB 스택
+      ansible.builtin.import_role:
+        name: db_stack
 
-  roles:
-    - preflight
-    - tailscale
-    - docker
-    - firewall
-    - db_stack
     # dev 초기 데이터 — 메인 DB 스키마(ArgoCD sync 때 main-db-migration hook 이 적용)가 있어야 실행, 없으면 건너뜀
-    - role: db_seed
+    - name: dev DB 시딩
+      ansible.builtin.import_role:
+        name: db_seed
       tags: [seed]

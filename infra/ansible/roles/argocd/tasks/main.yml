@@ -137,7 +137,7 @@
   retries: 12
   delay: 10
 
-# ── admin 초기 비밀번호 → 로컬 .secrets/argocd.env ─────────
+# ── admin 초기 비밀번호 → 로컬 .secrets/argocd.env · OpenBao argocd ─────────
 # UI 에서 비밀번호를 바꾸면 이 파일 값은 더 이상 맞지 않습니다 (initial secret 은 바뀌지 않음)
 - name: admin 초기 비밀번호 조회
   ansible.builtin.command: >-
@@ -161,6 +161,18 @@
   become: false
   when: argocd_initial_pw.stdout | length > 0
   no_log: true
+
+- name: OpenBao 저장 (argocd)
+  ansible.builtin.include_role:
+    name: openbao_kv
+    tasks_from: write
+  vars:
+    openbao_write_path: argocd
+    openbao_write_data:
+      ARGOCD_URL: "https://{{ argocd_fqdn }}:{{ argocd_serve_https_port }}"
+      ARGOCD_ADMIN_USER: admin
+      ARGOCD_ADMIN_PASSWORD: "{{ argocd_initial_pw.stdout | b64decode }}"
+  when: argocd_initial_pw.stdout | length > 0
 
 # ── 전환 전 배포 경로(agentk) 정리 ──────────────────────
 - name: GitLab Agent(agentk) 정리

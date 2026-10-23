@@ -1,0 +1,27 @@
+# Ansible(roles/openbao)이 관리 — playbook 이 쓰는 토큰(.secrets/openbao.env)의 정책.
+# dev 비밀값 읽기/쓰기 + k8s-cicd.yml 이 맞추는 Kubernetes auth 설정 (mount · 정책 변경은 root token 으로 db.yml 만)
+path "{{ openbao_kv_mount }}/data/{{ openbao_kv_prefix }}/*" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+
+path "{{ openbao_kv_mount }}/metadata/{{ openbao_kv_prefix }}/*" {
+  capabilities = ["read", "list", "delete"]
+}
+
+path "{{ openbao_kv_mount }}/metadata/{{ openbao_kv_prefix }}" {
+  capabilities = ["list"]
+}
+
+path "auth/kubernetes/config" {
+  capabilities = ["create", "read", "update"]
+}
+
+# ESO role 은 eso-dev 정책만 붙일 수 있음 (다른 정책으로 권한을 넓히지 못하게)
+path "auth/kubernetes/role/{{ openbao_eso_role }}" {
+  capabilities = ["create", "read", "update"]
+  # 목록 값은 목록 하나를 통째로 비교 → [["eso-dev"]] (["eso-dev"] 로 쓰면 목록 요청이 거부됨)
+  allowed_parameters = {
+    "token_policies" = [["eso-dev"]]
+    "*"              = []
+  }
+}

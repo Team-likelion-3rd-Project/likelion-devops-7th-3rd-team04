@@ -13,69 +13,46 @@ traefik_http_nodeport: 30080
 # api-gateway Ingress(/api, /api-docs)는 backend Helm 차트가 관리 (gitops envs/dev/values.yaml 의 ingress)
 
 # ── CI/CD: backend 네임스페이스 · Secret (k8s-cicd.yml, README 12-3) ──
-# GitLab 주소 / 토큰은 gitlab.yml --tags bootstrap 이 만든 .secrets/gitlab-k8s.env 에서
-gitlab_url: "{{ lookup('env', 'GITLAB_URL') }}"
-gitlab_ts_ip: "{{ lookup('env', 'GITLAB_TS_IP') }}"
+# GitLab 주소 / 토큰은 OpenBao gitlab-k8s (gitlab.yml --tags bootstrap 이 저장).
+# OpenBao 도입 전에는 .secrets/gitlab-k8s.env 를 source 한 환경변수에서
+gitlab_url: "{{ openbao_kv['gitlab-k8s'].GITLAB_URL | default(lookup('env', 'GITLAB_URL'), true) }}"
+gitlab_ts_ip: "{{ openbao_kv['gitlab-k8s'].GITLAB_TS_IP | default(lookup('env', 'GITLAB_TS_IP'), true) }}"
 gitlab_fqdn: "{{ gitlab_url | urlsplit('hostname') }}"
-gitlab_registry: "{{ lookup('env', 'GITLAB_REGISTRY') }}"
-registry_deploy_user: "{{ lookup('env', 'REGISTRY_DEPLOY_USER') }}"
-registry_deploy_token: "{{ lookup('env', 'REGISTRY_DEPLOY_TOKEN') }}"
+gitlab_registry: "{{ openbao_kv['gitlab-k8s'].GITLAB_REGISTRY | default(lookup('env', 'GITLAB_REGISTRY'), true) }}"
+registry_deploy_user: "{{ openbao_kv['gitlab-k8s'].REGISTRY_DEPLOY_USER | default(lookup('env', 'REGISTRY_DEPLOY_USER'), true) }}"
+registry_deploy_token: "{{ openbao_kv['gitlab-k8s'].REGISTRY_DEPLOY_TOKEN | default(lookup('env', 'REGISTRY_DEPLOY_TOKEN'), true) }}"
 
 # 앱 네임스페이스 — dev(온프레미스)·prod(EKS) 모두 같은 이름 (클러스터로 환경 구분)
 backend_namespace: backend
 backend_secret_name: backend-secrets
+# backend-secrets 는 ESO 가 OpenBao 에서 만듦 (ExternalSecret, key 목록은 group_vars/all.yml 의 backend_external_secret_data).
+# 운영(infra/gitops/prod/backend-secrets)과 같은 주기 — 값을 바꾼 뒤 바로 반영하려면 force-sync annotation (README 16-4)
+backend_secret_refresh_interval: 1h
+# backend_external_secret_data 를 [{key, remote, property}] 로 편 것 (backend_namespace role 의 확인 · ExternalSecret data)
+backend_external_secret_refs: >-
+  {%- set out = [] -%}
+  {%- for remote, keys in backend_external_secret_data.items() -%}
+    {%- for key, property in keys.items() -%}
+      {%- set _ = out.append({'key': key, 'remote': remote, 'property': property}) -%}
+    {%- endfor -%}
+  {%- endfor -%}
+  {{ out }}
+# k8s-cicd.yml 이 읽는 OpenBao 경로 — GitLab 토큰 + backend-secrets 원본 (값 확인용)
+k8s_cicd_openbao_paths: "{{ ['gitlab-k8s'] + (backend_external_secret_data.keys() | list) }}"
 
-# backend-secrets: backend/.env 를 단일 소스로 (db.yml 과 같은 파일)
-backend_env_file: "{{ (lookup('env', 'BACKEND_ENV_FILE') | default(playbook_dir ~ '/../../backend/.env', true)) | expanduser | realpath }}"
-backend_env: "{{ lookup('file', backend_env_file) | parse_dotenv }}"
-db_ts_ip: "{{ lookup('env', 'DB_TS_IP') }}"
-# 차트(backend-deploy/charts/backend values.yaml)의 secretEnv 에 나오는 key 전부
-backend_secret_keys:
-  - DB_HOST
-  - DB_USERNAME
-  - DB_PASSWORD
-  - DB_DATABASE
-  - JWT_ACCESS_SECRET
-  - JWT_REFRESH_SECRET
-  - REDIS_HOST
-  - REDIS_PASSWORD
-  - MOCK_PG_SECRET
-backend_secret_required_keys: "{{ backend_secret_keys | reject('equalto', 'REDIS_PASSWORD') | list }}"
-# 값이 있을 때만 Secret 에 넣는 key (전부 채우거나 전부 비워야 함).
-# 온프레미스 dev 는 payment-service · 결제 DB 를 클러스터 밖 결제 노드(payment.yml)에서 운영하므로 결제 DB 자격증명(PAYMENT_DB_*)을
-# 클러스터에 넣지 않음 — backend/.env 에 PAYMENT_DB_* 가 채워져 있어도(결제 노드용) backend-secrets 에는 들어가지 않음 (README 12-3, 14절)
-backend_secret_optional_keys: []
-# 온프레미스 dev 는 메인 MariaDB 와 Valkey 가 DB 노드 한 대에 있음
-backend_secret_host_overrides:
-  DB_HOST: "{{ db_ts_ip }}"
-  REDIS_HOST: "{{ db_ts_ip }}"
-# ── 챗봇 AI 스택(llm-service · n8n, infra/ansible README 15절) — backend/.env 가 아니라 infra/ansible/.env 에서 ──
-# 서비스 계정 키(JSON, 여러 줄)는 .env 에 직접 넣을 수 없어 파일 경로만 받음 (infra/gcp-terraform/README 의 키 발급).
-# 상대 경로는 infra/ansible 기준
-gcp_sa_key_file: "{{ lookup('env', 'GCP_SA_KEY_FILE') }}"
-gcp_sa_key_path: >-
-  {{ gcp_sa_key_file if gcp_sa_key_file.startswith('/')
-     else (playbook_dir ~ '/' ~ gcp_sa_key_file) | realpath }}
-# DB 노드(db.yml)의 포트와 같은 값 — group_vars/db.yml 의 minio_api_port / dynamodb_port
-db_minio_api_port: 9000
-db_dynamodb_port: 8000
-# 서비스 계정 키(GCP_SA_KEY_JSON)는 base64 로 Secret 의 data 에 넣음 (backend_namespace role).
-# 문자열로 두면 Ansible 이 JSON 을 dict 로 바꿔 stringData(문자열만 허용)가 kubectl apply 에서 거절됨
-gcp_sa_key_b64: "{{ lookup('file', gcp_sa_key_path) | b64encode }}"
-# 차트(gitops envs/dev/values.yaml)의 hotel-service · llm-service · chat-bot-service · n8n secretEnv 에 나오는 key (GCP_SA_KEY_JSON 제외)
-backend_secret_extra:
-  # hotel-service 객실 이미지 — DB 노드 MinIO 의 room-images 버킷, 앱 계정 (README 7-6)
-  S3_ENDPOINT: "http://{{ db_ts_ip }}:{{ db_minio_api_port }}"
-  S3_ACCESS_KEY_ID: "{{ lookup('env', 'MINIO_APP_ACCESS_KEY') }}"
-  S3_SECRET_ACCESS_KEY: "{{ lookup('env', 'MINIO_APP_SECRET_KEY') }}"
-  VECTOR_OBJECT_ENDPOINT: "http://{{ db_ts_ip }}:{{ db_minio_api_port }}"
-  VECTOR_OBJECT_ACCESS_KEY: "{{ lookup('env', 'MINIO_RAG_ACCESS_KEY') }}"
-  VECTOR_OBJECT_SECRET_KEY: "{{ lookup('env', 'MINIO_RAG_SECRET_KEY') }}"
-  DYNAMODB_ENDPOINT: "http://{{ db_ts_ip }}:{{ db_dynamodb_port }}"
-  N8N_INIT_OWNER_PASSWORD: "{{ lookup('env', 'N8N_INIT_OWNER_PASSWORD') }}"
+# ── External Secrets Operator (k8s-cicd.yml → roles/external_secrets, README 16절) ──
+# 운영(infra/gitops/prod/external-secrets/chart.yaml)과 같은 버전. 올릴 때는 두 곳을 같이
+external_secrets_chart_version: "2.13.0"
+external_secrets_chart_repo: "https://charts.external-secrets.io"
+external_secrets_namespace: external-secrets
+# OpenBao Kubernetes auth role 의 bound service account (roles/openbao 의 ansible-dev 정책과 같은 이름)
+external_secrets_service_account: external-secrets
+external_secrets_manifest_dir: /etc/kubernetes/external-secrets
+# 운영의 aws-secrets-manager 에 해당 — backend-secrets ExternalSecret 이 참조
+cluster_secret_store_name: openbao
 
 # ── ArgoCD (k8s-cicd.yml → roles/argocd, README 12-9) ──────────
-# backend 차트를 gitops 레포(team04/infra/backend-gitops)에서 pull 배포. Traefik · Secret 은 계속 Ansible 이 관리
+# backend 차트를 gitops 레포(team04/infra/backend-gitops)에서 pull 배포. Traefik · ESO · Secret 은 계속 Ansible 이 관리
 argocd_namespace: argocd
 # 버전 고정 — 올릴 때는 argo-helm Changelog / ArgoCD upgrade 문서 확인 (chart 10.10.3 = ArgoCD v3.5.5)
 argocd_chart_version: "10.10.3"
@@ -87,8 +64,8 @@ argocd_server_nodeport_http: 30880
 argocd_server_nodeport_https: 30881   # 차트가 함께 만드는 포트 (같은 컨테이너 포트) — 다른 NodePort 와 겹치지 않게만 고정
 argocd_serve_https_port: 8443          # 443 은 Traefik HTTPS 용으로 비워 둠 (README 11-4)
 # ArgoCD 가 읽는 GitLab 레포 (그룹 Deploy Token read_repository — gitlab.yml --tags bootstrap 이 발급)
-argocd_repo_user: "{{ lookup('env', 'ARGOCD_REPO_USER') }}"
-argocd_repo_token: "{{ lookup('env', 'ARGOCD_REPO_TOKEN') }}"
+argocd_repo_user: "{{ openbao_kv['gitlab-k8s'].ARGOCD_REPO_USER | default(lookup('env', 'ARGOCD_REPO_USER'), true) }}"
+argocd_repo_token: "{{ openbao_kv['gitlab-k8s'].ARGOCD_REPO_TOKEN | default(lookup('env', 'ARGOCD_REPO_TOKEN'), true) }}"
 # gitlab.yml(group_vars/gitlab.yml) 과 같은 값
 gitlab_group: team04
 gitlab_app_project_path: team04/hotel                     # 차트 (GitHub 모노레포 미러)

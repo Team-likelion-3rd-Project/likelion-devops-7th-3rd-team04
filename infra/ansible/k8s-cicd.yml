@@ -1,9 +1,11 @@
 ---
-- name: CI/CD 클러스터 측 구성 (backend 네임스페이스 / Secret + ArgoCD)
+# 클러스터 측 CI/CD: External Secrets Operator(OpenBao 연결) → backend 네임스페이스 / Secret → ArgoCD (README 12-3, 16절)
+#   GitLab 토큰 · backend-secrets 원본은 OpenBao (db.yml 로 먼저 구성, .secrets/openbao.env 를 source)
+- name: CI/CD 클러스터 측 구성 (ESO + backend 네임스페이스 / Secret + ArgoCD)
   hosts: control_plane
   become: true
   vars:
-    # gitlab.yml --tags bootstrap 이 만든 .secrets/gitlab-k8s.env 를 source 해야 채워짐
+    # OpenBao gitlab-k8s (도입 전: gitlab.yml --tags bootstrap 이 만든 .secrets/gitlab-k8s.env 를 source)
     required_env:
       GITLAB_URL: "{{ gitlab_url }}"
       GITLAB_TS_IP: "{{ gitlab_ts_ip }}"
@@ -13,12 +15,20 @@
       ARGOCD_REPO_USER: "{{ argocd_repo_user }}"
       ARGOCD_REPO_TOKEN: "{{ argocd_repo_token }}"
   pre_tasks:
-    - name: 필수 환경변수 확인
+    - name: OpenBao 값 읽기
+      ansible.builtin.import_role:
+        name: openbao_kv
+        tasks_from: read
+      vars:
+        openbao_read_paths: "{{ k8s_cicd_openbao_paths }}"
+      tags: [always]
+
+    - name: 필수 값 확인
       ansible.builtin.assert:
         that: item.value | length > 0
         fail_msg: >-
-          {{ item.key }} 가 비어 있습니다.
-          set -a; source .env; source .secrets/gitlab-k8s.env; set +a 후 다시 실행하세요. (README 12-3)
+          {{ item.key }} 가 비어 있습니다. OpenBao {{ openbao_kv_prefix }}/gitlab-k8s 에 없으면
+          gitlab.yml --tags bootstrap 을 다시 실행하거나, 도입 전이면 source .secrets/gitlab-k8s.env 후 다시 실행하세요. (README 12-3, 16절)
         quiet: true
       loop: "{{ required_env | dict2items }}"
       loop_control:
@@ -27,22 +37,7 @@
       run_once: true
       delegate_to: localhost
       become: false
-
-    - name: backend env 파일 확인
-      ansible.builtin.stat:
-        path: "{{ backend_env_file }}"
-      register: backend_env_stat
-      run_once: true
-      delegate_to: localhost
-      become: false
-
-    - name: backend env 파일 없음 안내
-      ansible.builtin.fail:
-        msg: >-
-          {{ backend_env_file }} 가 없습니다. backend/.env.example 을 backend/.env 로 복사해 값을 채우거나,
-          BACKEND_ENV_FILE 로 다른 경로를 지정하세요.
-      when: not backend_env_stat.stat.exists
-      run_once: true
+      tags: [always]
 
     - name: control plane 구성 여부 확인
       ansible.builtin.stat:
@@ -57,6 +52,9 @@
 
   roles:
     - helm
+    # ESO 만 다시: --tags external_secrets (README 16절)
+    - role: external_secrets
+      tags: [external_secrets, backend_secrets]
     - role: backend_namespace
       tags: [backend_secrets]
     # ArgoCD 만 다시: --tags argocd (README 12-9)

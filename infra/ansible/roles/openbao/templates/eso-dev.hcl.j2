@@ -1,0 +1,7 @@
+# Ansible(roles/openbao)이 관리 — External Secrets Operator(dev 클러스터)가 backend-secrets 를 만들 때 읽는 경로만.
+# 경로 목록은 group_vars/all.yml 의 backend_external_secret_data. root 계정(main-db-root 등) · GitLab 토큰은 읽을 수 없음
+{% for name in backend_external_secret_data %}
+path "{{ openbao_kv_mount }}/data/{{ openbao_kv_prefix }}/{{ name }}" {
+  capabilities = ["read"]
+}
+{% endfor %}

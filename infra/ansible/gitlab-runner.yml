@@ -3,8 +3,11 @@
   hosts: gitlab_runner
   become: true
   vars:
+    # preflight(Tailnet 연결 전)는 Tailscale 값만
     required_env:
       TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET: "{{ ts_oauth_secret }}"
+    # OpenBao gitlab-runner 를 읽은 뒤 확인 (도입 전: .secrets/gitlab-runner.env 를 source)
+    required_values:
       GITLAB_URL: "{{ gitlab_url }}"
       GITLAB_TS_IP: "{{ gitlab_ts_ip }}"
       GITLAB_RUNNER_TOKEN: "{{ gitlab_runner_token }}"
@@ -21,4 +24,31 @@
     - tailscale
     - docker
     - firewall
-    - gitlab_runner
+
+  # OpenBao 는 Tailnet 으로 읽으므로 tailscale role 뒤에서 (ACL: tag:gitlab-runner → tag:db tcp:8200)
+  tasks:
+    - name: OpenBao 값 읽기
+      ansible.builtin.import_role:
+        name: openbao_kv
+        tasks_from: read
+      vars:
+        openbao_read_paths: [gitlab-runner]
+      tags: [always]
+
+    - name: 필수 값 확인
+      ansible.builtin.assert:
+        that: item.value | length > 0
+        fail_msg: >-
+          {{ item.key }} 가 비어 있습니다. OpenBao {{ openbao_kv_prefix }}/gitlab-runner 에 없으면 gitlab.yml 을 다시 실행하거나,
+          도입 전이면 source .secrets/gitlab-runner.env 후 다시 실행하세요 (README 9-2, 16절).
+        quiet: true
+      loop: "{{ required_values | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+      run_once: true
+      tags: [always]
+
+    - name: GitLab Runner
+      ansible.builtin.import_role:
+        name: gitlab_runner

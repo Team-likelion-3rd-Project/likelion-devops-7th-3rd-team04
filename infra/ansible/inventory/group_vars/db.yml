@@ -16,22 +16,38 @@ dynamodb_image: "amazon/dynamodb-local:3.3.1"
 db_base_dir: /opt/hotel-db        # compose / 설정 / client 자격증명 (0700)
 db_data_dir: /var/lib/hotel-db    # mariadb / valkey / minio 데이터
 
-# ── DB 값: backend/.env 를 단일 소스로 사용 ──────────────────
-# backend 의 DB_* 를 바꾸고 db.yml 만 재실행하면 DB 계정/비밀번호가 맞춰집니다.
-backend_env_file: "{{ (lookup('env', 'BACKEND_ENV_FILE') | default(playbook_dir ~ '/../../backend/.env', true)) | expanduser | realpath }}"
-backend_env: "{{ lookup('file', backend_env_file) | parse_dotenv }}"
+# ── OpenBao: dev 비밀값 저장소 (roles/openbao, README 16절) ──
+# 2.7 은 KMS seal 이 외부 플러그인으로 바뀌어 보류 — 올릴 때는 static seal 동작을 릴리스 노트로 확인
+openbao_image: "openbao/openbao:2.6.4"
+openbao_port: 8200
+openbao_cluster_port: 8201                          # raft 내부 통신 (단일 노드라 loopback 만)
+openbao_base_dir: "{{ db_base_dir }}/openbao"       # compose / 설정 / static key (0700)
+openbao_data_dir: "{{ db_data_dir }}/openbao"       # raft 스토리지
+openbao_local_dir: "{{ local_secrets_dir }}/openbao" # static key 백업 · init 결과(root token) — 로컬 PC
+# ansible-dev 토큰(.secrets/openbao.env) 갱신 주기. 이 기간 안에 playbook 을 한 번이라도 돌리면(renew-self) 만료되지 않음
+openbao_ansible_token_period: 768h
+# roles/openbao 가 적용하는 정책 (templates/<이름>.hcl.j2)
+openbao_policies: [eso-dev, ansible-dev]
 
-db_port: "{{ backend_env.DB_PORT | default('3306', true) }}"
-db_database: "{{ backend_env.DB_DATABASE | default('hotel_service', true) }}"
-db_username: "{{ backend_env.DB_USERNAME | default('') }}"
-db_password: "{{ backend_env.DB_PASSWORD | default('') }}"
-db_root_password: "{{ backend_env.DB_ROOT_PASSWORD | default('') }}"
+# ── DB 값: OpenBao 가 단일 소스 (README 16절) ────────────────
+# OPENBAO_ADDR 이 비어 있으면(도입 전) 기존처럼 backend/.env · infra/ansible/.env 에서 읽음.
+# 값을 바꿀 때는 OpenBao 에서 바꾸고 db.yml 만 재실행하면 DB 계정/비밀번호가 맞춰집니다.
+backend_env_file: "{{ (lookup('env', 'BACKEND_ENV_FILE') | default(playbook_dir ~ '/../../backend/.env', true)) | expanduser | realpath }}"
+backend_env: "{{ lookup('file', backend_env_file, errors='ignore') | default('', true) | parse_dotenv }}"
+# db.yml 이 읽는 OpenBao 경로 (openbao_kv_prefix 아래)
+db_openbao_paths: [main-db, main-db-root, main-valkey, minio-root, minio-app, minio-rag, ci-smoke-db]
+
+db_port: "{{ openbao_kv['main-db'].port | default(backend_env.DB_PORT | default('3306', true), true) }}"
+db_database: "{{ openbao_kv['main-db'].dbname | default(backend_env.DB_DATABASE | default('hotel_service', true), true) }}"
+db_username: "{{ openbao_kv['main-db'].username | default(backend_env.DB_USERNAME | default(''), true) }}"
+db_password: "{{ openbao_kv['main-db'].password | default(backend_env.DB_PASSWORD | default(''), true) }}"
+db_root_password: "{{ openbao_kv['main-db-root'].password | default(backend_env.DB_ROOT_PASSWORD | default(''), true) }}"
 
 # ── GitLab CI 이미지 smoke test 전용 계정 (선택, 비우면 만들지 않음) ──
 # 권한은 ci\_% 이름의 database 에만 — dev 앱 DB(DB_DATABASE)·결제 DB 는 접근 불가.
 # 같은 비밀번호를 gitlab.yml --tags bootstrap 이 team04/hotel CI 변수로 등록 (README 12-2)
 ci_smoke_db_user: ci_smoke
-ci_smoke_db_password: "{{ lookup('env', 'CI_SMOKE_DB_PASSWORD') }}"
+ci_smoke_db_password: "{{ openbao_kv['ci-smoke-db'].password | default(lookup('env', 'CI_SMOKE_DB_PASSWORD'), true) }}"
 
 # ── dev DB 시딩 (db_seed role, db.yml --tags seed — README 7-5) ──────
 # backend/scripts/seed.ts 를 scripts/Dockerfile.seed 로 DB 노드에서 빌드해 실행. 관리자 계정 값은 backend/.env
@@ -45,30 +61,30 @@ db_seed_local_archive: "{{ local_secrets_dir }}/db-seed-src.tar.gz"   # 업로�
 # 이 테이블이 모두 있어야(= main-db-migration 이 적용돼야) 시딩
 db_seed_required_tables: [flyway_schema_history, hotels, admins]
 
-# ── Valkey: backend REDIS_* 연동은 추후 — 지금은 infra/ansible/.env 에서 ──
+# ── Valkey: 비밀번호는 OpenBao main-valkey (도입 전: infra/ansible/.env 의 VALKEY_PASSWORD) ──
 valkey_port: 6379
-valkey_password: "{{ lookup('env', 'VALKEY_PASSWORD') }}"
+valkey_password: "{{ openbao_kv['main-valkey'].password | default(lookup('env', 'VALKEY_PASSWORD'), true) }}"
 valkey_maxmemory: "1gb"
 
 # ── MinIO: dev 용 S3 (객실 이미지, README 7-6) ────────────────
-# 비밀값은 infra/ansible/.env 에서 — backend S3_* 연동은 추후
+# 비밀값은 OpenBao minio-root · minio-app · minio-rag (도입 전: infra/ansible/.env)
 # 버킷은 private. 브라우저 · Pod 모두 presigned URL 로 tailnet(:9000) 에 직접 접근
 minio_api_port: 9000
 minio_console_port: 9001
 minio_region: ap-northeast-2   # SQS_REGION 과 같은 값
 minio_bucket: room-images
-minio_root_user: "{{ lookup('env', 'MINIO_ROOT_USER') }}"
-minio_root_password: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') }}"
+minio_root_user: "{{ openbao_kv['minio-root'].user | default(lookup('env', 'MINIO_ROOT_USER'), true) }}"
+minio_root_password: "{{ openbao_kv['minio-root'].password | default(lookup('env', 'MINIO_ROOT_PASSWORD'), true) }}"
 # 앱 전용 계정 — minio_bucket 에만 읽기/쓰기 (root 키는 앱에 주지 않음)
-minio_app_access_key: "{{ lookup('env', 'MINIO_APP_ACCESS_KEY') }}"
-minio_app_secret_key: "{{ lookup('env', 'MINIO_APP_SECRET_KEY') }}"
+minio_app_access_key: "{{ openbao_kv['minio-app'].access_key | default(lookup('env', 'MINIO_APP_ACCESS_KEY'), true) }}"
+minio_app_secret_key: "{{ openbao_kv['minio-app'].secret_key | default(lookup('env', 'MINIO_APP_SECRET_KEY'), true) }}"
 minio_app_policy: hotel-app
 minio_cors_allow_origin: "*"
 # RAG 벡터 인덱스(llm-service VECTOR_STORE=object). 임베딩 JSON 파일 하나를 두고 llm-service 가 읽고,
 # ingest(llm-service 의 scripts.ingest)가 씀 — room-images 와 분리된 전용 버킷 · 계정
 minio_rag_bucket: rag-index
-minio_rag_access_key: "{{ lookup('env', 'MINIO_RAG_ACCESS_KEY') }}"
-minio_rag_secret_key: "{{ lookup('env', 'MINIO_RAG_SECRET_KEY') }}"
+minio_rag_access_key: "{{ openbao_kv['minio-rag'].access_key | default(lookup('env', 'MINIO_RAG_ACCESS_KEY'), true) }}"
+minio_rag_secret_key: "{{ openbao_kv['minio-rag'].secret_key | default(lookup('env', 'MINIO_RAG_SECRET_KEY'), true) }}"
 minio_rag_policy: hotel-rag
 # ── DynamoDB Local: chat-bot-service 대화 이력 (README 7-7) ────────────
 # -dbPath 로 파일에 저장 (로컬 compose 의 -inMemory 와 달리 재시작해도 이력 유지). 인증이 없으므로 tailnet 에서만 허용
@@ -82,6 +98,7 @@ firewall_tailnet_tcp_ports:
   - "{{ minio_api_port }}"     # MinIO S3 API (presigned URL)
   - "{{ minio_console_port }}" # MinIO Console (팀원 PC)
   - "{{ dynamodb_port }}"      # DynamoDB Local (chat-bot-service)
+  - "{{ openbao_port }}"       # OpenBao (ESO · Ansible · 팀원 PC UI)
 
 # ── 튜닝 (k6 부하 테스트 대비) ─────────────────────────────
 # 커넥션: DB 사용 서비스 5개 × replica × TypeORM(mysql2) 기본 풀 10 → replica 3 기준 150, 여유 포함

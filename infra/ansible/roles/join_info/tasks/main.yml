@@ -36,15 +36,23 @@
   delegate_to: localhost
   become: false
 
+- name: join 정보
+  ansible.builtin.set_fact:
+    join_env:
+      K8S_API_ENDPOINT: "{{ k8s_control_plane_endpoint }}:6443"
+      K8S_JOIN_TOKEN: "{{ join_token.stdout | trim }}"
+      K8S_CA_CERT_HASH: "sha256:{{ ca_hash.stdout | trim }}"
+  no_log: true
+
 - name: worker 용 join.env 생성 (로컬)
   ansible.builtin.copy:
     dest: "{{ local_secrets_dir }}/join.env"
     content: |
       # control-plane.yml 이 생성 — 커밋 금지, 팀 비밀 채널로만 공유
       # token 만료: {{ kubeadm_token_ttl }} 후
-      K8S_API_ENDPOINT={{ k8s_control_plane_endpoint }}:6443
-      K8S_JOIN_TOKEN={{ join_token.stdout | trim }}
-      K8S_CA_CERT_HASH=sha256:{{ ca_hash.stdout | trim }}
+      K8S_API_ENDPOINT={{ join_env.K8S_API_ENDPOINT }}
+      K8S_JOIN_TOKEN={{ join_env.K8S_JOIN_TOKEN }}
+      K8S_CA_CERT_HASH={{ join_env.K8S_CA_CERT_HASH }}
     mode: "0600"
   delegate_to: localhost
   become: false
@@ -55,6 +63,33 @@
     src: /etc/kubernetes/admin.conf
     dest: "{{ local_secrets_dir }}/admin.conf"
     flat: true
+
+# OpenBao 가 있으면(control-plane.yml 은 보통 OpenBao 보다 먼저라 건너뜀) 팀원이 파일 대신 OpenBao 에서 받음.
+# join token 은 {{ kubeadm_token_ttl }} 뒤 만료되므로 실행할 때마다 덮어씀
+- name: admin kubeconfig 읽기
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/admin.conf
+  register: join_admin_conf
+  when: openbao_addr | length > 0
+  no_log: true
+
+- name: OpenBao 저장 (k8s-join · k8s-admin)
+  ansible.builtin.include_role:
+    name: openbao_kv
+    tasks_from: write
+  vars:
+    openbao_write_path: "{{ join_bundle.path }}"
+    openbao_write_data: "{{ join_bundle.data }}"
+  loop:
+    - path: k8s-join
+      data: "{{ join_env }}"
+    - path: k8s-admin
+      data:
+        kubeconfig: "{{ join_admin_conf.content | default('') | b64decode }}"
+  loop_control:
+    loop_var: join_bundle
+    label: "{{ join_bundle.path }}"
+  when: openbao_addr | length > 0
 
 - name: 안내
   ansible.builtin.debug:

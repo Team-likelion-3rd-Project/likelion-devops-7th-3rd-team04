@@ -89,9 +89,12 @@ gitlab_registry_cleanup_policy:
 
 # 이미지 smoke test (CI test:image) 용 dev DB 접속 정보 → team04/hotel protected CI 변수
 #   DB 서버는 dev 것을 쓰되 database 는 파이프라인 전용(ci_<pipeline id>) — db.yml 이 만든 ci_smoke 계정
-smoke_db_host: "{{ lookup('env', 'DB_TS_IP') }}"                # DB 노드 Tailscale IP (db.yml 출력값)
+#   값은 OpenBao main-db(host) · ci-smoke-db · main-valkey (도입 전: infra/ansible/.env 의 DB_TS_IP · CI_SMOKE_DB_PASSWORD · VALKEY_PASSWORD)
+smoke_db_host: "{{ openbao_kv['main-db'].host | default(lookup('env', 'DB_TS_IP'), true) }}"   # DB 노드 Tailscale IP
 smoke_db_port: "3306"
 smoke_db_user: ci_smoke
-smoke_db_password: "{{ lookup('env', 'CI_SMOKE_DB_PASSWORD') }}"
+smoke_db_password: "{{ openbao_kv['ci-smoke-db'].password | default(lookup('env', 'CI_SMOKE_DB_PASSWORD'), true) }}"
 smoke_redis_port: "6379"
-smoke_redis_password: "{{ lookup('env', 'VALKEY_PASSWORD') }}"
+smoke_redis_password: "{{ openbao_kv['main-valkey'].password | default(lookup('env', 'VALKEY_PASSWORD'), true) }}"
+# gitlab_bootstrap 이 읽는 OpenBao 경로 — 이미 발급한 토큰(있으면 재발급하지 않음) + smoke test 값
+gitlab_openbao_paths: [gitlab-k8s, payment-node, github-mirror, main-db, main-valkey, ci-smoke-db]

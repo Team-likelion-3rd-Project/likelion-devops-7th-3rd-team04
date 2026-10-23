@@ -1,0 +1,28 @@
+# Ansible(roles/openbao)이 생성 — 직접 수정하지 마세요.
+# hotel-db 와 같은 방식(network_mode: host + ufw 로 tailscale0 에서만 접근). db_stack 이 OpenBao 값을 읽으므로 별도 project 로 먼저 기동
+name: hotel-openbao
+
+services:
+  openbao:
+    image: {{ openbao_image }}
+    container_name: openbao
+    network_mode: host
+    restart: unless-stopped
+    command: ["server"]
+    # 설정 · 키 파일이 root 전용(0700 / 0400)이라 root 로 실행하고 소유자를 바꾸지 않음 (이미지 기본 USER 는 openbao)
+    user: "0:0"
+    environment:
+      BAO_SKIP_DROP_ROOT: "true"
+      SKIP_CHOWN: "true"
+    labels:
+      hotel-db.config-checksum: "{{ openbao_conf.checksum }}"
+    volumes:
+      - ./config:/openbao/config:ro
+      - {{ openbao_data_dir }}:/openbao/file
+    healthcheck:
+      # 초기화 전 · sealed 여도 200 — 프로세스 기동만 확인 (초기화 · unseal 상태는 roles/openbao 가 sys/health 로 확인)
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:{{ openbao_port }}/v1/sys/health?uninitcode=200&sealedcode=200&standbyok=true"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s

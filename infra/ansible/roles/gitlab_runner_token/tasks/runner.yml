@@ -32,15 +32,32 @@
          | regex_replace('\s+', ' ') | trim | truncate(2000) }}
   when: runner_token_out.rc != 0 or runner_token_out.stdout is not search('RUNNER_TOKEN=glrt-')
 
+- name: "접속 정보 ({{ runner.description }})"
+  ansible.builtin.set_fact:
+    runner_env:
+      GITLAB_URL: "https://{{ ts_fqdn }}"
+      GITLAB_TS_IP: "{{ ts_ip }}"
+      GITLAB_RUNNER_TOKEN: "{{ runner_token_out.stdout_lines | select('match', '^RUNNER_TOKEN=glrt-') | first | regex_replace('^RUNNER_TOKEN=', '') }}"
+  no_log: true
+
 - name: "접속 정보 파일 생성 (로컬, {{ runner.env_file }})"
   ansible.builtin.copy:
     dest: "{{ local_secrets_dir }}/{{ runner.env_file }}"
     content: |
       # gitlab.yml 이 생성 — 커밋 금지, 팀 비밀 채널로만 공유
-      GITLAB_URL=https://{{ ts_fqdn }}
-      GITLAB_TS_IP={{ ts_ip }}
-      GITLAB_RUNNER_TOKEN={{ runner_token_out.stdout_lines | select('match', '^RUNNER_TOKEN=glrt-') | first | regex_replace('^RUNNER_TOKEN=', '') }}
+      GITLAB_URL={{ runner_env.GITLAB_URL }}
+      GITLAB_TS_IP={{ runner_env.GITLAB_TS_IP }}
+      GITLAB_RUNNER_TOKEN={{ runner_env.GITLAB_RUNNER_TOKEN }}
     mode: "0600"
   delegate_to: localhost
   become: false
   no_log: true
+
+# 경로 이름 = 파일 이름에서 .env 를 뺀 것 (gitlab-runner, aws-ci-runner). gitlab-runner.yml 이 OpenBao 에서 읽음
+- name: "OpenBao 저장 ({{ runner.env_file | splitext | first }})"
+  ansible.builtin.include_role:
+    name: openbao_kv
+    tasks_from: write
+  vars:
+    openbao_write_path: "{{ runner.env_file | splitext | first }}"
+    openbao_write_data: "{{ runner_env }}"
