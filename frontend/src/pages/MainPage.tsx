@@ -3,7 +3,8 @@ import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { HOTELS } from '../data/hotels'
 import { BRAND_VALUES } from '../data/brandValues'
-import { NOTICES } from '../data/notices'
+import { fetchNotices, formatNoticeDate, NOTICE_CATEGORY_LABEL } from '../api/notices'
+import type { Notice } from '../api/notices'
 import { useHotels } from '../data/hotelStore'
 import HotelCard from '../components/HotelCard'
 import { customerAuth } from '../api/tokenStore'
@@ -16,8 +17,6 @@ const HERO_PHOTOS = HOTELS.flatMap((hotel) => [hotel.images.hero, hotel.images.w
 )
 const HERO_INTERVAL_MS = 3000
 
-// 메인 하단 "새로운 소식" — 공지사항 최신 3개
-const LATEST_NOTICES = [...NOTICES].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3)
 
 // 움직임 줄이기 설정을 켠 사용자에게는 첫 사진만 보여 준다
 const prefersReducedMotion = () =>
@@ -27,6 +26,20 @@ function MainPage() {
   const hotels = useHotels()
   const accessToken = customerAuth.useAccessToken()
   const [heroIndex, setHeroIndex] = useState(0)
+  // 메인 하단 "새로운 소식" — 공지 API 첫 3개(중요 고정 먼저, 최신순). 못 불러오면 구역을 숨긴다
+  const [latestNotices, setLatestNotices] = useState<Notice[]>([])
+
+  useEffect(() => {
+    let ignore = false
+    fetchNotices(1, 3)
+      .then(({ notices }) => {
+        if (!ignore) setLatestNotices(notices)
+      })
+      .catch(() => {})
+    return () => {
+      ignore = true
+    }
+  }, [])
 
   useEffect(() => {
     if (HERO_PHOTOS.length < 2 || prefersReducedMotion()) return
@@ -101,25 +114,29 @@ function MainPage() {
         </div>
       </section>
 
-      <section className="main-news">
-        <div className="hotel-intro-header">
-          <h2>새로운 소식</h2>
-          <Link to="/notices" className="hotel-intro-link">
-            전체 공지 보기 →
-          </Link>
-        </div>
-        <ul className="main-news-list">
-          {LATEST_NOTICES.map((notice) => (
-            <li key={notice.id}>
-              <Link to="/notices">
-                <span className="main-news-category">{notice.category}</span>
-                <span className="main-news-title">{notice.title}</span>
-                <time dateTime={notice.date}>{notice.date.replaceAll('-', '.')}</time>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </section>
+      {latestNotices.length > 0 && (
+        <section className="main-news">
+          <div className="hotel-intro-header">
+            <h2>새로운 소식</h2>
+            <Link to="/notices" className="hotel-intro-link">
+              전체 공지 보기 →
+            </Link>
+          </div>
+          <ul className="main-news-list">
+            {latestNotices.map((notice) => (
+              <li key={notice.noticeId}>
+                <Link to="/notices">
+                  <span className="main-news-category">
+                    {notice.isPinned ? '중요' : (NOTICE_CATEGORY_LABEL[notice.category] ?? notice.category)}
+                  </span>
+                  <span className="main-news-title">{notice.title}</span>
+                  <time dateTime={notice.createdAt}>{formatNoticeDate(notice.createdAt)}</time>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </>
   )
 }
