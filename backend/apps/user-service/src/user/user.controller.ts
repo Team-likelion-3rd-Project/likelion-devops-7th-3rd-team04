@@ -25,6 +25,12 @@ export class UserController {
     return this.userService.getUsers(data);
   }
 
+  // api-gateway가 관리자 예약 목록에 예약자 이름·이메일을 붙일 때 호출 (LDP-150)
+  @GrpcMethod('UserService', 'GetUsersByIds')
+  async getUsersByIds(data: { ids: number[] }) {
+    return this.userService.getUsersByIds(data.ids);
+  }
+
   // api-gateway가 "내 정보 조회"(GET /users/me), 관리자 "특정 유저 조회"(GET /users/:userId)에서 호출
   @GrpcMethod('UserService', 'GetUserById')
   async getUserById(data: { id: number }) {

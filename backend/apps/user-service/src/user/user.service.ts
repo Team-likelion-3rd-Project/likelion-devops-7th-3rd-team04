@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RpcException } from '@nestjs/microservices';
-import { DataSource, Like, Repository } from 'typeorm';
+import { DataSource, In, Like, Repository } from 'typeorm';
 import { User, UserRole, UserStatus } from './entities/user.entity';
 import { DeletedUser } from './entities/deleted-user.entity';
 
@@ -21,6 +21,9 @@ export interface UserListQuery {
   size?: number;
   keyword?: string;
 }
+
+// 한 번에 찾을 수 있는 회원 수 (관리자 예약 목록 한 페이지 최대 100건 기준, LDP-150)
+const MAX_USERS_BY_IDS = 100;
 
 // LIKE 검색어의 %·_·\ 를 글자 그대로 찾게 한다
 function escapeLike(value: string): string {
@@ -117,6 +120,26 @@ export class UserService {
       throw new RpcException('가입되지 않은 이메일입니다.');
     }
     return this.toGrpcResponse(user);
+  }
+
+  // api-gateway가 관리자 예약 목록에 예약자 이름·이메일을 붙일 때 호출 (LDP-150).
+  // 같은 ID는 한 번만 찾고, 없는 ID(탈퇴 등)는 결과에서 빠진다. 너무 많으면 앞의 MAX_USERS_BY_IDS개만.
+  async getUsersByIds(
+    ids: number[],
+  ): Promise<{ users: UserGrpcResponse[]; total: number }> {
+    const unique = [...new Set(ids ?? [])]
+      .filter((id) => id > 0)
+      .slice(0, MAX_USERS_BY_IDS);
+    if (unique.length === 0) {
+      return { users: [], total: 0 };
+    }
+    const users = await this.userRepository.find({
+      where: { id: In(unique) },
+    });
+    return {
+      users: users.map((user) => this.toGrpcResponse(user)),
+      total: users.length,
+    };
   }
 
   // api-gateway 관리자 전용 "회원 목록 조회" 요청 (LDP-136). 조건이 없으면 전체(예전과 같음),

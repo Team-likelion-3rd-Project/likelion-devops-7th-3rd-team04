@@ -11,7 +11,11 @@ describe('AdminBookingController', () => {
     adminCancelBooking: jest.fn(),
     createExtensionBooking: jest.fn(),
   };
-  const user = { getUserById: jest.fn(), getUsers: jest.fn() };
+  const user = {
+    getUserById: jest.fn(),
+    getUsers: jest.fn(),
+    getUsersByIds: jest.fn(),
+  };
   const adminLookup = { getAdminById: jest.fn() };
   const hotel = { getHotels: jest.fn(), listRoomUnits: jest.fn() };
   const admin = {
@@ -75,6 +79,7 @@ describe('AdminBookingController', () => {
         of({ bookings: [grpcBooking], total: 37 }),
       );
       user.getUsers.mockReturnValue(of({ users: [{ id: 7 }, { id: 9 }] }));
+      user.getUsersByIds.mockReturnValue(of({ users: [] }));
       hotel.getHotels.mockReturnValue(
         of({ hotels: [{ hotelId: 1 }, { hotelId: 2 }] }),
       );
@@ -113,6 +118,56 @@ describe('AdminBookingController', () => {
         reservationId: 12,
         roomUnitId: null,
       });
+    });
+
+    // LDP-150: 예약자 이름·이메일 — 회원 전체 조회 없이 화면에 보이게
+    it('예약자 이름·이메일을 붙인다 — 이 응답의 회원을 한 번에(중복 없이) 조회', async () => {
+      booking.getBookings.mockReturnValue(
+        of({
+          bookings: [
+            { ...grpcBooking, reservationId: 1, userId: 7 },
+            { ...grpcBooking, reservationId: 2, userId: 7 },
+            { ...grpcBooking, reservationId: 3, userId: 9 },
+          ],
+          total: 3,
+        }),
+      );
+      user.getUsersByIds.mockReturnValue(
+        of({ users: [{ id: 7, name: '홍길동', email: 'hong@t.com' }] }),
+      );
+
+      const { bookings } = await controller.getBookings({});
+
+      expect(user.getUsersByIds).toHaveBeenCalledTimes(1);
+      expect(user.getUsersByIds).toHaveBeenCalledWith({ ids: [7, 9] });
+      expect(bookings.map((b) => [b.guestName, b.guestEmail])).toEqual([
+        ['홍길동', 'hong@t.com'],
+        ['홍길동', 'hong@t.com'],
+        ['', ''], // 회원 9는 없음(탈퇴 등)
+      ]);
+    });
+
+    it('회원 조회가 실패해도 예약 목록은 보여 준다 (이름만 빈 값)', async () => {
+      user.getUsersByIds.mockReturnValue(
+        throwError(() => ({ code: 14, details: 'No connection established' })),
+      );
+
+      const result = await controller.getBookings({});
+
+      expect(result.total).toBe(37);
+      expect(result.bookings[0]).toMatchObject({
+        reservationId: 12,
+        guestName: '',
+        guestEmail: '',
+      });
+    });
+
+    it('예약이 없으면 회원을 조회하지 않는다', async () => {
+      booking.getBookings.mockReturnValue(of({ bookings: [], total: 0 }));
+
+      await controller.getBookings({});
+
+      expect(user.getUsersByIds).not.toHaveBeenCalled();
     });
 
     it('page·지점·상태·연장 묶음 조건을 그대로 넘긴다', async () => {

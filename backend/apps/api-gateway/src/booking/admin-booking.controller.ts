@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   Inject,
+  Logger,
   OnModuleInit,
   Param,
   ParseIntPipe,
@@ -84,9 +85,18 @@ interface AdminBookingGrpcService {
   }): Observable<BookingDto>;
 }
 
-// proto(user.proto)의 UserService / GetUserById, GetUsers(회원 검색, LDP-136)
+// 관리자 예약 목록의 예약 한 건 — 예약자 이름·이메일을 붙여 준다 (LDP-150). 회원이 없으면(탈퇴 등) 빈 문자열
+export type AdminBookingListItem = BookingDto & {
+  guestName: string;
+  guestEmail: string;
+};
+
+// proto(user.proto)의 UserService / GetUserById, GetUsers(회원 검색, LDP-136), GetUsersByIds(예약자 이름, LDP-150)
 interface UserLookupGrpcService {
   getUserById(data: { id: number }): Observable<{ id: number; name: string }>;
+  getUsersByIds(data: {
+    ids: number[];
+  }): Observable<{ users?: { id: number; name: string; email: string }[] }>;
   getUsers(data: {
     page: number;
     size: number;
@@ -126,6 +136,7 @@ function toHttpError(err: unknown, code: string, message: string): Error {
 @Roles('ADMIN')
 @ApiBearerAuth()
 export class AdminBookingController implements OnModuleInit {
+  private readonly logger = new Logger(AdminBookingController.name);
   private bookingService!: AdminBookingGrpcService;
   private userService!: UserLookupGrpcService;
   private adminService!: AdminLookupGrpcService;
@@ -170,7 +181,7 @@ export class AdminBookingController implements OnModuleInit {
   })
   async getBookings(
     @Query() query: AdminBookingListQueryDto,
-  ): Promise<{ bookings: BookingDto[]; total: number }> {
+  ): Promise<{ bookings: AdminBookingListItem[]; total: number }> {
     const keyword = query.keyword?.trim() ?? '';
     let keywordReservationId = 0;
     let keywordUserIds: number[] = [];
@@ -206,6 +217,7 @@ export class AdminBookingController implements OnModuleInit {
       }
     }
 
+    let result: { bookings: BookingDto[]; total: number };
     try {
       const { bookings = [], total = 0 } = await firstValueFrom(
         this.bookingService.getBookings({
@@ -220,7 +232,7 @@ export class AdminBookingController implements OnModuleInit {
           keywordRoomUnitIds,
         }),
       );
-      return { bookings: bookings.map(toBooking), total };
+      result = { bookings: bookings.map(toBooking), total };
     } catch (err) {
       throw toHttpError(
         err,
@@ -228,6 +240,38 @@ export class AdminBookingController implements OnModuleInit {
         '예약 목록을 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.',
       );
     }
+    return {
+      bookings: await this.attachGuests(result.bookings),
+      total: result.total,
+    };
+  }
+
+  // 예약자 이름·이메일을 붙인다 (LDP-150). 이 응답의 회원을 user-service에서 한 번에 찾는다(예약 수만큼 부르지 않음).
+  // 회원 조회가 실패해도 예약 목록은 보여 준다 — 이름만 빈 값 (화면은 "회원 #ID"로 표시).
+  private async attachGuests(
+    bookings: BookingDto[],
+  ): Promise<AdminBookingListItem[]> {
+    const ids = [...new Set(bookings.map((booking) => booking.userId))];
+    const guests = new Map<number, { name: string; email: string }>();
+    if (ids.length > 0) {
+      try {
+        const { users = [] } = await firstValueFrom(
+          this.userService.getUsersByIds({ ids }),
+        );
+        for (const user of users) {
+          guests.set(user.id, { name: user.name, email: user.email });
+        }
+      } catch (err) {
+        this.logger.warn(
+          `예약자 이름 조회 실패 — 이름 없이 목록을 보여 줌 (회원 ${ids.length}명): ${String((err as { details?: string })?.details ?? err)}`,
+        );
+      }
+    }
+    return bookings.map((booking) => ({
+      ...booking,
+      guestName: guests.get(booking.userId)?.name ?? '',
+      guestEmail: guests.get(booking.userId)?.email ?? '',
+    }));
   }
 
   // 방 번호에 검색어가 들어 있는 호실 ID (LDP-136). 방 번호는 hotel-service에 있어 지점별 호실 목록에서 찾는다 —

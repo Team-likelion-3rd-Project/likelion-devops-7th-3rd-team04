@@ -149,6 +149,54 @@ describe('UserController', () => {
     });
   });
 
+  // LDP-150: 관리자 예약 목록의 예약자 이름·이메일
+  describe('getUsersByIds', () => {
+    it('같은 ID는 한 번만, 0 이하는 빼고 한 번에 찾는다', async () => {
+      userRepository.find.mockResolvedValue([
+        {
+          id: 7,
+          email: 'a@t.com',
+          name: 'A',
+          phoneNumber: '010',
+          role: 'USER',
+          status: 'ACTIVE',
+        },
+      ]);
+
+      const result = await userController.getUsersByIds({
+        ids: [7, 7, 9, 0],
+      });
+
+      const [{ where }] = userRepository.find.mock.calls[0] as [
+        { where: { id: { value: number[] } } },
+      ];
+      expect(where.id.value).toEqual([7, 9]);
+      expect(result.total).toBe(1);
+      expect(result.users[0]).toMatchObject({ id: 7, name: 'A' });
+    });
+
+    it('ID가 없으면 DB를 조회하지 않는다', async () => {
+      expect(await userController.getUsersByIds({ ids: [] })).toEqual({
+        users: [],
+        total: 0,
+      });
+      expect(userRepository.find).not.toHaveBeenCalled();
+    });
+
+    it('100개까지만 찾는다', async () => {
+      userRepository.find.mockResolvedValue([]);
+
+      await userController.getUsersByIds({
+        ids: Array.from({ length: 150 }, (_, i) => i + 1),
+      });
+
+      const [{ where }] = userRepository.find.mock.calls[0] as [
+        { where: { id: { value: number[] } } },
+      ];
+      expect(where.id.value).toHaveLength(100);
+    });
+  });
+
   describe('getUserById', () => {
     it('should return the profile when the id exists', async () => {
       userRepository.findOne.mockResolvedValue({
