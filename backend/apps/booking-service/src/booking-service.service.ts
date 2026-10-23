@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
+import { CallOptions, Metadata } from '@grpc/grpc-js';
 import { Observable, firstValueFrom } from 'rxjs';
 import {
   DataSource,
@@ -32,6 +33,30 @@ const MAX_PAYMENT_ATTEMPTS = 5;
 // 결과를 PG 조회로 확정해 주는 대사 배치가 아직 없어서, 확정되지 않은 시도가 결제 버튼을 계속 막지 않게 하려는 것.
 // 그 사이 재결제로 이중 승인이 나도 payment-service가 ALREADY_PAID로 자동 취소한다.
 const CONFIRMING_MINUTES = 10;
+
+// payment-service gRPC 호출 기한 (LDP-97). 기한이 없으면 결제 서버까지 가는 망(운영: PrivateLink)이 응답 없이 끊겼을 때
+// 호출이 끝나지 않아 결제 요청·결제 결과 수신이 멈춘다.
+//  - 승인: 토스 승인 10초 + "이미 처리된 결제" 조회 10초 + 여유. 넘기면 결과 불명(UNKNOWN)으로 응답하고,
+//    결제 쪽은 하던 승인을 마저 기록하거나 대사 배치가 PG 조회로 확정해 결과 이벤트로 알려 준다.
+//  - 환불: 토스 취소 10초 + 여유. 넘겨도 결제 쪽이 결과를 기록하고(REFUND_FAILED면 대사 배치가 재시도) 이벤트로 알려 준다.
+const PAYMENT_APPROVE_DEADLINE_MS = 25_000;
+const PAYMENT_REFUND_DEADLINE_MS = 15_000;
+
+// 환불 요청 대기열(pending_refunds, LDP-97) — 결제 서비스에 환불 요청이 전달될 때까지 재시도한다.
+// 가져간 건을 이만큼 미뤄 두어(lease) 여러 대가 같은 건을 동시에 요청하지 않게 한다 (환불 호출 기한 15초보다 넉넉하게)
+const REFUND_REQUEST_LEASE_SECONDS = 60;
+// 실패하면 30초부터 두 배씩 늘려 최대 1시간 뒤에 다시
+const REFUND_REQUEST_BACKOFF_BASE_SECONDS = 30;
+const REFUND_REQUEST_BACKOFF_MAX_SECONDS = 3600;
+// 이만큼 연달아 실패하면 알람 (재시도는 계속한다)
+const REFUND_REQUEST_ALARM_ATTEMPTS = 5;
+
+// 환불 요청 사유 (pending_refunds.reason)
+export type RefundRequestReason = 'CANCELLED' | 'APPROVED_AFTER_CLOSE';
+
+function grpcDeadline(ms: number): CallOptions {
+  return { deadline: new Date(Date.now() + ms) };
+}
 
 // 예약 취소 시 결제 서비스에 보내는 환불 멱등 키. 예약 ID로 항상 같은 값을 만들어서, 취소가 재시도되거나
 // 두 번 들어와도 같은 키로 요청한다 → payments.refund_idempotency_key UNIQUE·토스 Idempotency-Key로 환불 1번.
@@ -116,20 +141,29 @@ interface HotelGrpcService {
 }
 
 // libs/common/src/proto/payment.proto의 PaymentService / RefundPayment, ApprovePayment와 1:1 대응
+// (metadata·options는 grpc-js 호출에 그대로 넘어간다 — options.deadline으로 호출 기한을 건다)
 interface PaymentGrpcService {
-  refundPayment(data: {
-    reservationId: number;
-    refundIdempotencyKey: string;
-  }): Observable<{ refunded: boolean; status: string }>;
-  approvePayment(data: {
-    idempotencyKey: string;
-    reservationId: number;
-    userId: number;
-    orderId: string;
-    paymentKey: string;
-    amount: number;
-    orderName: string;
-  }): Observable<{
+  refundPayment(
+    data: {
+      reservationId: number;
+      refundIdempotencyKey: string;
+    },
+    metadata?: Metadata,
+    options?: CallOptions,
+  ): Observable<{ refunded: boolean; status: string }>;
+  approvePayment(
+    data: {
+      idempotencyKey: string;
+      reservationId: number;
+      userId: number;
+      orderId: string;
+      paymentKey: string;
+      amount: number;
+      orderName: string;
+    },
+    metadata?: Metadata,
+    options?: CallOptions,
+  ): Observable<{
     result: ConfirmResultType;
     paymentId: number;
     retryable: boolean;
@@ -150,6 +184,14 @@ function addDays(dateStr: string, offset: number): string {
 const ACTIVE_RESERVATION_STATUSES = [
   ReservationStatus.PENDING_PAYMENT,
   ReservationStatus.RESERVED,
+];
+
+// 끝난 예약 중 환불이 남아 있을 수 있는 상태 — 여기에 취소를 다시 요청하면 환불 상태를 확인해 알려 준다 (LDP-97).
+// 만료·결제 실패도 "예약이 끝난 뒤 승인"이 오면 자동 환불 대상이 된다.
+const REFUNDABLE_CLOSED_STATUSES = [
+  ReservationStatus.CANCELLED,
+  ReservationStatus.EXPIRED,
+  ReservationStatus.PAYMENT_FAILED,
 ];
 
 // 관리자 기능(대리 예약·연장)이 createBooking에 함께 넘기는 값 (LDP-90). 넘기면 실패도 api-error 형식으로 낸다.
@@ -459,6 +501,8 @@ export class BookingServiceService implements OnModuleInit {
   //    무관하게 항상 호출한다 — PAID 결제가 실제로 있는지 판단은 payment-service가 스스로 하도록
   //    맡긴다(RefundPayment 주석 참고). 이 호출도 hotel-service와 동일하게 실패해도 예약취소
   //    자체는 막지 않고 로그만 남긴다.
+  // 이미 끝난 예약(취소·만료·결제 실패)에 취소를 다시 요청하면 "환불 재요청"으로 보고 결제 쪽 환불 상태를 확인해 알려 준다 (LDP-97).
+  // 자동 환불을 멈춘 결제(REFUND_MANUAL_REQUIRED)는 이 응답으로 손님이 알게 되고, 결제사·고객센터에 문의하도록 안내한다.
   async cancelBooking(
     reservationId: number,
     userId: number,
@@ -471,6 +515,9 @@ export class BookingServiceService implements OnModuleInit {
     }
     if (reservation.userId !== userId) {
       throw new RpcException('본인의 예약만 취소할 수 있습니다.');
+    }
+    if (REFUNDABLE_CLOSED_STATUSES.includes(reservation.status)) {
+      return this.refundStatusOnRecancel(reservationId);
     }
     if (
       reservation.status !== ReservationStatus.PENDING_PAYMENT &&
@@ -492,19 +539,28 @@ export class BookingServiceService implements OnModuleInit {
 
   // 예약 1건 취소 공통 — 손님 취소·직원 취소·연쇄 취소가 함께 쓴다 (LDP-90).
   // 조건부 UPDATE: 확인한 뒤 그 사이 상태가 바뀌었으면(결제 실패·만료 처리, 동시 취소 등) 취소하지 않고 false.
-  // 취소를 확정한 뒤 재고 반환·환불을 요청한다 (둘 다 실패해도 취소는 유지하고 로그만 남김).
+  // 취소와 "환불 필요"(pending_refunds) 기록을 한 트랜잭션으로 묶고, 커밋 뒤 재고 반환·환불 요청을 한다.
+  // 환불 요청이 실패해도 취소는 유지하고, 환불 요청 워커가 결제 서비스에 전달될 때까지 다시 시도한다 (LDP-97).
   async cancelReservation(
     reservation: Reservation,
     record: CancelRecord = {},
   ): Promise<boolean> {
-    const { affected } = await this.reservationRepository.update(
-      {
-        reservationId: reservation.reservationId,
-        status: In(ACTIVE_RESERVATION_STATUSES),
-      },
-      { status: ReservationStatus.CANCELLED, ...record },
-    );
-    if (!affected) {
+    const cancelled = await this.dataSource.transaction(async (manager) => {
+      const { affected } = await manager.update(
+        Reservation,
+        {
+          reservationId: reservation.reservationId,
+          status: In(ACTIVE_RESERVATION_STATUSES),
+        },
+        { status: ReservationStatus.CANCELLED, ...record },
+      );
+      if (!affected) {
+        return false;
+      }
+      await this.enqueueRefund(manager, reservation.reservationId, 'CANCELLED');
+      return true;
+    });
+    if (!cancelled) {
       return false;
     }
     Object.assign(reservation, record, {
@@ -512,8 +568,73 @@ export class BookingServiceService implements OnModuleInit {
     });
 
     await this.releaseRoomAvailability(reservation, '취소');
-    await this.requestRefund(reservation.reservationId);
+    // 취소한 사람이 바로 환불 결과를 볼 수 있게 한 번은 바로 요청한다 (실패하면 워커가 이어 받음)
+    await this.deliverRefund(reservation.reservationId);
     return true;
+  }
+
+  // 이미 끝난 예약에 취소를 다시 요청함 = 환불 재요청 (LDP-97). 결제 쪽에 같은 환불 키로 환불을 다시 요청하고
+  // (실패로 남은 환불이면 그 자리에서 다시 시도, 이미 끝났거나 진행 중이면 상태만 돌려줌), 결과를 api-error로 알려 준다.
+  // 예약은 이미 끝난 상태라 성공 응답(예약)이 아니라 항상 409/503으로 상태를 전한다.
+  private async refundStatusOnRecancel(reservationId: number): Promise<never> {
+    let status: string;
+    try {
+      ({ status } = await firstValueFrom(
+        this.paymentService.refundPayment(
+          {
+            reservationId,
+            refundIdempotencyKey: refundIdempotencyKey(reservationId),
+          },
+          new Metadata(),
+          grpcDeadline(PAYMENT_REFUND_DEADLINE_MS),
+        ),
+      ));
+    } catch (error) {
+      this.logger.error(
+        `예약(#${reservationId}) 환불 재요청 — 결제 서비스 호출 실패`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw apiRpcException({
+        status: 503,
+        code: 'PAYMENT_SERVICE_UNAVAILABLE',
+        message: '환불 상태를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+        retryable: true,
+      });
+    }
+
+    switch (status) {
+      case 'REFUND_MANUAL_REQUIRED':
+        throw apiRpcException({
+          status: 409,
+          code: 'REFUND_MANUAL_REQUIRED',
+          message:
+            '자동 환불이 완료되지 않았습니다. 결제사(토스페이먼츠) 또는 고객센터로 문의해 주세요.',
+          retryable: false,
+        });
+      case 'REFUNDED':
+        throw apiRpcException({
+          status: 409,
+          code: 'ALREADY_REFUNDED',
+          message: '이미 취소되고 환불이 완료된 예약입니다.',
+          retryable: false,
+        });
+      case 'REFUND_REQUESTED':
+      case 'REFUND_FAILED':
+        throw apiRpcException({
+          status: 409,
+          code: 'REFUND_IN_PROGRESS',
+          message: '환불을 처리하고 있습니다. 잠시 후 다시 확인해 주세요.',
+          retryable: true,
+        });
+      default:
+        // NO_PAYMENT(결제 전 취소·실패) 등 — 환불할 것이 없다
+        throw apiRpcException({
+          status: 409,
+          code: 'ALREADY_CANCELLED',
+          message: '이미 취소되었거나 완료된 예약입니다.',
+          retryable: false,
+        });
+    }
   }
 
   // 원래 예약에 연결된 연장 예약(결제 대기·예약 확정)을 함께 취소한다 — 각각 재고 반환·환불 (LDP-90).
@@ -533,26 +654,107 @@ export class BookingServiceService implements OnModuleInit {
     }
   }
 
+  // 환불 필요 기록 (pending_refunds, LDP-97) — 예약 상태를 바꾸는 트랜잭션 안에서 부른다.
+  // 예약 ID가 PK라 같은 예약은 한 줄만 남는다. 이미 있으면(예: 취소 때 요청한 뒤 승인 이벤트가 옴) 다시 요청 대상으로 되돌린다 —
+  // 결제 쪽은 예약 ID로 만든 같은 환불 키를 쓰므로 여러 번 요청해도 한 번만 환불한다.
+  async enqueueRefund(
+    manager: EntityManager,
+    reservationId: number,
+    reason: RefundRequestReason,
+  ): Promise<void> {
+    await manager.query(
+      `INSERT INTO pending_refunds (reservation_id, reason)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE
+         reason = VALUES(reason),
+         completed_at = NULL,
+         next_attempt_at = NOW(6),
+         last_error = NULL`,
+      [reservationId, reason],
+    );
+  }
+
+  // 대기열의 환불 요청 1건을 결제 서비스에 전달한다 (취소 직후·환불 요청 워커가 부름).
+  //  1) 맡기: 아직 안 끝났고 요청할 때가 된 건이면 next_attempt_at을 잠깐 미래로 미뤄(lease) 다른 인스턴스가 겹쳐 부르지 않게 한다.
+  //  2) 결제 서비스 호출 — 응답을 받으면(환불 완료·실패·진행 중 모두) 끝. 그 뒤 환불 재시도는 결제 쪽 대사 배치가 맡고 이벤트로 알려 준다.
+  //  3) 호출 자체가 실패하면(결제 서버 응답 없음·기한 초과) 간격을 늘려 다시 요청할 시각을 정한다.
+  // 맡지 못했으면(다른 곳이 처리 중·이미 끝남·아직 때가 아님) 'SKIPPED'.
+  async deliverRefund(
+    reservationId: number,
+  ): Promise<'DELIVERED' | 'RETRY' | 'SKIPPED'> {
+    const claimed: { affectedRows?: number } = await this.dataSource.query(
+      `UPDATE pending_refunds
+          SET next_attempt_at = NOW(6) + INTERVAL ${REFUND_REQUEST_LEASE_SECONDS} SECOND
+        WHERE reservation_id = ? AND completed_at IS NULL AND next_attempt_at <= NOW(6)`,
+      [reservationId],
+    );
+    if (!claimed?.affectedRows) {
+      return 'SKIPPED';
+    }
+
+    const error = await this.requestRefund(reservationId);
+    if (!error) {
+      await this.dataSource.query(
+        'UPDATE pending_refunds SET completed_at = NOW(6), last_error = NULL WHERE reservation_id = ?',
+        [reservationId],
+      );
+      return 'DELIVERED';
+    }
+
+    const [row]: { attempts: number }[] = await this.dataSource.query(
+      'SELECT attempts FROM pending_refunds WHERE reservation_id = ?',
+      [reservationId],
+    );
+    const attempts = Number(row?.attempts ?? 0) + 1;
+    const delay = Math.min(
+      REFUND_REQUEST_BACKOFF_BASE_SECONDS * 2 ** (attempts - 1),
+      REFUND_REQUEST_BACKOFF_MAX_SECONDS,
+    );
+    await this.dataSource.query(
+      `UPDATE pending_refunds
+          SET attempts = ?, last_error = ?, next_attempt_at = NOW(6) + INTERVAL ${delay} SECOND
+        WHERE reservation_id = ? AND completed_at IS NULL`,
+      [attempts, error.slice(0, 500), reservationId],
+    );
+    if (attempts === REFUND_REQUEST_ALARM_ATTEMPTS) {
+      this.logger.error(
+        `[알람] 예약(#${reservationId}) 환불 요청이 결제 서비스에 ${attempts}번 연달아 전달되지 않았습니다 — 계속 재시도 중, 결제 서버 상태 확인 필요 (${error})`,
+      );
+    }
+    return 'RETRY';
+  }
+
   // 환불 요청 (LDP-28). 결과(REFUNDED / REFUND_FAILED)는 결제 결과 이벤트로도 들어와 inbox에 기록된다.
   // 결제가 없으면 결제 서비스가 NO_PAYMENT로 아무것도 하지 않는다.
-  private async requestRefund(reservationId: number): Promise<void> {
+  // 결제 서비스가 요청을 받았으면 null, 호출 자체가 실패했으면 오류 내용 (다시 요청해야 함).
+  private async requestRefund(reservationId: number): Promise<string | null> {
     try {
       const refund = await firstValueFrom(
-        this.paymentService.refundPayment({
-          reservationId,
-          refundIdempotencyKey: refundIdempotencyKey(reservationId),
-        }),
+        this.paymentService.refundPayment(
+          {
+            reservationId,
+            refundIdempotencyKey: refundIdempotencyKey(reservationId),
+          },
+          new Metadata(),
+          grpcDeadline(PAYMENT_REFUND_DEADLINE_MS),
+        ),
       );
       if (refund.status === 'REFUND_FAILED') {
         this.logger.error(
-          `[알람] 예약(#${reservationId}) 취소 후 환불 실패 — 결제 쪽에서 재시도 필요`,
+          `[알람] 예약(#${reservationId}) 환불 실패 — 결제 쪽 대사 배치가 재시도합니다`,
+        );
+      } else if (refund.status === 'REFUND_MANUAL_REQUIRED') {
+        this.logger.error(
+          `[알람] 예약(#${reservationId}) 환불이 자동 재시도 중단 상태 — PG 콘솔에서 수동 환불 필요`,
         );
       }
+      return null;
     } catch (error) {
       this.logger.error(
-        `예약(#${reservationId}) 취소 후 결제 환불 요청 실패`,
+        `예약(#${reservationId}) 결제 환불 요청 실패 — 환불 요청 워커가 다시 시도합니다`,
         error instanceof Error ? error.stack : String(error),
       );
+      return error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -707,17 +909,21 @@ export class BookingServiceService implements OnModuleInit {
     });
 
     const approved = await firstValueFrom(
-      this.paymentService.approvePayment({
-        idempotencyKey: attempt.idempotencyKey,
-        reservationId: data.reservationId,
-        userId: data.userId,
-        orderId: data.orderId,
-        paymentKey: data.paymentKey,
-        amount: attempt.amount,
-        orderName: this.orderName(data.reservationId),
-      }),
+      this.paymentService.approvePayment(
+        {
+          idempotencyKey: attempt.idempotencyKey,
+          reservationId: data.reservationId,
+          userId: data.userId,
+          orderId: data.orderId,
+          paymentKey: data.paymentKey,
+          amount: attempt.amount,
+          orderName: this.orderName(data.reservationId),
+        },
+        new Metadata(),
+        grpcDeadline(PAYMENT_APPROVE_DEADLINE_MS),
+      ),
     ).catch((error: unknown) => {
-      // payment-service 호출 자체가 실패 — 승인 요청이 처리됐는지 알 수 없으므로 시도는 REQUESTED로 두고 UNKNOWN.
+      // payment-service 호출 자체가 실패(기한 초과 포함) — 승인 요청이 처리됐는지 알 수 없으므로 시도는 REQUESTED로 두고 UNKNOWN.
       // 같은 orderId로 다시 호출하면 같은 멱등 키로 재요청되어 결제가 중복으로 생기지 않는다.
       this.logger.error(
         `결제 승인 요청 실패 (reservationId=${data.reservationId}, orderId=${data.orderId})`,
@@ -797,8 +1003,6 @@ export class BookingServiceService implements OnModuleInit {
   // 처리에 실패하면 에러를 그대로 던진다 — 수신기가 메시지를 지우지 않아 큐가 다시 보내고,
   // 5번 실패하면 DLQ(payment-result-dlq.fifo)로 옮겨진다.
   async applyPaymentResult(event: PaymentResultEvent): Promise<void> {
-    // 결제는 승인됐는데 예약이 이미 만료·취소·실패된 경우 → 트랜잭션 뒤에 환불 요청 (LDP-92)
-    let refundAfterApproval = false;
     const reservationToRelease = await this.dataSource.transaction(
       async (manager) => {
         const attempt = event.orderId
@@ -859,10 +1063,16 @@ export class BookingServiceService implements OnModuleInit {
               if (current && current.status !== ReservationStatus.RESERVED) {
                 // 결제는 승인됐는데 예약이 이미 만료·취소·실패 상태 → 돈만 빠져나간 상태라 자동 환불한다.
                 // (예: 결제창을 연 채 마감이 지나 만료 배치가 EXPIRED로 바꾼 뒤 승인이 도착)
+                // 환불은 여기서 직접 부르지 않고 같은 트랜잭션에 "환불 필요"만 남긴다 — 결제 서버가 느려도 큐 처리가 밀리지 않고,
+                // 호출이 실패해도 환불 요청 워커가 다시 시도한다 (LDP-97)
                 this.logger.warn(
                   `결제 승인 이벤트를 받았지만 예약(#${event.reservationId})이 ${current.status} 상태입니다 — 자동 환불 요청 (paymentId=${event.paymentId})`,
                 );
-                refundAfterApproval = true;
+                await this.enqueueRefund(
+                  manager,
+                  event.reservationId,
+                  'APPROVED_AFTER_CLOSE',
+                );
               }
             }
             break;
@@ -901,7 +1111,7 @@ export class BookingServiceService implements OnModuleInit {
           }
           case 'PAYMENT_REFUND_FAILED':
             this.logger.error(
-              `[알람] 환불 실패 이벤트 (reservationId=${event.reservationId}, paymentId=${event.paymentId}) — 결제 쪽 대사 배치가 재시도합니다.`,
+              `[알람] 환불 실패 이벤트 (reservationId=${event.reservationId}, paymentId=${event.paymentId}) — 결제 쪽 대사 배치가 간격을 늘려 재시도하고, 최대 횟수를 넘으면 수동 처리로 넘깁니다.`,
             );
             break;
           case 'PAYMENT_REFUNDED':
@@ -919,13 +1129,9 @@ export class BookingServiceService implements OnModuleInit {
       },
     );
 
-    // 재고 반환·환불은 다른 서비스 호출이라 트랜잭션이 끝난 뒤에 한다
+    // 재고 반환은 다른 서비스 호출이라 트랜잭션이 끝난 뒤에 한다 (환불은 위에서 대기열에 남겼다)
     if (reservationToRelease) {
       await this.releaseRoomAvailability(reservationToRelease, '결제 실패');
-    }
-    if (refundAfterApproval) {
-      // 예약 ID로 만든 같은 환불 키를 쓰므로, 취소 때 이미 환불을 요청했어도 한 번만 환불된다
-      await this.requestRefund(event.reservationId);
     }
   }
 

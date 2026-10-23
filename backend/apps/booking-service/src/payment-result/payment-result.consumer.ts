@@ -21,6 +21,8 @@ import { BookingServiceService } from '../booking-service.service';
 // 롱 폴링: 메시지가 없으면 최대 이 시간(초)까지 기다렸다가 빈 응답을 받는다. 메시지가 오면 바로 돌아오므로
 // 결제 후 예약 확정이 늦어지지 않는다 (SQS·ElasticMQ 최대 20초).
 const WAIT_TIME_SECONDS = 10;
+// 롱 폴링 호출 기한 — 대기 시간 + 여유. SQS 클라이언트 기본 기한(5초, libs/common sqs.ts)은 롱 폴링보다 짧아서 따로 준다
+const RECEIVE_REQUEST_TIMEOUT_MS = (WAIT_TIME_SECONDS + 5) * 1000;
 const MAX_MESSAGES = 10;
 // 큐 연결 오류 시 다시 시도하기 전 기다리는 시간
 const ERROR_BACKOFF_MS = 3000;
@@ -71,7 +73,10 @@ export class PaymentResultConsumer
             MaxNumberOfMessages: MAX_MESSAGES,
             WaitTimeSeconds: WAIT_TIME_SECONDS,
           }),
-          { abortSignal: this.abortController.signal },
+          {
+            abortSignal: this.abortController.signal,
+            requestTimeout: RECEIVE_REQUEST_TIMEOUT_MS,
+          },
         );
         for (const message of Messages ?? []) {
           await this.handle(message);
