@@ -1,0 +1,93 @@
+{{- /* RAG 적재 Job 의 spec (root 컨텍스트). 아래 Job 이름의 해시를 이 렌더 결과로 만든다 */}}
+{{- define "backend.llmIngestJobSpec" -}}
+{{- $i := .Values.llmIngest }}
+{{- $svc := index .Values.services "llm-service" }}
+{{- $env := merge (dict) ($i.env | default dict) ($svc.env | default dict) .Values.global.env -}}
+{{- $gcpWif := and $svc.gcpWorkloadIdentity .Values.gcpWorkloadIdentity.enabled -}}
+backoffLimit: {{ $i.backoffLimit }}
+activeDeadlineSeconds: {{ $i.activeDeadlineSeconds }}
+ttlSecondsAfterFinished: {{ $i.ttlSecondsAfterFinished }}
+template:
+  metadata:
+    labels:
+      {{- include "backend.labels" (dict "root" . "name" "llm-ingest") | nindent 6 }}
+  spec:
+    restartPolicy: Never
+    {{- include "backend.imagePullSecrets" . | trim | nindent 4 }}
+    {{- if .Values.serviceAccounts.create }}
+    serviceAccountName: llm-ingest
+    {{- end }}
+    {{- with .Values.podSecurityContext }}
+    securityContext:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- if $gcpWif }}
+    volumes:
+      {{- include "backend.gcpWif.volume" . | nindent 6 }}
+    {{- end }}
+    containers:
+      - name: llm-ingest
+        # llm-service 이미지에 scripts/ingest.py 가 들어 있다 (langchain_rag/llm-service/Dockerfile)
+        image: {{ include "backend.image" (dict "root" . "image" $svc.image) }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+        command: ["python", "-m", "scripts.ingest"]
+        env:
+          {{- range $key := keys $env | sortAlpha }}
+          - name: {{ $key }}
+            value: {{ tpl (get $env $key | toString) $ | quote }}
+          {{- end }}
+          {{- range $key := $svc.secretEnv }}
+          - name: {{ $key }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $.Values.global.secretName }}
+                key: {{ $key }}
+          {{- end }}
+          {{- if $gcpWif }}
+          {{- include "backend.gcpWif.env" . | nindent 10 }}
+          {{- end }}
+        resources:
+          {{- toYaml $i.resources | nindent 10 }}
+        {{- with .Values.containerSecurityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- if $gcpWif }}
+        volumeMounts:
+          {{- include "backend.gcpWif.volumeMount" . | nindent 10 }}
+        {{- end }}
+{{- end }}
+
+{{- if .Values.llmIngest.enabled }}
+{{- $svc := index .Values.services "llm-service" }}
+{{- $tag := $svc.image.tag | default .Values.global.imageTag | toString }}
+{{- $spec := include "backend.llmIngestJobSpec" . }}
+{{- $jobName := printf "llm-ingest-%s-%s" ($tag | trunc 8) (sha256sum $spec | trunc 6) }}
+{{- if .Values.serviceAccounts.create }}
+---
+# RAG 적재 Job 의 ServiceAccount — IRSA 매핑(prod pod-identity-webhook ConfigMap)은 backend/llm-ingest 기준 (벡터 쓰기),
+# Vertex AI 는 GCP Workload Identity (14-gcp-llm 바인딩 backend:llm-ingest)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: llm-ingest
+  labels:
+    {{- include "backend.labels" (dict "root" $ "name" "llm-ingest") | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}
+---
+# RAG 문서 적재 (langchain_rag/llm-service/scripts/ingest.py — app/corpus.py 문서 임베딩 → 벡터 스토어)
+# 문서가 코드(corpus.py)라 릴리스마다 다시 적재해 이미지와 인덱스를 맞춘다. 문서 id 가 key 라 다시 넣어도 중복되지 않는다
+# (corpus 에서 지운 문서는 인덱스에 남는다 — 지울 때는 인덱스를 새 이름으로 만든다)
+#
+# seed Job 과 같은 방식: hook 이 아닌 일반 Job, 실패해도 서비스 배포는 롤백되지 않는다.
+# 이름 = llm-ingest-<이미지 태그 8자>-<spec 해시 6자> (Job spec 은 바꿀 수 없어 바뀌면 새 이름으로 다시 만든다)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $jobName }}
+  labels:
+    {{- include "backend.labels" (dict "root" $ "name" "llm-ingest") | nindent 4 }}
+spec:
+  {{- $spec | nindent 2 }}
+{{- end }}

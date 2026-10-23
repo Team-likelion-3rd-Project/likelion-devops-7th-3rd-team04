@@ -33,6 +33,10 @@ variable "services" {
     "payment-migrations",
     # 초기 데이터 시딩 (backend 차트 seed Job, backend/scripts/Dockerfile.seed). 운영 전용 — .gitlab-ci.yml RELEASE_ONLY_IMAGES
     "seed",
+    # 챗봇 (LDP-143). llm-service 는 langchain_rag/llm-service/Dockerfile 빌드(태그 = 커밋 SHA),
+    # n8n 은 Docker Hub n8nio/n8n 을 release:mirror-n8n 이 옮긴 것(태그 = N8N_VERSION)
+    "llm-service",
+    "n8n",
   ]
 }
 

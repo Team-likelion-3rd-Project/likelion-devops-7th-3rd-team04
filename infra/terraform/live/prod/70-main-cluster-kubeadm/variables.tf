@@ -44,6 +44,21 @@ variable "queue_names" {
   type        = map(string)
 }
 
+variable "dynamodb_table_names" {
+  description = "41-main-data 의 dynamodb_table_names (chat_sessions, chat_messages). chat-bot-service Role 이 읽고 쓴다"
+  type        = map(string)
+}
+
+variable "vector_bucket_name" {
+  description = "15-chatbot-vectors 의 vector_bucket_name output. llm-service(조회) · llm-ingest(쓰기) Role 대상"
+  type        = string
+}
+
+variable "vector_index_name" {
+  description = "15-chatbot-vectors 의 vector_index_name output"
+  type        = string
+}
+
 variable "image_bucket_name" {
   description = "13-frontend 의 image_bucket_name output. hotel-service Role 이 객실 사진을 올리고 지운다"
   type        = string
