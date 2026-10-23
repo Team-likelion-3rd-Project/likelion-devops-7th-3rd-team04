@@ -741,3 +741,18 @@
   min-height: 220px;
   resize: vertical;
 }
+
+/* 목록 페이지 이동 (예약 관리) */
+.admin-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 0 4px;
+  flex-wrap: wrap;
+}
+
+.admin-pagination-gap {
+  padding: 0 4px;
+  color: var(--admin-text-muted, #6b7280);
+}
