@@ -52,4 +52,10 @@ export class UserController {
   async deleteUser(data: { id: number }) {
     return this.userService.deleteUser(data.id);
   }
+
+  // auth-service가 회원가입 전에 호출: 탈퇴가 중간에 멈춰 비밀번호 없이 남은 프로필을 deleted_user로 정리 (LDP-111)
+  @GrpcMethod('UserService', 'ArchiveOrphanProfile')
+  async archiveOrphanProfile(data: { id: number; email: string }) {
+    return this.userService.archiveOrphanProfile(data.id, data.email);
+  }
 }

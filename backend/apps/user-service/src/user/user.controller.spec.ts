@@ -14,7 +14,11 @@ describe('UserController', () => {
     commitTransaction: jest.Mock;
     rollbackTransaction: jest.Mock;
     release: jest.Mock;
-    manager: { insert: jest.Mock; delete: jest.Mock };
+    manager: {
+      insert: jest.Mock;
+      delete: jest.Mock;
+      createQueryBuilder: jest.Mock;
+    };
   };
   let dataSource: { createQueryRunner: jest.Mock };
 
@@ -26,7 +30,11 @@ describe('UserController', () => {
       commitTransaction: jest.fn(),
       rollbackTransaction: jest.fn(),
       release: jest.fn(),
-      manager: { insert: jest.fn(), delete: jest.fn() },
+      manager: {
+        insert: jest.fn(),
+        delete: jest.fn(),
+        createQueryBuilder: jest.fn(),
+      },
     };
     dataSource = { createQueryRunner: jest.fn(() => queryRunner) };
 
@@ -162,6 +170,73 @@ describe('UserController', () => {
       await expect(
         userController.updateUser({ id: 999, name: '김철수', phoneNumber: '010-9999-9999' }),
       ).rejects.toThrow();
+    });
+  });
+
+  // LDP-111: 탈퇴가 중간에 멈춰 비밀번호 없이 남은 프로필 정리
+  describe('archiveOrphanProfile', () => {
+    const queryOf = (found: unknown) => {
+      const qb = {
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(found),
+      };
+      queryRunner.manager.createQueryBuilder.mockReturnValue(qb);
+      return qb;
+    };
+
+    it('만든 지 오래된 남은 프로필을 잠그고 deleted_user로 옮긴 뒤 지운다', async () => {
+      const orphan = {
+        id: 3,
+        email: 'user@example.com',
+        name: '홍길동',
+        phoneNumber: '010-1234-5678',
+        role: 'USER',
+        status: 'ACTIVE',
+        createdAt: new Date('2026-10-01'),
+        updatedAt: new Date('2026-10-01'),
+      };
+      const qb = queryOf(orphan);
+
+      const result = await userController.archiveOrphanProfile({
+        id: 3,
+        email: 'user@example.com',
+      });
+
+      expect(qb.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'user.createdAt < NOW(6) - INTERVAL :seconds SECOND',
+        { seconds: 300 },
+      );
+      expect(queryRunner.manager.insert).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          originalId: 3,
+          email: 'user@example.com',
+          status: 'INACTIVE',
+        }),
+      );
+      expect(queryRunner.manager.delete).toHaveBeenCalledWith(
+        expect.anything(),
+        { id: 3 },
+      );
+      expect(queryRunner.commitTransaction).toHaveBeenCalled();
+      expect(result).toEqual({ success: true });
+    });
+
+    it('대상이 아니면(가입 진행 중·이미 없음·이메일 불일치) 아무것도 지우지 않는다', async () => {
+      queryOf(null);
+
+      const result = await userController.archiveOrphanProfile({
+        id: 3,
+        email: 'user@example.com',
+      });
+
+      expect(queryRunner.manager.insert).not.toHaveBeenCalled();
+      expect(queryRunner.manager.delete).not.toHaveBeenCalled();
+      expect(queryRunner.release).toHaveBeenCalled();
+      expect(result).toEqual({ success: false });
     });
   });
 

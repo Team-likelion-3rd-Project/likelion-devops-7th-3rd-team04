@@ -67,6 +67,7 @@ interface UserGrpcService {
   getUserByEmail(data: { email: string }): Observable<UserGrpcResponse>;
   deleteUser(data: { id: number }): Observable<{ success: boolean }>;
   cancelSignup(data: { id: number; email: string }): Observable<{ success: boolean }>;
+  archiveOrphanProfile(data: { id: number; email: string }): Observable<{ success: boolean }>;
 }
 
 interface AdminGrpcService {
@@ -133,6 +134,8 @@ export class AuthServiceService implements OnModuleInit {
     name: string;
     phoneNumber: string;
   }): Promise<AuthTokens> {
+    await this.archiveOrphanProfile(data.email);
+
     const user = await firstValueFrom(
       this.userService.createUser({
         email: data.email,
@@ -194,6 +197,40 @@ export class AuthServiceService implements OnModuleInit {
         message: '회원가입은 완료되었습니다. 잠시 후 로그인해 주세요.',
         retryable: false,
       });
+    }
+  }
+
+  // 탈퇴가 중간에 멈춰 비밀번호 없이 프로필만 남은 이메일이면, 가입 전에 그 프로필을 deleted_user로 정리합니다 (LDP-111).
+  // 비밀번호가 없으면 로그인도 탈퇴 재시도도 할 수 없어, 정리하지 않으면 이 이메일로 다시 가입할 방법이 없습니다.
+  // 만든 지 얼마 안 된 프로필(가입 진행 중)은 user-service가 건드리지 않습니다. 정리하지 못하면 아무것도 하지 않고,
+  // 이어지는 createUser가 기존처럼 "이미 가입된 이메일입니다."로 응답합니다 — 이 단계 실패로 가입이 막히지는 않습니다.
+  private async archiveOrphanProfile(email: string): Promise<void> {
+    try {
+      const existing = await firstValueFrom(
+        this.userService.getUserByEmail({ email }),
+      ).catch(() => null);
+      if (!existing) {
+        return;
+      }
+      const credential = await this.credentialRepository.findOne({
+        where: { userId: existing.id },
+      });
+      if (credential) {
+        return;
+      }
+      const { success } = await firstValueFrom(
+        this.userService.archiveOrphanProfile({ id: existing.id, email }),
+      );
+      if (success) {
+        this.logger.warn(
+          `비밀번호 없이 남은 프로필을 deleted_user로 정리하고 재가입 진행 (이전 userId=${existing.id})`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `남은 프로필 정리 실패 — 가입은 기존대로 진행 (email=${email})`,
+        error instanceof Error ? error.stack : String(error),
+      );
     }
   }
 

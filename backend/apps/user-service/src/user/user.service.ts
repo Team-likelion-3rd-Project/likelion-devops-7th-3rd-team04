@@ -15,6 +15,10 @@ export interface UserGrpcResponse {
   status: string;
 }
 
+// 비밀번호 없이 남은 프로필을 정리해도 되는 최소 경과 시간 (LDP-111). 정상 가입은 프로필을 만든 직후(1초 안) 비밀번호를
+// 저장하므로, 이보다 오래된 프로필은 가입 진행 중이 아니라 탈퇴·가입이 중간에 멈춘 것으로 본다.
+export const ORPHAN_PROFILE_MIN_AGE_SECONDS = 5 * 60;
+
 // 고객(users) 도메인 전용 서비스입니다. 관리자(admins) 도메인은 ../admin/admin.service.ts가 별도로 소유합니다.
 @Injectable()
 export class UserService {
@@ -53,6 +57,45 @@ export class UserService {
   async cancelSignup(id: number, email: string): Promise<{ success: boolean }> {
     await this.userRepository.delete({ id, email });
     return { success: true };
+  }
+
+  // auth-service 회원가입 전 호출 (LDP-111). 탈퇴가 프로필 단계에서 멈추면 비밀번호·세션은 이미 지워져 로그인도
+  // 탈퇴 재시도도 할 수 없고, 남은 프로필 때문에 같은 이메일로 재가입도 막힙니다. 그 프로필을 탈퇴와 똑같이
+  // deleted_user로 옮긴 뒤 지웁니다. 비밀번호가 없는지는 auth-service가 확인하고, 여기서는 만든 지
+  // ORPHAN_PROFILE_MIN_AGE_SECONDS가 지났는지를 DB 시각(NOW) 기준으로 확인합니다 — 막 만들어져 비밀번호 저장을
+  // 기다리는 정상 가입을 지우지 않기 위해서입니다. 대상이 아니거나 이미 없으면 success=false.
+  async archiveOrphanProfile(
+    id: number,
+    email: string,
+  ): Promise<{ success: boolean }> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      // 같은 이메일로 동시에 가입해도 한 요청만 옮기도록 행을 잠근다
+      const user = await queryRunner.manager
+        .createQueryBuilder(User, 'user')
+        .setLock('pessimistic_write')
+        .where('user.id = :id', { id })
+        .andWhere('user.email = :email', { email })
+        .andWhere('user.createdAt < NOW(6) - INTERVAL :seconds SECOND', {
+          seconds: ORPHAN_PROFILE_MIN_AGE_SECONDS,
+        })
+        .getOne();
+      if (!user) {
+        await queryRunner.commitTransaction();
+        return { success: false };
+      }
+      await queryRunner.manager.insert(DeletedUser, this.toDeletedUser(user));
+      await queryRunner.manager.delete(User, { id });
+      await queryRunner.commitTransaction();
+      return { success: true };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   // auth-service 로그인 요청으로 이메일 기준 프로필 조회. 미가입 이메일이면 RpcException.
@@ -108,17 +151,7 @@ export class UserService {
     await queryRunner.connect();
     await queryRunner.startTransaction();
     try {
-      await queryRunner.manager.insert(DeletedUser, {
-        originalId: user.id,
-        email: user.email,
-        name: user.name,
-        phoneNumber: user.phoneNumber,
-        role: user.role,
-        // 탈퇴 시점 상태와 무관하게 백업 레코드는 항상 탈퇴 처리(INACTIVE) 상태로 남깁니다.
-        status: UserStatus.INACTIVE,
-        originalCreatedAt: user.createdAt,
-        originalUpdatedAt: user.updatedAt,
-      });
+      await queryRunner.manager.insert(DeletedUser, this.toDeletedUser(user));
       await queryRunner.manager.delete(User, { id });
       await queryRunner.commitTransaction();
     } catch (error) {
@@ -129,6 +162,21 @@ export class UserService {
     }
 
     return { success: true };
+  }
+
+  // deleted_user 백업 레코드 (탈퇴, LDP-111 남은 프로필 정리 공통)
+  private toDeletedUser(user: User): Partial<DeletedUser> {
+    return {
+      originalId: user.id,
+      email: user.email,
+      name: user.name,
+      phoneNumber: user.phoneNumber,
+      role: user.role,
+      // 탈퇴 시점 상태와 무관하게 백업 레코드는 항상 탈퇴 처리(INACTIVE) 상태로 남깁니다.
+      status: UserStatus.INACTIVE,
+      originalCreatedAt: user.createdAt,
+      originalUpdatedAt: user.updatedAt,
+    };
   }
 
   private toGrpcResponse(user: User): UserGrpcResponse {

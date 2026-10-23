@@ -20,6 +20,9 @@ describe('AuthServiceService 가입·탈퇴 정합성', () => {
   const createUser = jest.fn();
   const cancelSignup = jest.fn();
   const deleteUser = jest.fn();
+  const getUserByEmail = jest.fn();
+  const archiveOrphanProfile = jest.fn();
+  const credentialFindOne = jest.fn();
   const countUpcomingReservations = jest.fn();
   const credentialSave = jest.fn();
   const credentialDelete = jest.fn();
@@ -55,6 +58,12 @@ describe('AuthServiceService 가입·탈퇴 정합성', () => {
     steps.length = 0;
     createUser.mockReturnValue(of(user));
     cancelSignup.mockReturnValue(of({ success: true }));
+    // 기본: 처음 가입하는 이메일 (남은 프로필 없음)
+    getUserByEmail.mockReturnValue(
+      throwError(() => ({ code: 2, details: '가입되지 않은 이메일입니다.' })),
+    );
+    archiveOrphanProfile.mockReturnValue(of({ success: true }));
+    credentialFindOne.mockResolvedValue(null);
     deleteUser.mockImplementation(() => {
       steps.push('profile');
       return of({ success: true });
@@ -75,10 +84,19 @@ describe('AuthServiceService 가입·탈퇴 정합성', () => {
         create: (data: unknown) => data,
         save: credentialSave,
         delete: credentialDelete,
+        findOne: credentialFindOne,
       } as unknown as Repository<Credential>,
       {} as Repository<AdminCredential>,
       new JwtService({}),
-      { getService: () => ({ createUser, cancelSignup, deleteUser }) } as never,
+      {
+        getService: () => ({
+          createUser,
+          cancelSignup,
+          deleteUser,
+          getUserByEmail,
+          archiveOrphanProfile,
+        }),
+      } as never,
       { getService: () => ({ countUpcomingReservations }) } as never,
       { set: redisSet, del: redisDel } as unknown as Redis,
     );
@@ -129,6 +147,58 @@ describe('AuthServiceService 가입·탈퇴 정합성', () => {
       });
       expect(credentialSave).toHaveBeenCalledTimes(1);
       expect(cancelSignup).not.toHaveBeenCalled();
+    });
+  });
+
+  // LDP-111: 탈퇴가 프로필 단계에서 멈춰 비밀번호 없이 남은 프로필 → 같은 이메일로 재가입
+  describe('남은 프로필 정리 후 재가입', () => {
+    it('비밀번호 없이 남은 프로필이면 deleted_user로 정리하고 새로 가입한다', async () => {
+      getUserByEmail.mockReturnValue(of({ ...user, id: 3 }));
+
+      const result = await register();
+
+      expect(credentialFindOne).toHaveBeenCalledWith({ where: { userId: 3 } });
+      expect(archiveOrphanProfile).toHaveBeenCalledWith({
+        id: 3,
+        email: user.email,
+      });
+      expect(createUser).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ userId: 7, email: user.email });
+    });
+
+    it('비밀번호가 있는 정상 회원이면 정리하지 않는다 (기존처럼 "이미 가입된 이메일")', async () => {
+      getUserByEmail.mockReturnValue(of(user));
+      credentialFindOne.mockResolvedValue({ userId: 7 });
+      createUser.mockReturnValue(
+        throwError(() => ({ code: 2, details: '이미 가입된 이메일입니다.' })),
+      );
+
+      const error = await register();
+
+      expect(archiveOrphanProfile).not.toHaveBeenCalled();
+      expect((error as Error).message).toBe('이미 가입된 이메일입니다.');
+    });
+
+    it('처음 가입하는 이메일이면 정리 단계를 건너뛴다', async () => {
+      await register();
+
+      expect(credentialFindOne).not.toHaveBeenCalled();
+      expect(archiveOrphanProfile).not.toHaveBeenCalled();
+      expect(createUser).toHaveBeenCalledTimes(1);
+    });
+
+    it('정리가 실패해도 가입 흐름은 기존대로 (createUser가 판단)', async () => {
+      getUserByEmail.mockReturnValue(of({ ...user, id: 3 }));
+      archiveOrphanProfile.mockReturnValue(
+        throwError(() => ({ code: 14, details: 'No connection established' })),
+      );
+      createUser.mockReturnValue(
+        throwError(() => ({ code: 2, details: '이미 가입된 이메일입니다.' })),
+      );
+
+      const error = await register();
+
+      expect((error as Error).message).toBe('이미 가입된 이메일입니다.');
     });
   });
 
