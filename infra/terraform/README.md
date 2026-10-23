@@ -10,7 +10,11 @@ AWS 운영 환경(`us-east-1`)을 구성하는 Terraform 코드입니다.
   # 터미널 세션 단위로 지정 (TG_PROVIDER_CACHE 는 4절)
   export AWS_PROFILE=team04 TG_PROVIDER_CACHE=1
   ```
-- 버전: Terraform `>= 1.11`, Terragrunt `>= 1.1`, AWS provider `~> 6.0`. `.terraform.lock.hcl` 은 커밋합니다.
+- `14-gcp-llm` 은 GCP 리소스를 만들어 **gcloud ADC 도 필요합니다** (`run --all` 에 포함). 본인 Google 계정에 terraform 서비스 계정의 Token Creator 권한이 있어야 합니다 ([`infra/gcp-terraform/README.md`](../gcp-terraform/README.md) 0절).
+  ```bash
+  gcloud auth application-default login
+  ```
+- 버전: Terraform `>= 1.11`, Terragrunt `>= 1.1`, AWS provider `~> 6.0`, Google provider `~> 8.5`. `.terraform.lock.hcl` 은 커밋합니다.
 
 ---
 
@@ -29,6 +33,7 @@ infra/terraform/
         ├── 11-registry/             🔒
         ├── 12-secrets/              🔒 외부에서 발급한 비밀값 (값 등록 때만 직접 apply)
         ├── 13-frontend/             🔒 프론트 · 객실 사진 (S3 · CloudFront · KeyValueStore)
+        ├── 14-gcp-llm/              🔒 챗봇 Vertex AI 인증 (GCP Workload Identity Federation)
         ├── 20-network/              🔁
         ├── 21-observability-base/   🔁
         ├── 30-security/             🔁
@@ -43,13 +48,12 @@ infra/terraform/
         ├── 70-main-cluster-kubeadm/ 🔁
         ├── 71-payment-link/         🔁 메인 VPC 결제 PrivateLink 엔드포인트 · 고정 이름
         ├── 80-main-edge/            🔁
-        ├── 82-gcp-llm/              🔁
         └── 90-observability-alarms/ 🔁
 ```
 
 🔒 상시 유지 (destroy 하지 않음) / 🔁 매일 재생성
 
-각 스택 디렉터리는 `*.tf` 와 `terragrunt.hcl` 로 이루어집니다. `backend.tf` · `providers.tf` 는 두지 않습니다 (`root.hcl` 이 생성).
+각 스택 디렉터리는 `*.tf` 와 `terragrunt.hcl` 로 이루어집니다. `backend.tf` · `providers.tf` 는 두지 않습니다 (`root.hcl` 이 생성). AWS 리소스가 없는 `14-gcp-llm` 은 `root.hcl` 의 `non_aws_stacks` 로 AWS provider 생성을 끄고, 자기 `terragrunt.hcl` 에서 google provider 를 생성합니다.
 
 ---
 
@@ -128,8 +132,8 @@ terragrunt output -raw api_url
 ```
 
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
-- `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
-- `10-global` · `11-registry` · `13-frontend` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
+- `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
+- `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` 은 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
 - `10-global` 의 GitHub OIDC 공급자(`token.actions.githubusercontent.com`)는 URL 이 고정이라 **계정에 하나뿐인 공용 리소스**입니다 (공유 계정의 다른 팀도 같은 공급자를 씀). 지우거나 audience 를 바꾸지 않습니다 (`prevent_destroy`). 다른 팀이 먼저 만들었으면 `create_github_oidc_provider = false` 로 기존 공급자를 씁니다.
 - `12-secrets` 는 `exclude`(all) 로 `run --all` 의 plan · apply · destroy 모두에서 빠집니다. 값(ephemeral 변수)이 있어야 plan 이 되므로 **값을 등록할 때만 스택 디렉터리에서 직접 apply** 합니다 (5절 "외부에서 발급한 비밀값"). 대기열 확인: `terragrunt list --queue-construct-as=apply`
 - **`TG_PROVIDER_CACHE=1` 을 켭니다.** 끄면 스택마다 캐시 디렉터리에 AWS provider 를 따로 받아 스택당 약 760MB 를 쓰고 첫 실행이 오래 걸립니다. 켜면 provider 를 한 번만 받아 공유합니다 (`run --all plan` 캐시가 찬 상태 약 1분).
@@ -140,7 +144,7 @@ terragrunt output -raw api_url
 
 ```
 bootstrap                                  🔒 최초 1회 (terraform)
-10-global   11-registry   12-secrets   13-frontend   🔒 최초 1회, 이후 변경 시에만 (12-secrets 는 직접 apply)
+10-global   11-registry   12-secrets   13-frontend   14-gcp-llm   🔒 최초 1회, 이후 변경 시에만 (12-secrets 는 직접 apply)
 ─────────────────────── 매일 재생성 ───────────────────────
 20-network   21-observability-base
 30-security
@@ -148,13 +152,13 @@ bootstrap                                  🔒 최초 1회 (terraform)
 50-payment-webhook
 60-payment-app   61-payment-mock
 70-main-cluster-kubeadm   71-payment-link
-80-main-edge   82-gcp-llm
+80-main-edge
 90-observability-alarms
 ```
 
 - 서비스 도메인은 운영 계정 Route53 에서 등록한 `meomulm.click` 이고, `10-global` 의 `domain_name` · `enable_certificate` 기본값에 들어 있습니다. 등록 시 자동 생성된 Zone 을 import 해 씁니다 ([`dns.tf`](live/prod/10-global/dns.tf) 상단 주석 [A] 절차). `domain_name = null` 로 두면 도메인 없이도 apply 할 수 있습니다.
-- `bootstrap`, `10-global`, `11-registry`, `12-secrets`, `13-frontend` 는 **destroy 하지 않습니다.**
-  Hosted Zone 을 다시 만들면 NS 가 바뀌고, CloudFront 는 생성 · 삭제가 느리고 사이트 릴리스 · 객실 사진이 사라지고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 합니다.
+- `bootstrap`, `10-global`, `11-registry`, `12-secrets`, `13-frontend`, `14-gcp-llm` 은 **destroy 하지 않습니다.**
+  Hosted Zone 을 다시 만들면 NS 가 바뀌고, CloudFront 는 생성 · 삭제가 느리고 사이트 릴리스 · 객실 사진이 사라지고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 하고, Workload Identity Pool · Provider 는 삭제 후 30일 동안 같은 ID 를 쓸 수 없습니다.
 
 ### 스택별 소요 시간
 
@@ -163,6 +167,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | 스택 | 조건 | apply | destroy |
 |---|---|---|---|
 | `13-frontend` 🔒 | 최초 1회. 버킷 2개 · CloudFront(2분 49초) · KeyValueStore(1분 24초) · Function · 레코드 4개 (2026-10-22) | 5분 07초 | (destroy 안 함) |
+| `14-gcp-llm` 🔒 | 최초 1회. API 4개(STS 25초) · 서비스 계정 · Pool · Provider · IAM 3개, 사전 작업 때문에 2번 나눠 apply (2026-10-23) | 52초 + 37초 | (destroy 안 함) |
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개, NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
@@ -597,4 +602,53 @@ curl -sI https://www.meomulm.click/a?b=1 | grep -i location                 # ht
 curl -sI https://team04-hotel-frontend.s3.us-east-1.amazonaws.com/releases/ | head -1   # 직접 접근 403
 AWS_PROFILE=team04 aws cloudfront-keyvaluestore get-key --key version \
   --kvs-arn "<위 ARN>" --query Value --output text                          # 현재 버전
+```
+
+---
+
+## 11. 챗봇 Vertex AI 인증 (`14-gcp-llm`)
+
+```
+llm-service 파드 projected 토큰 (iss = 메인 클러스터 OIDC 발급자, aud = Provider)
+  → sts.googleapis.com 토큰 교환   Provider 가 발급자의 keys.json 으로 서명 검증, backend 네임스페이스만 허용
+  → llm-service-prod impersonate   backend:llm-service · backend:llm-ingest 만 workloadIdentityUser
+  → Vertex AI
+```
+
+- 서비스 계정 키를 만들지 않습니다. 파드는 output `credential_config`(external_account JSON, 공개 값)와 projected 토큰만으로 인증합니다 (llm-service 는 `GCP_SA_KEY_JSON` 이 없으면 ADC 사용).
+- 발급자는 IRSA 와 같은 `10-global` OIDC 버킷입니다. 같은 1x 단계라 dependency 대신 버킷 이름(`oidc_bucket_name`)으로 주소를 만듭니다.
+- 🔒 상시 유지: Pool · Provider 는 삭제 후 30일 동안 같은 ID 를 쓸 수 없습니다.
+- 온프레미스 dev 는 [`infra/gcp-terraform`](../gcp-terraform/README.md) (SA 키 방식) 그대로입니다.
+
+### 사전 작업 (프로젝트 관리자 계정, 최초 1회)
+
+terraform 서비스 계정은 IAM 을 스스로 넓힐 수 없어 관리자가 직접 부여합니다.
+
+```bash
+P=likelion-devops-7th-3rd-team4
+TF=terraform@$P.iam.gserviceaccount.com
+
+# 1. Pool · Provider 관리
+gcloud projects add-iam-policy-binding $P --member=serviceAccount:$TF \
+  --role=roles/iam.workloadIdentityPoolAdmin --condition=None
+
+# 2. 운영 서비스 계정만 먼저 만든다 (이 유닛 디렉터리에서, terraform SA 로 실행)
+terragrunt apply -target=google_service_account.llm_service
+
+# 3. 그 서비스 계정 한정으로 IAM 정책 관리 권한 (workloadIdentityUser 바인딩용)
+gcloud iam service-accounts add-iam-policy-binding llm-service-prod@$P.iam.gserviceaccount.com \
+  --project=$P --member=serviceAccount:$TF --role=roles/iam.serviceAccountAdmin
+
+# 4. 나머지
+terragrunt apply
+```
+
+이후에는 `run --all apply` 에 포함되어 변경이 없으면 No changes 로 끝납니다.
+
+### 확인
+
+```bash
+terragrunt output -raw credential_config | jq .
+gcloud iam service-accounts keys list --managed-by=user \
+  --iam-account=llm-service-prod@likelion-devops-7th-3rd-team4.iam.gserviceaccount.com   # 키 0개
 ```
