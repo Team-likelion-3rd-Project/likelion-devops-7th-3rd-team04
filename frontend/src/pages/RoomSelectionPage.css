@@ -161,6 +161,17 @@
   color: var(--accent);
 }
 
+.room-select-remaining {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+
+  &.is-sold-out {
+    color: #e5484d;
+    font-weight: 600;
+  }
+}
+
 /* 본문 안에서 아래로 밀어 넣는 가격 — body가 flex-column이라 margin-top: auto로 카드 밑쪽에 붙는다 */
 .room-select-inline-price {
   margin-top: auto;

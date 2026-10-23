@@ -1,0 +1,19 @@
+.brand-logo {
+  display: block;
+  height: 100%;
+  width: auto;
+}
+
+.brand-logo.is-on-dark {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .brand-logo.is-on-light {
+    display: none;
+  }
+
+  .brand-logo.is-on-dark {
+    display: block;
+  }
+}

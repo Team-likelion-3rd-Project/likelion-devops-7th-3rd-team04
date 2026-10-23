@@ -1,4 +1,6 @@
 .hero {
+  position: relative;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -6,13 +8,8 @@
   padding: 48px 24px;
   text-align: center;
   color: #fbf9f5;
-  /* 위에서부터: 글자가 잘 보이도록 어두운 막 → 대표 사진(--main-hero-photo, 있을 때만) → 사진이 없을 때 보일 그라디언트 */
-  background-image:
-    linear-gradient(rgba(20, 17, 12, 0.45), rgba(20, 17, 12, 0.55)),
-    var(--main-hero-photo, none),
-    linear-gradient(160deg, #2a2620, #4a3f2c 60%, #6b5a3d);
-  background-size: cover;
-  background-position: center;
+  /* 사진이 없을 때 보일 그라디언트 (사진은 .hero-slide가 위에 겹친다) */
+  background-image: linear-gradient(160deg, #2a2620, #4a3f2c 60%, #6b5a3d);
 
   @media (max-width: 767px) {
     min-height: 60svh;
@@ -20,8 +17,40 @@
   }
 }
 
+.hero-slides {
+  position: absolute;
+  inset: 0;
+}
+
+.hero-slide {
+  position: absolute;
+  inset: 0;
+  /* 위에서부터: 글자가 잘 보이도록 어두운 막 → 사진(--main-hero-photo) */
+  background-image:
+    linear-gradient(rgba(20, 17, 12, 0.45), rgba(20, 17, 12, 0.55)),
+    var(--main-hero-photo, none);
+  background-size: cover;
+  background-position: center;
+  opacity: 0;
+  transform: scale(1.04);
+  transition:
+    opacity 1.2s ease,
+    transform 4s ease;
+
+  &.is-active {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+    transform: none;
+  }
+}
+
 .hero-content {
-  max-width: 560px;
+  position: relative;
+  max-width: 720px;
 }
 
 .hero-eyebrow {
@@ -34,12 +63,15 @@
 
 .hero-title {
   color: #fbf9f5;
-  margin: 0 0 16px;
+  margin: 0 0 20px;
+  line-height: 135%;
+  letter-spacing: 0.02em;
 }
 
 .hero-description {
   font-size: 16px;
-  line-height: 160%;
+  line-height: 170%;
+  text-wrap: balance;
   opacity: 0.85;
   margin-bottom: 28px;
 }
@@ -90,4 +122,135 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 24px;
+}
+
+
+/* ─── 머묾의 가치 — 브랜드 가치 4개를 사진 타일로 (배경을 살짝 물들여 구역을 나눈다) ─── */
+.main-values {
+  background: var(--accent-bg);
+}
+
+.main-values-inner {
+  max-width: 1126px;
+  margin: 0 auto;
+  padding: 72px 32px;
+  text-align: center;
+
+  h2 {
+    margin: 0 0 32px;
+  }
+
+  @media (max-width: 767px) {
+    padding: 48px 20px;
+  }
+}
+
+.main-section-eyebrow {
+  margin: 0 0 8px;
+  font-size: 13px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.main-values-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+
+  @media (max-width: 900px) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.main-value-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 4px;
+  aspect-ratio: 3 / 4;
+  padding: 20px;
+  border-radius: 12px;
+  overflow: hidden;
+  text-align: left;
+  text-decoration: none;
+  color: #fbf9f5;
+  background-image:
+    linear-gradient(rgba(20, 17, 12, 0) 40%, rgba(20, 17, 12, 0.75)),
+    var(--value-photo, none);
+  background-size: cover;
+  background-position: center;
+  transition: transform 0.3s ease;
+
+  &:hover {
+    transform: translateY(-4px);
+  }
+}
+
+.main-value-label {
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  opacity: 0.85;
+}
+
+.main-value-title {
+  font-family: var(--heading);
+  font-size: 18px;
+}
+
+/* ─── 새로운 소식 — 공지 최신 3개 ─── */
+.main-news {
+  max-width: 1126px;
+  margin: 0 auto;
+  padding: 64px 32px 80px;
+
+  @media (max-width: 767px) {
+    padding: 40px 20px 56px;
+  }
+}
+
+.main-news-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--text-h);
+
+  a {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 18px 8px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-h);
+    text-decoration: none;
+
+    &:hover .main-news-title {
+      color: var(--accent);
+    }
+  }
+
+  time {
+    flex: 0 0 auto;
+    font-size: 13px;
+    color: var(--text);
+  }
+}
+
+.main-news-category {
+  flex: 0 0 auto;
+  min-width: 48px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text);
+}
+
+.main-news-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
