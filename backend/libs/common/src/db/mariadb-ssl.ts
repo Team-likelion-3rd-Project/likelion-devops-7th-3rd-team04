@@ -9,6 +9,9 @@ import { readFileSync } from 'fs';
 //
 // 인증서 검증은 항상 켠다(rejectUnauthorized: true). 검증을 끄는 설정은 일부러 만들지 않는다 —
 // 끄면 중간에서 가짜 DB 서버가 끼어들어도 알 수 없다.
+// 호스트 이름 검증(verifyIdentity: true)도 켠다 — mysql2 는 이 값이 없으면 CA 만 보고 인증서의 이름은 확인하지 않아,
+// 같은 CA 로 발급된 다른 서버 인증서도 통과한다 (LDP-141 운영 검증에서 확인). <prefix>_HOST 는 인증서에 있는 이름(RDS 엔드포인트)이어야 한다.
+// IP 주소로 접속하면 mysql2 가 이름 검증을 건너뛴다.
 // 켜져 있는데 CA가 없거나 읽을 수 없으면 기동 시점에 바로 실패한다 (조용히 평문으로 넘어가지 않게).
 
 export type MariaDbSslPrefix = 'DB' | 'PAYMENT_DB';
@@ -16,6 +19,7 @@ export type MariaDbSslPrefix = 'DB' | 'PAYMENT_DB';
 export interface MariaDbSslOptions {
   ca: string;
   rejectUnauthorized: true;
+  verifyIdentity: true;
 }
 
 export function mariaDbSslOptions(
@@ -56,5 +60,5 @@ export function mariaDbSslOptions(
     throw new Error(`${caPathKey}가 PEM 형식 인증서가 아닙니다: ${caPath}`);
   }
 
-  return { ca, rejectUnauthorized: true };
+  return { ca, rejectUnauthorized: true, verifyIdentity: true };
 }

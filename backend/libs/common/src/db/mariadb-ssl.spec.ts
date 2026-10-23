@@ -23,10 +23,10 @@ describe('mariaDbSslOptions (DB TLS 옵션, LDP-101)', () => {
     expect(mariaDbSslOptions('DB', env({ DB_SSL: 'false' }))).toBeUndefined();
   });
 
-  it('true면 CA를 읽고 인증서 검증을 켠다', () => {
+  it('true면 CA를 읽고 인증서 · 호스트 이름 검증을 켠다', () => {
     expect(
       mariaDbSslOptions('DB', env({ DB_SSL: 'true', DB_SSL_CA_PATH: caPath })),
-    ).toEqual({ ca: pem, rejectUnauthorized: true });
+    ).toEqual({ ca: pem, rejectUnauthorized: true, verifyIdentity: true });
   });
 
   it('결제 DB는 PAYMENT_DB_ 이름을 쓴다', () => {
@@ -35,7 +35,7 @@ describe('mariaDbSslOptions (DB TLS 옵션, LDP-101)', () => {
         'PAYMENT_DB',
         env({ PAYMENT_DB_SSL: 'TRUE', PAYMENT_DB_SSL_CA_PATH: caPath }),
       ),
-    ).toEqual({ ca: pem, rejectUnauthorized: true });
+    ).toEqual({ ca: pem, rejectUnauthorized: true, verifyIdentity: true });
     // 메인 DB 설정은 결제 DB에 영향을 주지 않는다
     expect(
       mariaDbSslOptions(

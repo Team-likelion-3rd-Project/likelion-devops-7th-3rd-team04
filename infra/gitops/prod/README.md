@@ -186,24 +186,24 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
 
 | 항목 | 내용 |
 |---|---|
-| 실행 | `backend/scripts/seed.ts` (이미지 ECR `team04-hotel/seed:<main SHA>`, `backend/scripts/Dockerfile.seed`, `release:build` 가 빌드). Job 이름 `seed-<태그 앞 8자>` |
+| 실행 | `backend/scripts/seed.ts` (이미지 ECR `team04-hotel/seed:<main SHA>`, `backend/scripts/Dockerfile.seed`, `release:build` 가 빌드). Job 이름 `seed-<태그 앞 8자>-<spec 해시 6자>` — Job spec 은 바꿀 수 없어 seed 설정 · 차트가 바뀌면 새 이름으로 다시 만든다 (같은 이름으로 spec 이 바뀌면 helm 이 실패해 backend 전체가 롤백됨) |
 | 순서 | Flyway hook(`main-db-migration`) 다음, 앱 Deployment 와 같이 생성. hook 이 아니라 helm `--wait` 가 기다리지 않음 → **시드가 실패해도 서비스 배포는 롤백되지 않음** |
 | 데이터 | 관리자 계정 · 호텔 3 · 객실 종류 12 · 호실 60 · 편의시설 · 예약 가능일 365일 · 객실 사진 24장. 이미 있으면 건너뜀(멱등) |
 | 관리자 계정 | Secret `seed-admin` ← Secrets Manager `team04-hotel/prod/seed-admin` (Terraform 12-secrets 🔒, 값은 그 디렉터리 `.env` 의 `SEED_ADMIN_*`) |
 | 객실 사진 | 사진 버킷(13-frontend 🔒, 매일 재생성 안 함)에 고정 키 `room-types/<객실 종류 ID>/seed-<파일>` 로 올림. 같은 키가 있으면 올리지 않고(조건부 쓰기 `If-None-Match`) DB 만 다시 연결 → 매일 재생성해도 객체가 늘지 않음. 관리자가 올린 사진은 기존대로 uuid 키 |
-| DB 접속 | `DB_SSL=true` + RDS CA(`rds-ca-bundle`) — 서버 인증서 · 호스트 이름 검증 (`require_secure_transport` 를 켜도 접속) |
+| DB 접속 | `DB_SSL=true` + RDS CA(`rds-ca-bundle`) — 서버 인증서 · 호스트 이름 검증(`libs/common` `mariaDbSslOptions` 의 `verifyIdentity`, 서비스와 같은 코드). `require_secure_transport` 를 켜도 접속 |
 | 권한 | SA `backend/seed` → IRSA `team04-hotel-seed` (사진 버킷 `room-types/*` PutObject 만, 버킷 정책 쓰기 허용 목록에도 포함) |
 
 확인 (CP 에 SSM 접속 후):
 
 ```bash
 k -n backend get jobs -l app.kubernetes.io/name=seed     # COMPLETIONS 1/1
-k -n backend logs job/seed-<태그 앞 8자>                   # "[seed] 시딩 완료", 사진 "새로 올린 파일 N개"
+k -n backend logs -l app.kubernetes.io/name=seed --tail=-1  # "[seed] 시딩 완료", 사진 "새로 올린 파일 N개"
 k -n backend get externalsecret seed-admin                # SecretSynced
 ```
 
 - 끝난 Job 은 하루 뒤 정리됩니다 (`ttlSecondsAfterFinished`). 실패하면 2번 다시 시도하고(`backoffLimit`) 파드 로그를 남깁니다.
-- 다시 돌리려면 `k -n backend delete job seed-<태그 앞 8자>` 후 위 "확인 · 운영" 표의 "같은 SHA 를 다시 적용하고 싶음" 으로 backend 를 다시 적용합니다 (helm 이 없어진 Job 을 다시 만듦). 멱등이라 데이터가 늘지 않습니다.
+- 다시 돌리려면 `k -n backend delete job -l app.kubernetes.io/name=seed` 후 위 "확인 · 운영" 표의 "같은 SHA 를 다시 적용하고 싶음" 으로 backend 를 다시 적용합니다 (helm 이 없어진 Job 을 다시 만듦). 멱등이라 데이터가 늘지 않습니다.
 - 관리자 비밀번호를 바꾸면(12-secrets version 증가) 다음 DB 재생성부터 반영됩니다.
 
 ## ArgoCD 전환
