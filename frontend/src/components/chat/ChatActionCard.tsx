@@ -281,10 +281,13 @@ function PayCard() {
 }
 
 function CancelCard() {
+  const navigate = useNavigate()
   const { bookings, setBookings, roomLookup, state } = useMyBookings()
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const [submittingId, setSubmittingId] = useState<number | null>(null)
   const [cancelledIds, setCancelledIds] = useState<number[]>([])
+  // 취소 전에 결제 완료였던 예약 — 취소 뒤에는 상태가 CANCELLED라 환불 안내를 고르려고 따로 기억한다
+  const [refundIds, setRefundIds] = useState<number[]>([])
   const [error, setError] = useState('')
 
   const cancellable = bookings.filter(
@@ -298,6 +301,7 @@ function CancelCard() {
       const updated = await cancelBooking(booking.reservationId)
       setBookings((prev) => prev.map((b) => (b.reservationId === updated.reservationId ? updated : b)))
       setCancelledIds((prev) => [...prev, booking.reservationId])
+      if (booking.status === 'RESERVED') setRefundIds((prev) => [...prev, booking.reservationId])
       setConfirmingId(null)
     } catch (err) {
       setError(err instanceof Error && err.message ? err.message : '예약을 취소하지 못했어요. 잠시 후 다시 시도해주세요.')
@@ -324,9 +328,25 @@ function CancelCard() {
               <li key={booking.reservationId} className="chat-action-item">
                 <BookingSummary booking={booking} roomInfo={roomLookup.get(booking.roomId)} />
                 {isCancelled ? (
-                  <p className="chat-action-done">
-                    취소되었어요. 결제한 예약이었다면 환불 진행 상황을 마이페이지 &gt; 결제내역에서 확인할 수 있어요.
-                  </p>
+                  <div className="chat-action-confirm">
+                    <p className="chat-action-done">
+                      {refundIds.includes(booking.reservationId)
+                        ? '취소되었어요. 결제 금액은 전액 환불을 진행하고 있어요.'
+                        : '취소되었어요. 결제 전 예약이라 바로 해제됐어요.'}
+                    </p>
+                    {/* 예약 상세에 환불 진행 상황(환불 처리중·환불됨·확인 필요)이 보인다 (#280) */}
+                    <button
+                      type="button"
+                      className="chat-action-secondary"
+                      onClick={() =>
+                        navigate(`/mypage/reservations/${booking.reservationId}`, {
+                          state: { booking: bookings.find((b) => b.reservationId === booking.reservationId) },
+                        })
+                      }
+                    >
+                      {refundIds.includes(booking.reservationId) ? '환불 진행 상황 보기' : '예약 상세 보기'}
+                    </button>
+                  </div>
                 ) : isConfirming ? (
                   <div className="chat-action-confirm">
                     <p className="chat-action-meta">
