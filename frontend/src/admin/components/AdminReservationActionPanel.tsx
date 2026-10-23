@@ -6,6 +6,7 @@ import {
   createExtensionBooking,
 } from '../../api/adminReservations'
 import type { AdminBooking } from '../../api/adminReservations'
+import { openDatePicker } from '../../utils/date'
 
 export type ReservationAction = 'cancel' | 'extend'
 
@@ -157,6 +158,7 @@ function AdminReservationActionPanel({
                 type="date"
                 value={checkOutDate}
                 min={addDays(booking.checkOutDate, 1)}
+                onClick={openDatePicker}
                 onChange={(e) => setCheckOutDate(e.target.value)}
               />
             </label>

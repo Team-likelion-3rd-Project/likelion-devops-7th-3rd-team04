@@ -698,6 +698,23 @@
   color: #b45309;
 }
 
+.admin-reservation-actions {
+  display: grid;
+  /* 줄마다 따로 계산되지 않게 칸 너비를 고정 — 연장이 없는 줄도 취소가 같은 세로줄에 온다 */
+  grid-template-columns: 3.6em 3.6em;
+  gap: 6px;
+
+  .admin-btn {
+    justify-content: center;
+    width: 100%;
+  }
+}
+
+/* 날짜 칸 전체가 클릭하면 달력이 열리는 영역 */
+.admin-form-row input[type='date'] {
+  cursor: pointer;
+}
+
 .admin-reservation-note span {
   display: block;
   font-size: 12px;

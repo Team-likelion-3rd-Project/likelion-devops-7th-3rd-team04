@@ -16,6 +16,13 @@
   color: var(--admin-text);
   font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   letter-spacing: normal;
+
+  /* 고객 화면 공통 제목색(index.css --text-h)은 OS 다크 모드에서 밝은색이 되어 관리자 밝은 배경에서 안 보인다 — 관리자 색으로 고정 */
+  h1,
+  h2,
+  h3 {
+    color: var(--admin-text);
+  }
 }
 
 .admin-sidebar {

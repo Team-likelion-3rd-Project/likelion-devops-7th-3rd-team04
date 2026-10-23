@@ -267,11 +267,14 @@ function AdminReservationsPage() {
                           {b.cancelledByAdminId && <span>직원 취소: {b.cancelReason}</span>}
                         </td>
                         <td>
-                          <div className="admin-unit-actions">
-                            {b.status === 'RESERVED' && (
+                          {/* 버튼 자리를 두 칸으로 고정 — 연장이 없는 줄도 취소가 같은 세로줄에 오게 빈칸을 둔다 */}
+                          <div className="admin-reservation-actions">
+                            {b.status === 'RESERVED' ? (
                               <button type="button" className="admin-btn" onClick={() => openAction(b, 'extend')}>
                                 연장
                               </button>
+                            ) : (
+                              <span aria-hidden="true" />
                             )}
                             {isActive && (
                               <button
