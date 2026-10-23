@@ -56,6 +56,12 @@ variable "image_writer_role_name" {
   default     = "team04-hotel-hotel-service"
 }
 
+variable "image_seed_role_name" {
+  description = "시드 객실 사진을 올리는 backend 시드 Job IRSA Role 이름 (70 irsa_roles 의 seed)"
+  type        = string
+  default     = "team04-hotel-seed"
+}
+
 variable "release_sync_role_name" {
   description = "gitops main GitHub Actions 가 assume 하는 Role 이름 (10-global gitops_ssm_sync_role_name). 이 스택이 KeyValueStore 버전 갱신 권한을 붙인다"
   type        = string

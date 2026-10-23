@@ -17,7 +17,7 @@ variable "region" {
 }
 
 variable "services" {
-  description = "ECR 리포지토리를 만들 이미지 목록 (backend/apps 디렉터리 이름 + DB 마이그레이션). .gitlab-ci.yml IMAGES 와 같다"
+  description = "ECR 리포지토리를 만들 이미지 목록 (backend/apps 디렉터리 이름 + DB 마이그레이션 + 시드). .gitlab-ci.yml release:build 매트릭스와 같다"
   type        = set(string)
   default = [
     "api-gateway",
@@ -31,6 +31,8 @@ variable "services" {
     # Flyway 마이그레이션 (메인: backend 차트 hook Job, 결제: 결제 서버)
     "main-migrations",
     "payment-migrations",
+    # 초기 데이터 시딩 (backend 차트 seed Job, backend/scripts/Dockerfile.seed). 운영 전용 — .gitlab-ci.yml RELEASE_ONLY_IMAGES
+    "seed",
   ]
 }
 

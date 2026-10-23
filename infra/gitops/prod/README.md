@@ -41,6 +41,7 @@ pod-identity-webhook ns/SA → Role 매핑(values.yaml) 의 파드에 AWS_ROLE_A
 - **비밀값**: 앱은 `ExternalSecret` 에서 `ClusterSecretStore` `aws-secrets-manager` 를 참조해 Secrets Manager 값(`team04-hotel/prod/*`)을 받습니다. 읽을 수 있는 Secret 은 ESO Role 정책(70 `irsa.tf`)과 Secret 리소스 정책(41-main-data)이 제한합니다.
 - **backend Secret**: `backend-secrets` 앱이 Secret `backend-secrets` 를 만듭니다 (`chart/values.yaml` 의 `data` = Secret key ← Secrets Manager 이름 · 속성). backend 차트의 Flyway hook Job 은 차트의 일반 리소스보다 먼저 돌기 때문에 Secret 을 backend 릴리스 밖에 둡니다. 서비스가 새 `secretEnv` 를 쓰면 여기와 Terraform 41-main-data Secret 에 같이 추가합니다.
 - **backend IRSA**: backend 차트가 서비스마다 같은 이름의 ServiceAccount 를 만듭니다 (`serviceAccounts.create: true`). 매핑은 `backend/<서비스 이름>` 으로 추가합니다.
+- **시드 관리자 계정**: `backend-secrets` 앱이 별도 ExternalSecret 으로 Secret `seed-admin` 을 만듭니다 (`chart/values.yaml` 의 `seedAdmin`, 원본 Terraform 12-secrets `team04-hotel/prod/seed-admin`). `backend-secrets` 에 합치지 않아 이 값이 없어도 서비스 Secret 동기화는 영향을 받지 않습니다 (아래 "운영 시드").
 - webhook 은 `failurePolicy: Fail` 입니다. webhook 이 준비되기 전에 만든 파드가 자격 증명 없이 남지 않고, 생성이 거부된 뒤 다시 만들어집니다. 노드 · 네트워크 · 인증서 · 배포 agent 네임스페이스는 호출하지 않습니다 (`values.yaml` namespaceSelector).
 
 ## 클러스터 값 (`clusterValues`)
@@ -178,6 +179,32 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
 | `release:frontend-build` 실패 | 로그 확인 (토스 클라이언트 키 Parameter 미등록이면 `12-secrets` 에 `TOSS_CLIENT_KEY` 등록 후 파이프라인 재실행 — `release:prepare` 부터) → 고친 뒤 재시도. gitops PR 은 프론트 업로드가 끝나야 만들어집니다 |
 | `sync-frontend-version` 실패 | gitops 레포 Actions 에서 재실행 (`workflow_dispatch`). `releases/<SHA>/index.html 이 없습니다` 면 그 SHA 의 `release:frontend` 를 확인 |
 | main 에 잘못 merge 됨 | gitops PR 을 merge 하지 않으면 운영은 바뀌지 않습니다. 모노레포는 revert PR(develop) → 다음 릴리스 |
+
+## 운영 시드
+
+메인 DB(RDS)는 매일 새로 만들어지므로, backend 배포 때마다 backend 차트의 **seed Job** 이 초기 데이터를 채웁니다 (`backend/values.yaml` 의 `seed`, LDP-141). 사람이 실행할 단계는 없습니다.
+
+| 항목 | 내용 |
+|---|---|
+| 실행 | `backend/scripts/seed.ts` (이미지 ECR `team04-hotel/seed:<main SHA>`, `backend/scripts/Dockerfile.seed`, `release:build` 가 빌드). Job 이름 `seed-<태그 앞 8자>-<spec 해시 6자>` — Job spec 은 바꿀 수 없어 seed 설정 · 차트가 바뀌면 새 이름으로 다시 만든다 (같은 이름으로 spec 이 바뀌면 helm 이 실패해 backend 전체가 롤백됨) |
+| 순서 | Flyway hook(`main-db-migration`) 다음, 앱 Deployment 와 같이 생성. hook 이 아니라 helm `--wait` 가 기다리지 않음 → **시드가 실패해도 서비스 배포는 롤백되지 않음** |
+| 데이터 | 관리자 계정 · 호텔 3 · 객실 종류 12 · 호실 60 · 편의시설 · 예약 가능일 365일 · 객실 사진 24장. 이미 있으면 건너뜀(멱등) |
+| 관리자 계정 | Secret `seed-admin` ← Secrets Manager `team04-hotel/prod/seed-admin` (Terraform 12-secrets 🔒, 값은 그 디렉터리 `.env` 의 `SEED_ADMIN_*`) |
+| 객실 사진 | 사진 버킷(13-frontend 🔒, 매일 재생성 안 함)에 고정 키 `room-types/<객실 종류 ID>/seed-<파일>` 로 올림. 같은 키가 있으면 올리지 않고(조건부 쓰기 `If-None-Match`) DB 만 다시 연결 → 매일 재생성해도 객체가 늘지 않음. 관리자가 올린 사진은 기존대로 uuid 키 |
+| DB 접속 | `DB_SSL=true` + RDS CA(`rds-ca-bundle`) — 서버 인증서 · 호스트 이름 검증(`libs/common` `mariaDbSslOptions` 의 `verifyIdentity`, 서비스와 같은 코드). `require_secure_transport` 를 켜도 접속 |
+| 권한 | SA `backend/seed` → IRSA `team04-hotel-seed` (사진 버킷 `room-types/*` PutObject 만, 버킷 정책 쓰기 허용 목록에도 포함) |
+
+확인 (CP 에 SSM 접속 후):
+
+```bash
+k -n backend get jobs -l app.kubernetes.io/name=seed     # COMPLETIONS 1/1
+k -n backend logs -l app.kubernetes.io/name=seed --tail=-1  # "[seed] 시딩 완료", 사진 "새로 올린 파일 N개"
+k -n backend get externalsecret seed-admin                # SecretSynced
+```
+
+- 끝난 Job 은 하루 뒤 정리됩니다 (`ttlSecondsAfterFinished`). 실패하면 2번 다시 시도하고(`backoffLimit`) 파드 로그를 남깁니다.
+- 다시 돌리려면 `k -n backend delete job -l app.kubernetes.io/name=seed` 후 위 "확인 · 운영" 표의 "같은 SHA 를 다시 적용하고 싶음" 으로 backend 를 다시 적용합니다 (helm 이 없어진 Job 을 다시 만듦). 멱등이라 데이터가 늘지 않습니다.
+- 관리자 비밀번호를 바꾸면(12-secrets version 증가) 다음 DB 재생성부터 반영됩니다.
 
 ## ArgoCD 전환
 

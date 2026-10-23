@@ -64,6 +64,9 @@ variables:
   CANDIDATE_TAG: ci-$CI_COMMIT_SHORT_SHA
   # build 와 push 가 같은 목록을 써야 함 (8 서비스 + llm-service + 메인 / 결제 DB 마이그레이션)
   IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations"
+  # 운영(ECR)에만 올리는 이미지 — 온프레미스 GitLab Registry 로는 push · 승격하지 않음 (build 는 빌드 검증만, release:build 가 ECR push)
+  #   seed: backend 차트 seed Job (backend/scripts/Dockerfile.seed). 온프레미스 시딩은 Ansible db_seed 가 DB 노드에서 빌드
+  RELEASE_ONLY_IMAGES: "seed"
 
   # ── 차트 (helm-lint) · 배포 ──
   CHART_PATH: backend-deploy/charts/backend
@@ -197,6 +200,7 @@ build:
           - llm-service
           - main-migrations
           - payment-migrations
+          - seed
   script:
     - |
       if [ "$SERVICE" = "llm-service" ]; then
@@ -208,6 +212,9 @@ build:
       elif [ "$SERVICE" = "payment-migrations" ]; then
         CONTEXT="$CI_PROJECT_DIR/backend/apps/payment-service/migrations"
         DOCKERFILE="$CONTEXT/Dockerfile"
+      elif [ "$SERVICE" = "seed" ]; then
+        CONTEXT="$CI_PROJECT_DIR/backend"
+        DOCKERFILE="$CONTEXT/scripts/Dockerfile.seed"
       else
         CONTEXT="$CI_PROJECT_DIR/backend"
         DOCKERFILE="$CONTEXT/apps/$SERVICE/Dockerfile"
@@ -219,9 +226,9 @@ build:
       printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY"
       "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
       > /kaniko/.docker/config.json
-    # develop 만 후보 태그로 push. 작업 브랜치는 빌드 검증만 (main 은 release:build 가 ECR 로 빌드)
+    # develop 만 후보 태그로 push. 작업 브랜치 · RELEASE_ONLY_IMAGES 는 빌드 검증만 (main 은 release:build 가 ECR 로 빌드)
     - |
-      if [ "$CI_COMMIT_BRANCH" = "develop" ]; then
+      if [ "$CI_COMMIT_BRANCH" = "develop" ] && ! echo " $RELEASE_ONLY_IMAGES " | grep -q " $SERVICE "; then
         set -- --destination "$CI_REGISTRY_IMAGE/$SERVICE:$CANDIDATE_TAG"
       else
         set -- --no-push
@@ -324,7 +331,7 @@ release:prepare:
         --query Parameter.Value --output text 2>/dev/null)" || { key=""; echo "토스 클라이언트 키 Parameter 를 읽지 못했습니다 (release:frontend-build 가 실패합니다)"; }
       echo "VITE_TOSS_CLIENT_KEY=$key" >> release.env
     - |
-      for svc in $IMAGES; do
+      for svc in $IMAGES $RELEASE_ONLY_IMAGES; do
         if aws ecr describe-images --region us-east-1 --repository-name "team04-hotel/$svc" \
              --image-ids imageTag="$CI_COMMIT_SHA" > /dev/null 2>&1; then
           echo "이미 있음: $svc"
@@ -356,6 +363,7 @@ release:build:
           - user-service
           - main-migrations
           - payment-migrations
+          - seed
   script:
     - 'test -n "$ECR_REGISTRY" || { echo "ECR_REGISTRY 가 비었습니다 — release:prepare 의 dotenv 아티팩트를 확인하세요"; exit 1; }'
     - 'eval "skip=\${RELEASE_SKIP_$(echo "$SERVICE" | tr "a-z-" "A-Z_"):-}"; if [ -n "$skip" ]; then echo "$SERVICE:$CI_COMMIT_SHA 는 이미 ECR 에 있어 건너뜀"; exit 0; fi'
@@ -364,6 +372,8 @@ release:build:
         CONTEXT="$CI_PROJECT_DIR/backend/migrations"; DOCKERFILE="$CONTEXT/Dockerfile"
       elif [ "$SERVICE" = "payment-migrations" ]; then
         CONTEXT="$CI_PROJECT_DIR/backend/apps/payment-service/migrations"; DOCKERFILE="$CONTEXT/Dockerfile"
+      elif [ "$SERVICE" = "seed" ]; then
+        CONTEXT="$CI_PROJECT_DIR/backend"; DOCKERFILE="$CONTEXT/scripts/Dockerfile.seed"
       else
         CONTEXT="$CI_PROJECT_DIR/backend"; DOCKERFILE="$CONTEXT/apps/$SERVICE/Dockerfile"
       fi

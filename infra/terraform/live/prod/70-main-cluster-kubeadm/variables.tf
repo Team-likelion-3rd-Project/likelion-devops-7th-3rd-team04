@@ -33,6 +33,12 @@ variable "secret_names" {
   type        = map(string)
 }
 
+variable "seed_admin_secret_name" {
+  description = "12-secrets 🔒 의 시드 관리자 계정 Secret 이름. ESO Role 이 읽는다 (12 는 run --all 대상이 아니라 dependency 대신 고정 이름)"
+  type        = string
+  default     = "team04-hotel/prod/seed-admin"
+}
+
 variable "queue_names" {
   description = "43-messaging 의 queue_names (payment_result, payment_result_dlq). booking-service Role 이 받는 큐"
   type        = map(string)
