@@ -52,10 +52,12 @@
     --version {{ external_secrets_chart_version }}
     -n {{ external_secrets_namespace }} --create-namespace
     -f {{ external_secrets_manifest_dir }}/external-secrets-values.yaml
-    --wait --timeout 5m
+    --wait --timeout 10m
   environment: *kubeconfig
+  # 지난 설치가 --wait 시간 초과 등으로 failed 로 남았으면 values 가 같아도 다시 설치
   when: >-
     (eso_release.stdout | from_json | length == 0)
+    or ((eso_release.stdout | from_json | first).status != 'deployed')
     or ((eso_release.stdout | from_json | first).chart != 'external-secrets-' ~ external_secrets_chart_version)
     or ((eso_values_applied.stdout | from_json) != (lookup('ansible.builtin.template', 'external-secrets-values.yaml.j2') | from_yaml))
   changed_when: true

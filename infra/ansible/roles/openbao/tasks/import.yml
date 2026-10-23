@@ -89,16 +89,28 @@
   run_once: true
   no_log: true
 
-# 빈 값이 있거나(그 값이 없는 PC) 파일이 없어 속성이 없는 경로는 제외
+# 빈 값이 있거나(그 값이 없는 PC) 파일이 없어 속성이 없는 경로는 제외.
+# .secrets/*.env 는 예전 버전 파일이면 변수가 빠져 있을 수 있어(예: ArgoCD 전환 전 gitlab-k8s.env) 필요한 변수가 모두 있을 때만
 - name: 이관할 경로 고르기
   ansible.builtin.set_fact:
     openbao_import_items: >-
       {%- set out = {} -%}
       {%- for name, data in openbao_import_candidates.items()
-            if data | length > 0 and data.values() | map('string') | select('equalto', '') | list | length == 0 -%}
+            if data | length > 0 and data.values() | map('string') | select('equalto', '') | list | length == 0
+               and openbao_import_required_keys.get(name, []) | difference(data.keys() | list) | length == 0 -%}
         {%- set _ = out.update({name: data}) -%}
       {%- endfor -%}
       {{ out }}
+  vars:
+    # 파일에서 읽는 경로의 필수 변수 (만드는 role 의 파일 내용과 같음)
+    openbao_import_required_keys:
+      gitlab-k8s: [GITLAB_URL, GITLAB_TS_IP, GITLAB_REGISTRY, REGISTRY_DEPLOY_USER, REGISTRY_DEPLOY_TOKEN, ARGOCD_REPO_USER, ARGOCD_REPO_TOKEN]
+      payment-node: [GITLAB_URL, GITLAB_TS_IP, GITLAB_REGISTRY, PAYMENT_DEPLOY_USER, PAYMENT_DEPLOY_TOKEN]
+      github-mirror: [GITLAB_HOST, GITLAB_MIRROR_REPO, GITLAB_MIRROR_TOKEN]
+      gitlab-runner: [GITLAB_URL, GITLAB_TS_IP, GITLAB_RUNNER_TOKEN]
+      aws-ci-runner: [GITLAB_URL, GITLAB_TS_IP, GITLAB_RUNNER_TOKEN]
+      argocd: [ARGOCD_URL, ARGOCD_ADMIN_USER, ARGOCD_ADMIN_PASSWORD]
+      k8s-join: [K8S_API_ENDPOINT, K8S_JOIN_TOKEN, K8S_CA_CERT_HASH]
   run_once: true
   no_log: true
 

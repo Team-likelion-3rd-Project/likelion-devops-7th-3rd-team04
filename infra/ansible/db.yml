@@ -58,17 +58,17 @@
       # --tags seed · openbao_import 단독 실행에서도 OpenBao 값을 쓰도록
       tags: [always]
 
+    # 값 대신 [이름, 길이] 만 넘겨 no_log 없이 어떤 값이 비었는지 보여줌
     - name: 필수 값 확인
       ansible.builtin.assert:
-        that: item.value | length > 0
+        that: item.1 > 0
         fail_msg: >-
-          {{ item.key }} 가 비어 있습니다. OpenBao({{ openbao_kv_prefix }}/*)에 값을 넣거나,
+          {{ item.0 }} 가 비어 있습니다. OpenBao({{ openbao_kv_prefix }}/*)에 값을 넣거나,
           OpenBao 도입 전이면 infra/ansible/.env · backend/.env 를 채우고 다시 실행하세요 (README 7-2, 16-3).
         quiet: true
-      loop: "{{ required_values | dict2items }}"
+      loop: "{{ required_values | dict2items | map(attribute='key') | zip(required_values | dict2items | map(attribute='value') | map('length')) | list }}"
       loop_control:
-        label: "{{ item.key }}"
-      no_log: true
+        label: "{{ item.0 }}"
       run_once: true
 
     - name: DB 계정 정책 확인
