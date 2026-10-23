@@ -6,6 +6,9 @@
 #                                           gitops 레포 릴리스 PR 용 GitHub App (Runner 의 release:gitops-pr job 이 읽음)
 #   team04-hotel/prod/toss-payments       : {secret_key}           토스페이먼츠 시크릿 키 → TOSS_SECRET_KEY (결제 서버가 읽음)
 #
+#   SSM /team04-hotel/prod/frontend/toss-client-key (String)       토스 결제위젯 클라이언트 키 → VITE_TOSS_CLIENT_KEY
+#                                           Runner 의 release:frontend-build 가 읽어 빌드에 넣는다 (아래 frontend.tf)
+#
 # 값은 ephemeral 변수 → write-only(secret_string_wo) 로 넣어 state · plan 에 남지 않는다.
 # write-only 값은 생성 시와 *_version 이 바뀔 때만 전달되므로, 값을 바꿀 때는 version 을 올려 apply 한다 (README 5절).
 # 값은 terragrunt.hcl 이 이 디렉터리의 .env(gitignore)가 가리키는 파일에서 읽어 넘긴다.

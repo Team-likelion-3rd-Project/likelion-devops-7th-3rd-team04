@@ -1,0 +1,57 @@
+// CloudFront Function (viewer-request, cloudfront-js-2.0) — 기본 behavior(사이트)에만 붙는다. /room-types/* 는 지나가지 않음.
+//   www.<도메인> → 루트로 301 (api-gateway CORS 출처가 루트 하나)
+//   KeyValueStore 의 version(main 커밋 SHA) 으로 경로 변환: /a/b.js → /releases/<version>/a/b.js
+//   확장자가 없는 경로(SPA 라우트, /)는 /releases/<version>/index.html
+// 캐시 키는 바뀐 경로로 정해지므로 버전을 바꾸면 무효화 없이 새 파일을 받는다.
+import cf from 'cloudfront';
+
+const kvs = cf.kvs();
+
+// cloudfront-js-2.0 은 for...of 를 지원하지 않아 인덱스로 돈다
+function querystring(qs) {
+  const parts = [];
+  const keys = Object.keys(qs);
+  for (let i = 0; i < keys.length; i++) {
+    const param = qs[keys[i]];
+    const values = param.multiValue ? param.multiValue : [param];
+    for (let j = 0; j < values.length; j++) {
+      parts.push(values[j].value === '' ? keys[i] : keys[i] + '=' + values[j].value);
+    }
+  }
+  return parts.length ? '?' + parts.join('&') : '';
+}
+
+async function handler(event) {
+  const request = event.request;
+  const host = request.headers.host ? request.headers.host.value : '';
+
+  if (host === '${www_domain}') {
+    return {
+      statusCode: 301,
+      statusDescription: 'Moved Permanently',
+      headers: {
+        location: { value: 'https://${domain}' + request.uri + querystring(request.querystring) },
+      },
+    };
+  }
+
+  let version = '';
+  try {
+    version = await kvs.get('version');
+  } catch (e) {
+    // 키 없음 — 아래에서 503
+  }
+  // 첫 릴리스 전(none) · 잘못된 값이면 버킷 경로를 만들지 않는다
+  if (!/^[0-9a-f]{40}$/.test(version)) {
+    return {
+      statusCode: 503,
+      statusDescription: 'Service Unavailable',
+      headers: { 'cache-control': { value: 'no-store' } },
+    };
+  }
+
+  const last = request.uri.substring(request.uri.lastIndexOf('/') + 1);
+  const path = last.indexOf('.') === -1 ? '/index.html' : request.uri;
+  request.uri = '/${release_prefix}/' + version + path;
+  return request;
+}

@@ -1,5 +1,5 @@
 # Runner Instance Profile. job 컨테이너도 IMDS(hop limit 2)로 이 Role 을 쓴다.
-#   SSM 접속, 부트스트랩(Ansible 묶음 S3 조회), Runner Secret · GitHub App 조회, ECR push(team04-hotel/* 만), 실패 시 ASG Unhealthy 보고
+#   SSM 접속, 부트스트랩(Ansible 묶음 S3 조회), Runner Secret · GitHub App 조회, ECR push(team04-hotel/* 만), 프론트 빌드 업로드(releases/* 만) · 토스 클라이언트 키 조회, 실패 시 ASG Unhealthy 보고
 # 이름은 12-secrets 의 Secret 리소스 정책(ci_runner_role_name)과 같아야 한다
 
 data "aws_caller_identity" "current" {}
@@ -88,6 +88,22 @@ data "aws_iam_policy_document" "runner" {
       "ecr:GetDownloadUrlForLayer",
     ]
     resources = ["arn:${format(local.account_arn_prefix, "ecr")}:repository/${var.project}/*"]
+  }
+
+  # 13-frontend 사이트 버킷에 프론트 빌드 업로드 (release:frontend, releases/<main SHA>/).
+  # 운영 버전 전환(KeyValueStore)은 gitops 승인 후 GitHub Actions 만 한다 — Runner 에는 주지 않는다.
+  # 업로드는 cp --recursive 라 ListBucket 이 필요 없다
+  statement {
+    sid       = "UploadFrontendRelease"
+    actions   = ["s3:PutObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.frontend_bucket_name}/releases/*"]
+  }
+
+  # 12-secrets 의 토스 클라이언트 키(공개용, VITE_TOSS_CLIENT_KEY) 읽기만. 같은 이름 규칙으로 ARN 을 만든다 (12 와 의존 없음)
+  statement {
+    sid       = "GetFrontendBuildParameter"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:${format(local.account_arn_prefix, "ssm")}:parameter/${var.project}/${var.environment}/frontend/toss-client-key"]
   }
 }
 

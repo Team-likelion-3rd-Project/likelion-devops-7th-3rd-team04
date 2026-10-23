@@ -123,7 +123,7 @@ variable "toss_credentials_version" {
 }
 
 variable "toss_secret_key" {
-  description = "토스페이먼츠 시크릿 키. 클라이언트 키(*_gck_*)는 프론트에만 두고 여기에 넣지 않는다"
+  description = "토스페이먼츠 시크릿 키. 클라이언트 키(*_gck_*)는 toss_client_key 로 따로 넣는다"
   type        = string
   ephemeral   = true
   sensitive   = true
@@ -131,5 +131,16 @@ variable "toss_secret_key" {
   validation {
     condition     = can(regex("^(test|live)_g?sk_", var.toss_secret_key))
     error_message = "TF_VAR_toss_secret_key 가 비었거나 시크릿 키(test_sk_ · live_sk_ · test_gsk_ · live_gsk_) 형식이 아닙니다."
+  }
+}
+
+variable "toss_client_key" {
+  description = "토스 결제위젯 클라이언트 키 (프론트 VITE_TOSS_CLIENT_KEY, 공개용). toss_secret_key 와 같은 줄의 한 쌍. 12-secrets/.env 의 TOSS_CLIENT_KEY"
+  type        = string
+  ephemeral   = true
+
+  validation {
+    condition     = can(regex("^(test|live)_gck_", var.toss_client_key))
+    error_message = "TF_VAR_toss_client_key 가 비었거나 결제위젯 클라이언트 키(test_gck_ · live_gck_) 형식이 아닙니다."
   }
 }

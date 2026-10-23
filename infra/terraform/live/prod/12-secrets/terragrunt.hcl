@@ -44,4 +44,5 @@ inputs = {
   )
 
   toss_secret_key = lookup(local.env, "TOSS_SECRET_KEY", "")
+  toss_client_key = lookup(local.env, "TOSS_CLIENT_KEY", "")
 }

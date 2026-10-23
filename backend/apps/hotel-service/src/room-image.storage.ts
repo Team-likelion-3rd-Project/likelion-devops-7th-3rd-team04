@@ -37,6 +37,7 @@ export interface RoomImageUploadUrl {
 
 // 객실 사진 저장소(S3 호환: 로컬·온프레미스 dev는 MinIO, 운영은 AWS S3).
 // 버킷이 비공개라 브라우저는 저장소에 직접 접근하지 못하고, 여기서 서명한 Presigned URL로만 사진을 올리고 본다.
+// 운영은 보기만 CloudFront 고정 URL(IMAGE_BASE_URL)로 내려준다 — CloudFront(OAC)만 버킷을 읽을 수 있다.
 // DB(room_images.object_key)에는 경로만 저장하고 주소는 환경변수로 정하므로, MinIO ↔ S3 전환에 코드 변경이 없다.
 //
 // Presigned URL은 서명에 주소(Host)가 들어가서, 브라우저가 실제로 여는 주소로 서명해야 한다.
@@ -50,6 +51,13 @@ export class RoomImageStorage {
   private readonly client: S3Client;
   // Presigned URL 서명 전용 클라이언트 (브라우저가 여는 주소로 서명)
   private readonly signer: S3Client;
+  // 사진 보기 고정 주소 (운영: CloudFront https://<도메인>, /room-types/* 가 버킷으로 연결됨).
+  // 있으면 서명 없이 <IMAGE_BASE_URL>/<objectKey> 를 내려준다 — objectKey 가 올릴 때마다 새 uuid 라 주소가 바뀌지 않아 캐시된다.
+  // 없으면(로컬 · 온프레미스) 기존처럼 Presigned GET URL 을 만든다.
+  private readonly imageBaseUrl = (process.env.IMAGE_BASE_URL || '').replace(
+    /\/+$/,
+    '',
+  );
 
   constructor() {
     const endpoint = process.env.S3_ENDPOINT || undefined;
@@ -111,8 +119,11 @@ export class RoomImageStorage {
     return { uploadUrl, objectKey, expiresIn: UPLOAD_URL_EXPIRES_SECONDS };
   }
 
-  // 화면에 내려줄 사진 보기용 Presigned URL
+  // 화면에 내려줄 사진 보기 URL (IMAGE_BASE_URL 이 있으면 고정 URL, 없으면 Presigned GET URL)
   async createViewUrl(objectKey: string): Promise<string> {
+    if (this.imageBaseUrl) {
+      return `${this.imageBaseUrl}/${objectKey}`;
+    }
     return getSignedUrl(
       this.signer,
       new GetObjectCommand({ Bucket: this.bucket, Key: objectKey }),

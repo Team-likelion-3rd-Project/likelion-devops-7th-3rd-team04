@@ -28,6 +28,7 @@ infra/terraform/
         ├── 10-global/               🔒
         ├── 11-registry/             🔒
         ├── 12-secrets/              🔒 외부에서 발급한 비밀값 (값 등록 때만 직접 apply)
+        ├── 13-frontend/             🔒 프론트 · 객실 사진 (S3 · CloudFront · KeyValueStore)
         ├── 20-network/              🔁
         ├── 21-observability-base/   🔁
         ├── 30-security/             🔁
@@ -42,7 +43,6 @@ infra/terraform/
         ├── 70-main-cluster-kubeadm/ 🔁
         ├── 71-payment-link/         🔁 메인 VPC 결제 PrivateLink 엔드포인트 · 고정 이름
         ├── 80-main-edge/            🔁
-        ├── 81-frontend/             🔁
         ├── 82-gcp-llm/              🔁
         └── 90-observability-alarms/ 🔁
 ```
@@ -128,8 +128,8 @@ terragrunt output -raw api_url
 ```
 
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
-- `run --all apply` 는 🔒 `10-global` · `11-registry` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
-- `10-global` · `11-registry` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
+- `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
+- `10-global` · `11-registry` · `13-frontend` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
 - `10-global` 의 GitHub OIDC 공급자(`token.actions.githubusercontent.com`)는 URL 이 고정이라 **계정에 하나뿐인 공용 리소스**입니다 (공유 계정의 다른 팀도 같은 공급자를 씀). 지우거나 audience 를 바꾸지 않습니다 (`prevent_destroy`). 다른 팀이 먼저 만들었으면 `create_github_oidc_provider = false` 로 기존 공급자를 씁니다.
 - `12-secrets` 는 `exclude`(all) 로 `run --all` 의 plan · apply · destroy 모두에서 빠집니다. 값(ephemeral 변수)이 있어야 plan 이 되므로 **값을 등록할 때만 스택 디렉터리에서 직접 apply** 합니다 (5절 "외부에서 발급한 비밀값"). 대기열 확인: `terragrunt list --queue-construct-as=apply`
 - **`TG_PROVIDER_CACHE=1` 을 켭니다.** 끄면 스택마다 캐시 디렉터리에 AWS provider 를 따로 받아 스택당 약 760MB 를 쓰고 첫 실행이 오래 걸립니다. 켜면 provider 를 한 번만 받아 공유합니다 (`run --all plan` 캐시가 찬 상태 약 1분).
@@ -140,7 +140,7 @@ terragrunt output -raw api_url
 
 ```
 bootstrap                                  🔒 최초 1회 (terraform)
-10-global   11-registry   12-secrets       🔒 최초 1회, 이후 변경 시에만 (12-secrets 는 직접 apply)
+10-global   11-registry   12-secrets   13-frontend   🔒 최초 1회, 이후 변경 시에만 (12-secrets 는 직접 apply)
 ─────────────────────── 매일 재생성 ───────────────────────
 20-network   21-observability-base
 30-security
@@ -148,13 +148,13 @@ bootstrap                                  🔒 최초 1회 (terraform)
 50-payment-webhook
 60-payment-app   61-payment-mock
 70-main-cluster-kubeadm   71-payment-link
-80-main-edge   81-frontend   82-gcp-llm
+80-main-edge   82-gcp-llm
 90-observability-alarms
 ```
 
 - 서비스 도메인은 운영 계정 Route53 에서 등록한 `meomulm.click` 이고, `10-global` 의 `domain_name` · `enable_certificate` 기본값에 들어 있습니다. 등록 시 자동 생성된 Zone 을 import 해 씁니다 ([`dns.tf`](live/prod/10-global/dns.tf) 상단 주석 [A] 절차). `domain_name = null` 로 두면 도메인 없이도 apply 할 수 있습니다.
-- `bootstrap`, `10-global`, `11-registry`, `12-secrets` 는 **destroy 하지 않습니다.**
-  Hosted Zone 을 다시 만들면 NS 가 바뀌고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 합니다.
+- `bootstrap`, `10-global`, `11-registry`, `12-secrets`, `13-frontend` 는 **destroy 하지 않습니다.**
+  Hosted Zone 을 다시 만들면 NS 가 바뀌고, CloudFront 는 생성 · 삭제가 느리고 사이트 릴리스 · 객실 사진이 사라지고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 합니다.
 
 ### 스택별 소요 시간
 
@@ -162,6 +162,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 
 | 스택 | 조건 | apply | destroy |
 |---|---|---|---|
+| `13-frontend` 🔒 | 최초 1회. 버킷 2개 · CloudFront(2분 49초) · KeyValueStore(1분 24초) · Function · 레코드 4개 (2026-10-22) | 5분 07초 | (destroy 안 함) |
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개, NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
@@ -228,6 +229,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 | `team04-hotel/prod/ci-runner-gitlab` | `{url, token}` | `gitlab.yml --tags runner_token` 이 만든 `infra/ansible/.secrets/aws-ci-runner.env` ([Ansible README](../ansible/README.md) 13절) | `40-cicd` Runner Role |
 | `team04-hotel/prod/toss-payments` | `{secret_key}` | 토스페이먼츠 개발자센터 API 키 → 결제위젯 연동 키의 **시크릿 키**(테스트 `test_gsk_*`, 지금은 로컬 `backend/.env` 의 `TOSS_SECRET_KEY` 와 같은 값). 프론트 클라이언트 키(`test_gck_*`)와 같은 줄의 한 쌍 | `60-payment-app` 결제 서버 Role (`TOSS_SECRET_KEY`) |
 | `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `40-cicd` Runner Role (`release:gitops-pr` job) |
+| SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 Runner 가 시크릿 키까지 읽게 되므로 분리 | `40-cicd` Runner Role (`release:prepare` → `release:frontend-build` 의 `VITE_TOSS_CLIENT_KEY`) |
 
 처음 등록 · 값 교체 (온프레미스 GitLab 재생성으로 토큰이 바뀐 경우 등):
 
@@ -245,7 +247,8 @@ AWS_PROFILE=team04 terragrunt apply
 - `.env` 가 없거나 항목이 비면 값이 빈 문자열로 넘어가 변수 검증에서 막힙니다. 어떤 값이 비었는지는 검증 오류 메시지의 변수 이름으로 확인합니다.
 - `--inputs-debug` 는 값을 `terragrunt-debug.tfvars.json` 파일로 쓰므로 쓰지 않습니다. `terragrunt render` 도 값을 화면에 출력합니다.
 - 값이 바뀌면 `.env` 를 고치고 해당 version 을 올립니다. 예: 온프레미스 GitLab 재생성으로 `aws-ci-runner.env` 의 토큰이 바뀜 → `GITLAB_RUNNER_TOKEN` 수정 + `ci_runner_credentials_version` 증가.
-- 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-` · `test_gsk_` 등 시크릿 키)이 다르면 변수 검증에서 막힙니다.
+- 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-` · `test_gsk_` 등 시크릿 키 · `test_gck_` 클라이언트 키)이 다르면 변수 검증에서 막힙니다.
+- 토스 시크릿 키와 클라이언트 키는 한 쌍이라 `toss_credentials_version` 하나로 함께 다시 넣습니다. 클라이언트 키는 다음 릴리스 빌드부터 반영됩니다 (변경 이력: `aws ssm get-parameter-history`).
 - Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(Runner Secret 은 `team04-hotel-ci-runner`, 토스는 `team04-hotel-payment-app`)과 apply 한 주체만 허용합니다.
 - GitHub App 개인 키(`.pem`)는 GitHub 에서 다시 받을 수 없습니다. 분실하면 새 키를 만들고 `github_app_credentials_version` 을 올려 다시 등록합니다.
 - 이미 떠 있는 Runner 는 부팅 때 값을 읽었으므로, 교체 후에는 Runner 를 다시 만듭니다 (`40-cicd` apply 또는 ASG 인스턴스 종료).
@@ -559,3 +562,37 @@ AWS_PROFILE=team04 aws ssm get-parameter --name /team04-hotel/prod/payment/relea
 | 서버 1대 종료 → ASG 교체 | 교체 서버가 같은 release 로 부팅 배포 (종료 후 2분 06초에 성공). 호출 403회 실패 0 |
 | gitops PR merge → 자동 교체 (MOCK → TOSS) | sync-payment-tag 가 OIDC 로 release 갱신 → 50초 뒤 a 시작, b 까지 5분 39초에 완료. 사람 개입 없음. 호출 830회 실패 0 |
 | 로그 · 이벤트 | 비밀값 없음, 이벤트의 이미지 이름에 레지스트리(계정 ID) 없음 |
+
+---
+
+## 10. 프론트 · 객실 사진 (`13-frontend`)
+
+```
+https://<도메인>/*             → CloudFront Function → 사이트 버킷 releases/<KeyValueStore version>/...   (확장자 없는 경로는 index.html)
+https://<도메인>/room-types/*  → 객실 사진 버킷 room-types/...                                           (1년 캐시)
+https://www.<도메인>/*         → 301 루트 (api-gateway CORS 출처가 루트 하나)
+```
+
+- 🔒 상시 유지라 매일 재생성과 무관하게 프론트 · 사진이 남습니다. Zone · 인증서는 같은 1x 단계인 `10-global` 을 dependency 대신 도메인 이름으로 조회합니다.
+- `40-cicd`(Runner 업로드 권한) · `70-main-cluster-kubeadm`(hotel-service IRSA) 이 `13` 의 output 을 mock 없이 읽으므로 **`13` 을 먼저 apply** 합니다 (`run --all apply` 는 순서대로 처리).
+- 버킷은 CloudFront(OAC, `aws:SourceArn` = 이 배포)만 읽습니다. 쓰기는 버킷 정책이 Runner(사이트 `releases/*`) · hotel-service(사진) · apply 주체 외에는 거부합니다.
+- 릴리스 · 롤백 절차는 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스" — 버전 전환은 gitops merge 후 GitHub Actions 만 합니다 (`release.tf`).
+
+처음 apply 한 뒤 한 번만:
+
+```bash
+# gitops 레포 Secret FRONTEND_KVS_ARN (계정 ID 가 들어 있어 변수가 아니라 Secret)
+AWS_PROFILE=team04 aws cloudfront describe-key-value-store \
+  --name "$(terragrunt output -raw kvs_name)" --query KeyValueStore.ARN --output text
+```
+
+첫 릴리스 전(`version` = `none`)에는 사이트가 503 을 응답합니다. 확인:
+
+```bash
+curl -sI https://meomulm.click/ | head -1                                   # 첫 릴리스 전 503, 이후 200
+curl -sI https://meomulm.click/hotels/1 | grep -i -E '^(HTTP|cache-control)'  # SPA 경로도 200 (index.html, no-cache)
+curl -sI https://www.meomulm.click/a?b=1 | grep -i location                 # https://meomulm.click/a?b=1
+curl -sI https://team04-hotel-frontend.s3.us-east-1.amazonaws.com/releases/ | head -1   # 직접 접근 403
+AWS_PROFILE=team04 aws cloudfront-keyvaluestore get-key --key version \
+  --kvs-arn "<위 ARN>" --query Value --output text                          # 현재 버전
+```

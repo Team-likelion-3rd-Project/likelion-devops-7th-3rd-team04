@@ -35,7 +35,7 @@ services:
   api-gateway:
     replicas: 2
     env:
-      # 프론트(81-frontend) 출처. 하나만 허용하므로 www 는 CloudFront 에서 루트로 리다이렉트
+      # 프론트(13-frontend) 출처. 하나만 허용하므로 www 는 CloudFront 에서 루트로 리다이렉트
       CORS_ORIGIN: "https://meomulm.click"
       # 결제 서버는 결제 VPC — 메인 VPC 의 PrivateLink 엔드포인트 고정 이름으로 호출 (Terraform 71-payment-link, 재생성해도 같음)
       PAYMENT_SERVICE_HOST: "payment.team04-hotel.internal:3004"
@@ -48,6 +48,16 @@ services:
       SQS_ENDPOINT: ""
       SQS_REGION: us-east-1
       PAYMENT_RESULT_QUEUE_URL: "https://sqs.us-east-1.amazonaws.com/{{ .Values.global.awsAccountId }}/payment-result.fifo"
+  hotel-service:
+    env:
+      # 객실 사진 버킷 (13-frontend). 엔드포인트 · 키를 비우면 AWS 기본 주소 + IRSA(team04-hotel-hotel-service)
+      S3_BUCKET: team04-hotel-room-images
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "false"
+      S3_ENDPOINT: ""
+      S3_PUBLIC_ENDPOINT: ""
+      # 사진 보기 = 서명 없는 CloudFront 고정 URL <IMAGE_BASE_URL>/<objectKey> (/room-types/* behavior). 올리기는 Presigned PUT
+      IMAGE_BASE_URL: "https://meomulm.click"
   auth-service:
     env:
       # ElastiCache Valkey 는 전송 암호화 required (41-main-data)
