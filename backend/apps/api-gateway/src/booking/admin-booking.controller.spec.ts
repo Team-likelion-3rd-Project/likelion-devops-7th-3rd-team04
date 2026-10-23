@@ -6,11 +6,12 @@ import { AdminBookingController } from './admin-booking.controller';
 // LDP-90: 관리자 예약 API — 회원 확인·직원 이름 조회·응답 변환
 describe('AdminBookingController', () => {
   const booking = {
+    getBookings: jest.fn(),
     createAdminBooking: jest.fn(),
     adminCancelBooking: jest.fn(),
     createExtensionBooking: jest.fn(),
   };
-  const user = { getUserById: jest.fn() };
+  const user = { getUserById: jest.fn(), getUsers: jest.fn() };
   const adminLookup = { getAdminById: jest.fn() };
   const admin = {
     userId: 3,
@@ -63,6 +64,100 @@ describe('AdminBookingController', () => {
       } as never,
     );
     controller.onModuleInit();
+  });
+
+  // LDP-136: 관리자 예약 목록 — 조건·페이지. 회원 검색은 user-service에서 회원을 찾아 넘긴다
+  describe('getBookings', () => {
+    beforeEach(() => {
+      booking.getBookings.mockReturnValue(
+        of({ bookings: [grpcBooking], total: 37 }),
+      );
+      user.getUsers.mockReturnValue(of({ users: [{ id: 7 }, { id: 9 }] }));
+    });
+
+    it('조건이 없으면 페이지를 나누지 않고 전체를 요청한다 (예전과 같은 목록) — 응답에 total', async () => {
+      const result = await controller.getBookings({});
+
+      expect(booking.getBookings).toHaveBeenCalledWith({
+        page: 0,
+        size: 20,
+        hotelId: 0,
+        statuses: [],
+        hasKeyword: false,
+        keywordReservationId: 0,
+        keywordUserIds: [],
+        linkedTo: 0,
+      });
+      expect(user.getUsers).not.toHaveBeenCalled();
+      expect(result.total).toBe(37);
+      expect(result.bookings[0]).toMatchObject({
+        reservationId: 12,
+        roomUnitId: null,
+      });
+    });
+
+    it('page·지점·상태·연장 묶음 조건을 그대로 넘긴다', async () => {
+      await controller.getBookings({
+        page: 2,
+        size: 50,
+        hotelId: 1,
+        status: ['PENDING_PAYMENT', 'RESERVED'],
+        linkedTo: 12,
+      });
+
+      expect(booking.getBookings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          page: 2,
+          size: 50,
+          hotelId: 1,
+          statuses: ['PENDING_PAYMENT', 'RESERVED'],
+          linkedTo: 12,
+        }),
+      );
+    });
+
+    it('검색어는 회원 이름·이메일·연락처로 찾은 회원의 예약 — 회원은 user-service에서 찾는다', async () => {
+      await controller.getBookings({ keyword: ' 홍길동 ' });
+
+      expect(user.getUsers).toHaveBeenCalledWith({
+        page: 1,
+        size: 500,
+        keyword: '홍길동',
+      });
+      expect(booking.getBookings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hasKeyword: true,
+          keywordReservationId: 0,
+          keywordUserIds: [7, 9],
+        }),
+      );
+    });
+
+    it('숫자 검색어는 예약번호로도 찾는다', async () => {
+      await controller.getBookings({ keyword: '12' });
+
+      expect(booking.getBookings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hasKeyword: true,
+          keywordReservationId: 12,
+          keywordUserIds: [7, 9],
+        }),
+      );
+    });
+
+    it('회원 검색이 실패하면 503 USER_SERVICE_UNAVAILABLE', async () => {
+      user.getUsers.mockReturnValue(
+        throwError(() => ({ code: 14, details: 'No connection established' })),
+      );
+
+      const { status, body } = await httpError(
+        controller.getBookings({ keyword: '홍' }),
+      );
+
+      expect(status).toBe(503);
+      expect(body).toMatchObject({ code: 'USER_SERVICE_UNAVAILABLE' });
+      expect(booking.getBookings).not.toHaveBeenCalled();
+    });
   });
 
   it('회원을 확인하고 직원 이름과 함께 대리 예약을 만든다 (0은 null로 바꿔 응답)', async () => {

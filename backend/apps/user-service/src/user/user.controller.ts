@@ -1,6 +1,6 @@
 import { Controller } from '@nestjs/common';
 import { GrpcMethod } from '@nestjs/microservices';
-import { UserService } from './user.service';
+import { UserListQuery, UserService } from './user.service';
 
 // proto의 UserService(고객 도메인)와 매핑됩니다. 관리자 도메인은 ../admin/admin.controller.ts가 따로 갖습니다.
 @Controller()
@@ -19,10 +19,10 @@ export class UserController {
     return this.userService.getUserByEmail(data.email);
   }
 
-  // api-gateway가 관리자 전용 "전체 유저 목록 조회"(GET /users)에서 호출
+  // api-gateway가 관리자 "회원 목록 조회"(GET /users)·관리자 예약 목록 회원 검색에서 호출 (LDP-136)
   @GrpcMethod('UserService', 'GetUsers')
-  async getUsers() {
-    return this.userService.getUsers();
+  async getUsers(data: UserListQuery) {
+    return this.userService.getUsers(data);
   }
 
   // api-gateway가 "내 정보 조회"(GET /users/me), 관리자 "특정 유저 조회"(GET /users/:userId)에서 호출

@@ -7,7 +7,13 @@ import { User } from './entities/user.entity';
 
 describe('UserController', () => {
   let userController: UserController;
-  let userRepository: { findOne: jest.Mock; find: jest.Mock; save: jest.Mock; delete: jest.Mock };
+  let userRepository: {
+    findOne: jest.Mock;
+    find: jest.Mock;
+    findAndCount: jest.Mock;
+    save: jest.Mock;
+    delete: jest.Mock;
+  };
   let queryRunner: {
     connect: jest.Mock;
     startTransaction: jest.Mock;
@@ -23,7 +29,13 @@ describe('UserController', () => {
   let dataSource: { createQueryRunner: jest.Mock };
 
   beforeEach(async () => {
-    userRepository = { findOne: jest.fn(), find: jest.fn(), save: jest.fn(), delete: jest.fn().mockResolvedValue({ affected: 1 }) };
+    userRepository = {
+      findOne: jest.fn(),
+      find: jest.fn(),
+      findAndCount: jest.fn(),
+      save: jest.fn(),
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
     queryRunner = {
       connect: jest.fn(),
       startTransaction: jest.fn(),
@@ -88,15 +100,52 @@ describe('UserController', () => {
         { id: 2, email: 'b@example.com', name: 'B', phoneNumber: '010-1111-1111', role: 'USER', status: 'ACTIVE' },
       ]);
 
-      const result = await userController.getUsers();
+      // 조건이 없으면 예전처럼 전체 (LDP-136)
+      const result = await userController.getUsers({});
 
       expect(userRepository.find).toHaveBeenCalled();
+      expect(userRepository.findAndCount).not.toHaveBeenCalled();
       expect(result).toEqual({
         users: [
           { id: 1, email: 'a@example.com', name: 'A', phoneNumber: '010-0000-0000', role: 'USER', status: 'ACTIVE' },
           { id: 2, email: 'b@example.com', name: 'B', phoneNumber: '010-1111-1111', role: 'USER', status: 'ACTIVE' },
         ],
+        total: 2,
       });
+    });
+
+    it('page·size면 최근 가입 순으로 그 페이지만, total은 전체 개수 (LDP-136)', async () => {
+      userRepository.findAndCount.mockResolvedValue([[], 45]);
+
+      const result = await userController.getUsers({
+        page: 3,
+        size: 20,
+        keyword: '',
+      });
+
+      expect(userRepository.findAndCount).toHaveBeenCalledWith({
+        where: {},
+        order: { id: 'DESC' },
+        skip: 40,
+        take: 20,
+      });
+      expect(result.total).toBe(45);
+    });
+
+    it('검색어는 이름·이메일·연락처 중 하나에 들어 있으면 찾고, %·_는 글자 그대로 찾는다', async () => {
+      userRepository.findAndCount.mockResolvedValue([[], 0]);
+
+      await userController.getUsers({ page: 1, size: 20, keyword: '50%_off' });
+
+      const [{ where }] = userRepository.findAndCount.mock.calls[0] as [
+        { where: Record<string, { value: string }>[] },
+      ];
+      expect(where.map((condition) => Object.keys(condition)[0])).toEqual([
+        'name',
+        'email',
+        'phoneNumber',
+      ]);
+      expect(where[0].name.value).toBe('%50\\%\\_off%');
     });
   });
 
