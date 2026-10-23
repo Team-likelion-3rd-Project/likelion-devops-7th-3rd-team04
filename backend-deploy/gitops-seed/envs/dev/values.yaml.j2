@@ -35,7 +35,7 @@ services:
     #   PAYMENT_RESULT_QUEUE_URL: "http://<payment ts ip>:9324/000000000000/payment-result.fifo"
     #   AWS_ACCESS_KEY_ID: elasticmq        # ElasticMQ 용 더미 (검증 안 함)
     #   AWS_SECRET_ACCESS_KEY: elasticmq
-  # 객실 이미지는 DB 노드 MinIO 의 room-images 버킷 (infra/ansible README 7-6). 주소 · 앱 키는 Ansible(k8s-cicd.yml)이 backend-secrets 에 넣음
+  # 객실 이미지는 DB 노드 MinIO 의 room-images 버킷 (infra/ansible README 7-6). 주소 · 앱 키는 OpenBao minio-app → ESO 가 backend-secrets 에 넣음
   hotel-service:
     env:
       S3_REGION: ap-northeast-2   # MinIO 에서는 의미 없지만 SDK 서명에 필요해 고정
@@ -49,7 +49,7 @@ services:
   # 결제 노드에서 운영 — 클러스터에는 배포하지 않음
   payment-service:
     enabled: false
-  # 대화 이력은 DB 노드의 DynamoDB Local (db.yml). 주소는 Ansible(k8s-cicd.yml)이 backend-secrets 에 넣음
+  # 대화 이력은 DB 노드의 DynamoDB Local (db.yml). 주소는 OpenBao dynamodb → ESO 가 backend-secrets 에 넣음
   chat-bot-service:
     secretEnv: [DYNAMODB_ENDPOINT]
   # 챗봇 AI: Vertex AI(GCP 서비스 계정 키) + RAG 인덱스는 DB 노드 MinIO 의 rag-index 버킷 (infra/ansible README 15절)
