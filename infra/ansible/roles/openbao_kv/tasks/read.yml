@@ -41,17 +41,18 @@
       run_once: true
       no_log: true
 
-    # [경로, 상태 코드] 만 넘김 — 결과 전체(요청 헤더의 토큰 포함)가 실패 출력에 찍히지 않게
+    # [경로, 상태 코드, uri 메시지] 만 넘김 — 결과 전체(요청 헤더의 토큰 포함)가 실패 출력에 찍히지 않게
     - name: OpenBao 읽기 결과 확인
       ansible.builtin.assert:
         that: item.1 in [200, 404]
         fail_msg: >-
-          OpenBao {{ openbao_kv_prefix }}/{{ item.0 }} 읽기 실패 (HTTP {{ item.1 }}, {{ openbao_addr }}).
+          OpenBao {{ openbao_kv_prefix }}/{{ item.0 }} 읽기 실패 (HTTP {{ item.1 }}, {{ openbao_addr }}: {{ item.2 }}).
           403 이면 토큰 만료 · 정책, -1 이면 접속 불가(ACL tag → tag:db tcp:8200, OpenBao 기동 여부)를 확인하세요 (README 16-6).
         quiet: true
       loop: >-
         {{ openbao_read.results | map(attribute='item')
-           | zip(openbao_read.results | map(attribute='status', default=-1)) | list }}
+           | zip(openbao_read.results | map(attribute='status', default=-1),
+                 openbao_read.results | map(attribute='msg', default='')) | list }}
       loop_control:
         label: "{{ item.0 }}"
       run_once: true
