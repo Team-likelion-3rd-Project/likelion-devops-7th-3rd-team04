@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   Body,
   Controller,
   Delete,
@@ -526,10 +525,6 @@ export class HotelController implements OnModuleInit {
     status: 400,
     description: '사진 경로가 이 객실 것이 아니거나 업로드되지 않음',
   })
-  @ApiResponse({
-    status: 409,
-    description: '보유 수량을 이미 받은 예약 수보다 적게 줄임',
-  })
   @ApiResponse({ status: 403, description: '관리자 권한이 없음' })
   @ApiResponse({ status: 404, description: '존재하지 않는 객실' })
   async updateRoom(
@@ -543,10 +538,6 @@ export class HotelController implements OnModuleInit {
       const message = err?.details || err?.message || '';
       if (!message || message.includes('존재하지 않는')) {
         throw new NotFoundException(message || '존재하지 않는 객실입니다.');
-      }
-      // 보유 수량을 줄이면 이미 받은 예약과 부딪히는 경우 → 409
-      if (message.includes('이미 예약된 수')) {
-        throw new ConflictException(message);
       }
       // 사진 경로가 잘못됐거나 업로드되지 않은 경우 → 요청 값 문제라 400
       throw new BadRequestException(message);
