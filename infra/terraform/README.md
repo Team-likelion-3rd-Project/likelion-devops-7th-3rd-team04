@@ -34,6 +34,7 @@ infra/terraform/
         ├── 12-secrets/              🔒 외부에서 발급한 비밀값 (값 등록 때만 직접 apply)
         ├── 13-frontend/             🔒 프론트 · 객실 사진 (S3 · CloudFront · KeyValueStore)
         ├── 14-gcp-llm/              🔒 챗봇 Vertex AI 인증 (GCP Workload Identity Federation)
+        ├── 15-chatbot-vectors/      🔒 챗봇 RAG 벡터 저장소 (S3 Vectors)
         ├── 20-network/              🔁
         ├── 21-observability-base/   🔁
         ├── 30-security/             🔁
@@ -132,8 +133,8 @@ terragrunt output -raw api_url
 ```
 
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
-- `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
-- `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` 은 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
+- `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
+- `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
 - `10-global` 의 GitHub OIDC 공급자(`token.actions.githubusercontent.com`)는 URL 이 고정이라 **계정에 하나뿐인 공용 리소스**입니다 (공유 계정의 다른 팀도 같은 공급자를 씀). 지우거나 audience 를 바꾸지 않습니다 (`prevent_destroy`). 다른 팀이 먼저 만들었으면 `create_github_oidc_provider = false` 로 기존 공급자를 씁니다.
 - `12-secrets` 는 `exclude`(all) 로 `run --all` 의 plan · apply · destroy 모두에서 빠집니다. 값(ephemeral 변수)이 있어야 plan 이 되므로 **값을 등록할 때만 스택 디렉터리에서 직접 apply** 합니다 (5절 "외부에서 발급한 비밀값"). 대기열 확인: `terragrunt list --queue-construct-as=apply`
 - **`TG_PROVIDER_CACHE=1` 을 켭니다.** 끄면 스택마다 캐시 디렉터리에 AWS provider 를 따로 받아 스택당 약 760MB 를 쓰고 첫 실행이 오래 걸립니다. 켜면 provider 를 한 번만 받아 공유합니다 (`run --all plan` 캐시가 찬 상태 약 1분).
@@ -144,7 +145,7 @@ terragrunt output -raw api_url
 
 ```
 bootstrap                                  🔒 최초 1회 (terraform)
-10-global   11-registry   12-secrets   13-frontend   14-gcp-llm   🔒 최초 1회, 이후 변경 시에만 (12-secrets 는 직접 apply)
+10-global   11-registry   12-secrets   13-frontend   14-gcp-llm   15-chatbot-vectors   🔒 최초 1회, 이후 변경 시에만 (12-secrets 는 직접 apply)
 ─────────────────────── 매일 재생성 ───────────────────────
 20-network   21-observability-base
 30-security
@@ -157,7 +158,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 ```
 
 - 서비스 도메인은 운영 계정 Route53 에서 등록한 `meomulm.click` 이고, `10-global` 의 `domain_name` · `enable_certificate` 기본값에 들어 있습니다. 등록 시 자동 생성된 Zone 을 import 해 씁니다 ([`dns.tf`](live/prod/10-global/dns.tf) 상단 주석 [A] 절차). `domain_name = null` 로 두면 도메인 없이도 apply 할 수 있습니다.
-- `bootstrap`, `10-global`, `11-registry`, `12-secrets`, `13-frontend`, `14-gcp-llm` 은 **destroy 하지 않습니다.**
+- `bootstrap`, `10-global`, `11-registry`, `12-secrets`, `13-frontend`, `14-gcp-llm`, `15-chatbot-vectors` 는 **destroy 하지 않습니다.**
   Hosted Zone 을 다시 만들면 NS 가 바뀌고, CloudFront 는 생성 · 삭제가 느리고 사이트 릴리스 · 객실 사진이 사라지고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 하고, Workload Identity Pool · Provider 는 삭제 후 30일 동안 같은 ID 를 쓸 수 없습니다.
 
 ### 스택별 소요 시간
@@ -168,6 +169,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 |---|---|---|---|
 | `13-frontend` 🔒 | 최초 1회. 버킷 2개 · CloudFront(2분 49초) · KeyValueStore(1분 24초) · Function · 레코드 4개 (2026-10-22) | 5분 07초 | (destroy 안 함) |
 | `14-gcp-llm` 🔒 | 최초 1회. API 4개(STS 25초) · 서비스 계정 · Pool · Provider · IAM 3개, 사전 작업 때문에 2번 나눠 apply (2026-10-23) | 52초 + 37초 | (destroy 안 함) |
+| `15-chatbot-vectors` 🔒 | 최초 1회. 벡터 버킷 · 인덱스 (각 1초, 2026-10-23) | 약 4초 | (destroy 안 함) |
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개, NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
@@ -651,4 +653,33 @@ terragrunt apply
 terragrunt output -raw credential_config | jq .
 gcloud iam service-accounts keys list --managed-by=user \
   --iam-account=llm-service-prod@likelion-devops-7th-3rd-team4.iam.gserviceaccount.com   # 키 0개
+```
+
+---
+
+## 12. 챗봇 운영 구성 (`15-chatbot-vectors` · 70 IRSA)
+
+```
+프론트 → api-gateway → chat-bot-service ──(IRSA)──→ DynamoDB 대화 테이블 (41, 매일 재생성)
+                           └→ n8n → llm-service ──(IRSA)──→ S3 Vectors 인덱스 조회 (15 🔒)
+                                         └──(GCP WIF)──→ Vertex AI (14 🔒)
+릴리스마다 llm-ingest Job ──(IRSA)──→ S3 Vectors PutVectors   (문서 = llm-service 이미지의 app/corpus.py)
+```
+
+| ServiceAccount (backend) | AWS 권한 (70 `irsa.tf`) | GCP |
+|---|---|---|
+| `chat-bot-service` | 대화 테이블 2개 `PutItem` · `Query` (GSI 포함) | – |
+| `llm-service` | 인덱스 `QueryVectors` · `GetVectors` | `llm-service-prod` impersonate |
+| `llm-ingest` | 인덱스 `PutVectors` | `llm-service-prod` impersonate |
+
+- 이미지: `llm-service` 는 `release:build`(태그 = main SHA), `n8n` 은 `release:mirror-n8n` 이 Docker Hub 에서 ECR 로 옮김 (태그 = `N8N_VERSION`, 이미 있으면 건너뜀).
+- RAG 적재는 backend 차트 `llmIngest` Job 이 릴리스마다 실행합니다. 문서 id 가 key 라 다시 넣어도 중복되지 않습니다. corpus 에서 **지운 문서는 인덱스에 남으므로**, 문서를 지우거나 임베딩 모델 · 차원을 바꿀 때는 `vector_index_name` 을 새 이름으로 바꿔 인덱스를 새로 만들고 gitops `VECTOR_INDEX_NAME` 도 함께 바꿉니다.
+- n8n owner 비밀번호(워크플로 활성화용 내부 계정)는 `41` 의 `backend-app` Secret `n8n_owner_password` 입니다 (매일 새 값).
+- pod-identity-webhook 은 **파드를 만들 때만** 자격 증명을 주입합니다. 떠 있는 클러스터에 매핑만 추가하면 기존 파드는 그대로이므로 `kubectl -n backend rollout restart deploy/<서비스>` 로 다시 만듭니다 (매일 재생성 · 이미지 태그가 바뀌는 릴리스에서는 해당 없음).
+
+확인:
+
+```bash
+curl -s -H 'Content-Type: application/json' -d '{"message":"체크인 시간이 언제예요?"}' https://api.meomulm.click/api/chat-bots/messages
+kubectl -n backend logs job/<llm-ingest-...> --tail=3        # "20 documents indexed into VECTOR_STORE=s3vectors"
 ```
