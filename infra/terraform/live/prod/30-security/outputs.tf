@@ -2,7 +2,7 @@
 # enable_control_plane = false 면 main_cp, main_internal_nlb 는 null
 
 output "sg_ids" {
-  description = "SG ID (main_alb, main_worker, main_cp, main_internal_nlb, main_db, main_valkey, deployment_runner)"
+  description = "SG ID (main_alb, main_worker, main_cp, main_internal_nlb, main_db, main_valkey, main_privatelink, payment_app, payment_db, payment_vpce, payment_nlb, payment_mock, deployment_runner)"
   value = merge(
     {
       main_cp           = null

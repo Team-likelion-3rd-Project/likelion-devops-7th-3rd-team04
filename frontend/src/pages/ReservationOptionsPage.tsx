@@ -124,7 +124,7 @@ function ReservationOptionsPage() {
   }
 
   // 예약 - 결제 프로세스 변경: 이 페이지는 결제 없이 예약만 먼저 생성한다(booking-service
-  // POST /api/bookings). 서버가 예약을 PENDING_PAYMENT 상태로 만들며, 실제 결제(POST /api/payments)는
+  // POST /api/bookings). 서버가 예약을 PENDING_PAYMENT 상태로 만들며, 실제 결제(결제 준비 → 승인, 명세 5.8·5.9)는
   // 이어지는 예약완료 페이지(ReservationCompletePage)나 내 예약 내역 상세 페이지에서 별도로 진행한다.
   // 옵션(수영장/라운지) 이용 인원수를 그대로 실어 보낸다 — 서버가 hotel-service의 facilities 테이블에서
   // 실제 단가를 조회해 인원수만큼 곱해 요금에 반영한다(hasIndoorPool/hasLounge boolean 방식은 폐지됨).

@@ -6,13 +6,19 @@
 #
 #   VPC          CIDR            계층 (AZ)
 #   Main         10.10.0.0/16    public(a·b) cp(a·b·c) db(a·b) worker(a·b, /19 — EKS VPC CNI 파드 IP 여유)
-#   Payment      10.20.0.0/16    public(a·b) lb(a·b) app(a·b) db(a·b)
+#   Payment      10.20.0.0/16    public(a·b) firewall(a·b, /28) lb(a·b) app(a·b) db(a·b)
 #   Deployment   10.30.0.0/16    public(a) runner(a)
 #
 # DB 계층은 NAT 경로 없이 isolated 라우트 테이블을 쓴다.
+# 결제 VPC 의 lb · app 계층 egress 는 Network Firewall(network-firewall.tf) 을 거쳐 NAT 로 나간다.
 
 locals {
   name = var.project
+
+  payment_firewall_cidrs = { a = "10.20.2.0/28", b = "10.20.2.16/28" }
+
+  # 결제 app-a 서브넷에서 고정 IP 를 쓰는 인스턴스용 대역 (61-payment-mock). 아래 예약 참고
+  payment_app_static_cidr = "10.20.8.16/28"
 }
 
 module "main" {
@@ -59,6 +65,10 @@ module "payment" {
       public = true
       cidrs  = { a = "10.20.0.0/24", b = "10.20.1.0/24" }
     }
+    firewall = {
+      firewall = true
+      cidrs    = local.payment_firewall_cidrs
+    }
     lb = {
       cidrs = { a = "10.20.4.0/24", b = "10.20.5.0/24" }
     }
@@ -71,8 +81,9 @@ module "payment" {
     }
   }
 
-  single_nat_gateway = var.single_nat_gateway
-  gateway_endpoints  = ["s3"]
+  single_nat_gateway    = var.single_nat_gateway
+  gateway_endpoints     = ["s3"]
+  firewall_endpoint_ids = local.payment_firewall_endpoint_ids
 
   # 10-global 버킷 정책이 vpc-flow-logs/AWSLogs/<계정>/* 에만 쓰기를 허용한다
   flow_log_destination_arn = "${var.log_bucket_arn}/vpc-flow-logs/"
@@ -98,4 +109,13 @@ module "deployment" {
   # 무료라 둔다. AL2023 패키지 저장소·ECR pull 레이어(S3) 트래픽만 NAT 를 우회한다
   # (ECR push 는 레이어도 dkr 엔드포인트로 올라가므로 NAT 를 거친다)
   gateway_endpoints = ["s3"]
+}
+
+# 결제 app-a 서브넷의 고정 IP 대역. explicit 예약 대역은 AWS 가 자동 할당하지 않으므로
+# 44 인터페이스 엔드포인트 · 60 결제 서버 ENI 가 먼저 떠도 고정 IP(61 pg-mock) 와 겹치지 않는다
+resource "aws_ec2_subnet_cidr_reservation" "payment_app_static" {
+  subnet_id        = module.payment.subnet_ids_by_az.app.a
+  cidr_block       = local.payment_app_static_cidr
+  reservation_type = "explicit"
+  description      = "Static IPs for payment VPC instances (PG mock)"
 }

@@ -23,6 +23,11 @@ service UserService {
   // auth-service가 "회원 탈퇴"(JWT의 userId)에서 호출합니다. users 레코드를 deleted_user 백업 테이블로
   // 옮긴 뒤 users 테이블에서 제거합니다. (없으면 에러)
   rpc DeleteUser (DeleteUserRequest) returns (DeleteUserResponse);
+
+  // auth-service가 회원가입 도중(비밀번호 저장) 실패했을 때 방금 만든 프로필을 되돌립니다 (LDP-96).
+  // 가입이 성립하지 않은 것이라 deleted_user 백업 없이 지웁니다. id와 email이 모두 맞을 때만 지우고,
+  // 이미 없으면 그대로 성공으로 응답합니다(다시 호출해도 안전).
+  rpc CancelSignup (CancelSignupRequest) returns (DeleteUserResponse);
 }
 
 // 관리자 계정(admins 테이블)은 고객(users)과 완전히 다른 테이블로 관리합니다.
@@ -55,6 +60,11 @@ message CreateUserRequest {
 
 message GetUserByEmailRequest {
   string email = 1;
+}
+
+message CancelSignupRequest {
+  int32 id = 1;
+  string email = 2;
 }
 
 message GetUserByIdRequest {

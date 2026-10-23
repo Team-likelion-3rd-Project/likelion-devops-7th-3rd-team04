@@ -301,6 +301,39 @@ function ReservationDetailPage() {
                     <span className="reservation-detail-value">{paymentDue}</span>
                   </div>
                 )}
+
+                {/* 호텔 직원이 배정·처리한 정보 (#196·#204). 값이 없으면 줄을 보여주지 않는다. */}
+                {booking.roomNumber && (
+                  <div className="reservation-detail-row">
+                    <span className="reservation-detail-label">객실 호수</span>
+                    <span className="reservation-detail-value">{booking.roomNumber}호</span>
+                  </div>
+                )}
+                {booking.linkedReservationId && (
+                  <div className="reservation-detail-row">
+                    <span className="reservation-detail-label">연장 예약</span>
+                    <span className="reservation-detail-value">
+                      <Link to={`/mypage/reservations/${booking.linkedReservationId}`}>
+                        예약 #{booking.linkedReservationId}
+                      </Link>
+                      의 투숙 연장
+                    </span>
+                  </div>
+                )}
+                {booking.createdByAdminId && (
+                  <div className="reservation-detail-row">
+                    <span className="reservation-detail-label">예약 접수</span>
+                    <span className="reservation-detail-value">호텔 직원이 대신 예약했어요</span>
+                  </div>
+                )}
+                {booking.status === 'CANCELLED' && booking.cancelledByAdminId && (
+                  <div className="reservation-detail-row">
+                    <span className="reservation-detail-label">취소 사유</span>
+                    <span className="reservation-detail-value">
+                      호텔에서 취소{booking.cancelReason ? `: ${booking.cancelReason}` : ''}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="reservation-detail-notice">

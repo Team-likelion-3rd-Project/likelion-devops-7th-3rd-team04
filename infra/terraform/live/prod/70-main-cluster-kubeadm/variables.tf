@@ -38,6 +38,11 @@ variable "queue_names" {
   type        = map(string)
 }
 
+variable "image_bucket_name" {
+  description = "13-frontend 의 image_bucket_name output. hotel-service Role 이 객실 사진을 올리고 지운다"
+  type        = string
+}
+
 variable "main_network" {
   description = "20-network 의 main output (vpc_id, vpc_cidr, subnet_ids, subnet_ids_by_az)"
   type = object({

@@ -1,0 +1,58 @@
+#!/bin/bash
+# pg-mock 인스턴스 부트스트랩 (LDP-116). 진행 · 실패 로그는 /var/log/cloud-init-output.log
+#   - docker · jq 설치 (AL2023 저장소, S3 게이트웨이 엔드포인트 경유)
+#   - pull agent(/usr/local/bin/pg-mock-deploy) · systemd timer(1분) 설치, 첫 배포 실행
+set -Eeuo pipefail
+
+echo "[bootstrap] docker · jq 설치 (flock · ss 도 확인)"
+dnf install -y -q docker jq util-linux-core iproute
+systemctl enable --now docker
+
+echo "[bootstrap] pull agent 설치"
+install -d -m 0755 /etc/pg-mock-deploy
+
+cat > /etc/pg-mock-deploy/config.env <<'CONFIG_EOF'
+# Terraform 61-payment-mock 이 만든 설정 (비밀값 없음)
+%{ for key, value in config ~}
+${key}=${jsonencode(value)}
+%{ endfor ~}
+CONFIG_EOF
+
+cat > /usr/local/bin/pg-mock-deploy <<'AGENT_EOF'
+${agent_script}
+AGENT_EOF
+chmod 0755 /usr/local/bin/pg-mock-deploy
+
+cat > /etc/systemd/system/pg-mock-deploy.service <<'UNIT_EOF'
+[Unit]
+Description=pg-mock pull agent (Parameter Store release -> pg-mock-service)
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pg-mock-deploy
+UNIT_EOF
+
+cat > /etc/systemd/system/pg-mock-deploy.timer <<'UNIT_EOF'
+[Unit]
+Description=Run pg-mock-deploy every minute
+
+[Timer]
+OnActiveSec=60
+OnUnitInactiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
+UNIT_EOF
+
+systemctl daemon-reload
+
+echo "[bootstrap] 첫 배포"
+/usr/local/bin/pg-mock-deploy ||
+  echo "[bootstrap] 첫 배포 실패 — 일시 오류면 timer 가 다시 시도합니다 (journalctl -u pg-mock-deploy)"
+
+systemctl enable --now pg-mock-deploy.timer
+
+echo "[bootstrap] 완료"

@@ -7,7 +7,7 @@ import { User } from './entities/user.entity';
 
 describe('UserController', () => {
   let userController: UserController;
-  let userRepository: { findOne: jest.Mock; find: jest.Mock; save: jest.Mock };
+  let userRepository: { findOne: jest.Mock; find: jest.Mock; save: jest.Mock; delete: jest.Mock };
   let queryRunner: {
     connect: jest.Mock;
     startTransaction: jest.Mock;
@@ -19,7 +19,7 @@ describe('UserController', () => {
   let dataSource: { createQueryRunner: jest.Mock };
 
   beforeEach(async () => {
-    userRepository = { findOne: jest.fn(), find: jest.fn(), save: jest.fn() };
+    userRepository = { findOne: jest.fn(), find: jest.fn(), save: jest.fn(), delete: jest.fn().mockResolvedValue({ affected: 1 }) };
     queryRunner = {
       connect: jest.fn(),
       startTransaction: jest.fn(),
@@ -224,6 +224,22 @@ describe('UserController', () => {
       expect(queryRunner.rollbackTransaction).toHaveBeenCalled();
       expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
       expect(queryRunner.release).toHaveBeenCalled();
+    });
+  });
+
+  // LDP-96: 회원가입 도중 실패 시 프로필 되돌리기
+  describe('cancelSignup', () => {
+    it('id와 email이 모두 맞는 프로필만 백업 없이 지운다', async () => {
+      await expect(userController.cancelSignup({ id: 7, email: 'a@t.com' })).resolves.toEqual({ success: true });
+
+      expect(userRepository.delete).toHaveBeenCalledWith({ id: 7, email: 'a@t.com' });
+      expect(queryRunner.manager.insert).not.toHaveBeenCalled();
+    });
+
+    it('이미 없으면(다시 호출) 그대로 성공', async () => {
+      userRepository.delete.mockResolvedValue({ affected: 0 });
+
+      await expect(userController.cancelSignup({ id: 7, email: 'a@t.com' })).resolves.toEqual({ success: true });
     });
   });
 });

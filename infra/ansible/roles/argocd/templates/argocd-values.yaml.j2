@@ -1,0 +1,81 @@
+# argo-cd chart {{ argocd_chart_version }} values — Ansible(roles/argocd) 이 관리. 직접 수정 금지
+#
+# 단일 인스턴스(HA 끔) · 전 컴포넌트 control plane 고정. dex · notifications · ApplicationSet 은 쓰지 않음
+global:
+  domain: {{ argocd_fqdn | to_json }}
+  # 워커는 팀원 PC 의 VM 이라 꺼질 수 있으므로 control plane 1대에 고정 (Traefik 과 같은 이유)
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  # Pod 의 CoreDNS 는 MagicDNS(*.ts.net)를 해석한다는 보장이 없어 GitLab 주소를 고정 (Runner 의 extra_hosts 와 같은 이유)
+  hostAliases:
+    - ip: {{ gitlab_ts_ip | to_json }}
+      hostnames:
+        - {{ gitlab_fqdn | to_json }}
+
+configs:
+  cm:
+    url: "https://{{ argocd_fqdn }}:{{ argocd_serve_https_port }}"
+    # 추적은 annotation 으로 — 차트가 붙이는 app.kubernetes.io/instance 라벨과 섞이지 않게 (ArgoCD 3.x 기본값을 명시)
+    application.resourceTrackingMethod: annotation
+    admin.enabled: true
+  params:
+    # TLS 는 앞단 tailscale serve 가 종료 (*.ts.net Let's Encrypt)
+    server.insecure: true
+{% if private_ca_cert_file | length > 0 %}
+  # 사설 CA 를 쓸 때만 — repo-server 가 GitLab 을 신뢰하도록 (README 12-7)
+  tls:
+    certificates:
+      {{ gitlab_fqdn }}: |
+        {{ lookup('ansible.builtin.file', private_ca_cert_file) | indent(8) }}
+{% endif %}
+  # admin 비밀번호는 비워 둠 → 최초 설치 때 argocd-initial-admin-secret 에 랜덤 생성 (role 이 .secrets/argocd.env 로 저장)
+
+dex:
+  enabled: false
+
+notifications:
+  enabled: false
+
+# ApplicationSet 은 쓰지 않음 (차트에 enabled 플래그가 없어 replicas 0)
+applicationSet:
+  replicas: 0
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+server:
+  service:
+    type: NodePort
+    nodePortHttp: {{ argocd_server_nodeport_http }}
+    nodePortHttps: {{ argocd_server_nodeport_https }}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi

@@ -2,6 +2,11 @@ include "root" {
   path = find_in_parent_folders("root.hcl")
 }
 
+# 🔒 13-frontend 는 destroy 하지 않으므로 mock 없이 실제 output 을 읽는다
+dependency "frontend" {
+  config_path = "../13-frontend"
+}
+
 # mock_outputs: 인프라가 내려가 있을 때(output 없음) plan · validate · destroy 를 돌리기 위한 값
 dependency "network" {
   config_path = "../20-network"
@@ -30,4 +35,6 @@ dependency "security" {
 inputs = {
   deployment_network = dependency.network.outputs.deployment
   sg_ids             = dependency.security.outputs.sg_ids
+
+  frontend_bucket_name = dependency.frontend.outputs.site_bucket_name
 }

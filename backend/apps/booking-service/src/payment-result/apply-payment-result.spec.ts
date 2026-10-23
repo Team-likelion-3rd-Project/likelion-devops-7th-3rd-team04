@@ -14,13 +14,16 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
   const managerFindOne = jest.fn();
   const managerSave = jest.fn();
   const managerUpdate = jest.fn();
+  const managerQuery = jest.fn();
   const manager = {
     findOne: managerFindOne,
     save: managerSave,
     create: (_entity: unknown, value: unknown) => value,
     update: managerUpdate,
+    query: managerQuery,
   };
   const releaseRoomAvailability = jest.fn();
+  const refundPayment = jest.fn();
   let service: BookingServiceService;
 
   const attempt = { attemptId: '3', reservationId: 1, pgOrderId: 'rsv1-abc' };
@@ -49,6 +52,7 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
     managerSave.mockResolvedValue({});
     managerUpdate.mockResolvedValue({ affected: 1 });
     releaseRoomAvailability.mockReturnValue(of({ success: true }));
+    refundPayment.mockReturnValue(of({ refunded: true, status: 'REFUNDED' }));
     const dataSource = {
       transaction: (work: (m: typeof manager) => Promise<unknown>) =>
         work(manager),
@@ -59,7 +63,7 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
       dataSource,
       {} as ReservationFacilityService,
       { getService: () => ({ releaseRoomAvailability }) } as never,
-      { getService: () => ({}) } as never,
+      { getService: () => ({ refundPayment }) } as never,
     );
     service.onModuleInit();
   });
@@ -138,20 +142,42 @@ describe('BookingServiceService.applyPaymentResult (결제 결과 이벤트 반�
     expect(releaseRoomAvailability).not.toHaveBeenCalled();
   });
 
-  it('승인 이벤트인데 예약이 이미 취소됐으면 에러 없이 알람 로그만 남긴다 (환불 필요)', async () => {
-    managerFindOne
-      .mockResolvedValueOnce(attempt)
-      .mockResolvedValueOnce({ status: ReservationStatus.CANCELLED });
-    managerUpdate
-      .mockResolvedValueOnce({ affected: 1 }) // 시도 SUCCEEDED
-      .mockResolvedValueOnce({ affected: 0 }) // 예약 조건부 UPDATE 실패
-      .mockResolvedValue({ affected: 1 });
-    const errorLog = jest
-      .spyOn(service['logger'], 'error')
-      .mockImplementation(() => undefined);
+  // LDP-92: 결제창을 연 채 마감이 지나 만료된 뒤 승인이 도착하는 경우 등
+  it.each([
+    ReservationStatus.EXPIRED,
+    ReservationStatus.CANCELLED,
+    ReservationStatus.PAYMENT_FAILED,
+  ])(
+    '승인 이벤트인데 예약이 이미 %s면 예약은 그대로 두고, 같은 트랜잭션에 "환불 필요"를 남긴다 (환불 호출은 워커가)',
+    async (status) => {
+      managerFindOne
+        .mockResolvedValueOnce(attempt)
+        .mockResolvedValueOnce({ reservationId: 1, status });
+      managerUpdate
+        .mockResolvedValueOnce({ affected: 1 }) // 시도 SUCCEEDED
+        .mockResolvedValueOnce({ affected: 0 }) // 예약 조건부 UPDATE 실패
+        .mockResolvedValue({ affected: 1 });
+      jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
 
-    await expect(service.applyPaymentResult(event())).resolves.toBeUndefined();
+      await expect(
+        service.applyPaymentResult(event()),
+      ).resolves.toBeUndefined();
 
-    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('환불 필요'));
+      expect(managerQuery).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO pending_refunds'),
+        [1, 'APPROVED_AFTER_CLOSE'],
+      );
+      // 수신기는 결제 서버를 직접 부르지 않는다 — 결제 서버가 느려도 큐 처리가 밀리지 않게 (LDP-97)
+      expect(refundPayment).not.toHaveBeenCalled();
+    },
+  );
+
+  it('승인 이벤트로 예약이 정상 확정되면 환불하지 않는다', async () => {
+    managerFindOne.mockResolvedValueOnce(attempt);
+
+    await service.applyPaymentResult(event());
+
+    expect(managerQuery).not.toHaveBeenCalled();
+    expect(refundPayment).not.toHaveBeenCalled();
   });
 });

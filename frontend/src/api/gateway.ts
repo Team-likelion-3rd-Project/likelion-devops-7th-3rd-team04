@@ -7,13 +7,17 @@ const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 // 호출부가 "진짜 인증 실패(401)"와 그 외 실패(429/5xx/네트워크 오류 등)를 구분할 수 있도록 HTTP
 // status를 함께 담아 던진다. 401만 로그아웃/재로그인 유도(navigate('/login'))로 이어져야 하고,
 // 나머지는 일시적 오류로 다뤄야 한다(강제 로그아웃 금지) — 아래 isUnauthorized() 참고.
+// code는 서버가 오류 종류를 알려줄 때만 온다(명세 5.10 형식: { statusCode, error, code, message, retryable }).
+// 이메일 중복 같은 기존 오류는 code 없이 message만 온다.
 export class ApiError extends Error {
   readonly status: number
+  readonly code?: string
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
   }
 }
 
@@ -115,7 +119,7 @@ async function parseAuthResponse(res: Response, store: AuthStore): Promise<AuthR
     const body = await res.json().catch(() => null)
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다 (필드별 검증 메시지 여러 개).
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(message ?? `${res.status} ${res.statusText}`, res.status)
+    throw new ApiError(message ?? `${res.status} ${res.statusText}`, res.status, body?.code)
   }
 
   const data: AuthResponse = await res.json()
@@ -162,16 +166,35 @@ export async function register(payload: RegisterRequest): Promise<AuthResponse> 
 
 // 액세스 토큰(메모리)을 Authorization 헤더에 실어 보내는 공통 fetch. 마이페이지 등 로그인 필요한 API에서 사용.
 // bookings.ts/payments.ts도 각자 fetch를 직접 구현하지 않고 이 함수를 재사용한다(429 재시도 포함).
+//
+// 액세스 토큰(15분)이 만료돼 401이 오면 리프레시 토큰(쿠키)으로 한 번 갱신하고 원래 요청을 한 번만 다시 보낸다
+// (LDP-128, 관리자 adminApi.authedFetch와 같은 방식). 401은 인증 가드가 핸들러 전에 거절한 것이라 예약 취소·결제처럼
+// 상태를 바꾸는 요청도 다시 보내도 두 번 처리되지 않는다. 갱신까지 실패하면 원래 401을 그대로 돌려줘서
+// 각 화면의 기존 처리(isUnauthorized → 로그인 안내)로 이어진다. 동시에 여러 요청이 401을 받아도 갱신은 한 번만 한다
+// (refreshAccessToken의 refreshInFlight 공유).
 export async function authorizedFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const token = customerAuth.getAccessToken()
-  return fetchWithRateLimitRetry(`${BASE_URL}${path}`, {
-    ...options,
-    credentials: 'include',
-    headers: {
-      ...options.headers,
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  })
+  const send = () => {
+    const token = customerAuth.getAccessToken()
+    return fetchWithRateLimitRetry(`${BASE_URL}${path}`, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        ...options.headers,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    })
+  }
+
+  const res = await send()
+  // 로그인·갱신 요청 자체의 401은 다시 갱신하지 않는다 (무한 반복 방지)
+  if (res.status !== 401 || path.startsWith('/api/auth/')) return res
+
+  try {
+    await refreshAccessToken()
+  } catch {
+    return res
+  }
+  return send()
 }
 
 export async function parseJsonResponse<T>(res: Response): Promise<T> {
@@ -179,7 +202,7 @@ export async function parseJsonResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다 (필드별 검증 메시지 여러 개).
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(message ?? `${res.status} ${res.statusText}`, res.status)
+    throw new ApiError(message ?? `${res.status} ${res.statusText}`, res.status, body?.code)
   }
   return body as T
 }
@@ -287,7 +310,7 @@ export async function refreshAccessToken(): Promise<AuthResponse> {
 
 // proto의 Booking 메시지와 1:1 대응되는 응답 형태 (api-gateway BookingController의 BookingDto와 동일).
 // 편의시설(수영장/라운지) 이용 여부/인원수는 여기 담기지 않는다 — fetchReservationFacilities로 별도 조회한다.
-export interface Booking {
+export interface Booking extends BookingStaffFields {
   reservationId: number
   userId: number
   roomId: number
@@ -301,6 +324,27 @@ export interface Booking {
   /** 최근 결제 시도 상태 REQUESTED / CONFIRMING / SUCCEEDED / FAILED. 시도가 없으면 빈 문자열.
    * CONFIRMING = 승인 요청 후 결과 확인 중 → 결제 버튼을 막는다 (paymentBlockReason) */
   lastPaymentAttemptStatus?: string
+}
+
+// 예약 응답에 추가된 호실 배정·직원 처리 필드 (#196 LDP-89, #204 LDP-90). 값이 없으면 숫자는 null, 문자열은 "".
+// 배포 전 서버에서는 오지 않을 수 있어 모두 선택 필드로 둔다.
+export interface BookingStaffFields {
+  /** 배정된 호실 ID (배정 전 null) */
+  roomUnitId?: number | null
+  /** 배정된 방 번호 (배정 전 "") */
+  roomNumber?: string
+  /** 연장 예약이면 맨 처음 원래 예약 번호 */
+  linkedReservationId?: number | null
+  /** 직원이 대신 만든 예약이면 직원 ID */
+  createdByAdminId?: number | null
+  /** 만든 직원 이름 (예약 당시 이름) */
+  createdByAdminName?: string
+  /** 직원이 취소했으면 직원 ID */
+  cancelledByAdminId?: number | null
+  /** 직원 취소 사유 */
+  cancelReason?: string
+  /** 예약 생성 일시 (ISO 8601) */
+  createdAt?: string
 }
 
 // proto의 ReservationFacilityItem 메시지와 1:1 대응되는 응답 형태

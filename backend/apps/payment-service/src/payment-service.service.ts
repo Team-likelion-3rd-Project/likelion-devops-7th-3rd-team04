@@ -5,6 +5,7 @@ import { RpcException } from '@nestjs/microservices';
 import {
   DataSource,
   EntityManager,
+  FindOperator,
   In,
   QueryFailedError,
   Repository,
@@ -23,6 +24,7 @@ import { PgMockClient } from './pg-mock/pg-mock.client';
 import { TossPaymentsClient } from './pg/toss-payments.client';
 import { PgConfirmResult } from './pg/pg-confirm-result';
 import { PgCancelResult } from './pg/pg-cancel-result';
+import { PgLookupResult } from './pg/pg-lookup-result';
 
 // 결제 승인 결과 (proto ApprovePaymentResponse.result, 위키 API 명세 5.9의 result와 같은 값)
 export type ApproveResultType =
@@ -55,6 +57,13 @@ function toJsonColumn(
   return value as QueryDeepPartialEntity<Payment>['rawResponse'];
 }
 
+// 조건부 UPDATE의 이전 상태 조건 — 하나면 그대로 비교, 여럿이면 IN (승인 직후는 PROCESSING 하나, 대사 배치는 둘)
+function statusIn(
+  from: PaymentStatus[],
+): PaymentStatus | FindOperator<PaymentStatus> {
+  return from.length === 1 ? from[0] : In(from);
+}
+
 // MariaDB UNIQUE 위반(ER_DUP_ENTRY)인지. constraint를 주면 그 제약 이름이 들어간 경우만 true
 function isDuplicateKeyError(error: unknown, constraint?: string): boolean {
   if (!(error instanceof QueryFailedError)) {
@@ -77,6 +86,14 @@ export interface PaymentGrpcResponse {
   status: string;
   paidAt: string;
   userId: number;
+  receiptUrl: string; // PG 영수증 주소 (없으면 빈 문자열)
+}
+
+// 저장된 PG 응답(raw_response)에서 영수증 주소를 꺼낸다 — 토스 승인 응답의 receipt.url (LDP-124).
+// 환불 뒤에도 승인 응답 원본은 그대로 두고 cancel 아래에 덧붙이므로 같은 주소가 남는다. pg-mock은 영수증이 없다.
+function receiptUrlOf(rawResponse: Record<string, unknown> | null): string {
+  const receipt = rawResponse?.receipt as { url?: unknown } | null | undefined;
+  return typeof receipt?.url === 'string' ? receipt.url : '';
 }
 
 @Injectable()
@@ -150,6 +167,10 @@ export class PaymentServiceService {
           amount: data.amount,
           paymentMethod: '', // PG 승인 응답의 결제수단으로 채움
           status: PaymentStatus.PROCESSING,
+          // 토스는 결제창에서 받은 결제 번호를 승인 전부터 안다 — 승인 도중 서버가 죽어도 대사 배치가
+          // 이 번호로 조회해 확정할 수 있게 먼저 남긴다 (LDP-97). pg-mock은 승인 과정에서 번호를 새로 발급한다.
+          paymentKey:
+            provider === PaymentProvider.TOSS ? data.paymentKey : null,
         }),
       );
     } catch (error: unknown) {
@@ -201,17 +222,7 @@ export class PaymentServiceService {
           '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
       };
     }
-    await this.dataSource.manager.update(
-      Payment,
-      { paymentId: payment.paymentId, status: PaymentStatus.PROCESSING },
-      {
-        status: PaymentStatus.UNKNOWN,
-        rawResponse: toJsonColumn({
-          ...(pgResult.raw ?? {}),
-          pgMessage: pgResult.pgMessage,
-        }),
-      },
-    );
+    await this.markUnknown(payment, pgResult);
     return {
       result: 'UNKNOWN',
       paymentId: payment.paymentId,
@@ -222,17 +233,51 @@ export class PaymentServiceService {
     };
   }
 
+  // 결과 불명 반영: UNKNOWN + PG 결제 번호. 대사 배치(LDP-97)가 이 번호로 PG에 조회해 승인·실패를 확정한다 (LDP-91).
+  // 결제 번호는 UNIQUE라, 혹시 다른 결제가 이미 같은 번호를 갖고 있으면 번호 없이라도 UNKNOWN은 남긴다.
+  private async markUnknown(
+    payment: Payment,
+    pgResult: PgConfirmResult,
+  ): Promise<void> {
+    const update = (paymentKey: string | null) =>
+      this.dataSource.manager.update(
+        Payment,
+        { paymentId: payment.paymentId, status: PaymentStatus.PROCESSING },
+        {
+          status: PaymentStatus.UNKNOWN,
+          paymentKey,
+          rawResponse: toJsonColumn({
+            ...(pgResult.raw ?? {}),
+            pgMessage: pgResult.pgMessage,
+          }),
+        },
+      );
+    try {
+      await update(pgResult.paymentKey ?? null);
+    } catch (error: unknown) {
+      if (!isDuplicateKeyError(error) || !pgResult.paymentKey) {
+        throw error;
+      }
+      this.logger.error(
+        `[알람] 결과 불명 결제의 PG 결제 번호가 다른 결제와 겹칩니다 — 번호 없이 UNKNOWN으로 남김 (paymentId=${payment.paymentId}, paymentKey=${pgResult.paymentKey})`,
+      );
+      await update(null);
+    }
+  }
+
   // 승인 반영: APPROVED 전환과 payment_outbox 기록을 한 트랜잭션으로 — 상태는 바뀌었는데 예약 쪽에
   // 알릴 이벤트가 유실되는 일을 막는다 (Transactional Outbox). 발행(SQS)은 LDP-26의 발행기가 맡는다.
+  //   from: 바꿀 수 있는 이전 상태 — 승인 요청 직후는 PROCESSING, 대사 배치(LDP-97)는 UNKNOWN·PROCESSING
   private async markApproved(
     payment: Payment,
     pgResult: PgConfirmResult,
+    from: PaymentStatus[] = [PaymentStatus.PROCESSING],
   ): Promise<ApprovePaymentResponse> {
     try {
       await this.dataSource.transaction(async (manager) => {
         const { affected } = await manager.update(
           Payment,
-          { paymentId: payment.paymentId, status: PaymentStatus.PROCESSING },
+          { paymentId: payment.paymentId, status: statusIn(from) },
           {
             status: PaymentStatus.APPROVED,
             paymentKey: pgResult.paymentKey ?? null,
@@ -261,7 +306,7 @@ export class PaymentServiceService {
       }
       // 같은 예약에 이미 승인된 결제가 있음 → 이 건은 실패 처리하고 PG 승인을 되돌려야 한다
       // (ERD "테이블이 쓰이는 곳": 두 번째 건은 실패 → 즉시 취소, 알람)
-      await this.handleDuplicateApproval(payment, pgResult);
+      await this.handleDuplicateApproval(payment, pgResult, from);
       return {
         result: 'FAILED',
         paymentId: payment.paymentId,
@@ -284,11 +329,12 @@ export class PaymentServiceService {
   private async markFailed(
     payment: Payment,
     pgResult: PgConfirmResult,
+    from: PaymentStatus[] = [PaymentStatus.PROCESSING],
   ): Promise<void> {
     await this.dataSource.transaction(async (manager) => {
       const { affected } = await manager.update(
         Payment,
-        { paymentId: payment.paymentId, status: PaymentStatus.PROCESSING },
+        { paymentId: payment.paymentId, status: statusIn(from) },
         {
           status: PaymentStatus.FAILED,
           rawResponse: toJsonColumn({
@@ -316,13 +362,14 @@ export class PaymentServiceService {
   private async handleDuplicateApproval(
     payment: Payment,
     pgResult: PgConfirmResult,
+    from: PaymentStatus[] = [PaymentStatus.PROCESSING],
   ): Promise<void> {
     this.logger.error(
       `[알람] 예약(#${payment.reservationId})에 이미 승인된 결제가 있는데 중복 승인됨 (paymentId=${payment.paymentId}, paymentKey=${pgResult.paymentKey})`,
     );
     await this.dataSource.manager.update(
       Payment,
-      { paymentId: payment.paymentId, status: PaymentStatus.PROCESSING },
+      { paymentId: payment.paymentId, status: statusIn(from) },
       {
         status: PaymentStatus.FAILED,
         paymentKey: pgResult.paymentKey ?? null,
@@ -392,6 +439,7 @@ export class PaymentServiceService {
       case PaymentStatus.REFUND_REQUESTED:
       case PaymentStatus.REFUND_FAILED:
       case PaymentStatus.REFUNDED:
+      case PaymentStatus.REFUND_MANUAL_REQUIRED:
         return {
           ...base,
           result: 'APPROVED',
@@ -407,6 +455,7 @@ export class PaymentServiceService {
             '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
         };
       case PaymentStatus.UNKNOWN:
+      case PaymentStatus.UNKNOWN_MANUAL_REQUIRED:
         return {
           ...base,
           result: 'UNKNOWN',
@@ -470,6 +519,14 @@ export class PaymentServiceService {
       // 다른 요청이 지금 PG 취소 중 — 결과는 그쪽이 기록하고 이벤트로 알린다
       return { refunded: false, status: PaymentStatus.REFUND_REQUESTED };
     }
+    if (payment.status === PaymentStatus.REFUND_MANUAL_REQUIRED) {
+      // 자동 재시도를 멈춘 환불 (LDP-97) — PG를 다시 부르지 않고 상태만 알려 준다.
+      // booking은 이 응답으로 손님에게 결제사·고객센터 문의를 안내한다.
+      return {
+        refunded: false,
+        status: PaymentStatus.REFUND_MANUAL_REQUIRED,
+      };
+    }
 
     // 한 번 정한 환불 멱등 키는 바꾸지 않는다 (REFUND_FAILED 재시도도 같은 키 → PG가 한 번만 취소)
     const refundKey =
@@ -495,6 +552,153 @@ export class PaymentServiceService {
       };
     }
 
+    const refunded = await this.cancelAtPgAndRecord(payment, refundKey);
+    return {
+      refunded,
+      status: refunded ? PaymentStatus.REFUNDED : PaymentStatus.REFUND_FAILED,
+    };
+  }
+
+  // 환불 재시도 — 대사 배치(LDP-97)가 호출. REFUND_FAILED, 또는 오래 멈춘 REFUND_REQUESTED(환불 도중 서버가 죽음)를
+  // 처음 정한 환불 멱등 키 그대로 PG에 다시 취소 요청한다 → PG가 한 번만 환불한다.
+  //   - REFUND_FAILED → REFUND_REQUESTED 조건부 전환으로 다른 요청과 겹치지 않게 한다.
+  //   - REFUND_REQUESTED는 이미 그 상태라 바로 PG에 다시 요청한다 (배치가 충분히 오래된 것만 넘긴다).
+  // 환불됐으면 true. 환불 키가 없거나 그 사이 상태가 바뀌었으면 시도하지 않고 false.
+  async retryRefund(payment: Payment): Promise<boolean> {
+    if (!payment.refundIdempotencyKey) {
+      this.logger.error(
+        `[알람] 환불 재시도 대상인데 환불 키가 없습니다 — 수동 확인 필요 (paymentId=${payment.paymentId})`,
+      );
+      return false;
+    }
+    if (payment.status === PaymentStatus.REFUND_FAILED) {
+      const { affected } = await this.paymentRepository.update(
+        { paymentId: payment.paymentId, status: PaymentStatus.REFUND_FAILED },
+        { status: PaymentStatus.REFUND_REQUESTED },
+      );
+      if (!affected) {
+        return false;
+      }
+    } else if (payment.status !== PaymentStatus.REFUND_REQUESTED) {
+      return false;
+    }
+    return this.cancelAtPgAndRecord(payment, payment.refundIdempotencyKey);
+  }
+
+  // 환불 자동 재시도 중단 — 대사 배치(LDP-97)가 호출. 최대 횟수만큼 실패했거나 환불 키가 없어 다시 시도할 수 없는 환불을
+  // REFUND_MANUAL_REQUIRED로 옮긴다. 이 상태는 대사 배치·환불 요청 모두 다시 건드리지 않는다.
+  // 예약 쪽으로 따로 알리지는 않고 상태로만 남긴다 — 손님이 취소(환불)를 다시 요청하면 이 상태를 응답으로 받고
+  // 결제사·고객센터에 문의하게 된다 (refundPayment → booking cancelBooking).
+  // 읽었을 때 상태(REFUND_FAILED·REFUND_REQUESTED)에서만 바꾸는 조건부라, 그 사이 다른 경로가 처리했으면 아무것도 하지 않는다.
+  // 옮겼으면 true — 로그는 옮길 때 한 번만 남는다.
+  async markRefundManualRequired(
+    payment: Payment,
+    reason: string,
+  ): Promise<boolean> {
+    if (
+      payment.status !== PaymentStatus.REFUND_FAILED &&
+      payment.status !== PaymentStatus.REFUND_REQUESTED
+    ) {
+      return false;
+    }
+    const { affected } = await this.paymentRepository.update(
+      { paymentId: payment.paymentId, status: payment.status },
+      {
+        status: PaymentStatus.REFUND_MANUAL_REQUIRED,
+        rawResponse: toJsonColumn({
+          ...(payment.rawResponse ?? {}),
+          manualRefund: { reason, at: new Date().toISOString() },
+        }),
+      },
+    );
+    if (!affected) {
+      return false;
+    }
+    this.logger.error(
+      `[알람] 환불 자동 재시도 중단 — PG 콘솔에서 수동 환불 필요 (paymentId=${payment.paymentId}, reservationId=${payment.reservationId}, 사유: ${reason})`,
+    );
+    return true;
+  }
+
+  // 결과 불명 확정 중단 — 대사 배치(LDP-97)가 호출. 기한 안에 PG 조회로 승인·실패를 확정하지 못한 결제를
+  // UNKNOWN_MANUAL_REQUIRED로 옮겨 자동 조회를 멈춘다. 운영자가 PG 콘솔에서 주문번호로 확인한다.
+  // 예약 쪽 상태는 바꿀 것이 없어(결제 확인 중 표시는 시간이 지나면 풀리고 예약은 만료 배치가 정리) 이벤트는 보내지 않는다.
+  // 읽었을 때 상태(UNKNOWN·PROCESSING)에서만 바꾸는 조건부. 옮겼으면 true — 알람은 옮길 때 한 번만 남는다.
+  async markSettleManualRequired(
+    payment: Payment,
+    reason: string,
+  ): Promise<boolean> {
+    if (
+      payment.status !== PaymentStatus.UNKNOWN &&
+      payment.status !== PaymentStatus.PROCESSING
+    ) {
+      return false;
+    }
+    const { affected } = await this.paymentRepository.update(
+      { paymentId: payment.paymentId, status: payment.status },
+      {
+        status: PaymentStatus.UNKNOWN_MANUAL_REQUIRED,
+        rawResponse: toJsonColumn({
+          ...(payment.rawResponse ?? {}),
+          manualSettle: { reason, at: new Date().toISOString() },
+        }),
+      },
+    );
+    if (!affected) {
+      return false;
+    }
+    this.logger.error(
+      `[알람] 결과 불명 결제 자동 확인 중단 — PG 콘솔에서 주문번호로 확인 필요 (paymentId=${payment.paymentId}, reservationId=${payment.reservationId}, orderId=${payment.pgOrderId}, 사유: ${reason})`,
+    );
+    return true;
+  }
+
+  // 결과 불명 결제 확정 — 대사 배치(LDP-97)가 PG 조회 결과로 호출 (ERD "UNKNOWN → 토스 조회로 확정").
+  //   승인 완료 → APPROVED + PAYMENT_APPROVED 이벤트 (같은 예약에 이미 승인된 결제가 있으면 기존 중복 승인 처리)
+  //   실패로 끝남·PG에 없음·이미 취소됨 → FAILED + PAYMENT_FAILED 이벤트 (돈이 남아 있지 않음)
+  //   아직 진행 중·조회 실패 → 그대로 두고 다음에 다시 조회
+  // 상태 변경은 UNKNOWN·PROCESSING에서만 하는 조건부라, 그 사이 다른 경로가 확정했으면 아무것도 하지 않는다.
+  async settleFromPgLookup(
+    payment: Payment,
+    lookup: PgLookupResult,
+  ): Promise<'APPROVED' | 'FAILED' | 'PENDING'> {
+    const from = [PaymentStatus.UNKNOWN, PaymentStatus.PROCESSING];
+    if (lookup.outcome === 'APPROVED') {
+      await this.markApproved(
+        payment,
+        { ...lookup, outcome: 'APPROVED' },
+        from,
+      );
+      return 'APPROVED';
+    }
+    if (
+      lookup.outcome === 'FAILED' ||
+      lookup.outcome === 'NOT_FOUND' ||
+      lookup.outcome === 'CANCELED'
+    ) {
+      await this.markFailed(
+        payment,
+        {
+          outcome: 'DECLINED',
+          pgCode: lookup.pgCode ?? `RECONCILED_${lookup.outcome}`,
+          pgMessage:
+            lookup.pgMessage ??
+            `대사 배치: PG 상태 ${lookup.pgStatus ?? lookup.outcome}`,
+          raw: { ...(payment.rawResponse ?? {}), reconcile: lookup.raw ?? {} },
+        },
+        from,
+      );
+      return 'FAILED';
+    }
+    return 'PENDING';
+  }
+
+  // PG 취소 요청 → 결과 기록 (환불 요청·환불 재시도 공통). REFUND_REQUESTED에서만 바꾸는 조건부라 한 번만 반영된다.
+  // 시도마다 raw_response.refundAttempts를 1씩 올려, 대사 배치가 반복 실패를 알 수 있게 한다.
+  private async cancelAtPgAndRecord(
+    payment: Payment,
+    refundKey: string,
+  ): Promise<boolean> {
     const cancelResult: PgCancelResult = !payment.paymentKey
       ? {
           outcome: 'FAILED',
@@ -510,6 +714,8 @@ export class PaymentServiceService {
         : await this.pgMockClient.refund(payment.paymentKey, '예약 취소');
 
     const refunded = cancelResult.outcome === 'CANCELED';
+    const previous = payment.rawResponse ?? {};
+    const refundAttempts = (Number(previous.refundAttempts) || 0) + 1;
     await this.dataSource.transaction(async (manager) => {
       const { affected: done } = await manager.update(
         Payment,
@@ -524,7 +730,8 @@ export class PaymentServiceService {
           refundedAt: refunded ? (cancelResult.canceledAt ?? new Date()) : null,
           // 승인 응답 원본은 그대로 두고 취소 응답을 cancel 아래에 덧붙인다
           rawResponse: toJsonColumn({
-            ...(payment.rawResponse ?? {}),
+            ...previous,
+            refundAttempts,
             cancel: {
               ...(cancelResult.raw ?? {}),
               pgCode: cancelResult.pgCode,
@@ -548,13 +755,10 @@ export class PaymentServiceService {
 
     if (!refunded) {
       this.logger.error(
-        `[알람] 환불 실패 — REFUND_FAILED로 두고 재시도 대상 (paymentId=${payment.paymentId}, reservationId=${data.reservationId}, code=${cancelResult.pgCode}): ${cancelResult.pgMessage}`,
+        `[알람] 환불 실패 — REFUND_FAILED로 두고 재시도 대상 (paymentId=${payment.paymentId}, reservationId=${payment.reservationId}, 시도 ${refundAttempts}회, code=${cancelResult.pgCode}): ${cancelResult.pgMessage}`,
       );
     }
-    return {
-      refunded,
-      status: refunded ? PaymentStatus.REFUNDED : PaymentStatus.REFUND_FAILED,
-    };
+    return refunded;
   }
 
   private toGrpcResponse(payment: Payment): PaymentGrpcResponse {
@@ -569,6 +773,7 @@ export class PaymentServiceService {
       status: payment.status,
       paidAt: payment.paidAt ? payment.paidAt.toISOString() : '',
       userId: payment.userId,
+      receiptUrl: receiptUrlOf(payment.rawResponse),
     };
   }
 }

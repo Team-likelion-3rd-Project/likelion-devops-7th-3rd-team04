@@ -11,7 +11,7 @@
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
 | `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) — [11절](#11-ingress-controller-traefik) |
-| `k8s-cicd.yml` | `[control_plane]` (1대) | GitLab Agent(agentk) 설치 → `backend` 네임스페이스 / CI 배포 RBAC → 레지스트리 pull Secret · `backend-secrets` — [12절](#12-cicd-kas--registry--agent--파이프라인) |
+| `k8s-cicd.yml` | `[control_plane]` (1대) | `backend` 네임스페이스 · 레지스트리 pull Secret · `backend-secrets` → ArgoCD (backend 배포) — [12절](#12-cicd-registry--파이프라인--argocd) |
 | `registry-trust.yml` | `[control_plane]`, `[workers]` | containerd `certs.d` 설정 (사설 CA 를 쓸 때 레지스트리 CA 신뢰) — [12-7](#12-7-사설-ca-를-쓸-때-선택) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) → api-gateway Ingress(`/api`) — [11절](#11-ingress-controller-traefik) |
 | `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행. CP-a 는 마지막에 GitOps pull 배포 agent 설치 (Traefik · whoami 는 agent 가 설치) — [13절](#13-aws-main-클러스터-user-data-전용) |
@@ -56,9 +56,9 @@ infra/ansible/
 │                              # docker, firewall, db_stack, db_seed,
 │                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
 │                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle, gitops_sync
-│                              # gitlab_bootstrap, gitlab_agent, backend_namespace, payment_stack
+│                              # gitlab_bootstrap, backend_namespace, argocd, payment_stack
 └── .secrets/                  # (자동 생성, gitignore) join.env, admin.conf, gitlab-runner.env,
-                               # gitlab-k8s.env, github-mirror.env, payment-node.env
+                               # gitlab-k8s.env, github-mirror.env, payment-node.env, argocd.env
 ```
 
 ---
@@ -99,6 +99,8 @@ infra/ansible/
     { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:22", "tcp:6443"] },
     // (k6) 팀원 PC 에서 k8s 의 Ingress / NodePort 로 부하를 줄 때
     { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:80", "tcp:443", "tcp:30000-32767"] },
+    // 팀원 PC → control plane : ArgoCD UI/API (tailscale serve HTTPS 8443, 12-9)
+    { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:8443"] },
 
     // ── DB ───────────────────────────────────────────────
     // k8s Pod → DB · MinIO(S3 API 9000) · DynamoDB Local(8000, chat-bot-service). Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
@@ -111,7 +113,7 @@ infra/ansible/
     // ── GitLab ───────────────────────────────────────────
     // Runner → GitLab : job 수신, git clone (HTTPS), git SSH, Container Registry(5050)
     { "src": ["tag:gitlab-runner"], "dst": ["tag:gitlab"], "ip": ["tcp:443", "tcp:2222", "tcp:5050"] },
-    // k8s 노드 → GitLab : agentk ↔ KAS (443, WebSocket), containerd 이미지 pull (5050)
+    // k8s 노드 → GitLab : ArgoCD repo-server git fetch (443), containerd 이미지 pull (5050)
     { "src": ["tag:k8s-node"], "dst": ["tag:gitlab"], "ip": ["tcp:443", "tcp:5050"] },
     // GitHub Actions runner → GitLab : 코드 미러링 push (HTTPS, .github/workflows/mirror-gitlab.yml)
     { "src": ["tag:ci"], "dst": ["tag:gitlab"], "ip": ["tcp:443"] },
@@ -144,7 +146,7 @@ infra/ansible/
 | GitLab 용 | `tag:gitlab` | `TS_GITLAB_OAUTH_CLIENT_SECRET` | GitLab 담당자 |
 | GitLab Runner 용 | `tag:gitlab-runner` | `TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET` | Runner 담당자 |
 | 결제 노드 용 | `tag:payment` | `TS_PAYMENT_OAUTH_CLIENT_SECRET` | 결제 노드 담당자 |
-| GitHub Actions 용 | `tag:ci` | GitHub Repository Secret `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` | 레포 관리자 ([12절](#12-cicd-kas--registry--agent--파이프라인)) |
+| GitHub Actions 용 | `tag:ci` | GitHub Repository Secret `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` | 레포 관리자 ([12절](#12-cicd-registry--파이프라인--argocd)) |
 | AWS Runner 용 | `tag:ci-runner` | `TS_CI_RUNNER_OAUTH_CLIENT_SECRET` → Terraform `12-secrets` 로 Secrets Manager 등록 | AWS 담당자 (13절 "AWS GitLab Runner") |
 
 1. [Admin console → Settings → Trust credentials (OAuth clients)](https://login.tailscale.com/admin/settings/trust-credentials) → **새 credential (OAuth)** 생성
@@ -315,7 +317,7 @@ backend 서비스가 사용할 MariaDB와, 향후 Redis를 대체할 Valkey, 객
 |---|---|---|---|
 | MariaDB | `mariadb:11.4.13` (LTS) | `DB_PORT` (3306) | backend `DB_*` 와 동일한 계정/DB |
 | Valkey | `valkey/valkey:9.1.2` | 6379 | 기동만 — backend `REDIS_*` 연동은 추후 |
-| MinIO | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` | 9000 (S3 API) / 9001 (Console) | dev 용 S3 — 객실 이미지 버킷. backend 연동은 추후 ([7-6](#7-6-minio-dev-용-s3)) |
+| MinIO | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` | 9000 (S3 API) / 9001 (Console) | dev 용 S3 — 객실 이미지 버킷 (hotel-service, [7-6](#7-6-minio-dev-용-s3)) |
 
 - 모든 컨테이너가 `network_mode: host` 로 뜨고, **ufw 가 `tailscale0` 으로 들어오는 3306/6379/9000/9001 만 허용**합니다. (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
 - 데이터: `/var/lib/hotel-db/{mariadb,valkey,minio}`, 설정·자격증명: `/opt/hotel-db` (root 전용 0700)
@@ -346,7 +348,7 @@ DB 계정 정보는 **`backend/.env` 를 직접 읽습니다.** Ansible 쪽에 �
 | `TS_DB_OAUTH_CLIENT_SECRET` | `infra/ansible/.env` | 1-2 의 DB 용 OAuth client |
 | `VALKEY_PASSWORD` | `infra/ansible/.env` | 추후 backend `REDIS_PASSWORD` 와 같은 값으로 맞출 예정 |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | `infra/ansible/.env` | MinIO 관리자 (Console 로그인). 최초 기동 때만 반영 |
-| `MINIO_APP_ACCESS_KEY`, `MINIO_APP_SECRET_KEY` | `infra/ansible/.env` | 앱 전용 계정 (객실 이미지 버킷만). 추후 backend S3 접근 키와 같은 값으로 맞출 예정 |
+| `MINIO_APP_ACCESS_KEY`, `MINIO_APP_SECRET_KEY` | `infra/ansible/.env` | 앱 전용 계정 (객실 이미지 버킷만). `k8s-cicd.yml` 이 `backend-secrets` 의 `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` 로 넣음 (7-6) |
 | `BACKEND_ENV_FILE` (선택) | `infra/ansible/.env` | backend/.env 대신 다른 파일을 쓸 때 |
 
 - 비밀번호에는 공백, 따옴표, 역슬래시, `$`, `#`, `` ` `` 를 쓸 수 없습니다. (설정 파일에 그대로 들어가기 때문)
@@ -397,11 +399,11 @@ kubectl run vktest --rm -it --image=valkey/valkey:9.1 --restart=Never --   valke
 
 | 단계 | 하는 곳 | 내용 |
 |---|---|---|
-| 스키마 | 클러스터 — 차트의 `main-db-migration` hook Job | `deploy-dev` 때 앱보다 먼저 `main-migrations:<tag>`(backend/migrations V1~) 적용. 실패하면 배포 중단 · 롤백 |
+| 스키마 | 클러스터 — 차트의 `main-db-migration` hook Job | ArgoCD sync 때(PreSync) 앱보다 먼저 `main-migrations:<tag>`(backend/migrations V1~) 적용. 실패하면 sync 중단 (앱은 이전 버전 유지) |
 | 초기 데이터 | DB 노드 — `db.yml --tags seed` (`db_seed` role) | `backend/scripts/seed.ts` 를 `scripts/Dockerfile.seed` 로 빌드해 1회 실행 — 관리자 계정, 호텔 3 · 객실, 편의시설, 객실 재고(오늘부터 30일) |
 
 ```bash
-# 순서: db.yml(DB 기동) → GitLab 에서 deploy-dev(스키마 생성) → 시딩
+# 순서: db.yml(DB 기동) → 첫 배포(deploy-dev → ArgoCD sync, 스키마 생성) → 시딩
 cd infra/ansible
 set -a; source .env; set +a
 ansible-playbook db.yml -K --tags seed
@@ -417,26 +419,43 @@ ansible-playbook db.yml -K --tags seed
   sudo docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf -e "SHOW TABLES FROM <DB_DATABASE>"
   # 비우기 (database 를 지우고 db.yml 로 다시 만들면 계정 권한도 그대로 맞춰짐)
   sudo docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf -e "DROP DATABASE <DB_DATABASE>"
-  ansible-playbook db.yml -K      # → deploy-dev 재실행 → db.yml -K --tags seed
+  ansible-playbook db.yml -K      # → ArgoCD backend 앱 SYNC (마이그레이션 hook 재실행) → db.yml -K --tags seed
   ```
 
 ### 7-6. MinIO (dev 용 S3)
 
-객실 이미지를 MariaDB 의 Base64 컬럼(`room_images.image_base64`) 대신 S3 에 저장하도록 바꾸기 위한 dev 저장소입니다. **온프레미스에서는 객실 이미지에 관한 S3 역할(저장 · presigned URL 발급 대상 · 삭제)을 모두 MinIO 가 맡습니다.** 이번 단계는 인프라만 준비합니다.
+객실 이미지를 MariaDB 의 Base64 컬럼(`room_images.image_base64`) 대신 S3 에 저장하도록 바꾸기 위한 dev 저장소입니다. **온프레미스에서는 객실 이미지에 관한 S3 역할(저장 · presigned URL 발급 대상 · 삭제)을 모두 MinIO 가 맡습니다.**
 
 - **이미지**: 업스트림 `minio/minio` 는 커뮤니티 이미지 배포가 끝나 Docker Hub 에서 내려갔습니다. 그래서 호환 포크 [Silo(`pgsty/minio`)](https://github.com/pgsty/minio) 를 버전을 고정해 씁니다. `MINIO_*` 환경변수, S3 API, Console 은 동일하고, 클라이언트는 `mcli`(`mc` 와 같음)입니다.
 - **버킷**: `room-images` (`group_vars/db.yml` 의 `minio_bucket`). playbook 이 매번 버킷이 있는지와 **익명 접근이 꺼져 있는지(private)**를 확인합니다.
 - **앱 계정**: `MINIO_APP_ACCESS_KEY` 에 `hotel-app` 정책을 붙입니다. 이 정책은 버킷 하나에 Get / Put / Delete / List 만 허용합니다. MariaDB 와 같은 방식으로, 앱 계정으로 접속을 검사해 **실패할 때만** 계정 생성 · secret 갱신 · 정책 부여를 다시 합니다.
 - **접근 방식: presigned URL** — backend 가 앱 키로 서명한 URL 을 발급하면, 브라우저와 Pod 가 tailnet 으로 `:9000` 에 직접 접근합니다. 서명에 Host 가 들어가므로 **backend 의 endpoint 와 브라우저가 접근하는 주소가 같아야** 합니다(DB 노드 Tailscale IP).
-- **환경변수 (예정, 이름은 backend 연동 때 확정)**
+- **hotel-service 환경변수 (확정)**
 
-  | 이름 | dev (MinIO) | prod (AWS S3) |
-  |---|---|---|
-  | `S3_ENDPOINT` | `http://<DB ts ip>:9000` | 비움 → AWS SDK 기본 엔드포인트 |
-  | `S3_REGION` | `ap-northeast-2` | 실제 리전 |
-  | `S3_BUCKET` | `room-images` | (미정) |
-  | `S3_FORCE_PATH_STYLE` | `true` | `false` |
-  | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `MINIO_APP_ACCESS_KEY` / `MINIO_APP_SECRET_KEY` | 넣지 않음 (IAM 역할) |
+  | 이름 | dev (MinIO) | 주입 위치 (dev) | prod (AWS S3) |
+  |---|---|---|---|
+  | `S3_ENDPOINT` | `http://<DB_TS_IP>:9000` | `backend-secrets` (`k8s-cicd.yml`) | 비움 → AWS SDK 기본 엔드포인트 |
+  | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `MINIO_APP_ACCESS_KEY` / `MINIO_APP_SECRET_KEY` | `backend-secrets` (`k8s-cicd.yml`) | 넣지 않음 (IAM 역할) |
+  | `S3_REGION` | `ap-northeast-2` (고정 — MinIO 에서는 의미 없지만 SDK 서명에 필요) | gitops `envs/dev/values.yaml` env | 실제 리전 |
+  | `S3_BUCKET` | `room-images` | gitops env | (미정) |
+  | `S3_FORCE_PATH_STYLE` | `true` | gitops env | `false` |
+
+- **반영 순서** (gitops seed 는 레포를 처음 만들 때만 들어가므로 기존 레포는 직접 커밋)
+  1. `.env` 에 `MINIO_APP_*` · `DB_TS_IP` 확인 → `ansible-playbook k8s-cicd.yml -K --tags backend_secrets`
+  2. 그다음 GitLab `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` 에 아래를 커밋 → ArgoCD sync (env 가 바뀌어 hotel-service Pod 가 새로 뜸).
+     순서를 바꾸면 Secret 에 key 가 없어 hotel-service 가 `CreateContainerConfigError` 로 멈춥니다.
+
+     ```yaml
+     services:
+       hotel-service:
+         env:
+           S3_REGION: ap-northeast-2
+           S3_BUCKET: room-images
+           S3_FORCE_PATH_STYLE: "true"
+         # 리스트는 차트 기본값을 덮어쓰므로 DB_* 도 다시 적음
+         secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY]
+     ```
+  3. 확인: `kubectl -n backend exec deploy/hotel-service -- printenv | grep ^S3_` → 관리자 화면에서 사진 업로드 → DB 노드에서 `sudo docker exec minio mcli ls app/room-images`
 
 - **CORS**: `minio_cors_allow_origin: "*"`(서버 전역)입니다.
 - **자동화하지 않는 것**: `MINIO_ROOT_PASSWORD` 변경. root 자격증명은 데이터 디렉토리가 빈 상태로 처음 기동할 때만 반영됩니다. 값을 바꾸려면 Console 이나 `mcli admin` 으로 직접 변경한 뒤 `.env` 를 맞춥니다.
@@ -470,8 +489,8 @@ ansible-playbook db.yml -K --tags seed
 
 ## 8. GitLab 노드 구성
 
-GitHub Actions 가 미러링한 코드로 CI(테스트 → 이미지 빌드 → GitLab Container Registry push → dev 클러스터 배포)를 돌릴 온프레미스 GitLab 을 GitLab 전용 VM 1대에 Docker Compose 로 띄웁니다.
-파이프라인 · 클러스터 연결(agent) 은 [12절](#12-cicd-kas--registry--agent--파이프라인)에 정리되어 있습니다.
+GitHub Actions 가 미러링한 코드로 CI(테스트 → 이미지 빌드 → GitLab Container Registry push → dev gitops 커밋)를 돌릴 온프레미스 GitLab 을 GitLab 전용 VM 1대에 Docker Compose 로 띄웁니다.
+파이프라인 · 배포(ArgoCD) 는 [12절](#12-cicd-registry--파이프라인--argocd)에 정리되어 있습니다.
 
 ```
 GitHub Actions ──(Tailscale OAuth, tag:ci)──▶ https://gitlab.<tailnet>.ts.net ◀──(tag:gitlab-runner)── GitLab Runner
@@ -487,7 +506,7 @@ GitHub Actions ──(Tailscale OAuth, tag:ci)──▶ https://gitlab.<tailnet>
 | URL | `https://<node_name>.<tailnet>.ts.net` — `tailscale serve` 가 443 에서 TLS 종료 |
 | git SSH | `ssh://git@<fqdn>:2222/...` — `tailscale serve` TCP 2222 포워딩 |
 | Registry | `<fqdn>:5050` — `tailscale serve` HTTPS 5050 |
-| KAS | `wss://<fqdn>/-/kubernetes-agent/` — 내장 nginx 가 WebSocket 업그레이드 포함 프록시 |
+| KAS | `wss://<fqdn>/-/kubernetes-agent/` — 내장 nginx 가 WebSocket 업그레이드 포함 프록시 (현재 사용처 없음 — GitLab Agent 는 ArgoCD 전환 때 제거, 12-6) |
 | 포트 publish | `127.0.0.1:8080`, `127.0.0.1:2222`, `127.0.0.1:5050` (loopback 전용, 사설 IP 로는 접근 불가) |
 | ufw | SSH, 41641/udp, `tailscale0` 의 443 / 2222 / 5050 만 허용 |
 | 경로 | 설정 `/opt/gitlab` (0700), 데이터 `/var/lib/gitlab/{config,logs,data}` |
@@ -611,7 +630,7 @@ sudo gitlab-runner list
 
 ### 9-4. 다음 단계
 
-- 미러링 workflow, `.gitlab-ci.yml`, 클러스터 agent 연결은 [12절](#12-cicd-kas--registry--agent--파이프라인) 참고
+- 미러링 workflow, `.gitlab-ci.yml`, ArgoCD 배포는 [12절](#12-cicd-registry--파이프라인--argocd) 참고
 
 ### 9-5. docker 정리 timer
 
@@ -663,9 +682,10 @@ sudo /usr/local/sbin/team04-runner-prune light         # 직접 실행
 | `forwardedHeaders.trustedIPs` | 미설정 | Vite proxy 가 붙이는 `X-Forwarded-For`(127.0.0.1)를 버리고 실제 접속 IP 로 다시 씀 |
 | websecure(443) | 노출 안 함 | Tailnet 구간은 WireGuard 로 암호화. HTTPS 가 필요하면 앞단에 `tailscale serve` |
 | CORS / body 제한 | 설정 안 함 | CORS 는 api-gateway(Nest) 가 전담 (중복 시 헤더 2번 → 브라우저 거부). 객실 이미지(Base64, 최대 20MB) 업로드 허용 |
+| Ingress status | `ingressEndpoint.ip` = control plane Tailscale IP (`publishedService` 끔) | NodePort 라 기본값으로는 Ingress status 가 비어 ArgoCD 가 Ingress 를 계속 Progressing 으로 표시 |
 
 - ACL 은 1-1 의 `autogroup:member → tag:k8s-node tcp:30000-32767` 로 충분하고, control plane 에는 ufw 가 없어 방화벽 작업이 필요 없습니다.
-- api-gateway Ingress(`/api`, `/api-docs`)는 backend Helm 차트가 `backend` 네임스페이스에 만듭니다 (GitLab CI `deploy-dev`, [12절](#12-cicd-kas--registry--agent--파이프라인)). 이 playbook 은 Traefik 만 관리합니다.
+- api-gateway Ingress(`/api`, `/api-docs`)는 backend Helm 차트가 `backend` 네임스페이스에 만듭니다 (ArgoCD `backend` 앱, [12절](#12-cicd-registry--파이프라인--argocd)). 이 playbook 은 Traefik 만 관리합니다.
 
 ### 11-1. 값 설정
 
@@ -690,7 +710,7 @@ ansible-playbook ingress.yml -K
 kubectl -n traefik get pods -o wide            # NODE 가 control plane
 kubectl -n traefik get svc traefik             # 80:30080/TCP, NodePort
 kubectl get ingressclass traefik
-kubectl -n backend get ingress api-gateway     # CLASS traefik (deploy-dev 이후)
+kubectl -n backend get ingress api-gateway     # CLASS traefik, ADDRESS = control plane Tailscale IP (backend 배포 이후)
 
 # 개발자 PC (Tailnet)
 curl -i http://<control-plane>.<tailnet>.ts.net:30080/   # Traefik "404 page not found" → 컨트롤러 도달 OK
@@ -698,33 +718,37 @@ curl -i http://<control-plane>.<tailnet>.ts.net:30080/   # Traefik "404 page not
 
 클라이언트 IP 보존은 `kubectl -n traefik logs deploy/traefik --tail=5` 의 access log client IP 가 개발자 PC 의 Tailscale IP(100.x)인지로 확인합니다.
 
-api-gateway 배포(12절 `deploy-dev`) 후에는 `curl .../api/users/hello` → 200, 브라우저로 `.../api-docs` → Swagger.
+backend 배포(12-5) 후에는 `curl .../api/users/hello` → 200, 브라우저로 `.../api-docs` → Swagger.
 
 ### 11-4. 트러블슈팅 / 추후 작업
 
 - **curl 이 timeout (TCP 연결이 안 맺어짐)**: control plane 에서 `sudo tcpdump -ni any 'tcp port 30080 or tcp port 8000'` → SYN-ACK 가 `tailscale0` 이 아닌 `ens33` 으로 나가면 6절의 fwmark 충돌입니다. `control-plane.yml` / `worker-join.yml` 을 재실행해 Felix mark 대역과 Tailscale SNAT 설정을 반영합니다.
 - **curl 이 timeout (그 외)**: 개발자 PC 에서 `tailscale ping <control-plane>` 확인 → ACL(1-1) 의 NodePort 범위 grant 확인. `externalTrafficPolicy: Local` 이라 **control plane 이 아닌 노드 주소로는 응답하지 않습니다.**
 - **`/api/...` 가 404**: Ingress 와 Service 의 namespace / 이름 / 포트가 `control_plane.yml` 값과 같은지 확인합니다 (`kubectl -n traefik logs deploy/traefik` 에 원인이 찍힘). Service 는 있는데 Pod 가 없으면 503 입니다.
-- **ArgoCD 도입 후**: Traefik 자체는 계속 이 playbook 으로 관리하거나 ArgoCD 로 함께 이관합니다.
+- **ArgoCD 와의 관계**: Traefik 은 ArgoCD 로 옮기지 않고 이 playbook 으로 관리합니다 (2026-10 결정 — 버전 고정 · 변경이 드물고, 값이 Ansible 변수(NodePort · 배치)와 묶여 있음). 옮기게 되면 values 를 gitops 레포의 정적 파일로 바꾸고, 기존 helm 릴리스를 Application 으로 넘겨받고(CRD 는 ServerSideApply), 이 playbook 을 폐기합니다.
 - **HTTPS 가 필요해지면**: control plane 에서 `tailscale serve --https=443 http://<control plane Tailscale IP>:30080` (127.0.0.1 은 NodePort 동작이 kube-proxy 설정에 좌우되므로 노드 IP 사용). 이 경우 Traefik 이 보는 출발지가 노드 IP 하나가 되므로 Traefik `trustedIPs` 와 api-gateway `trust proxy` 에 노드 IP 를 추가해야 사용자별 rate limit 이 유지됩니다.
 
 ---
 
-## 12. CI/CD (KAS · Registry · agent · 파이프라인)
+## 12. CI/CD (Registry · 파이프라인 · ArgoCD)
 
-GitHub 모노레포 → GitLab 미러 → GitLab 파이프라인이 테스트 · 이미지 빌드 · 레지스트리 push · dev 클러스터 배포까지 합니다.
-ArgoCD 도입 전 단계라 CI 가 클러스터에 직접 배포(push 방식)하지만, 배포 상태(이미지 태그·values)는 별도 gitops 레포에 커밋해 두어 나중에 ArgoCD 가 그대로 이어받을 수 있게 했습니다.
+GitHub 모노레포 → GitLab 미러 → GitLab 파이프라인이 테스트 · 이미지 빌드 · 레지스트리 push 를 하고, `deploy-dev` 가 배포 상태(이미지 태그 · 차트 revision)를 gitops 레포에 커밋합니다. 클러스터 반영은 온프레미스 **ArgoCD** 가 gitops 레포를 sync 해서 합니다 (pull 방식 — 파이프라인은 클러스터에 접근하지 않음).
 
 ```
 GitHub push(develop|main)
   └ .github/workflows/mirror-gitlab.yml ──(Tailscale tag:ci)──▶ GitLab team04/hotel (같은 브랜치 force push)
 GitLab 파이프라인 (.gitlab-ci.yml)
   test       : lint · jest (non-blocking) · nest build · helm lint
-  build      : kaniko × 10 → <registry>/team04/hotel/<svc>:ci-<sha>       (develop 만 push, 서비스 8 + main/payment-migrations)
+  build      : kaniko → <registry>/team04/hotel/<svc>:ci-<sha>             (develop 만 push)
   image-test : ci_<id>(결제) · ci_main_<id>(메인) DB 생성 → flyway(main, payment) → 후보 이미지 기동 → GET /health
   push       : crane tag ci-<sha> → <sha>                                  (레이어 재업로드 없음)
-  deploy-dev : (수동) gitops envs/dev/values.yaml 태그 커밋 → helm upgrade --atomic (pre hook: main-db-migration) → rollout status
-               └ ci_access ──▶ KAS ──▶ dev-agent(agentk, 온프레미스) ──▶ namespace backend
+  deploy-dev : (수동 ▶) team04/infra/backend-gitops 에 커밋 1개
+                 envs/dev/values.yaml   global.imageTag             = <short sha>
+                 apps/dev/backend.yaml  sources[0].targetRevision   = <full sha>   (차트도 같은 커밋)
+ArgoCD (온프레미스, argocd ns) ◀── poll 최대 3분
+  root app dev-apps → apps/dev/*.yaml
+  app      backend  → 차트 team04/hotel@<sha> + $values/envs/dev/values.yaml → ns backend
+                      자동 sync · selfHeal · prune, PreSync hook: main-db-migration
 ```
 
 | 구성 요소 | 위치 | 관리 |
@@ -732,62 +756,61 @@ GitLab 파이프라인 (.gitlab-ci.yml)
 | 미러 workflow | `.github/workflows/mirror-gitlab.yml` | GitHub |
 | 파이프라인 | `.gitlab-ci.yml` (레포 루트) | GitHub → 미러 |
 | Helm 차트 | `backend-deploy/charts/backend` | GitHub → 미러 |
-| dev values · 이미지 태그 | GitLab `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` | CI deploy-dev job 이 커밋 (초기본: `backend-deploy/gitops-seed`) |
+| dev values · 이미지 태그 · Application | GitLab `team04/infra/backend-gitops` 의 `envs/dev/values.yaml`, `apps/dev/backend.yaml` | 태그 · 차트 revision 은 CI `deploy-dev`, values 는 MR (초기본: `backend-deploy/gitops-seed`) |
 | prod values · 이미지 태그 | GitHub 별도 prod gitops 레포 | PR 로만 변경 (보호 규칙) — GitLab 은 관여하지 않음 |
-| agent 설정 (`ci_access`) | `infra/gitlab/k8s-agents` → GitLab `team04/infra/k8s-agents` | Ansible `gitlab.yml --tags bootstrap` |
-| agentk · RBAC · Secret | 온프레미스 클러스터 | Ansible `k8s-cicd.yml` |
+| ArgoCD · AppProject · root app · 네임스페이스 · Secret | 온프레미스 클러스터 | Ansible `k8s-cicd.yml` |
 
 | 결정 | 내용 |
 |---|---|
-| 환경 | dev = 온프레미스(`dev-agent`, 이 파이프라인이 배포), prod = AWS EKS(배포 상태는 GitHub prod gitops 레포 — GitLab 은 배포하지 않음). 네임스페이스는 둘 다 `backend` |
-| 브랜치 | develop → dev 빌드·smoke test·배포(수동 `when: manual`, `resource_group` 으로 직렬화). main → prod 이미지 빌드 검증 (ECR push 는 prod 구성 후 추가) |
+| 환경 | dev = 온프레미스(ArgoCD), prod = AWS EKS(배포 상태는 GitHub prod gitops 레포 — GitLab 은 배포하지 않음). 네임스페이스는 둘 다 `backend` |
+| 브랜치 | develop → dev 빌드 · smoke test · 배포(수동 `when: manual`, `resource_group` 으로 직렬화). main → 릴리스(`infra/gitops/prod/README.md` "릴리스") |
 | 이미지 태그 | 커밋 SHA (`$CI_COMMIT_SHORT_SHA`). `latest` 는 차트가 렌더링을 거부 |
-| 클러스터 권한 | GitLab CE(Free)에는 ci_access impersonation 이 없어 **CI 권한 = agentk ServiceAccount 권한** → 차트 기본 cluster-admin 을 끄고 `backend` 네임스페이스 Role 만 부여 |
+| 배포 시점 | 이미지 · 차트: `deploy-dev` ▶ 시점. dev values: gitops `main` 에 merge 하는 시점 (**main 커밋 = 배포**) |
+| 클러스터 권한 | 파이프라인에는 클러스터 자격 증명이 없음. ArgoCD 는 AppProject `backend` 로 `backend` 네임스페이스의 namespaced 리소스만 배포 |
 | smoke test DB | dev DB 서버를 쓰되 database 는 파이프라인 전용(`ci_<id>` 결제, `ci_main_<id>` 메인). 후보 이미지의 마이그레이션을 빈 DB 에 처음부터 적용해 검증하고, dev 데이터와 분리하기 위해 |
 
-### 12-1. GitLab: KAS · Registry · 부트스트랩 (GitLab 담당자)
+### 12-1. GitLab: Registry · 부트스트랩 (GitLab 담당자)
 
-`gitlab.yml` 이 KAS 와 Container Registry(`<fqdn>:5050`)를 켜고, `gitlab_bootstrap` role 이 REST API 로 아래를 멱등하게 맞춥니다.
+`gitlab.yml` 이 Container Registry(`<fqdn>:5050`)를 켜고, `gitlab_bootstrap` role 이 REST API 로 아래를 멱등하게 맞춥니다.
 
-- 그룹 `team04`, `team04/infra` / 프로젝트 `team04/hotel`(미러), `team04/infra/k8s-agents`, `team04/infra/backend-gitops`
-  - `ci_access` 를 받는 프로젝트는 agent 설정 프로젝트와 **같은 최상위 그룹**에 있어야 해서 `team04` 하나로 묶었습니다.
-- agent `dev-agent` 등록과 토큰 발급, gitops 레포(dev 전용) 초기 values 커밋(레포가 비어 있을 때만)
-- 그룹 Deploy Token(`read_registry`) — 클러스터 imagePullSecret 용
+- 그룹 `team04`, `team04/infra` / 프로젝트 `team04/hotel`(미러), `team04/infra/backend-gitops`
+- gitops 레포(dev 전용) 초기 내용 커밋(레포가 비어 있을 때만: `envs/dev/values.yaml`, `apps/dev/backend.yaml`)과 `apps/dev/README.md`(매번 동기화)
+- 그룹 Deploy Token — `k8s-registry-pull`(`read_registry`, 클러스터 imagePullSecret), `argocd-repo-read`(`read_repository`, ArgoCD), `payment-node`(결제 노드)
 - `team04/hotel` CI 변수: `GITOPS_PUSH_TOKEN`(gitops 레포 Project Access Token), `SMOKE_DB_*`, `SMOKE_REDIS_*` (모두 protected)
 - 미러용 Project Access Token, `main`/`develop` 보호 브랜치(force push 허용), 레지스트리 cleanup policy(`ci-*` 후보 태그·kaniko 캐시 7일)
 
 ```bash
 cd infra/ansible
 set -a; source .env; set +a          # CI_SMOKE_DB_PASSWORD, DB_TS_IP 포함 (12-2)
-ansible-playbook gitlab.yml -K                   # KAS/Registry 반영 (gitlab.rb 가 바뀌면 컨테이너 재생성, 수 분)
+ansible-playbook gitlab.yml -K                   # Registry 반영 (gitlab.rb 가 바뀌면 컨테이너 재생성, 수 분)
 ansible-playbook gitlab.yml -K --tags bootstrap  # 부트스트랩만 다시
 ```
 
-- 결과: `.secrets/gitlab-k8s.env`(agent 토큰, Deploy Token → 12-3), `.secrets/github-mirror.env`(미러 토큰 → 12-4), `.secrets/payment-node.env`(결제 노드 Deploy Token → 14-2). 커밋 금지, 팀 비밀 채널로만 공유합니다.
+- 결과: `.secrets/gitlab-k8s.env`(레지스트리 · ArgoCD Deploy Token → 12-3), `.secrets/github-mirror.env`(미러 토큰 → 12-4), `.secrets/payment-node.env`(결제 노드 Deploy Token → 14-2). 커밋 금지, 팀 비밀 채널로만 공유합니다.
 - 토큰 교체: 해당 줄을 비우고(또는 CI 변수 `GITOPS_PUSH_TOKEN` 을 삭제하고) 다시 실행하면 그 토큰만 재발급하고 기존 것은 폐기합니다. Project Access Token 은 364일 뒤 만료됩니다.
 - Tailscale ACL(1-1)에 `tag:k8s-node → tag:gitlab tcp:443,5050`, `tag:gitlab-runner → tag:gitlab tcp:5050`, `tag:gitlab-runner → tag:db tcp:3306,6379` 가 있어야 합니다.
+- GitLab 의 KAS 는 켜져 있지만 지금은 쓰는 곳이 없습니다 (GitLab Agent 는 ArgoCD 전환 때 제거, 12-6).
 
 ### 12-2. DB: smoke test 전용 계정 (DB 담당자)
 
 `.env` 에 `CI_SMOKE_DB_PASSWORD` 를 채우고 `db.yml` 을 다시 실행하면 `ci_smoke` 계정이 생깁니다. 권한은 이름이 `ci_` 로 시작하는 database 에만 있어서 dev 앱 DB 와 결제 DB 는 건드릴 수 없습니다.
 같은 비밀번호와 `DB_TS_IP`(DB 노드 Tailscale IP)를 넣고 12-1 의 부트스트랩을 실행하면 CI 변수로 등록됩니다. GitLab 의 masked 변수 제약 때문에 비밀번호는 8자 이상, 영숫자 위주로 정합니다.
 
-### 12-3. 클러스터: agent · RBAC · Secret (CP 담당자)
+### 12-3. 클러스터: 네임스페이스 · Secret · ArgoCD (CP 담당자)
 
 ```bash
 cd infra/ansible
 set -a; source .env; source .secrets/gitlab-k8s.env; set +a
 ansible-playbook k8s-cicd.yml -K
 ansible-playbook k8s-cicd.yml -K --tags backend_secrets   # backend/.env 를 바꾼 뒤 Secret 만 다시
+ansible-playbook k8s-cicd.yml -K --tags argocd            # ArgoCD 만 다시
 ```
 
-- `gitlab-agent` 네임스페이스에 agentk(chart `gitlab-agent` 2.32.0 = v19.4.0)를 control plane 1대에 고정해 설치합니다. `hostAliases` 로 GitLab FQDN 을 Tailscale IP 에 고정합니다(Pod 의 CoreDNS 가 MagicDNS 를 해석한다는 보장이 없음).
-- `backend` 네임스페이스와 Role `cicd-deployer`(Deployment/Service/ConfigMap/Secret/Job/Ingress/HPA 등, 이 네임스페이스 안만)를 만들고, `kubectl auth can-i` 로 `backend` 허용 · `kube-system`·namespace 생성 거부를 확인합니다.
-- Secret `gitlab-registry`(Deploy Token)와 `backend-secrets`(`backend/.env` 에서 차트가 쓰는 key 만, `DB_HOST`·`REDIS_HOST` 는 `DB_TS_IP` 로 덮어씀)를 만듭니다.
+- `backend` 네임스페이스와 Secret `gitlab-registry`(Deploy Token), `backend-secrets`(`backend/.env` 에서 차트가 쓰는 key 만, `DB_HOST`·`REDIS_HOST` 는 `DB_TS_IP` 로 덮어씀. hotel-service 의 `S3_*`(7-6)와 챗봇 key(15절)는 `infra/ansible/.env` 에서)를 만듭니다. 차트 · ArgoCD 는 네임스페이스와 Secret 을 만들지 않습니다 (`CreateNamespace=false`).
+- `backend-secrets` 는 Pod 기동 때만 읽힙니다. 값을 바꿨으면 `kubectl -n backend rollout restart deployment` 로 재기동합니다 (selfHeal 이 되돌리지 않음).
+- ArgoCD 설치 · 구성은 12-9 입니다. 전환 전 클러스터에 남아 있는 GitLab Agent(agentk) · `cicd-deployer` Role 은 `argocd` role 이 지웁니다 (없으면 건너뜀).
 - **결제**: payment-service · 결제 DB · ElasticMQ 는 클러스터 밖 **결제 서버 노드**([14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq))에서 운영합니다. 그래서 `backend-secrets` 에는 `PAYMENT_DB_*` 를 넣지 않고(`backend/.env` 에 채워져 있어도 제외), gitops `envs/dev/values.yaml` 에서 `services.payment-service.enabled` 와 `migrations.payment.enabled` 는 `false` 로 둡니다(초기 seed 에 반영됨).
   - 이미지 smoke test(`test:image`)는 파이프라인 전용 DB 로 payment-service 를 계속 검증합니다.
-
-확인: GitLab `team04/infra/k8s-agents` → Operate → Kubernetes clusters 에서 `dev-agent` 가 **Connected**.
 
 ### 12-4. GitHub: 미러 workflow 설정 (레포 관리자)
 
@@ -802,24 +825,38 @@ GitHub 레포 Settings → Secrets and variables → Actions:
 
 develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니다. GitHub 이 원본이므로 **GitLab `team04/hotel` 에는 직접 커밋하지 않습니다** (다음 미러링 때 덮어써짐). 처음 한 번은 Actions → Mirror to GitLab → Run workflow 로 develop 을 수동 미러링합니다.
 
-### 12-5. 파이프라인 사용
+### 12-5. 파이프라인 사용 · dev 배포 절차
 
-- develop 에 merge → 미러 → 파이프라인 자동 실행(test → build → image-test → push) → **`deploy-dev` 를 GitLab UI 에서 수동 실행**.
-- `deploy-dev` 는 gitops 레포에 `chore(gitops): dev backend → <sha>` 를 커밋한 뒤 배포합니다. 배포가 실패하면(`--atomic` 롤백) 그 커밋을 revert 해서 gitops 레포가 항상 실제 배포 상태와 같습니다.
-- 롤백: Deployments → Environments → dev 에서 이전 배포의 `deploy-dev` 를 다시 실행하면 그 SHA 로 되돌아갑니다(최종 태그 이미지는 cleanup 대상이 아님).
+develop 에 merge → 미러 → 파이프라인 자동 실행(test → build → image-test → push). 배포는 **배포 일정에 맞춰** 아래처럼 합니다.
+
+| 배포 내용 | 방법 |
+|---|---|
+| 새 버전 (코드 · 차트 · 차트 기본값) | 배포할 버전 파이프라인의 **`deploy-dev` ▶** → gitops 에 `chore(gitops): dev backend → <sha>` 커밋 → ArgoCD 가 최대 3분 안에 sync |
+| dev values (`envs/dev/values.yaml` 의 env, 서비스 활성화 등) | backend-gitops 에 브랜치 · MR 로 미리 준비 → **배포 일정에 merge**. `main` 에 바로 커밋하면 그 즉시 배포됩니다 |
+| 둘 다 (예: 새 차트에 생긴 서비스를 켜기) | ① `deploy-dev` ▶ → 새 버전 Healthy 확인 → ② MR merge. 나눠서 반영하면 문제가 생겼을 때 원인을 구분할 수 있습니다 |
+| 롤백 | Deployments → Environments → dev 에서 이전 배포의 `deploy-dev` 를 다시 실행 (그 SHA 로 다시 커밋 — 최종 태그 이미지는 cleanup 대상이 아님). values 는 MR merge 커밋을 revert |
+
+- **job 성공 = gitops 커밋 성공**입니다. 배포 결과(sync · health · `main-db-migration` hook)는 ArgoCD UI 의 `backend` 앱에서 확인합니다 (12-9).
+- 배포가 실패해도 자동으로 되돌리지 않습니다. 롤링 업데이트라 이전 파드가 계속 서비스하고 앱이 Degraded · Progressing 으로 남습니다. 마이그레이션 hook 이 실패하면 앱 리소스는 적용되지 않습니다. 수정 커밋이나 위 롤백으로 복구합니다.
+- 결제 노드는 따로 배포합니다 (14-5, 순서 주의).
 - lint/jest 는 기존 실패가 남아 있어 non-blocking 입니다. 정리되면 `.gitlab-ci.yml` 의 `allow_failure: true` 를 지웁니다.
 - smoke test 가 실패하면 job 로그 위쪽의 service(`app`) 로그(`CI_DEBUG_SERVICES`)에서 앱 기동 오류를 확인합니다. 파이프라인이 중간에 끊겨 남은 DB 는 DB 노드에서 확인 후 `DROP DATABASE` 합니다.
   ```bash
   docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf -N \
     -e "SHOW DATABASES LIKE 'ci%'"
   ```
-- prod: 이 파이프라인은 main 에서 이미지 빌드 검증만 합니다. prod 구성 후 `build` job 의 main 분기에 ECR push 를 추가하고, 배포 상태는 GitHub 의 prod gitops 레포에 PR 로 반영합니다 (GitLab 의 `deploy-prod` · `prod-agent` 는 이 결정으로 제거).
+- prod: 이 파이프라인의 main 분기는 릴리스(ECR push · prod gitops 릴리스 PR)만 합니다 (`infra/gitops/prod/README.md` "릴리스").
 
-### 12-6. ArgoCD 전환 메모
+### 12-6. ArgoCD 전환 기록 (2026-10-21)
 
-- (dev) Application 은 multi-source 로 만듭니다: 차트 = `team04/hotel` 의 `backend-deploy/charts/backend`, values = `team04/infra/backend-gitops` 의 `$values/envs/dev/values.yaml`. `destination.namespace: backend`, `CreateNamespace=false`. prod 는 GitHub prod gitops 레포를 바라봅니다.
-- HPA 를 켠 서비스가 있으면 `ignoreDifferences` 에 Deployment `/spec/replicas` 를 넣습니다(2nd 프로젝트에서 HPA 와 selfHeal 이 replicas 를 서로 되돌린 문제).
-- 전환 후 `.gitlab-ci.yml` 의 `.deploy` 는 gitops 커밋까지만 남기고 helm/kubectl 단계를 지웁니다. agent 의 `cicd-deployer` Role 도 회수합니다.
+이전에는 `deploy-dev` 가 GitLab Agent(agentk, `ci_access`)로 클러스터에 `helm upgrade --atomic` 을 직접 실행했습니다. 아래 순서로 ArgoCD 로 옮겼습니다. 클러스터를 새로 만들 때는 12-3 · 12-9 만 하면 되고, 이 절은 기록입니다.
+
+1. ArgoCD 병행 설치 (12-9) — 배포는 아직 helm
+2. 배포 동결 → gitops `envs/dev/values.yaml` 을 **실제 배포된 값**(`helm get values backend`)과 똑같이 맞춤 → `apps/dev/backend.yaml` 을 **자동 sync 를 끈 채** 커밋(`targetRevision` = 배포된 커밋 full SHA) → APP DIFF 가 tracking annotation 뿐인지 확인 → 수동 Sync(PRUNE 끔) → 자동 sync 켬 → `kubectl -n backend delete secret -l owner=helm,name=backend`
+3. `deploy-dev` 를 gitops 커밋만 하도록 변경, agentk · `cicd-deployer` · agent 설정 레포 제거
+
+- 배운 점: values 에 아직 배포하지 않은 값(그 차트에 없는 서비스)이 들어 있으면 Application 이 `Failed to load target state` 로 멈춥니다. 자동 sync 이후에는 **values 를 미리 main 에 넣어 두지 않습니다** (12-5).
+- **기존 환경의 GitLab 쪽 정리 (사람, 1회)**: GitLab `team04/infra/k8s-agents` → Operate → Kubernetes clusters 에서 `dev-agent` 삭제 → 프로젝트 `team04/infra/k8s-agents` 삭제. `.secrets/gitlab-k8s.env` 의 `DEV_AGENT_TOKEN` 줄은 다음 bootstrap 때 사라집니다. 클러스터 쪽 agentk 는 `k8s-cicd.yml` 이 지웁니다.
 
 ### 12-7. 사설 CA 를 쓸 때 (선택)
 
@@ -827,7 +864,7 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 
 | 대상 | 적용 | playbook |
 |---|---|---|
-| agentk | `config.kasCaCert` | `k8s-cicd.yml` |
+| ArgoCD repo-server | `configs.tls.certificates.<gitlab fqdn>` | `k8s-cicd.yml` |
 | CI job | Runner `/etc/gitlab-runner/certs/<fqdn>.crt` → job 에 `CI_SERVER_TLS_CA_FILE` 로 전달 (kaniko 는 이 파일을 CA 번들에 추가) | `gitlab-runner.yml` |
 | 모든 노드 containerd | `/etc/containerd/certs.d/<registry>/hosts.toml` + `ca.crt` | `registry-trust.yml -l <노드>` (워커는 각자) |
 
@@ -835,11 +872,67 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 
 ### 12-8. 트러블슈팅
 
-- **agent 가 Not connected**: `kubectl -n gitlab-agent logs -l app.kubernetes.io/instance=dev-agent`. `unauthenticated` 면 토큰(12-1 재발급 후 `k8s-cicd.yml` 재실행), `dial`/timeout 이면 ACL `tag:k8s-node → tag:gitlab tcp:443` 과 `hostAliases` IP 를 확인합니다. GitLab 노드에서 `gitlab.yml` 의 "KAS WebSocket 프록시 확인" 이 502/504 면 KAS 가 안 떠 있는 것입니다(`docker exec gitlab gitlab-ctl status gitlab-kas`).
-- **deploy job 이 `context ... does not exist`**: agent 설정의 `ci_access.projects` 와 job 의 `environment` 이름(dev/prod)이 맞는지, `team04/hotel` 이 `team04` 그룹 안에 있는지 확인합니다.
-- **`forbidden` (deploy job)**: Role `cicd-deployer` 에 없는 리소스를 차트에 추가한 경우입니다. `roles/gitlab_agent/templates/cicd-rbac.yaml.j2` 에 추가하고 `k8s-cicd.yml` 을 다시 실행합니다.
+- **`deploy-dev` 가 `sources[0].path 가 … 가 아닙니다`**: gitops `apps/dev/backend.yaml` 의 sources 순서가 바뀐 경우입니다. 차트 source(`path: backend-deploy/charts/backend`)를 첫 번째로 둡니다.
+- **`deploy-dev` 의 git push 실패**: CI 변수 `GITOPS_PUSH_TOKEN` 만료(364일) → 변수를 삭제하고 12-1 bootstrap 재실행.
 - **ImagePullBackOff**: `kubectl -n backend describe pod` → 401 이면 `gitlab-registry` Secret(Deploy Token), `no such host` 면 노드의 MagicDNS, timeout 이면 ACL `tag:k8s-node → tag:gitlab tcp:5050` 입니다.
 - **smoke test 에서 DB 접속 실패**: ACL `tag:gitlab-runner → tag:db tcp:3306,6379`, CI 변수 `SMOKE_DB_HOST`(Tailscale IP), `db.yml` 로 `ci_smoke` 계정을 만들었는지 확인합니다.
+- ArgoCD 쪽(sync 실패 · OutOfSync · 레포 접근)은 12-9 "트러블슈팅".
+
+### 12-9. ArgoCD (CP 담당자)
+
+관리 대상은 **backend 차트만**이고 Traefik(11절) · 네임스페이스 · Secret(12-3) 은 Ansible 이 관리합니다.
+
+| 결정 | 내용 |
+|---|---|
+| 설치 | `argo-cd` chart `10.10.3`(ArgoCD v3.5.5) 를 `k8s-cicd.yml` 의 `argocd` role 이 helm 으로 설치. HA · dex · notifications · ApplicationSet 끔 |
+| 배치 | 전 컴포넌트 control plane 고정 (워커는 팀원 PC). GitLab FQDN 은 `hostAliases` 로 Tailscale IP 에 고정 (Pod 의 CoreDNS 가 MagicDNS 를 해석한다는 보장이 없음) |
+| 레포 접근 | 그룹 `team04` Deploy Token `argocd-repo-read`(`read_repository`) → Secret `argocd/gitlab-repo-creds`(repo-creds, `https://<gitlab>/team04/` prefix) |
+| 권한 | AppProject `backend`: 두 레포만, `backend` 네임스페이스의 namespaced 리소스만. AppProject `bootstrap`: root app 이 `argocd` 의 Application 만 |
+| 앱 목록 | root app `dev-apps`(Ansible) → gitops `apps/dev/*.yaml`. Application 에 finalizer 가 없어 파일을 지워도 앱 리소스는 남음 |
+| sync | 자동 sync · selfHeal · prune. HPA 가 바꾼 replicas 는 `ignoreDifferences`(managedFieldsManagers `kube-controller-manager`)로 무시 |
+| 추적 | `application.resourceTrackingMethod: annotation` — 차트의 `app.kubernetes.io/instance` 라벨과 섞이지 않게 |
+| UI | argocd-server(`--insecure`) NodePort `30880` ← control plane 의 `tailscale serve --https=8443` (443 은 Traefik HTTPS 용으로 비워 둠) |
+| admin | 최초 설치 때 랜덤 생성(`argocd-initial-admin-secret`) → 로컬 `.secrets/argocd.env` |
+
+#### 설치
+
+```bash
+cd infra/ansible
+set -a; source .env; set +a
+ansible-playbook gitlab.yml -K --tags bootstrap     # Deploy Token argocd-repo-read 발급 + gitops apps/dev 커밋
+set -a; source .env; source .secrets/gitlab-k8s.env; set +a
+ansible-playbook k8s-cicd.yml -K                    # ArgoCD 만 다시: --tags argocd
+```
+
+- `gitlab-k8s.env` 에 `ARGOCD_REPO_USER/TOKEN` 이 이미 있으면 재발급하지 않습니다. 줄을 비우고 bootstrap 을 다시 실행하면 그 토큰만 교체됩니다 (12-1 과 같음).
+- Tailscale ACL(1-1)에 `autogroup:member → tag:k8s-node tcp:8443` 이 있어야 UI 에 접속됩니다.
+- 결과 파일 (커밋 금지): `.secrets/argocd.env`(UI 주소 · admin 비밀번호). UI 에서 admin 비밀번호를 바꾸면 이 값은 맞지 않게 됩니다 (initial secret 은 바뀌지 않음).
+- 새 gitops 레포(seed)에서는 첫 `deploy-dev` 전까지 `backend` 앱이 ComparisonError(이미지 태그 없음)입니다. 아무것도 배포되지 않는 상태라 정상입니다.
+
+#### 확인 · 운영
+
+```bash
+kubectl -n argocd get pods -o wide                         # 모두 Running, NODE 가 control plane
+kubectl -n argocd get application                          # dev-apps · backend : Synced / Healthy
+# 마지막 sync 결과 · 마이그레이션 hook
+kubectl -n argocd get application backend -o jsonpath='{.status.operationState.phase}{"\n"}{range .status.operationState.syncResult.resources[?(@.hookType=="PreSync")]}{.name}: {.hookPhase} {.message}{"\n"}{end}'
+# Healthy 가 아닌 리소스
+kubectl -n argocd get application backend -o jsonpath='{range .status.resources[?(@.health.status!="Healthy")]}{.kind}/{.name}: {.health.status} {.health.message}{"\n"}{end}'
+```
+
+- UI: `https://<control-plane>.<tailnet>.ts.net:8443` → `backend` 앱의 리소스 트리 · APP DIFF · 이벤트 · 로그. 레포 자격증명은 템플릿(repo-creds)이라 Settings → Repositories 목록에는 나오지 않습니다.
+- 새 커밋은 최대 3분 안에 감지합니다. 바로 반영하려면 앱의 **REFRESH**. `apps/dev/*.yaml` 변경은 `dev-apps` 가 먼저 가져온 뒤 `backend` 에 반영됩니다.
+- **kubectl 로 직접 고치면 selfHeal 이 되돌립니다** (scale · edit · env 변경 등). 예외: HPA 의 replicas, `kubectl rollout restart`. 디버깅으로 잠시 고쳐야 하면 `backend` 앱 → APP DETAILS → SYNC POLICY 에서 자동 sync 를 끄고, 끝나면 다시 켭니다 (켜는 순간 git 상태로 돌아감).
+- `main-db-migration` 은 PreSync hook 이라 sync 마다(selfHeal 포함) 한 번 실행되고, 성공하면 지워집니다 (Flyway 라 이미 적용된 스키마면 변경 없음).
+
+#### 트러블슈팅
+
+- **`Failed to load target state` / ComparisonError**: 차트 렌더링 실패입니다. 메시지의 `helm template` 오류를 봅니다 — values 에 그 차트(`targetRevision`)에 없는 서비스 · 키가 들어간 경우(예: `nil pointer evaluating … hpa.enabled`), 이미지 태그가 빈 경우. 이 상태에서는 클러스터가 바뀌지 않습니다.
+- **레포 접근 실패** (ComparisonError 메시지): `authentication required` 면 Deploy Token(`gitlab-k8s.env` 의 `ARGOCD_REPO_*`, 12-1 재발급 후 `--tags argocd`), `no such host`/timeout 이면 `hostAliases` 의 `GITLAB_TS_IP` 와 ACL `tag:k8s-node → tag:gitlab tcp:443` 을 확인합니다. `unable to resolve '<sha>'` 면 `targetRevision` 커밋이 아직 GitLab 미러에 없는 경우입니다.
+- **sync 실패 (PreSync)**: `main-db-migration` Job 이 실패한 경우 — 실패한 Job 은 남아 있으므로 `kubectl -n backend logs job/main-db-migration`. 앱 리소스는 적용되지 않았습니다.
+- **Progressing 이 계속됨**: 위 "Healthy 가 아닌 리소스" 명령으로 대상을 찾습니다. Deployment 면 새 파드가 Ready 가 되지 않는 경우(`kubectl -n backend describe pod`), Ingress 면 Traefik 이 Ingress status 를 채우지 않는 경우 → `ingress.yml` 재실행(11절, `ingressEndpoint`).
+- **dev-apps 가 `app path does not exist`**: gitops 레포에 `apps/dev` 가 없는 경우 → `gitlab.yml --tags bootstrap`.
+- **UI 접속이 안 됨**: control plane 에서 `tailscale serve status` 에 `:8443 → http://<CP Tailscale IP>:30880` 이 있는지, `curl -s http://<CP Tailscale IP>:30880/healthz` 가 `ok` 인지 확인합니다.
 
 ## 13. AWS Main 클러스터 (user-data 전용)
 
@@ -865,7 +958,7 @@ develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니
 | Calico 노드 IP 감지 / MTU | `tailscale0` / 1230 | `NodeInternalIP` / 8951 (VPC 점보 프레임 9001 − VXLAN 50) |
 | Felix mark 대역 변경 | 함 (Tailscale fwmark 충돌) | 안 함 |
 | kube-apiserver `--service-account-issuer` (`k8s_service_account_issuer`) | 미설정 (kubeadm 기본값) | 10-global OIDC 버킷 URL (IRSA). CP-a 가 init 직후 SA 서명 공개키를 `keys.json` 으로 업로드 |
-| 클러스터 서비스 설치 | Ansible(`ingress.yml`) · GitLab CI(`deploy-dev`) | GitOps pull 배포 agent (`gitops_sync` role 이 CP-a 부트스트랩 마지막에 설치, 워커 Ready 대기 후 첫 실행) |
+| 클러스터 서비스 설치 | Ansible(`ingress.yml`, Traefik) · ArgoCD(backend, 12절) | GitOps pull 배포 agent (`gitops_sync` role 이 CP-a 부트스트랩 마지막에 설치, 워커 Ready 대기 후 첫 실행) |
 | Traefik | `ingress.yml` 수동 실행 (`roles/traefik`), control plane 1대 고정, `externalTrafficPolicy: Local` | gitops `envs/prod/traefik` — 워커에 2개, `externalTrafficPolicy: Cluster`, trustedIPs = Main VPC CIDR + Pod CIDR, `/ping` 을 `web` 에 노출(`80-main-edge` 헬스체크) |
 | Ingress 대상 | api-gateway (`/api`, `/api-docs`) | api-gateway (`/api`, gitops `envs/prod/backend`) + 테스트 백엔드 whoami (`/whoami`). 그 외 경로는 Traefik 404 |
 
@@ -910,6 +1003,7 @@ job(kaniko) ─▶ IMDS(hop limit 2) ─▶ Runner Role ─▶ ECR push (team04-
 | docker.sock 바인드 | 켬 (`gitlab_runner_mount_docker_sock: true`) | 끔 — kaniko 로 빌드 |
 | 등록 확인 실패 | playbook 실패 | 진행 (`gitlab_runner_verify_required: false`) — GitLab 이 꺼진 날 ASG 가 계속 교체하지 않게. GitLab 이 켜지면 다시 연결 |
 | 이미지 아키텍처 | 노드 아키텍처 | arm64 (운영 워커 t4g 와 같음) |
+| 사양 · 동시 job | VM 사양 (9-1), `concurrent` 2 | m7g.large (2 vCPU · 8 GiB, 고정 성능 — Terraform `40-cicd` `instance_type`), `concurrent` 2 |
 
 **최초 1회 / 값 교체**
 1. Tailscale: 1-1 ACL 에 `tag:ci-runner` 추가, 1-2 OAuth client(`tag:ci-runner`) 생성 → `.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET`
@@ -973,6 +1067,9 @@ InnoDB buffer pool 은 메모리의 25%(자동 계산), ElasticMQ JVM heap 은 2
 | 값 | 위치 | 비고 |
 |---|---|---|
 | `PAYMENT_DB_PORT`, `PAYMENT_DB_DATABASE`, `PAYMENT_DB_USERNAME`, `PAYMENT_DB_PASSWORD` | `backend/.env` | 결제 DB / 앱 계정. `PAYMENT_DB_HOST` 는 노드 안에서 `127.0.0.1` 로 덮어씀 |
+| `PAYMENT_PROVIDER` | `backend/.env` | `MOCK` / `TOSS`. 비우면 `MOCK` |
+| `TOSS_SECRET_KEY` | `backend/.env` | 결제위젯 연동 키의 시크릿 키(`test_gsk_…`). `TOSS` 일 때만 필요 · 기록 |
+| `TOSS_API_BASE_URL` (선택) | `backend/.env` | 비우면 앱 기본값 `https://api.tosspayments.com` |
 | `TS_PAYMENT_OAUTH_CLIENT_SECRET` | `infra/ansible/.env` | 1-2 의 결제 노드 용 OAuth client (`tag:payment`) |
 | `PAYMENT_DB_ROOT_PASSWORD` | `infra/ansible/.env` | 결제 MariaDB root. 최초 초기화 때만 반영 |
 | `CLUSTER_ENTRY_IP` | `infra/ansible/.env` | control plane Tailscale IP (booking / pg-mock NodePort 호출 대상) |
@@ -980,6 +1077,8 @@ InnoDB buffer pool 은 메모리의 25%(자동 계산), ElasticMQ JVM heap 은 2
 | `GITLAB_URL`, `GITLAB_TS_IP`, `GITLAB_REGISTRY`, `PAYMENT_DEPLOY_USER`, `PAYMENT_DEPLOY_TOKEN` | `.secrets/payment-node.env` | `gitlab.yml --tags bootstrap` 이 생성 (12-1) |
 
 - 비밀번호에는 공백, 따옴표, 역슬래시, `$`, `#`, `` ` `` 를 쓸 수 없습니다.
+- `backend/.env` 의 `PAYMENT_DB_SSL*` 과 `SQS_*` 는 결제 노드에서 쓰지 않습니다. 결제 DB 는 같은 노드 loopback(평문)이고, 큐는 항상 노드의 ElasticMQ(`group_vars/payment.yml` 의 `payment_sqs_env`)입니다. 로컬 docker compose 용 값이 들어 있어도 영향이 없습니다.
+- 결제 PG 값은 실행 전에 검사합니다. `PAYMENT_PROVIDER` 가 `MOCK`/`TOSS`(대소문자 무관)가 아니거나, `TOSS` 인데 `TOSS_SECRET_KEY` 가 비었거나 `test_gsk_`/`live_gsk_` 형식이 아니면 중단합니다. 프론트의 `VITE_PAYMENT_MODE` · `VITE_TOSS_CLIENT_KEY`(같은 줄의 한 쌍)와 맞춥니다.
 - `hosts.ini` 의 `[payment]` 그룹에 VM 을 추가합니다. (예시: `inventory/hosts.example.ini`)
 - 결제 노드 Deploy Token(`payment-node`, read_registry + read_repository)은 k8s 용(`k8s-registry-pull`)과 별개라 따로 폐기할 수 있습니다. `.secrets/payment-node.env` 의 `PAYMENT_DEPLOY_TOKEN` 을 비우고 부트스트랩을 다시 실행하면 재발급됩니다.
 
@@ -996,11 +1095,12 @@ PAYMENT_IMAGE_TAG=<short sha> ansible-playbook payment.yml -K --tags deploy   # 
 순서: 결제 DB · ElasticMQ 기동 → 결제 DB 계정 맞추기 → Flyway migrate → payment-service 갱신(healthy 대기). 마지막에 적용된 스키마 버전과 **gitops 에 넣을 값**(14-4)이 출력됩니다.
 
 - `backend/.env` 의 `PAYMENT_DB_*` 를 바꿨을 때도 다시 실행하면 됩니다 — 앱 계정 접속이 실패할 때만 DB / 계정 / 비밀번호 / 권한을 다시 맞춥니다 (`db.yml` 과 같은 방식).
+- `PAYMENT_PROVIDER` · `TOSS_*` 를 바꿨으면 `--tags deploy` 로 다시 실행합니다. env 파일이 바뀌어 payment-service 컨테이너만 다시 만들어집니다.
 - **`PAYMENT_DB_ROOT_PASSWORD` 변경은 자동화하지 않습니다.** 결제 노드에서 `docker exec -it payment-mariadb mariadb -uroot -p` → `ALTER USER 'root'@'localhost' IDENTIFIED BY '<새 값>';` 후 `.env` 를 바꿉니다.
 
 ### 14-4. dev gitops 값 (최초 1회)
 
-클러스터 쪽 서비스가 결제 노드를 찾을 수 있게 gitops `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` 에 아래를 넣고 `deploy-dev` 를 실행합니다. `payment.yml` 실행 결과에 실제 IP 가 채워진 값이 출력됩니다.
+클러스터 쪽 서비스가 결제 노드를 찾을 수 있게 gitops `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` 에 아래를 넣습니다. `main` 에 반영하는 순간 ArgoCD 가 배포하므로 배포 일정에 맞춰 MR 로 merge 합니다 (12-5). `payment.yml` 실행 결과에 실제 IP 가 채워진 값이 출력됩니다.
 
 ```yaml
 services:
@@ -1030,12 +1130,12 @@ migrations:
 
 ### 14-5. 재배포 (수동) — 순서 주의
 
-결제 노드는 CI 가 자동 배포하지 않습니다(후속 작업). `deploy-dev` 와 별개로 `payment.yml --tags deploy` 를 실행합니다.
+결제 노드는 CI · ArgoCD 가 배포하지 않습니다(후속 작업). 클러스터 배포(`deploy-dev` → ArgoCD sync)와 별개로 `payment.yml --tags deploy` 를 실행합니다.
 
 | 배포 내용 | 순서 |
 |---|---|
-| 결제 쪽 계약 변경 (payment.proto, SQS 메시지 형식, 결제 마이그레이션 추가) | ① `PAYMENT_IMAGE_TAG=<새 sha> ... --tags deploy` 로 결제 노드 먼저 → ② `deploy-dev` |
-| 그 외 | ① `deploy-dev` → ② `payment.yml --tags deploy` (gitops 태그를 그대로 따라감) |
+| 결제 쪽 계약 변경 (payment.proto, SQS 메시지 형식, 결제 마이그레이션 추가) | ① `PAYMENT_IMAGE_TAG=<새 sha> ... --tags deploy` 로 결제 노드 먼저 → ② `deploy-dev` (ArgoCD sync 확인) |
+| 그 외 | ① `deploy-dev` → ArgoCD 의 `backend` 가 Synced · Healthy → ② `payment.yml --tags deploy` (gitops 태그를 그대로 따라감) |
 
 > 클러스터와 결제 노드의 커밋이 어긋나면 gRPC / SQS 메시지 호환 문제가 생길 수 있습니다. `payment.yml` 출력의 "이미지 태그" 와 gitops `global.imageTag` 가 같은지 확인하세요.
 
@@ -1096,7 +1196,7 @@ nc -zv <결제 노드 Tailscale IP> 3306                        # 실패해야 �
 | 서비스 계정 키(JSON) | `infra/ansible/.secrets/` (gitignore) | gcloud (`infra/gcp-terraform/README.md` 의 키 발급) |
 | 대화 이력 DynamoDB Local · RAG 인덱스 버킷 | DB 노드 | `db.yml` (7-7) |
 | `backend-secrets` 의 챗봇 key | 클러스터 | `k8s-cicd.yml` |
-| llm-service · n8n Deployment | 클러스터 | CI `deploy-dev` (차트) |
+| llm-service · n8n Deployment | 클러스터 | ArgoCD (차트 + gitops values, 15-3) |
 
 ### 15-1. 값 설정 (`infra/ansible/.env`)
 
@@ -1117,7 +1217,7 @@ ansible-playbook db.yml -K
 # 3) 클러스터: backend-secrets 에 챗봇 key 반영
 set -a; source .env; source .secrets/gitlab-k8s.env; set +a
 ansible-playbook k8s-cicd.yml -K --tags backend_secrets
-# 4) gitops envs/dev/values.yaml 반영 (15-3) → GitLab 파이프라인 deploy-dev
+# 4) 배포 일정에: deploy-dev ▶ (llm-service · n8n 이 있는 차트 버전) → gitops values MR merge (15-3) → ArgoCD sync
 # 5) RAG 인덱스 1회 적재 (corpus 가 바뀔 때마다 다시)
 kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
 ```
@@ -1127,7 +1227,11 @@ kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
 
 ### 15-3. dev gitops 값 (최초 1회)
 
-`backend-deploy/gitops-seed` 는 gitops 레포를 **처음 만들 때만** 반영됩니다. 이미 있는 `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` 에는 아래를 직접 커밋합니다.
+`backend-deploy/gitops-seed` 는 gitops 레포를 **처음 만들 때만** 반영됩니다. 이미 있는 `team04/infra/backend-gitops` 에는 아래를 `envs/dev/values.yaml` 에 넣는 **MR 을 미리 만들어 두고 배포 일정에 merge** 합니다.
+
+- `main` 에 먼저 넣으면 안 됩니다. 그 시점의 차트(`apps/dev/backend.yaml` 의 `targetRevision`)에 llm-service 가 없으면 `backend` 앱이 `Failed to load target state`(`nil pointer evaluating … hpa.enabled`)로 멈추고, 있으면 일정보다 먼저 배포됩니다.
+- 순서: ① 차트에 llm-service · n8n 이 있는 버전(`3d5f513` 이후)의 `deploy-dev` ▶ → 새 버전 Healthy 확인 → ② 이 MR merge → ③ 15-4 검증 · RAG 적재. ① · ② 사이에는 chat-bot-service 가 DynamoDB 설정 없이 떠 있으므로 바로 이어서 진행합니다.
+- 되돌리기: ② 의 merge 커밋을 revert 하면 prune 이 llm-service · n8n 을 지우고 chat-bot-service 도 이전 설정으로 돌아갑니다.
 
 ```yaml
 services:

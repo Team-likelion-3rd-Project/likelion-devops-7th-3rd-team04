@@ -1,5 +1,5 @@
-# 도메인 구매 후 사용 (구매 전에는 tfvars 없이 apply)
-# cp terraform.tfvars.example terraform.tfvars 후 등록한 도메인으로 수정
+# 도메인 · 인증서는 variables.tf 기본값(meomulm.click, enable_certificate = true)을 쓰므로 tfvars 가 필요 없다.
+# 다른 도메인으로 시험할 때만 cp terraform.tfvars.example terraform.tfvars 후 수정
 domain_name = "example.click"
 
 # 이 계정에서 구매했으면 import 와 함께 바로 true, 다른 계정이면 NS 위임 확인 후 true (dns.tf 상단 주석 참고)

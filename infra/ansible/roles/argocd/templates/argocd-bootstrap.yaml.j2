@@ -1,0 +1,64 @@
+# Ansible(roles/argocd) 이 관리 — 직접 수정 금지
+#
+# AppProject 2개 + root Application. 앱 목록(Application)은 gitops 레포 apps/dev/ 가 기준
+#   bootstrap : root(dev-apps) 전용 — argocd 네임스페이스의 Application 만 만들 수 있음
+#   backend   : backend 차트 전용 — {{ backend_namespace }} 네임스페이스의 namespaced 리소스만 (클러스터 범위 리소스 불가)
+# application-controller 자체는 cluster-admin 이므로, 앱이 할 수 있는 범위는 AppProject 로 좁힘
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: bootstrap
+  namespace: {{ argocd_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+spec:
+  description: gitops 레포 apps/dev 의 Application 목록 (root app 전용)
+  sourceRepos:
+    - {{ argocd_gitops_repo_url | to_json }}
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: {{ argocd_namespace }}
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      kind: Application
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: backend
+  namespace: {{ argocd_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+spec:
+  description: backend 차트 (차트 = {{ gitlab_app_project_path }}, values = {{ gitlab_gitops_project_path }})
+  sourceRepos:
+    - {{ argocd_app_repo_url | to_json }}
+    - {{ argocd_gitops_repo_url | to_json }}
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: {{ backend_namespace }}
+  # 차트는 namespaced 리소스만 만듦. Namespace 는 Ansible(backend_namespace role)이 생성
+  clusterResourceWhitelist: []
+---
+# root app — apps/dev/*.yaml 의 Application 을 만들고 지움 (파일 삭제 시 Application 만 삭제, 앱 리소스는 남음: finalizer 없음)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dev-apps
+  namespace: {{ argocd_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+spec:
+  project: bootstrap
+  source:
+    repoURL: {{ argocd_gitops_repo_url | to_json }}
+    targetRevision: {{ gitlab_default_branch }}
+    path: apps/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ argocd_namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

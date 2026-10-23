@@ -17,15 +17,15 @@ variable "region" {
 }
 
 variable "domain_name" {
-  description = "서비스 루트 도메인 (예: example.click). 등록한 도메인과 같아야 한다. null 이면 Zone/인증서를 만들지 않는다"
+  description = "서비스 루트 도메인. 등록한 도메인과 같아야 한다 (운영 계정 Route53 에서 등록). null 이면 Zone/인증서를 만들지 않는다"
   type        = string
-  default     = null
+  default     = "meomulm.click"
 }
 
 variable "enable_certificate" {
-  description = "ACM 인증서 생성 여부. NS 위임이 끝난 뒤에 true 로 바꾼다 (dns.tf 상단 주석 참고)"
+  description = "ACM 인증서 생성 여부. 도메인 NS 가 이 Zone 을 가리킨 뒤에 켠다 (dns.tf 상단 주석 참고)"
   type        = bool
-  default     = false
+  default     = true
 
   validation {
     condition     = !var.enable_certificate || var.domain_name != null
@@ -67,7 +67,7 @@ variable "oidc_bucket_name" {
 variable "create_github_oidc_provider" {
   description = "GitHub OIDC 공급자(token.actions.githubusercontent.com)를 이 스택에서 만든다. 계정에 하나만 존재할 수 있어, 다른 팀이 먼저 만들었으면 false 로 두고 기존 공급자를 쓴다"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "gitops_oidc_subject_prefix" {

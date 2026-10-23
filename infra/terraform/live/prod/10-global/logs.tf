@@ -2,6 +2,7 @@
 #   app-logs/       Fluent Bit (메인 클러스터 · 결제 EC2) — IAM Role 로 쓰므로 버킷 정책 불필요
 #                   Object Lock 버킷이라 Fluent Bit s3 output 에 send_content_md5 true 필요
 #   vpc-flow-logs/  VPC Flow Logs (20-network)
+#   network-firewall/  결제 VPC Network Firewall flow 로그 (20-network)
 #   alb/            ALB 액세스 로그 (80-main-edge)
 #
 # 버킷 정책은 버킷당 하나라 여러 스택이 나눠 가질 수 없으므로, 로그 전달 서비스 권한을 여기서 미리 열어 둔다.
@@ -123,7 +124,7 @@ data "aws_iam_policy_document" "logs" {
     }
   }
 
-  # VPC Flow Logs → vpc-flow-logs/
+  # VPC Flow Logs → vpc-flow-logs/, Network Firewall flow 로그 → network-firewall/ (둘 다 delivery.logs 가 쓴다)
   statement {
     sid       = "FlowLogsAclCheck"
     actions   = ["s3:GetBucketAcl"]
@@ -148,9 +149,12 @@ data "aws_iam_policy_document" "logs" {
   }
 
   statement {
-    sid       = "FlowLogsWrite"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.logs.arn}/vpc-flow-logs/AWSLogs/${local.account_id}/*"]
+    sid     = "FlowLogsWrite"
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.logs.arn}/vpc-flow-logs/AWSLogs/${local.account_id}/*",
+      "${aws_s3_bucket.logs.arn}/network-firewall/AWSLogs/${local.account_id}/*",
+    ]
 
     principals {
       type        = "Service"

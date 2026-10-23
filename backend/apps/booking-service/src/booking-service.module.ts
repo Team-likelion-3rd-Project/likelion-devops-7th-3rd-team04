@@ -14,11 +14,13 @@ import { BookingServiceService } from './booking-service.service';
 import { ReservationFacilityService } from './reservation-facility.service';
 import { RoomAssignmentService } from './room-assignment.service';
 import { AdminBookingService } from './admin-booking.service';
+import { ReservationExpiryService } from './reservation-expiry.service';
 import { PaymentResultConsumer } from './payment-result/payment-result.consumer';
 import { Reservation } from './entities/reservation.entity';
 import { ReservationFacility } from './entities/reservation-facility.entity';
 import { PaymentAttempt } from './entities/payment-attempt.entity';
 import { PaymentResultInbox } from './entities/payment-result-inbox.entity';
+import { RefundRequestWorker } from './refund-request.worker';
 
 @Module({
   imports: [
@@ -98,8 +100,12 @@ import { PaymentResultInbox } from './entities/payment-result-inbox.entity';
     RoomAssignmentService,
     // 관리자 대리 예약·직원 취소·투숙 연장 (LDP-90)
     AdminBookingService,
+    // 결제 마감 지난 결제 대기 예약 자동 만료 배치 (LDP-92)
+    ReservationExpiryService,
     // 결제 결과 이벤트 수신 (SQS FIFO / ElasticMQ -> payment_result_inbox, LDP-26)
     PaymentResultConsumer,
+    // 환불 필요 대기열(pending_refunds)을 결제 서비스에 전달될 때까지 재시도 (LDP-97)
+    RefundRequestWorker,
     { provide: SQS_CLIENT, useFactory: createSqsClient },
   ],
 })

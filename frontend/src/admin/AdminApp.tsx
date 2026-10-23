@@ -9,6 +9,7 @@ import AdminHotelsPage from './pages/AdminHotelsPage'
 import AdminHotelDetailPage from './pages/AdminHotelDetailPage'
 import AdminRoomDetailPage from './pages/AdminRoomDetailPage'
 import AdminRoomAssignmentsPage from './pages/AdminRoomAssignmentsPage'
+import AdminReservationsPage from './pages/AdminReservationsPage'
 
 // /admin/* 전용 서브 라우터. 고객 프론트의 라우트 트리와 분리되어 있고,
 // App.tsx에서 React.lazy로만 불러오므로 별도 청크로 코드 스플리팅된다.
@@ -25,6 +26,7 @@ function AdminApp() {
           <Route path="hotels/:hotelId" element={<AdminHotelDetailPage />} />
           <Route path="hotels/:hotelId/rooms/:roomId" element={<AdminRoomDetailPage />} />
           <Route path="room-assignments" element={<AdminRoomAssignmentsPage />} />
+          <Route path="reservations" element={<AdminReservationsPage />} />
         </Route>
       </Route>
     </Routes>

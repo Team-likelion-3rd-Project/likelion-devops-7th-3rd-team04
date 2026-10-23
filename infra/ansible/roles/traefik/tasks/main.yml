@@ -1,6 +1,16 @@
 ---
 # helm upgrade 는 값이 같아도 revision 을 새로 만들기 때문에,
 # 설치된 chart 버전과 values 가 원하는 상태와 같으면 건너뜁니다.
+# Ingress status 에 기록할 진입 주소 (개발자 PC 가 접속하는 control plane 의 Tailscale IP)
+- name: control plane Tailscale IP 조회
+  ansible.builtin.command: tailscale ip -4
+  register: traefik_ts_ip
+  changed_when: false
+
+- name: Ingress 진입 주소 fact 등록
+  ansible.builtin.set_fact:
+    traefik_ingress_endpoint_ip: "{{ traefik_ts_ip.stdout_lines | first }}"
+
 - name: values 파일 생성
   ansible.builtin.template:
     src: traefik-values.yaml.j2

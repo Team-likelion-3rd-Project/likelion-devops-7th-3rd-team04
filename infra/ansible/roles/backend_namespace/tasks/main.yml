@@ -1,8 +1,25 @@
 ---
-# backend 네임스페이스에 차트가 참조하는 Secret 2개를 만듭니다. (namespace 자체는 gitlab_agent role 이 생성)
+# backend 네임스페이스와, 차트가 참조하는 Secret 2개를 만듭니다. (차트 · ArgoCD 는 Namespace 를 만들지 않음 — CreateNamespace=false)
 #   gitlab-registry : GitLab Container Registry pull (그룹 Deploy Token, read_registry)
 #   backend-secrets : DB 비밀번호·JWT secret 등 — backend/.env 를 단일 소스로 (db.yml 과 같은 방식)
 # 값은 stdin 으로 kubectl apply 에 넘겨 노드 디스크에 남기지 않습니다.
+- name: 네임스페이스 ({{ backend_namespace }})
+  vars:
+    manifest:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ backend_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: ansible
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: "{{ manifest | to_json }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: backend_ns_apply
+  changed_when: "'configured' in backend_ns_apply.stdout or 'created' in backend_ns_apply.stdout"
+
 - name: 레지스트리 pull Secret ({{ backend_namespace }}/gitlab-registry)
   vars:
     dockerconfig:
@@ -30,17 +47,19 @@
   changed_when: "'configured' in pull_secret_apply.stdout or 'created' in pull_secret_apply.stdout"
   no_log: true
 
-- name: 챗봇 AI 스택 값 확인 (infra/ansible/.env)
+- name: 객실 이미지 · 챗봇 AI 스택 값 확인 (infra/ansible/.env)
   ansible.builtin.assert:
     that:
+      - lookup('env', 'MINIO_APP_ACCESS_KEY') | length > 0
+      - lookup('env', 'MINIO_APP_SECRET_KEY') | length > 0
       - gcp_sa_key_file | length > 0
       - lookup('env', 'MINIO_RAG_ACCESS_KEY') | length > 0
       - lookup('env', 'MINIO_RAG_SECRET_KEY') | length > 0
       - lookup('env', 'N8N_INIT_OWNER_PASSWORD') | length >= 8
       - db_ts_ip | length > 0
     fail_msg: >-
-      GCP_SA_KEY_FILE / MINIO_RAG_ACCESS_KEY / MINIO_RAG_SECRET_KEY / N8N_INIT_OWNER_PASSWORD(8자 이상) / DB_TS_IP 가
-      비어 있습니다. infra/ansible/.env 를 채우고 다시 source 하세요 (README 15절).
+      MINIO_APP_ACCESS_KEY / MINIO_APP_SECRET_KEY / GCP_SA_KEY_FILE / MINIO_RAG_ACCESS_KEY / MINIO_RAG_SECRET_KEY /
+      N8N_INIT_OWNER_PASSWORD(8자 이상) / DB_TS_IP 가 비어 있습니다. infra/ansible/.env 를 채우고 다시 source 하세요 (README 7-6, 15절).
     quiet: true
   no_log: true
 
@@ -129,5 +148,5 @@
     msg:
       - "Secret {{ backend_namespace }}/gitlab-registry ({{ gitlab_registry }}), {{ backend_namespace }}/{{ backend_secret_name }} 적용"
       - >-
-        backend-secrets 는 Pod 기동 시에만 읽힙니다. 값을 바꿨다면 CI deploy-dev 를 다시 실행하거나
-        kubectl -n {{ backend_namespace }} rollout restart deployment 로 재기동하세요.
+        backend-secrets 는 Pod 기동 시에만 읽힙니다. 값을 바꿨다면
+        kubectl -n {{ backend_namespace }} rollout restart deployment 로 재기동하세요 (ArgoCD selfHeal 이 되돌리지 않음).

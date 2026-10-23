@@ -8,5 +8,6 @@ dependency "global" {
 }
 
 inputs = {
-  log_bucket_arn = dependency.global.outputs.log_bucket_arn
+  log_bucket_arn  = dependency.global.outputs.log_bucket_arn
+  log_bucket_name = dependency.global.outputs.log_bucket_name
 }

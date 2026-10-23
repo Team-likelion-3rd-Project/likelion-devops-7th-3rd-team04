@@ -88,9 +88,3 @@ variable "waf_rate_limit_window_sec" {
     error_message = "waf_rate_limit_window_sec 는 60, 120, 300, 600 중 하나여야 합니다."
   }
 }
-
-variable "waf_large_body_path_regex" {
-  description = "WAF 본문 크기 제한(8KB)에서 뺄 URI 경로 정규식. 기본값은 객실 등록 · 수정 API (Base64 이미지 본문)"
-  type        = string
-  default     = "^/api/hotels/[^/]+/rooms(/[^/]+)?$"
-}

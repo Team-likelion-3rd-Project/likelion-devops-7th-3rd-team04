@@ -55,6 +55,35 @@
       become: false
       tags: [always]
 
+    # 항목마다 결과(bool)만 넘겨 값은 출력하지 않음 — no_log 없이 원인별 메시지를 보여줌
+    - name: 결제 PG 설정 확인 (backend/.env)
+      ansible.builtin.assert:
+        that: item.ok | bool
+        fail_msg: "{{ item.msg }}"
+        quiet: true
+      loop:
+        - name: PAYMENT_PROVIDER
+          ok: "{{ payment_provider in ['MOCK', 'TOSS'] }}"
+          msg: PAYMENT_PROVIDER 는 MOCK 또는 TOSS 만 쓸 수 있습니다 (비우면 MOCK).
+        - name: TOSS_SECRET_KEY
+          ok: "{{ payment_provider != 'TOSS' or toss_secret_key is regex('^(test|live)_gsk_[A-Za-z0-9_-]+$') }}"
+          msg: >-
+            PAYMENT_PROVIDER=TOSS 이면 TOSS_SECRET_KEY 에 결제위젯 연동 키의 시크릿 키(test_gsk_… / live_gsk_…)가 필요합니다.
+            API 개별 연동 키(test_sk_…)나 클라이언트 키(test_gck_…)는 쓸 수 없습니다.
+        - name: TOSS_API_BASE_URL
+          ok: >-
+            {{ toss_api_base_url | length == 0 or
+               (toss_api_base_url is match('https://') and toss_api_base_url is regex(secret_charset_regex)) }}
+          msg: >-
+            TOSS_API_BASE_URL 은 비우거나(기본 https://api.tosspayments.com) https:// 주소여야 합니다.
+            공백, 따옴표, 역슬래시, $, #, ` 는 쓸 수 없습니다.
+      loop_control:
+        label: "{{ item.name }}"
+      run_once: true
+      delegate_to: localhost
+      become: false
+      tags: [always]
+
     - name: 선행 패키지 설치
       ansible.builtin.apt:
         name: [ca-certificates, curl, git, python3-debian, ufw]

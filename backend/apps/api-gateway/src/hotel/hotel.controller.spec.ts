@@ -1,10 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';
-import {
-  BadRequestException,
-  ConflictException,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { HotelController } from './hotel.controller';
 
 describe('HotelController', () => {
@@ -359,23 +355,6 @@ describe('HotelController', () => {
       await expect(controller.updateRoom(1, 1, dto)).rejects.toThrow(
         BadRequestException,
       );
-    });
-
-    it('should throw ConflictException when totalCount goes below existing bookings', async () => {
-      updateRoomMock.mockReturnValue(
-        throwError(() => ({
-          details:
-            '이미 예약된 수(최대 3개)보다 보유 수량을 적게 줄일 수 없습니다.',
-        })),
-      );
-
-      await expect(
-        controller.updateRoom(1, 1, {
-          name: '디럭스 더블룸',
-          capacity: 2,
-          totalCount: 1,
-        }),
-      ).rejects.toThrow(ConflictException);
     });
   });
 

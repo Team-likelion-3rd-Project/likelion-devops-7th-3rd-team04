@@ -1,8 +1,9 @@
-# 온프레미스 dev 클러스터 (agent: team04/infra/k8s-agents:dev-agent, namespace: backend)
+# 온프레미스 dev 클러스터 (ArgoCD backend 앱 — apps/dev/backend.yaml, namespace: backend)
 # 차트: GitHub 모노레포 backend-deploy/charts/backend (기본값은 그 values.yaml)
 #
 # global.imageTag 는 CI deploy-dev job 이 커밋 SHA 로 갱신하고 커밋합니다 — 직접 고치지 마세요.
-# 나머지 값(리소스, env, Ingress 등)은 이 파일을 MR/커밋으로 고치면 다음 배포부터 반영됩니다.
+# main 에 커밋하면 ArgoCD 가 최대 3분 안에 클러스터에 반영합니다 (main 커밋 = 배포).
+# 배포 일정에 맞춰 반영할 변경은 브랜치 · MR 로 준비해 두고 배포 시점에 merge 하세요.
 global:
   imageRegistry: {{ gitlab_fqdn }}:{{ gitlab_registry_port }}
   imageRepositoryPrefix: {{ gitlab_app_project_path }}/
@@ -34,6 +35,14 @@ services:
     #   PAYMENT_RESULT_QUEUE_URL: "http://<payment ts ip>:9324/000000000000/payment-result.fifo"
     #   AWS_ACCESS_KEY_ID: elasticmq        # ElasticMQ 용 더미 (검증 안 함)
     #   AWS_SECRET_ACCESS_KEY: elasticmq
+  # 객실 이미지는 DB 노드 MinIO 의 room-images 버킷 (infra/ansible README 7-6). 주소 · 앱 키는 Ansible(k8s-cicd.yml)이 backend-secrets 에 넣음
+  hotel-service:
+    env:
+      S3_REGION: ap-northeast-2   # MinIO 에서는 의미 없지만 SDK 서명에 필요해 고정
+      S3_BUCKET: room-images
+      S3_FORCE_PATH_STYLE: "true"
+    # 리스트는 차트 기본값을 덮어쓰므로 DB_* 도 다시 적음
+    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY]
   pg-mock-service:
     # 결제 노드의 payment-service 가 HTTP 로 호출 (<control plane Tailscale IP>:30307)
     nodePort: 30307

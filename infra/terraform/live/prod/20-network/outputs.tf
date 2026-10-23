@@ -1,6 +1,7 @@
 # 다른 스택은 dependency.network.outputs.<vpc>.subnet_ids.<계층> 처럼 읽는다.
 #   main.subnet_ids       : public / worker / cp (enable_control_plane_subnets) / db
-#   payment.subnet_ids    : public / lb / app / db
+#   payment.subnet_ids    : public / firewall (NFW 전용) / lb / app / db, payment.gateway_endpoint_ids.s3 는 44-payment-endpoints 가 정책을 붙인다
+#   payment.app_static_cidr : app-a 서브넷의 자동 할당 제외 대역. 고정 IP 인스턴스(61-payment-mock)가 이 안에서 IP 를 고른다
 #   deployment.subnet_ids : public / runner
 
 output "main" {
@@ -16,14 +17,16 @@ output "main" {
 }
 
 output "payment" {
-  description = "Payment VPC (vpc_id, vpc_cidr, subnet_ids, subnet_ids_by_az, route_table_ids, nat_public_ips)"
+  description = "Payment VPC (vpc_id, vpc_cidr, subnet_ids, subnet_ids_by_az, route_table_ids, nat_public_ips, gateway_endpoint_ids, app_static_cidr)"
   value = {
-    vpc_id           = module.payment.vpc_id
-    vpc_cidr         = module.payment.vpc_cidr
-    subnet_ids       = module.payment.subnet_ids
-    subnet_ids_by_az = module.payment.subnet_ids_by_az
-    route_table_ids  = module.payment.route_table_ids
-    nat_public_ips   = module.payment.nat_public_ips
+    vpc_id               = module.payment.vpc_id
+    vpc_cidr             = module.payment.vpc_cidr
+    subnet_ids           = module.payment.subnet_ids
+    subnet_ids_by_az     = module.payment.subnet_ids_by_az
+    route_table_ids      = module.payment.route_table_ids
+    nat_public_ips       = module.payment.nat_public_ips
+    gateway_endpoint_ids = module.payment.gateway_endpoint_ids
+    app_static_cidr      = aws_ec2_subnet_cidr_reservation.payment_app_static.cidr_block
   }
 }
 
