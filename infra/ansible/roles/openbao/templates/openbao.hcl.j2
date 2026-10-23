@@ -1,0 +1,24 @@
+# Ansible(roles/openbao)이 생성 — 직접 수정하지 마세요.
+ui           = true
+api_addr     = "http://{{ ts_ip }}:{{ openbao_port }}"
+cluster_addr = "https://127.0.0.1:{{ openbao_cluster_port }}"
+
+# 단일 노드 raft (DB 노드 한 대). 백업: bao operator raft snapshot save (README 16-5)
+storage "raft" {
+  path    = "/openbao/file"
+  node_id = "{{ node_name }}"
+}
+
+# TLS 없음 — tailnet(WireGuard) 안에서만 접근 (ufw: tailscale0 만 허용, MinIO · DynamoDB Local 과 같은 기준)
+listener "tcp" {
+  address         = "0.0.0.0:{{ openbao_port }}"
+  cluster_address = "127.0.0.1:{{ openbao_cluster_port }}"
+  tls_disable     = true
+}
+
+# 키 파일로 자동 unseal. 키를 잃으면 데이터를 복구할 수 없음 — 로컬 .secrets/openbao/unseal.key 에 백업 (README 16-5)
+# key id 는 키의 sha256 앞부분 — 키가 바뀌면 id 도 바뀜
+seal "static" {
+  current_key_id = "{{ openbao_key_id }}"
+  current_key    = "file:///openbao/config/unseal.key"
+}

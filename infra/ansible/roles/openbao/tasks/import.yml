@@ -1,0 +1,136 @@
+---
+# 기존 .env · backend/.env · .secrets/*.env 값을 OpenBao 로 옮깁니다 (README 16-3). db.yml 이 매번 실행하지만
+#   - 경로가 이미 있으면 건너뜀 (덮어쓰지 않음 — 이관 뒤에는 OpenBao 가 원본)
+#   - 속성이 하나라도 비어 있는 경로는 건너뜀 (그 값을 가진 PC 에서 db.yml --tags openbao_import 로 다시)
+# 경로 · 속성 이름은 운영 Secrets Manager(team04-hotel/prod/*)와 같게 — env 만 다름
+- name: Tailscale IP 조회 (--tags openbao_import 단독 실행 대비)
+  ansible.builtin.command: tailscale ip -4
+  register: openbao_ts_ip
+  changed_when: false
+  when: ts_ip is not defined
+
+- name: ts_ip fact 등록
+  ansible.builtin.set_fact:
+    ts_ip: "{{ openbao_ts_ip.stdout_lines | first }}"
+  when: ts_ip is not defined
+
+- name: 이관 대상 값 모으기
+  ansible.builtin.set_fact:
+    openbao_import_candidates:
+      main-db:
+        engine: mariadb
+        host: "{{ ts_ip }}"
+        port: "{{ backend_env.DB_PORT | default('3306', true) }}"
+        dbname: "{{ backend_env.DB_DATABASE | default('hotel_service', true) }}"
+        username: "{{ backend_env.DB_USERNAME | default('') }}"
+        password: "{{ backend_env.DB_PASSWORD | default('') }}"
+      main-db-root:
+        password: "{{ backend_env.DB_ROOT_PASSWORD | default('') }}"
+      main-valkey:
+        host: "{{ ts_ip }}"
+        port: "{{ valkey_port }}"
+        password: "{{ lookup('env', 'VALKEY_PASSWORD') }}"
+      backend-app:
+        jwt_access_secret: "{{ backend_env.JWT_ACCESS_SECRET | default('') }}"
+        jwt_refresh_secret: "{{ backend_env.JWT_REFRESH_SECRET | default('') }}"
+        mock_pg_secret: "{{ backend_env.MOCK_PG_SECRET | default('') }}"
+      minio-root:
+        user: "{{ lookup('env', 'MINIO_ROOT_USER') }}"
+        password: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') }}"
+      minio-app:
+        endpoint: "http://{{ ts_ip }}:{{ minio_api_port }}"
+        access_key: "{{ lookup('env', 'MINIO_APP_ACCESS_KEY') }}"
+        secret_key: "{{ lookup('env', 'MINIO_APP_SECRET_KEY') }}"
+      minio-rag:
+        endpoint: "http://{{ ts_ip }}:{{ minio_api_port }}"
+        access_key: "{{ lookup('env', 'MINIO_RAG_ACCESS_KEY') }}"
+        secret_key: "{{ lookup('env', 'MINIO_RAG_SECRET_KEY') }}"
+      dynamodb:
+        endpoint: "http://{{ ts_ip }}:{{ dynamodb_port }}"
+      n8n:
+        init_owner_password: "{{ lookup('env', 'N8N_INIT_OWNER_PASSWORD') }}"
+      # JSON 문자열은 Ansible 이 dict 로 바꾸므로 base64 로 저장 (ESO 가 decodingStrategy: Base64 로 풀어 GCP_SA_KEY_JSON 에 넣음)
+      gcp-sa:
+        key_json_b64: "{{ (lookup('ansible.builtin.file', openbao_import_gcp_key_path, errors='ignore') | default('', true) | b64encode) if openbao_import_gcp_key_file | length > 0 else '' }}"
+      ci-smoke-db:
+        password: "{{ lookup('env', 'CI_SMOKE_DB_PASSWORD') }}"
+      payment-db:
+        engine: mariadb
+        host: 127.0.0.1
+        port: "{{ backend_env.PAYMENT_DB_PORT | default('3306', true) }}"
+        dbname: "{{ backend_env.PAYMENT_DB_DATABASE | default('') }}"
+        username: "{{ backend_env.PAYMENT_DB_USERNAME | default('') }}"
+        password: "{{ backend_env.PAYMENT_DB_PASSWORD | default('') }}"
+      payment-db-root:
+        password: "{{ lookup('env', 'PAYMENT_DB_ROOT_PASSWORD') }}"
+      toss-payments:
+        secret_key: "{{ backend_env.TOSS_SECRET_KEY | default('') | trim }}"
+      # ── playbook 이 만든 .secrets/*.env (gitlab.yml · k8s-cicd.yml · control-plane.yml) — 속성 = 파일의 변수 이름 ──
+      gitlab-k8s: "{{ openbao_import_files['gitlab-k8s.env'] }}"
+      payment-node: "{{ openbao_import_files['payment-node.env'] }}"
+      github-mirror: "{{ openbao_import_files['github-mirror.env'] }}"
+      gitlab-runner: "{{ openbao_import_files['gitlab-runner.env'] }}"
+      aws-ci-runner: "{{ openbao_import_files['aws-ci-runner.env'] }}"
+      argocd: "{{ openbao_import_files['argocd.env'] }}"
+      k8s-join: "{{ openbao_import_files['join.env'] }}"
+      k8s-admin:
+        kubeconfig: "{{ lookup('ansible.builtin.file', local_secrets_dir ~ '/admin.conf', errors='ignore') | default('', true) }}"
+  vars:
+    openbao_import_gcp_key_file: "{{ lookup('env', 'GCP_SA_KEY_FILE') }}"
+    openbao_import_gcp_key_path: >-
+      {{ openbao_import_gcp_key_file if openbao_import_gcp_key_file.startswith('/')
+         else (playbook_dir ~ '/' ~ openbao_import_gcp_key_file) | realpath }}
+    openbao_import_files: >-
+      {%- set out = {} -%}
+      {%- for f in ['gitlab-k8s.env', 'payment-node.env', 'github-mirror.env', 'gitlab-runner.env', 'aws-ci-runner.env', 'argocd.env', 'join.env'] -%}
+        {%- set _ = out.update({f: lookup('ansible.builtin.file', local_secrets_dir ~ '/' ~ f, errors='ignore') | default('', true) | parse_dotenv}) -%}
+      {%- endfor -%}
+      {{ out }}
+  run_once: true
+  no_log: true
+
+# 빈 값이 있거나(그 값이 없는 PC) 파일이 없어 속성이 없는 경로는 제외.
+# .secrets/*.env 는 예전 버전 파일이면 변수가 빠져 있을 수 있어(예: ArgoCD 전환 전 gitlab-k8s.env) 필요한 변수가 모두 있을 때만
+- name: 이관할 경로 고르기
+  ansible.builtin.set_fact:
+    openbao_import_items: >-
+      {%- set out = {} -%}
+      {%- for name, data in openbao_import_candidates.items()
+            if data | length > 0 and data.values() | map('string') | select('equalto', '') | list | length == 0
+               and openbao_import_required_keys.get(name, []) | difference(data.keys() | list) | length == 0 -%}
+        {%- set _ = out.update({name: data}) -%}
+      {%- endfor -%}
+      {{ out }}
+  vars:
+    # 파일에서 읽는 경로의 필수 변수 (만드는 role 의 파일 내용과 같음)
+    openbao_import_required_keys:
+      gitlab-k8s: [GITLAB_URL, GITLAB_TS_IP, GITLAB_REGISTRY, REGISTRY_DEPLOY_USER, REGISTRY_DEPLOY_TOKEN, ARGOCD_REPO_USER, ARGOCD_REPO_TOKEN]
+      payment-node: [GITLAB_URL, GITLAB_TS_IP, GITLAB_REGISTRY, PAYMENT_DEPLOY_USER, PAYMENT_DEPLOY_TOKEN]
+      github-mirror: [GITLAB_HOST, GITLAB_MIRROR_REPO, GITLAB_MIRROR_TOKEN]
+      gitlab-runner: [GITLAB_URL, GITLAB_TS_IP, GITLAB_RUNNER_TOKEN]
+      aws-ci-runner: [GITLAB_URL, GITLAB_TS_IP, GITLAB_RUNNER_TOKEN]
+      argocd: [ARGOCD_URL, ARGOCD_ADMIN_USER, ARGOCD_ADMIN_PASSWORD]
+      k8s-join: [K8S_API_ENDPOINT, K8S_JOIN_TOKEN, K8S_CA_CERT_HASH]
+  run_once: true
+  no_log: true
+
+- name: OpenBao 로 이관 (없는 경로만)
+  ansible.builtin.include_role:
+    name: openbao_kv
+    tasks_from: write
+  vars:
+    openbao_write_path: "{{ openbao_item.key }}"
+    openbao_write_data: "{{ openbao_item.value }}"
+    openbao_write_create_only: true
+  loop: "{{ openbao_import_items | dict2items }}"
+  loop_control:
+    loop_var: openbao_item
+    label: "{{ openbao_item.key }}"
+
+- name: 이관 결과
+  ansible.builtin.debug:
+    msg:
+      - "이관 대상(값이 모두 있는 경로): {{ openbao_import_items.keys() | join(', ') }}"
+      - "건너뜀(이 PC 에 값이 없거나 비어 있음): {{ openbao_import_candidates.keys() | difference(openbao_import_items.keys()) | join(', ') }}"
+      - "이미 OpenBao 에 있는 경로는 덮어쓰지 않습니다. 이관 뒤 .env 의 해당 값은 지워도 됩니다 (README 16-3)."
+  run_once: true

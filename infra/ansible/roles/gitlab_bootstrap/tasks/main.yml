@@ -2,7 +2,8 @@
 # CI/CD 에 필요한 GitLab 리소스를 REST API 로 멱등하게 맞춥니다. (--tags bootstrap 단독 실행 가능)
 #   그룹/프로젝트 → gitops 초기 values · apps/dev → Deploy Token(k8s 레지스트리 / ArgoCD 레포 / 결제 노드)
 #   → gitops push 토큰(CI 변수) → 미러 push 토큰 → 보호 브랜치 → smoke test CI 변수 → 레지스트리 cleanup policy
-# 발급된 토큰은 로컬 .secrets/gitlab-k8s.env, .secrets/github-mirror.env, .secrets/payment-node.env 에 저장 (이미 있으면 재사용)
+# 발급된 토큰은 OpenBao gitlab-k8s · github-mirror · payment-node 와 로컬 .secrets/<같은 이름>.env 에 저장 (이미 있으면 재사용).
+# OpenBao 가 있으면 OpenBao 값을 우선 재사용 — 파일이 없는 팀원 PC 에서 실행해도 토큰을 다시 발급하지 않음 (README 16-7)
 - name: Tailscale 정보 조회 (--tags bootstrap 단독 실행 대비)
   ansible.builtin.command: tailscale status --self --peers=false --json
   register: gl_ts_self
@@ -30,6 +31,13 @@
   delegate_to: localhost
   become: false
 
+- name: OpenBao 값 읽기 (기존 토큰 · smoke test 값)
+  ansible.builtin.include_role:
+    name: openbao_kv
+    tasks_from: read
+  vars:
+    openbao_read_paths: "{{ gitlab_openbao_paths }}"
+
 - name: 기존 토큰 파일 확인
   ansible.builtin.stat:
     path: "{{ local_secrets_dir }}/{{ item }}"
@@ -38,17 +46,18 @@
   delegate_to: localhost
   become: false
 
+# OpenBao 값 → 로컬 파일 순으로 사용
 - name: 기존 토큰 읽기
   ansible.builtin.set_fact:
     gl_k8s_env: >-
-      {{ (lookup('ansible.builtin.file', local_secrets_dir ~ '/gitlab-k8s.env') | parse_dotenv)
-         if gl_secret_files.results[0].stat.exists else {} }}
+      {{ openbao_kv['gitlab-k8s'] | default((lookup('ansible.builtin.file', local_secrets_dir ~ '/gitlab-k8s.env') | parse_dotenv)
+         if gl_secret_files.results[0].stat.exists else {}) }}
     gl_mirror_env: >-
-      {{ (lookup('ansible.builtin.file', local_secrets_dir ~ '/github-mirror.env') | parse_dotenv)
-         if gl_secret_files.results[1].stat.exists else {} }}
+      {{ openbao_kv['github-mirror'] | default((lookup('ansible.builtin.file', local_secrets_dir ~ '/github-mirror.env') | parse_dotenv)
+         if gl_secret_files.results[1].stat.exists else {}) }}
     gl_payment_env: >-
-      {{ (lookup('ansible.builtin.file', local_secrets_dir ~ '/payment-node.env') | parse_dotenv)
-         if gl_secret_files.results[2].stat.exists else {} }}
+      {{ openbao_kv['payment-node'] | default((lookup('ansible.builtin.file', local_secrets_dir ~ '/payment-node.env') | parse_dotenv)
+         if gl_secret_files.results[2].stat.exists else {}) }}
   no_log: true
 
 # ── 단기 관리자 토큰 ───────────────────────────────────────
@@ -446,10 +455,45 @@
       become: false
       no_log: true
 
+    # 파일과 같은 값을 OpenBao 에도 (k8s-cicd.yml · payment.yml 이 OpenBao 에서 읽음)
+    - name: OpenBao 저장 (gitlab-k8s · payment-node · github-mirror)
+      ansible.builtin.include_role:
+        name: openbao_kv
+        tasks_from: write
+      vars:
+        openbao_write_path: "{{ gl_bundle.path }}"
+        openbao_write_data: "{{ gl_bundle.data }}"
+      loop:
+        - path: gitlab-k8s
+          data:
+            GITLAB_URL: "{{ gitlab_url }}"
+            GITLAB_TS_IP: "{{ ts_ip }}"
+            GITLAB_REGISTRY: "{{ gitlab_fqdn }}:{{ gitlab_registry_port }}"
+            REGISTRY_DEPLOY_USER: "{{ gl_k8s_env.REGISTRY_DEPLOY_USER | default('') }}"
+            REGISTRY_DEPLOY_TOKEN: "{{ gl_k8s_env.REGISTRY_DEPLOY_TOKEN | default('') }}"
+            ARGOCD_REPO_USER: "{{ gl_k8s_env.ARGOCD_REPO_USER | default('') }}"
+            ARGOCD_REPO_TOKEN: "{{ gl_k8s_env.ARGOCD_REPO_TOKEN | default('') }}"
+        - path: payment-node
+          data:
+            GITLAB_URL: "{{ gitlab_url }}"
+            GITLAB_TS_IP: "{{ ts_ip }}"
+            GITLAB_REGISTRY: "{{ gitlab_fqdn }}:{{ gitlab_registry_port }}"
+            PAYMENT_DEPLOY_USER: "{{ gl_payment_env.PAYMENT_DEPLOY_USER | default('') }}"
+            PAYMENT_DEPLOY_TOKEN: "{{ gl_payment_env.PAYMENT_DEPLOY_TOKEN | default('') }}"
+        - path: github-mirror
+          data:
+            GITLAB_HOST: "{{ gitlab_fqdn }}"
+            GITLAB_MIRROR_REPO: "{{ gitlab_app_project_path }}"
+            GITLAB_MIRROR_TOKEN: "{{ gl_mirror_env.GITLAB_MIRROR_TOKEN | default('') }}"
+      loop_control:
+        loop_var: gl_bundle
+        label: "{{ gl_bundle.path }}"
+
 - name: 안내
   ansible.builtin.debug:
     msg:
       - "GitLab 프로젝트: {{ gitlab_url }}/{{ gitlab_app_project_path }} (미러), {{ gitlab_gitops_project_path }}"
+      - "토큰은 OpenBao {{ openbao_kv_prefix }}/gitlab-k8s · payment-node · github-mirror 에도 저장 (OPENBAO_ADDR 이 있을 때)"
       - "k8s 용 토큰: {{ local_secrets_dir }}/gitlab-k8s.env → k8s-cicd.yml 실행 시 source"
       - "GitHub 용 토큰: {{ local_secrets_dir }}/github-mirror.env → GitHub Actions Secrets 등록"
       - "결제 노드 용 토큰: {{ local_secrets_dir }}/payment-node.env → payment.yml 실행 시 source"

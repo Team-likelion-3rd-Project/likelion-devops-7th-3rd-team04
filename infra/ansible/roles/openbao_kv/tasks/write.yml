@@ -1,0 +1,45 @@
+---
+# OpenBao KV v2 의 <openbao_kv_prefix>/<openbao_write_path> 에 openbao_write_data(dict, 값은 문자열)를 씁니다 (README 16절).
+#   openbao_write_create_only: true → 경로가 없을 때만 씀 (이미 있으면 그대로 둠 — .env 값 이관용)
+# 현재 값과 같으면 쓰지 않음 (버전이 쌓이지 않고 changed 도 아님). OPENBAO_ADDR 가 비어 있으면 건너뜀
+- name: "OpenBao 쓰기 ({{ openbao_write_path }})"
+  when: openbao_addr | length > 0
+  become: false
+  block:
+    - name: "OpenBao 현재 값 ({{ openbao_write_path }})"
+      ansible.builtin.uri:
+        url: "{{ openbao_addr }}/v1/{{ openbao_kv_mount }}/data/{{ openbao_kv_prefix }}/{{ openbao_write_path }}"
+        headers:
+          X-Vault-Token: "{{ openbao_token }}"
+        status_code: [200, 404]
+      register: openbao_current
+      failed_when: false
+      run_once: true
+      no_log: true
+
+    - name: "OpenBao 현재 값 확인 ({{ openbao_write_path }})"
+      ansible.builtin.assert:
+        that: openbao_current.status | default(-1) in [200, 404]
+        fail_msg: >-
+          OpenBao {{ openbao_kv_prefix }}/{{ openbao_write_path }} 조회 실패 (HTTP {{ openbao_current.status | default('?') }}, {{ openbao_addr }}).
+          403 이면 토큰 만료 · 정책, -1 이면 접속 불가를 확인하세요 (README 16-6).
+        quiet: true
+      run_once: true
+
+    - name: "OpenBao 값 저장 ({{ openbao_write_path }})"
+      ansible.builtin.uri:
+        url: "{{ openbao_addr }}/v1/{{ openbao_kv_mount }}/data/{{ openbao_kv_prefix }}/{{ openbao_write_path }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ openbao_token }}"
+        body_format: json
+        body:
+          data: "{{ openbao_write_data }}"
+        status_code: [200, 204]
+      when: >-
+        openbao_current.status == 404 or
+        (not (openbao_write_create_only | default(false) | bool)
+         and openbao_current.json.data.data != openbao_write_data)
+      changed_when: true
+      run_once: true
+      no_log: true

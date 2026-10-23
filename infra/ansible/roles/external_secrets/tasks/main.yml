@@ -1,0 +1,223 @@
+---
+# External Secrets Operator 설치 + OpenBao 연결(Kubernetes auth · ClusterSecretStore) (README 16절).
+# backend-secrets(ExternalSecret)는 backend_namespace role 이 만듦. 운영은 gitops 레포 envs/prod/external-secrets · cluster-secret-store
+#   ESO → OpenBao : ESO ServiceAccount 토큰으로 auth/kubernetes 로그인 → eso-dev 정책(backend-secrets 원본 경로 읽기만)
+#   OpenBao → k8s : 받은 토큰을 그대로 써서 TokenReview (ACL: tag:db → tag:k8s-node tcp:6443) → ESO SA 에 system:auth-delegator
+- name: OpenBao 설정 확인
+  ansible.builtin.assert:
+    that:
+      - openbao_addr | length > 0
+      - openbao_token | length > 0
+    fail_msg: >-
+      OPENBAO_ADDR / OPENBAO_TOKEN 이 비어 있습니다. db.yml 로 OpenBao 를 먼저 구성하고
+      set -a; source .env; source .secrets/openbao.env; set +a 후 다시 실행하세요 (README 16-2).
+    quiet: true
+  run_once: true
+
+- name: 작업 디렉토리
+  ansible.builtin.file:
+    path: "{{ external_secrets_manifest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# helm upgrade 는 값이 같아도 revision 을 새로 만들기 때문에 (traefik role 과 같은 방식)
+# 설치된 chart 버전과 values 가 원하는 상태와 같으면 건너뜁니다.
+- name: values 파일
+  ansible.builtin.template:
+    src: external-secrets-values.yaml.j2
+    dest: "{{ external_secrets_manifest_dir }}/external-secrets-values.yaml"
+    mode: "0644"
+
+- name: 설치된 External Secrets release 조회
+  ansible.builtin.command: >-
+    helm list -n {{ external_secrets_namespace }} --filter '^external-secrets$' -o json
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: eso_release
+  changed_when: false
+
+- name: 적용된 values 조회
+  ansible.builtin.command: helm get values external-secrets -n {{ external_secrets_namespace }} -o json
+  environment: *kubeconfig
+  register: eso_values_applied
+  changed_when: false
+  when: eso_release.stdout | from_json | length > 0
+
+- name: External Secrets Operator 설치 / 업그레이드
+  ansible.builtin.command: >-
+    helm upgrade --install external-secrets external-secrets
+    --repo {{ external_secrets_chart_repo }}
+    --version {{ external_secrets_chart_version }}
+    -n {{ external_secrets_namespace }} --create-namespace
+    -f {{ external_secrets_manifest_dir }}/external-secrets-values.yaml
+    --wait --timeout 10m
+  environment: *kubeconfig
+  # 지난 설치가 --wait 시간 초과 등으로 failed 로 남았으면 values 가 같아도 다시 설치
+  when: >-
+    (eso_release.stdout | from_json | length == 0)
+    or ((eso_release.stdout | from_json | first).status != 'deployed')
+    or ((eso_release.stdout | from_json | first).chart != 'external-secrets-' ~ external_secrets_chart_version)
+    or ((eso_values_applied.stdout | from_json) != (lookup('ansible.builtin.template', 'external-secrets-values.yaml.j2') | from_yaml))
+  changed_when: true
+
+- name: External Secrets Ready 대기
+  ansible.builtin.command: >-
+    kubectl rollout status {{ item }} -n {{ external_secrets_namespace }} --timeout=180s
+  loop:
+    - deployment/external-secrets
+    - deployment/external-secrets-webhook
+    - deployment/external-secrets-cert-controller
+  environment: *kubeconfig
+  changed_when: false
+
+# OpenBao 가 ESO 의 토큰으로 TokenReview 를 호출할 수 있게 (token_reviewer_jwt 를 따로 두지 않음)
+- name: ESO ServiceAccount 에 system:auth-delegator
+  vars:
+    manifest:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: external-secrets-openbao-auth-delegator
+        labels:
+          app.kubernetes.io/managed-by: ansible
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: system:auth-delegator
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ external_secrets_service_account }}"
+          namespace: "{{ external_secrets_namespace }}"
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: "{{ manifest | to_json }}"
+  environment: *kubeconfig
+  register: eso_crb_apply
+  changed_when: "'configured' in eso_crb_apply.stdout or 'created' in eso_crb_apply.stdout"
+
+# ── OpenBao Kubernetes auth (ansible-dev 토큰, roles/openbao 의 정책) ──
+# OpenBao 는 클러스터 밖(DB 노드)이라 API 주소 · CA 를 직접 지정. 주소는 apiserver certSANs 에 있는 control plane Tailscale IP
+- name: control plane Tailscale IP 조회
+  ansible.builtin.command: tailscale ip -4
+  register: eso_cp_ts_ip
+  changed_when: false
+
+- name: 클러스터 CA 읽기
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/pki/ca.crt
+  register: eso_cluster_ca
+
+- name: OpenBao Kubernetes auth 설정
+  vars:
+    openbao_k8s_config:
+      kubernetes_host: "https://{{ eso_cp_ts_ip.stdout_lines | first }}:6443"
+      kubernetes_ca_cert: "{{ eso_cluster_ca.content | b64decode }}"
+      # 클러스터 밖이라 로컬 SA 토큰 · CA 가 없음 → 로그인한 ESO 토큰으로 TokenReview
+      disable_local_ca_jwt: true
+    openbao_k8s_role:
+      bound_service_account_names: ["{{ external_secrets_service_account }}"]
+      bound_service_account_namespaces: ["{{ external_secrets_namespace }}"]
+      token_policies: [eso-dev]
+      token_ttl: 3600
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Vault-Token: "{{ openbao_token }}"
+      body_format: json
+  run_once: true
+  block:
+    - name: 현재 auth/kubernetes 설정 조회
+      ansible.builtin.uri:
+        url: "{{ openbao_addr }}/v1/auth/kubernetes/config"
+        status_code: [200, 404]
+      register: openbao_k8s_config_current
+
+    - name: auth/kubernetes 설정
+      ansible.builtin.uri:
+        url: "{{ openbao_addr }}/v1/auth/kubernetes/config"
+        method: POST
+        body: "{{ openbao_k8s_config }}"
+        status_code: [200, 204]
+      when: >-
+        openbao_k8s_config_current.status == 404
+        or openbao_k8s_config_current.json.data.kubernetes_host != openbao_k8s_config.kubernetes_host
+        or openbao_k8s_config_current.json.data.kubernetes_ca_cert | trim != openbao_k8s_config.kubernetes_ca_cert | trim
+        or not openbao_k8s_config_current.json.data.disable_local_ca_jwt
+      changed_when: true
+
+    - name: "현재 role 조회 ({{ openbao_eso_role }})"
+      ansible.builtin.uri:
+        url: "{{ openbao_addr }}/v1/auth/kubernetes/role/{{ openbao_eso_role }}"
+        status_code: [200, 404]
+      register: openbao_k8s_role_current
+
+    - name: "role 설정 ({{ openbao_eso_role }})"
+      ansible.builtin.uri:
+        url: "{{ openbao_addr }}/v1/auth/kubernetes/role/{{ openbao_eso_role }}"
+        method: POST
+        body: "{{ openbao_k8s_role }}"
+        status_code: [200, 204]
+      when: >-
+        openbao_k8s_role_current.status == 404
+        or openbao_k8s_role_current.json.data.bound_service_account_names != openbao_k8s_role.bound_service_account_names
+        or openbao_k8s_role_current.json.data.bound_service_account_namespaces != openbao_k8s_role.bound_service_account_namespaces
+        or openbao_k8s_role_current.json.data.token_policies != openbao_k8s_role.token_policies
+        or openbao_k8s_role_current.json.data.token_ttl | int != openbao_k8s_role.token_ttl
+      changed_when: true
+
+# ── ClusterSecretStore ─────────────────────────────────
+- name: "ClusterSecretStore ({{ cluster_secret_store_name }})"
+  vars:
+    manifest:
+      apiVersion: external-secrets.io/v1
+      kind: ClusterSecretStore
+      metadata:
+        name: "{{ cluster_secret_store_name }}"
+        labels:
+          app.kubernetes.io/managed-by: ansible
+      spec:
+        provider:
+          vault:
+            server: "{{ openbao_addr }}"
+            path: "{{ openbao_kv_mount }}"
+            version: v2
+            auth:
+              kubernetes:
+                mountPath: kubernetes
+                role: "{{ openbao_eso_role }}"
+                serviceAccountRef:
+                  name: "{{ external_secrets_service_account }}"
+                  namespace: "{{ external_secrets_namespace }}"
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: "{{ manifest | to_json }}"
+  environment: *kubeconfig
+  register: eso_store_apply
+  changed_when: "'configured' in eso_store_apply.stdout or 'created' in eso_store_apply.stdout"
+
+- name: ClusterSecretStore Ready 대기 (OpenBao 로그인 확인)
+  ansible.builtin.command: >-
+    kubectl wait --for=condition=Ready clustersecretstore/{{ cluster_secret_store_name }} --timeout=120s
+  environment: *kubeconfig
+  register: eso_store_ready
+  changed_when: false
+  failed_when: false
+
+- name: ClusterSecretStore 실패 원인
+  ansible.builtin.command: >-
+    kubectl get clustersecretstore {{ cluster_secret_store_name }}
+    -o 'jsonpath={.status.conditions[?(@.type=="Ready")].message}'
+  environment: *kubeconfig
+  register: eso_store_message
+  changed_when: false
+  when: eso_store_ready.rc != 0
+
+- name: ClusterSecretStore 실패 안내
+  ansible.builtin.fail:
+    msg: >-
+      ClusterSecretStore {{ cluster_secret_store_name }} 가 Ready 가 아닙니다: {{ eso_store_message.stdout | default('?') }}.
+      403 · permission denied 면 auth/kubernetes 설정(TokenReview — ACL tag:db → tag:k8s-node tcp:6443),
+      접속 오류면 ACL tag:k8s-node → tag:db tcp:8200 을 확인하세요 (README 16-6).
+  when: eso_store_ready.rc != 0

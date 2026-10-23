@@ -1,0 +1,66 @@
+---
+# OpenBao KV v2 의 <openbao_kv_mount>/<openbao_kv_prefix>/<이름> 을 읽어 openbao_kv fact({이름: {속성: 값}})에 합칩니다 (README 16절).
+#   - ansible.builtin.import_role: {name: openbao_kv, tasks_from: read}
+#     vars: {openbao_read_paths: [main-db, main-valkey]}
+# OPENBAO_ADDR 가 비어 있으면(OpenBao 도입 전) 건너뜀 → group_vars 는 기존 .env 값을 씀. 없는 경로는 openbao_kv 에 넣지 않음.
+# 호출은 play 대상 노드에서 — Ansible 을 실행하는 PC 는 Tailnet 에 없을 수 있음 (ACL: 각 노드 태그 → tag:db tcp:8200, README 1-1)
+- name: OpenBao 값 읽기
+  when: openbao_addr | length > 0
+  become: false
+  block:
+    - name: OpenBao 토큰 확인
+      ansible.builtin.assert:
+        that: openbao_token | length > 0
+        fail_msg: >-
+          OPENBAO_ADDR 은 있는데 OPENBAO_TOKEN 이 비어 있습니다.
+          set -a; source .secrets/openbao.env; set +a 후 다시 실행하세요 (README 16절).
+        quiet: true
+      run_once: true
+
+    # ansible-dev 토큰은 periodic — 기간 안에 갱신하면 만료되지 않음. 실패해도 아래 읽기에서 원인이 드러남
+    - name: OpenBao 토큰 갱신
+      ansible.builtin.uri:
+        url: "{{ openbao_addr }}/v1/auth/token/renew-self"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ openbao_token }}"
+      changed_when: false
+      failed_when: false
+      run_once: true
+      no_log: true
+
+    - name: "OpenBao 읽기 ({{ openbao_read_paths | join(', ') }})"
+      ansible.builtin.uri:
+        url: "{{ openbao_addr }}/v1/{{ openbao_kv_mount }}/data/{{ openbao_kv_prefix }}/{{ item }}"
+        headers:
+          X-Vault-Token: "{{ openbao_token }}"
+        status_code: [200, 404]
+      loop: "{{ openbao_read_paths }}"
+      register: openbao_read
+      failed_when: false
+      run_once: true
+      no_log: true
+
+    # [경로, 상태 코드, uri 메시지] 만 넘김 — 결과 전체(요청 헤더의 토큰 포함)가 실패 출력에 찍히지 않게
+    - name: OpenBao 읽기 결과 확인
+      ansible.builtin.assert:
+        that: item.1 in [200, 404]
+        fail_msg: >-
+          OpenBao {{ openbao_kv_prefix }}/{{ item.0 }} 읽기 실패 (HTTP {{ item.1 }}, {{ openbao_addr }}: {{ item.2 }}).
+          403 이면 토큰 만료 · 정책, -1 이면 접속 불가(ACL tag → tag:db tcp:8200, OpenBao 기동 여부)를 확인하세요 (README 16-6).
+        quiet: true
+      loop: >-
+        {{ openbao_read.results | map(attribute='item')
+           | zip(openbao_read.results | map(attribute='status', default=-1),
+                 openbao_read.results | map(attribute='msg', default='')) | list }}
+      loop_control:
+        label: "{{ item.0 }}"
+      run_once: true
+
+    - name: openbao_kv fact
+      ansible.builtin.set_fact:
+        openbao_kv: >-
+          {{ openbao_kv | combine(dict(found | map(attribute='item') | zip(found | map(attribute='json.data.data')))) }}
+      vars:
+        found: "{{ openbao_read.results | selectattr('status', 'equalto', 200) | list }}"
+      no_log: true

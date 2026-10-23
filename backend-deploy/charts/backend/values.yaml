@@ -23,7 +23,7 @@ global:
   # 온프레미스: GitLab Deploy Token(read_registry) 으로 만든 Secret (Ansible backend_namespace role)
   imagePullSecrets:
     - gitlab-registry
-  # DB 비밀번호·JWT secret 등 — 차트 밖에서 만든 Secret (온프레미스: Ansible 이 backend/.env 로 생성)
+  # DB 비밀번호·JWT secret 등 — 차트 밖에서 만든 Secret (온프레미스: OpenBao → ESO, 운영: Secrets Manager → ESO)
   secretName: backend-secrets
   # 모든 서비스에 공통으로 들어가는 환경변수
   env:
