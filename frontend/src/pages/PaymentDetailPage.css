@@ -16,6 +16,12 @@
   opacity: 0.6;
 }
 
+/* 자동 처리를 멈추고 사람이 확인하는 상태 (LDP-97) — 문의 안내와 같은 경고 색 */
+.reservation-detail-row .payment-status-refund_manual_required,
+.reservation-detail-row .payment-status-unknown_manual_required {
+  background: #e5484d;
+}
+
 /* mypage-ghost-btn은 원래 <button>용 클래스라 <a>(Link)에 쓰면 밑줄이 남는다. */
 .mypage-actions a.mypage-ghost-btn {
   text-decoration: none;

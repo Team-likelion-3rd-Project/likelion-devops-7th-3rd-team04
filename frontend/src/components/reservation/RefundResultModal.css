@@ -1,0 +1,9 @@
+/* 환불 결과 창 (LDP-139). 카드·아이콘·버튼은 결제 결과 화면(PaymentResultPage.css)과 같은 모양을 쓴다. */
+/* payment-result-primary는 원래 <a>(Link)용이라 <button>에 쓸 때 기본 테두리·글꼴을 지운다 */
+.payment-result-actions button.payment-result-primary {
+  border: none;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}

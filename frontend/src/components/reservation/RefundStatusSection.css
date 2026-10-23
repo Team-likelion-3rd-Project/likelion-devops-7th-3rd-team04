@@ -1,0 +1,14 @@
+/* 예약 상세의 환불 정보 (LDP-139). 행·배지·버튼은 예약/결제 상세와 같은 클래스를 그대로 쓴다. */
+.refund-status {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 32px;
+}
+
+.refund-status-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-h);
+}
