@@ -36,7 +36,7 @@ infra/terraform/
         ├── 14-gcp-llm/              🔒 챗봇 Vertex AI 인증 (GCP Workload Identity Federation)
         ├── 15-chatbot-vectors/      🔒 챗봇 RAG 벡터 저장소 (S3 Vectors)
         ├── 20-network/              🔁
-        ├── 21-observability-base/   🔁
+        ├── 21-observability-base/   🔁 메인 클러스터 로그 그룹 (Fluent Bit)
         ├── 30-security/             🔁
         ├── 40-cicd/                 🔁
         ├── 41-main-data/            🔁
@@ -682,4 +682,38 @@ gcloud iam service-accounts keys list --managed-by=user \
 ```bash
 curl -s -H 'Content-Type: application/json' -d '{"message":"체크인 시간이 언제예요?"}' https://api.meomulm.click/api/chat-bots/messages
 kubectl -n backend logs job/<llm-ingest-...> --tail=3        # "20 documents indexed into VECTOR_STORE=s3vectors"
+```
+
+---
+
+## 13. 클러스터 로그 (`21-observability-base` · Fluent Bit)
+
+```
+모든 노드(CP 포함) /var/log/containers ─ Fluent Bit DaemonSet (gitops fluent-bit, IRSA) ─┬→ CloudWatch Logs /team04-hotel/prod/cluster/<네임스페이스>  (21, 매일 재생성)
+                                                                                         └→ S3 team04-hotel-logs/app-logs/main-cluster/  (10-global 🔒, 90일)
+```
+
+| 위치 | 용도 | 보존 |
+|---|---|---|
+| CloudWatch Logs `/team04-hotel/prod/cluster/<네임스페이스>` | 당일 조회 · Logs Insights. 스트림 = `<파드>.<컨테이너>` | 매일 destroy 로 그룹째 삭제 |
+| CloudWatch Logs `/team04-hotel/prod/cluster/other` | `21` `cluster_log_namespaces` 에 없는 네임스페이스 | 같음 |
+| S3 `team04-hotel-logs/app-logs/main-cluster/<YYYY>/<MM>/<DD>/<노드>/` | 날짜를 넘긴 조회 (gzip JSON Lines, 5분마다 노드별 객체) | Object Lock 7일 · 90일 뒤 삭제 |
+
+- 레코드: `data`(JSON 로그를 펼친 값, JSON 이 아니면 `log` 원문) · `kubernetes`(네임스페이스 · 파드 · 컨테이너 · 노드, 라벨 · 어노테이션 없음) · `date` · `log_group_ns`.
+- S3 경로의 날짜 · 시각은 **UTC** 입니다 (한국 시간 오전 9시 전 로그는 전날 폴더).
+- **네임스페이스를 추가할 때**: `21` `cluster_log_namespaces` 와 gitops `fluent-bit/values.yaml` Lua 필터의 `known` 에 같이 추가합니다. Fluent Bit 은 그룹을 만들지 못하므로(권한 없음) 한쪽만 고치면 그 로그는 `other` 로 가거나(gitops 만 빠짐) 거부됩니다(21 만 빠짐).
+- Fluent Bit Role(`team04-hotel-fluent-bit`, 70 `irsa.tf`)은 위 그룹의 `CreateLogStream` · `PutLogEvents` 와 버킷 `app-logs/main-cluster/*` `PutObject` 만 가집니다.
+- 노드가 지워지면 아직 올리지 않은 마지막 5분 이내 로그는 S3 에 남지 않습니다 (CloudWatch 는 수 초 단위로 전송).
+
+```bash
+# 당일 — 최근 10분 backend 에러
+aws logs tail /team04-hotel/prod/cluster/backend --since 10m --filter-pattern ERROR
+
+# 날짜를 넘긴 조회 — 객체 목록 · 내용
+aws s3 ls s3://team04-hotel-logs/app-logs/main-cluster/2026/10/24/ --recursive
+aws s3 cp s3://team04-hotel-logs/app-logs/main-cluster/<경로>.gz - | gunzip | jq -c 'select(.kubernetes.namespace_name == "backend")'
+
+# 수집 상태 (DaemonSet · 출력 오류)
+kubectl -n fluent-bit get ds fluent-bit
+kubectl -n fluent-bit logs ds/fluent-bit --tail=50 | grep -iE 'error|warn'
 ```
