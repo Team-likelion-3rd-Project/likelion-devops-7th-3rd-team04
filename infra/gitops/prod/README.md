@@ -19,6 +19,7 @@ infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── cert-manager/          chart.yaml · values.yaml          15  webhook TLS 인증서 발급 · caBundle 주입
 ├── pod-identity-webhook/  chart.yaml · values.yaml          20  IRSA 주입 (ns/SA → Role 매핑)
 ├── whoami/                chart.yaml · values.yaml · chart/ 20  수직 경로 검증용 테스트 백엔드 (/whoami)
+├── fluent-bit/            chart.yaml · values.yaml          25  파드 로그 수집 → CloudWatch Logs · 로그 버킷 app-logs/main-cluster/
 ├── external-secrets/      chart.yaml · values.yaml          30  External Secrets Operator
 ├── cluster-secret-store/  chart.yaml · chart/               40  ClusterSecretStore aws-secrets-manager
 ├── backend-secrets/       chart.yaml · chart/               45  backend Secret(ExternalSecret) · RDS CA ConfigMap
