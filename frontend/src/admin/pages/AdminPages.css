@@ -735,3 +735,9 @@
   align-items: center;
   gap: 12px;
 }
+
+/* 공지 관리 — 본문 입력 칸 */
+.admin-notice-body {
+  min-height: 220px;
+  resize: vertical;
+}
