@@ -15,7 +15,7 @@ backend-deploy/
 ## 규칙
 
 - 헬스체크는 모든 서비스가 `GET /health` 입니다 (`libs/common` HealthController). HTTP 서비스는 서비스 포트, gRPC 서비스는 `gRPC 포트 + 100` 포트를 `healthPort` 에 적습니다.
-- 서비스가 새 Secret key 를 쓰면 `values.yaml` 의 `secretEnv` 와 `infra/ansible/inventory/group_vars/control_plane.yml` 의 `backend_secret_keys` 에 같이 추가합니다. prod 는 `infra/gitops/prod/backend-secrets` 와 Terraform 41-main-data Secret 에 추가합니다.
+- 서비스가 새 Secret key 를 쓰면 `values.yaml` 의 `secretEnv` 와 `infra/ansible/inventory/group_vars/all.yml` 의 `backend_external_secret_data`(dev ExternalSecret · OpenBao 경로) 에 같이 추가하고, OpenBao 에 값을 넣습니다 (infra/ansible README 16절). prod 는 `infra/gitops/prod/backend-secrets` 와 Terraform 41-main-data Secret 에 추가합니다.
 - prod 전용 기능(서비스별 ServiceAccount `serviceAccounts.create`, `global.imageRegistry` · `services.*.env` 의 tpl 렌더링, Flyway `db.jdbcParams` · `db.caConfigMap`, 시드 Job `seed.enabled`)은 기본값이 꺼져 있어 dev 렌더 결과에 영향이 없습니다.
 - Service 는 기본 ClusterIP 입니다. 클러스터 밖(온프레미스 결제 노드)에서 호출해야 하는 서비스만 환경별 values 에 `nodePort` 를 지정하면 NodePort 가 됩니다 (dev: booking-service 30303, pg-mock-service 30307 — [infra/ansible/README.md 14절](../infra/ansible/README.md#14-결제-서버-노드-결제-db--payment-service--elasticmq)).
 - DB 스키마는 `migrations.<이름>` 마다 pre-install/pre-upgrade hook Job(`<이름>-db-migration`)이 Flyway 로 적용합니다. `main`(backend/migrations, Secret 의 `DB_*`), `payment`(apps/payment-service/migrations, `PAYMENT_DB_*`). 앱은 모두 `synchronize: false` 라 이 Job 이 실패하면 배포를 중단합니다. dev 는 결제 노드가 결제 마이그레이션을 실행하므로 `migrations.payment.enabled: false`.

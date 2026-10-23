@@ -106,7 +106,7 @@
     'Recreated' in compose_up.stderr or
     'Created' in compose_up.stderr
 
-# ── backend/.env 값과 DB 계정 상태 맞추기 ─────────────────────
+# ── OpenBao(main-db) 값과 DB 계정 상태 맞추기 ─────────────────
 # 공식 이미지는 MARIADB_* 를 최초 초기화 시 1회만 반영하므로,
 # 매 실행마다 앱 계정으로 접속을 검사하고 실패할 때만 재설정합니다.
 - name: 앱 계정 접속 검사
@@ -133,7 +133,7 @@
 - name: 재설정 실패 안내
   ansible.builtin.fail:
     msg: >-
-      root 계정으로 DB 에 접속하지 못했습니다. backend/.env 의 DB_ROOT_PASSWORD 가
+      root 계정으로 DB 에 접속하지 못했습니다. OpenBao main-db-root 의 password(도입 전: backend/.env 의 DB_ROOT_PASSWORD)가
       최초 초기화 때 값과 다른 경우입니다 (root 비밀번호 변경은 자동화하지 않음 — README 참고).
   when: db_reconcile is not skipped and db_reconcile.rc != 0
 

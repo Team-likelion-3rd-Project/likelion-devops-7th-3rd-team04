@@ -9,6 +9,7 @@ import {
   Param,
   ParseIntPipe,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
@@ -25,6 +26,7 @@ import {
   toHttpException,
 } from '@app/common';
 import { UpdateMeDto } from './dto/update-me.dto';
+import { UserListQueryDto } from './dto/user-list-query.dto';
 
 // proto의 User 메시지와 1:1 대응되는 응답 형태
 interface UserResponse {
@@ -39,7 +41,11 @@ interface UserResponse {
 // proto의 UserService 스펙과 1:1 대응되는 TS 인터페이스
 interface UserService {
   getHello(data: {}): Observable<{ message: string }>;
-  getUsers(data: {}): Observable<{ users: UserResponse[] }>;
+  getUsers(data: {
+    page: number;
+    size: number;
+    keyword: string;
+  }): Observable<{ users?: UserResponse[]; total?: number }>;
   getUserById(data: { id: number }): Observable<UserResponse>;
   updateUser(data: { id: number; name: string; phoneNumber: string }): Observable<UserResponse>;
 }
@@ -93,19 +99,30 @@ export class UserController implements OnModuleInit {
   @Roles('ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: '전체 유저 목록 조회 (관리자 전용)',
-    description: '관리자 권한을 가진 사용자만 호출할 수 있습니다. gRPC를 통해 user-service의 전체 유저 목록을 가져옵니다.',
+    summary: '회원 목록 조회 (관리자 전용)',
+    description:
+      '관리자 권한을 가진 사용자만 호출할 수 있습니다. 조건이 없으면 전체(가입 순), ' +
+      'page를 주면 그 페이지만(최근 가입 순) 돌려줍니다. keyword는 이름·이메일·연락처 일부. total은 조건에 맞는 전체 개수 (LDP-136).',
   })
   @ApiResponse({
     status: 200,
-    description: '전체 유저 목록 조회 성공',
+    description: '{ users, total }',
   })
   @ApiResponse({
     status: 403,
     description: '관리자 권한이 없음',
   })
-  async getUsers(): Promise<{ users: UserResponse[] }> {
-    return firstValueFrom(this.userService.getUsers({}));
+  async getUsers(
+    @Query() query: UserListQueryDto,
+  ): Promise<{ users: UserResponse[]; total: number }> {
+    const { users = [], total = 0 } = await firstValueFrom(
+      this.userService.getUsers({
+        page: query.page ?? 0,
+        size: query.size ?? 20,
+        keyword: query.keyword?.trim() ?? '',
+      }),
+    );
+    return { users, total };
   }
 
   /**

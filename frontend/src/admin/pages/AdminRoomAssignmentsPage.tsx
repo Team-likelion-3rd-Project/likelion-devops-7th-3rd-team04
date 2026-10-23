@@ -8,6 +8,7 @@ import {
   roomUnitErrorMessage,
 } from '../../api/roomUnits'
 import type { RoomUnitAssignments, UnitAssignment, UnitAssignmentBoard } from '../../api/roomUnits'
+import { openDatePicker } from '../../utils/date'
 import './AdminPages.css'
 
 // 한 번에 볼 기간(일). 서버는 최대 31일까지 조회한다 (LDP-89 #171 API 7).
@@ -234,6 +235,7 @@ function AdminRoomAssignmentsPage() {
             <input
               type="date"
               value={startDate}
+              onClick={openDatePicker}
               onChange={(e) => {
                 if (e.target.value) setStartDate(e.target.value)
               }}

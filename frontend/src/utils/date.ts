@@ -92,3 +92,13 @@ export function getMonthCells(monthStart: Date): (Date | null)[] {
   }
   return cells
 }
+
+// <input type="date">는 오른쪽 작은 달력 아이콘을 눌러야만 달력이 열린다 — 칸 아무 곳이나 클릭해도 열리게 onClick에 건다.
+// showPicker를 지원하지 않는 브라우저나 막힌 상황(비활성 칸 등)에서는 그냥 무시하고 타자 입력은 그대로 된다.
+export function openDatePicker(event: { currentTarget: HTMLInputElement }) {
+  try {
+    event.currentTarget.showPicker?.()
+  } catch {
+    // 지원하지 않거나 허용되지 않으면 기본 동작(타자 입력)만 둔다
+  }
+}

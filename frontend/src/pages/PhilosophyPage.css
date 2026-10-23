@@ -1,0 +1,165 @@
+.philosophy-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  align-items: center;
+  gap: 64px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 64px 24px 72px;
+
+  @media (max-width: 860px) {
+    grid-template-columns: 1fr;
+    gap: 32px;
+    padding: 32px 20px 48px;
+  }
+}
+
+.philosophy-photo {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+
+  @media (max-width: 860px) {
+    aspect-ratio: 4 / 3;
+  }
+}
+
+.philosophy-text {
+  text-align: left;
+
+  h1 {
+    margin: 0 0 24px;
+  }
+}
+
+.philosophy-eyebrow {
+  margin: 0 0 12px;
+  font-size: 13px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.philosophy-lead {
+  margin: 0 0 36px;
+  font-family: var(--heading);
+  font-size: 19px;
+  line-height: 175%;
+  color: var(--text-h);
+
+  @media (max-width: 640px) {
+    font-size: 17px;
+  }
+}
+
+.philosophy-tabs {
+  display: flex;
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+
+  a {
+    padding: 8px 20px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 14px;
+    text-decoration: none;
+
+    &:hover {
+      border-color: var(--accent-border);
+    }
+
+    &.active {
+      border-color: var(--accent);
+      background: var(--accent-bg);
+      color: var(--text-h);
+    }
+  }
+}
+
+/* 카드 구역 — 배경을 살짝 물들여 구역을 나눈다 */
+.philosophy-band {
+  padding: 56px 24px;
+  background: var(--accent-bg);
+
+  .philosophy-sections {
+    max-width: 960px;
+    margin: 0 auto;
+  }
+}
+
+.philosophy-sections {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.philosophy-section {
+  padding: 28px 24px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+
+  h2 {
+    margin: 8px 0 12px;
+    font-size: 20px;
+  }
+
+  p {
+    margin: 0;
+    font-size: 15px;
+    line-height: 170%;
+    color: var(--text);
+  }
+}
+
+.philosophy-section-no {
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+}
+
+.philosophy-cta {
+  padding: 72px 24px 96px;
+  text-align: center;
+
+  h2 {
+    margin: 0 0 8px;
+  }
+
+  p {
+    margin: 0 0 28px;
+    color: var(--text);
+  }
+}
+
+.philosophy-cta-links {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+
+  a {
+    padding: 12px 28px;
+    border-radius: 999px;
+    font-size: 15px;
+    text-decoration: none;
+  }
+}
+
+.philosophy-cta-primary {
+  background: var(--accent);
+  color: #fbf9f5;
+}
+
+.philosophy-cta-secondary {
+  border: 1px solid var(--border);
+  color: var(--text-h);
+}

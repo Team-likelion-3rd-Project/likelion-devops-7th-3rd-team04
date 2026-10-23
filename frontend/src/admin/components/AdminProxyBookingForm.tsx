@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import type { AdminHotel, AdminRoom, AdminUser } from '../../api/adminApi'
 import { adminReservationErrorMessage, createAdminBooking } from '../../api/adminReservations'
 import type { AdminBooking } from '../../api/adminReservations'
+import { openDatePicker } from '../../utils/date'
 
 interface AdminProxyBookingFormProps {
   hotels: AdminHotel[]
@@ -145,7 +146,12 @@ function AdminProxyBookingForm({ hotels, roomsByHotel, users, onCreated, onClose
           </label>
           <label className="admin-form-row">
             <span>체크인</span>
-            <input type="date" value={checkInDate} onChange={(e) => setCheckInDate(e.target.value)} />
+            <input
+              type="date"
+              value={checkInDate}
+              onClick={openDatePicker}
+              onChange={(e) => setCheckInDate(e.target.value)}
+            />
           </label>
           <label className="admin-form-row">
             <span>체크아웃</span>
@@ -153,6 +159,7 @@ function AdminProxyBookingForm({ hotels, roomsByHotel, users, onCreated, onClose
               type="date"
               value={checkOutDate}
               min={checkInDate || undefined}
+              onClick={openDatePicker}
               onChange={(e) => setCheckOutDate(e.target.value)}
             />
           </label>

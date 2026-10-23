@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
+import BrandLogo from './BrandLogo'
 import { useHotels } from '../data/hotelStore'
 import { logout } from '../api/gateway'
 import { customerAuth } from '../api/tokenStore'
@@ -34,9 +35,8 @@ function Header() {
 
   return (
     <header className="site-header">
-      {/* TODO: 확정된 브랜드 로고/명칭으로 교체 */}
-      <Link to="/" className="site-logo" onClick={closeMenu}>
-        LOGO
+      <Link to="/" className="site-logo" onClick={closeMenu} aria-label="머묾 홈">
+        <BrandLogo />
       </Link>
 
       <nav className="site-nav" aria-label="주요 메뉴">

@@ -1,0 +1,217 @@
+---
+# DB 노드에 OpenBao(dev 비밀값 단일 소스)를 띄우고 초기화 · 기본 설정을 맞춥니다 (README 16절).
+#   static seal : 32바이트 키 파일로 자동 unseal. 키는 로컬 .secrets/openbao/unseal.key 에 백업 (잃으면 데이터 복구 불가)
+#   init 결과   : root token · recovery key → 로컬 .secrets/openbao/init.json 에만 저장 (OpenBao 관리자 PC)
+#   ansible-dev : playbook 이 쓰는 토큰 → .secrets/openbao.env (다른 playbook 실행 전 source)
+# 노드 쪽 호출은 127.0.0.1 로 (Tailnet ACL 과 무관하게 동작)
+- name: Tailscale IP 조회 (--tags openbao 단독 실행 대비)
+  ansible.builtin.command: tailscale ip -4
+  register: openbao_ts_ip
+  changed_when: false
+  when: ts_ip is not defined
+
+- name: ts_ip fact 등록
+  ansible.builtin.set_fact:
+    ts_ip: "{{ openbao_ts_ip.stdout_lines | first }}"
+  when: ts_ip is not defined
+
+- name: 설정 디렉토리 (static key 포함 → root 전용)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ openbao_base_dir }}"
+    - "{{ openbao_base_dir }}/config"
+    - "{{ openbao_data_dir }}"
+
+- name: 로컬 백업 디렉토리
+  ansible.builtin.file:
+    path: "{{ openbao_local_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+# ── static seal 키 ─────────────────────────────────────
+- name: static key 확인 (노드)
+  ansible.builtin.stat:
+    path: "{{ openbao_base_dir }}/config/unseal.key"
+    checksum_algorithm: sha256
+  register: openbao_key_remote
+
+- name: static key 확인 (로컬 백업)
+  ansible.builtin.stat:
+    path: "{{ openbao_local_dir }}/unseal.key"
+    checksum_algorithm: sha256
+  register: openbao_key_local
+  delegate_to: localhost
+  become: false
+
+- name: static key 복구 (노드 재설치 — 로컬 백업에서)
+  ansible.builtin.copy:
+    src: "{{ openbao_local_dir }}/unseal.key"
+    dest: "{{ openbao_base_dir }}/config/unseal.key"
+    owner: root
+    group: root
+    mode: "0400"
+  when: not openbao_key_remote.stat.exists and openbao_key_local.stat.exists
+  no_log: true
+
+# 데이터는 있는데 키만 없으면 새 키로는 열 수 없음 → 만들지 않고 중단
+- name: 데이터 디렉토리 확인
+  ansible.builtin.find:
+    paths: "{{ openbao_data_dir }}"
+    file_type: any
+  register: openbao_data_files
+  when: not openbao_key_remote.stat.exists and not openbao_key_local.stat.exists
+
+- name: static key 없음 안내
+  ansible.builtin.fail:
+    msg: >-
+      {{ openbao_data_dir }} 에 데이터가 있는데 static key 가 노드에도 로컬({{ openbao_local_dir }}/unseal.key)에도 없습니다.
+      키를 잃었다면 데이터를 복구할 수 없습니다 — 백업한 키를 {{ openbao_local_dir }}/unseal.key 에 두고 다시 실행하거나,
+      데이터 디렉토리를 비우고 새로 시작하세요 (README 16-5).
+  when:
+    - openbao_data_files is not skipped
+    - openbao_data_files.matched > 0
+
+- name: static key 생성 (최초 1회, 32바이트)
+  ansible.builtin.command: openssl rand -out {{ openbao_base_dir }}/config/unseal.key 32
+  args:
+    creates: "{{ openbao_base_dir }}/config/unseal.key"
+  when: not openbao_key_remote.stat.exists and not openbao_key_local.stat.exists
+
+- name: static key 권한
+  ansible.builtin.file:
+    path: "{{ openbao_base_dir }}/config/unseal.key"
+    owner: root
+    group: root
+    mode: "0400"
+
+- name: static key 다시 확인
+  ansible.builtin.stat:
+    path: "{{ openbao_base_dir }}/config/unseal.key"
+    checksum_algorithm: sha256
+  register: openbao_key
+
+- name: static key 로컬 백업
+  ansible.builtin.fetch:
+    src: "{{ openbao_base_dir }}/config/unseal.key"
+    dest: "{{ openbao_local_dir }}/unseal.key"
+    flat: true
+  when: not openbao_key_local.stat.exists
+
+- name: 노드 · 로컬 백업 키 일치 확인
+  ansible.builtin.assert:
+    that: not openbao_key_local.stat.exists or openbao_key_local.stat.checksum == openbao_key.stat.checksum
+    fail_msg: >-
+      노드의 static key 와 로컬 백업({{ openbao_local_dir }}/unseal.key)이 다릅니다.
+      어느 쪽이 지금 데이터를 연 키인지 확인하고 다른 쪽을 맞추세요 (README 16-5).
+    quiet: true
+
+# ── 기동 ──────────────────────────────────────────────
+- name: 설정 파일
+  ansible.builtin.template:
+    src: openbao.hcl.j2
+    dest: "{{ openbao_base_dir }}/config/openbao.hcl"
+    mode: "0600"
+  vars:
+    openbao_key_id: "{{ openbao_key.stat.checksum[:16] }}"
+  register: openbao_conf
+
+- name: compose 파일
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ openbao_base_dir }}/compose.yml"
+    mode: "0600"
+
+- name: 컨테이너 기동 (healthy 까지 대기)
+  ansible.builtin.command: docker compose up -d --wait --wait-timeout 120
+  args:
+    chdir: "{{ openbao_base_dir }}"
+  register: openbao_compose_up
+  changed_when: >-
+    'Started' in openbao_compose_up.stderr or
+    'Recreated' in openbao_compose_up.stderr or
+    'Created' in openbao_compose_up.stderr
+
+- name: 상태 조회
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ openbao_port }}/v1/sys/health?uninitcode=200&sealedcode=200&standbyok=true"
+  register: openbao_health
+  until: openbao_health.status == 200
+  retries: 12
+  delay: 5
+
+# ── 초기화 (최초 1회) ──────────────────────────────────
+# static seal 은 auto unseal 이라 unseal key 대신 recovery key 가 나옴 (root token 재발급 · seal 이전에만 씀)
+- name: 초기화
+  when: not openbao_health.json.initialized
+  block:
+    - name: sys/init
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ openbao_port }}/v1/sys/init"
+        method: POST
+        body_format: json
+        body:
+          recovery_shares: 1
+          recovery_threshold: 1
+      register: openbao_init
+      changed_when: true
+      no_log: true
+
+    - name: init 결과 저장 (로컬, root token · recovery key)
+      ansible.builtin.copy:
+        dest: "{{ openbao_local_dir }}/init.json"
+        content: "{{ openbao_init.json | to_nice_json }}\n"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+- name: unseal 대기
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ openbao_port }}/v1/sys/health"
+  register: openbao_unsealed
+  until: openbao_unsealed.status == 200
+  retries: 12
+  delay: 5
+
+# ── root token 으로 mount · 정책 · ansible-dev 토큰 (OpenBao 관리자 PC 에서만) ──
+- name: init 결과 확인 (로컬)
+  ansible.builtin.stat:
+    path: "{{ openbao_local_dir }}/init.json"
+  register: openbao_init_file
+  delegate_to: localhost
+  become: false
+
+- name: 기본 설정
+  ansible.builtin.include_tasks: configure.yml
+  when: openbao_init_file.stat.exists
+
+- name: root token 없음 안내
+  ansible.builtin.debug:
+    msg: >-
+      {{ openbao_local_dir }}/init.json 이 없어 mount · 정책 · ansible-dev 토큰 설정을 건너뜁니다.
+      OpenBao 관리자 PC 에서 db.yml 을 실행하거나, 전달받은 .secrets/openbao.env 를 source 하세요 (README 16-2).
+  when: not openbao_init_file.stat.exists
+
+# 이번 실행의 이관 · 읽기에 쓰도록 — source 하지 않았어도 로컬 파일이 있으면 사용
+- name: openbao.env 확인 (로컬)
+  ansible.builtin.stat:
+    path: "{{ local_secrets_dir }}/openbao.env"
+  register: openbao_env_file
+  delegate_to: localhost
+  become: false
+
+- name: OpenBao 주소 · 토큰 (이번 실행)
+  ansible.builtin.set_fact:
+    openbao_addr: "{{ openbao_env.OPENBAO_ADDR }}"
+    openbao_token: "{{ openbao_env.OPENBAO_TOKEN }}"
+  vars:
+    openbao_env: "{{ lookup('ansible.builtin.file', local_secrets_dir ~ '/openbao.env') | parse_dotenv }}"
+  when: openbao_env_file.stat.exists and openbao_token | length == 0
+  no_log: true

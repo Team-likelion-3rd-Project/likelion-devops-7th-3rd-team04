@@ -50,3 +50,49 @@ kubeadm_token_ttl: "72h"
 # 기본 구성(tailscale serve, *.ts.net Let's Encrypt)에서는 비워 둡니다.
 # 지정하면: containerd certs.d(모든 k8s 노드), ArgoCD repo-server(configs.tls), Runner 의 /etc/gitlab-runner/certs 에 배포
 private_ca_cert_file: "{{ lookup('env', 'PRIVATE_CA_CERT_FILE') }}"
+
+# ── OpenBao: dev 비밀값 단일 소스 (DB 노드, README 16절) ─────
+# db.yml 이 만든 .secrets/openbao.env 를 source 하면 채워짐 (ansible-dev 정책 토큰).
+# 비어 있으면 OpenBao 를 읽거나 쓰지 않고 기존처럼 .env · backend/.env · .secrets/*.env 값을 씀
+openbao_addr: "{{ lookup('env', 'OPENBAO_ADDR') }}"
+openbao_token: "{{ lookup('env', 'OPENBAO_TOKEN') }}"
+openbao_kv_mount: secret
+# 운영 Secrets Manager 이름(team04-hotel/prod/<이름>)과 env 만 다름
+openbao_kv_prefix: team04-hotel/dev
+# roles/openbao_kv(read) 가 채움 — {경로 이름: {속성: 값}}
+openbao_kv: {}
+# ESO 가 로그인하는 OpenBao Kubernetes auth role (db.yml 의 ansible-dev 정책 · k8s-cicd.yml 의 external_secrets role)
+openbao_eso_role: external-secrets
+
+# backend-secrets(ExternalSecret) 의 key ← OpenBao <경로 이름>.<속성>. 운영 infra/gitops/prod/backend-secrets values 와 같은 형식.
+# db.yml 의 eso-dev 정책(읽기 허용 경로)과 k8s-cicd.yml 의 ExternalSecret 이 함께 씀 — key 를 추가하면 차트 secretEnv 와 이관(roles/openbao import)도 맞추기
+backend_external_secret_data:
+  main-db:
+    DB_HOST: host
+    DB_DATABASE: dbname
+    DB_USERNAME: username
+    DB_PASSWORD: password
+  main-valkey:
+    REDIS_HOST: host
+    REDIS_PASSWORD: password
+  backend-app:
+    JWT_ACCESS_SECRET: jwt_access_secret
+    JWT_REFRESH_SECRET: jwt_refresh_secret
+    MOCK_PG_SECRET: mock_pg_secret
+  # ── dev 전용 (운영은 S3 · DynamoDB 를 IAM 으로, n8n · llm-service 는 아직 없음) ──
+  minio-app:
+    S3_ENDPOINT: endpoint
+    S3_ACCESS_KEY_ID: access_key
+    S3_SECRET_ACCESS_KEY: secret_key
+  minio-rag:
+    VECTOR_OBJECT_ENDPOINT: endpoint
+    VECTOR_OBJECT_ACCESS_KEY: access_key
+    VECTOR_OBJECT_SECRET_KEY: secret_key
+  dynamodb:
+    DYNAMODB_ENDPOINT: endpoint
+  n8n:
+    N8N_INIT_OWNER_PASSWORD: init_owner_password
+  gcp-sa:
+    GCP_SA_KEY_JSON: key_json_b64
+# OpenBao 에 base64 로 둔 속성 (ESO 가 풀어서 Secret 에 넣음). JSON 문자열은 Ansible 이 dict 로 바꿔 버리므로 base64 로 저장
+backend_external_secret_base64_keys: [GCP_SA_KEY_JSON]
