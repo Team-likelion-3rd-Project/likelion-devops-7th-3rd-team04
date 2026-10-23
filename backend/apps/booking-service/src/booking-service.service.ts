@@ -147,6 +147,7 @@ interface PaymentGrpcService {
     data: {
       reservationId: number;
       refundIdempotencyKey: string;
+      skipFailedRetry?: boolean;
     },
     metadata?: Metadata,
     options?: CallOptions,
@@ -573,8 +574,10 @@ export class BookingServiceService implements OnModuleInit {
     return true;
   }
 
-  // 이미 끝난 예약에 취소를 다시 요청함 = 환불 재요청 (LDP-97). 결제 쪽에 같은 환불 키로 환불을 다시 요청하고
-  // (실패로 남은 환불이면 그 자리에서 다시 시도, 이미 끝났거나 진행 중이면 상태만 돌려줌), 결과를 api-error로 알려 준다.
+  // 이미 끝난 예약에 취소를 다시 요청함 = 환불 재요청 (LDP-97). 결제 쪽에 같은 환불 키로 환불을 요청하고 결과를 api-error로 알려 준다.
+  //  - 아직 환불을 시작하지 않은 승인 결제(APPROVED)면 이 요청으로 환불을 시작한다 (첫 시도라 간격과 무관).
+  //  - 실패로 남은 환불(REFUND_FAILED)은 다시 시도하지 않고 상태만 받는다(skipFailedRetry, LDP-137) — 손님이 연달아 눌러도
+  //    PG 호출이 늘지 않고, 재시도는 결제 쪽 대사 배치가 간격을 늘려 가며 한다.
   // 예약은 이미 끝난 상태라 성공 응답(예약)이 아니라 항상 409/503으로 상태를 전한다.
   private async refundStatusOnRecancel(reservationId: number): Promise<never> {
     let status: string;
@@ -584,6 +587,7 @@ export class BookingServiceService implements OnModuleInit {
           {
             reservationId,
             refundIdempotencyKey: refundIdempotencyKey(reservationId),
+            skipFailedRetry: true,
           },
           new Metadata(),
           grpcDeadline(PAYMENT_REFUND_DEADLINE_MS),

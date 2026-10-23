@@ -80,6 +80,10 @@ message RefundPaymentRequest {
   // 환불 멱등 키 (booking-service가 예약 ID로 만든 고정값). 같은 예약 취소가 재시도돼도 같은 키라서
   // payments.refund_idempotency_key UNIQUE·토스 Idempotency-Key로 환불이 1번만 일어난다.
   string refundIdempotencyKey = 2;
+  // true면 이전에 실패한 환불(REFUND_FAILED)을 이 요청으로 다시 시도하지 않고 상태만 돌려준다 (LDP-137).
+  // 손님이 끝난 예약에 취소를 다시 요청할 때 쓴다 — 누를 때마다 PG를 부르면 대사 배치의 재시도 간격을 건너뛰고
+  // 시도 횟수(10번)를 금방 다 써 버리기 때문이다. 실패한 환불의 재시도는 대사 배치만 한다. 기본 false.
+  bool skipFailedRetry = 3;
 }
 
 message RefundPaymentResponse {
