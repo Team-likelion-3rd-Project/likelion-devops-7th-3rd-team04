@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchAdminHotelRooms, fetchAdminHotels, fetchAdminUsers } from '../../api/adminApi'
 import type { AdminHotel, AdminRoom, AdminUser } from '../../api/adminApi'
-import { adminReservationErrorMessage, fetchAdminBookings } from '../../api/adminReservations'
+import {
+  adminReservationErrorMessage,
+  fetchAdminBookings,
+  fetchAdminUserPayments,
+  latestPaymentByReservation,
+} from '../../api/adminReservations'
 import type { AdminBooking } from '../../api/adminReservations'
+import type { Payment } from '../../api/payments'
 import { STATUS_LABEL } from '../../pages/reservationHistoryUtils'
+import { PAYMENT_STATUS_LABEL } from '../../utils/payment'
 import AdminProxyBookingForm from '../components/AdminProxyBookingForm'
 import AdminReservationActionPanel from '../components/AdminReservationActionPanel'
 import type { ReservationAction } from '../components/AdminReservationActionPanel'
@@ -17,6 +24,16 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: '', label: '전체' },
   ...Object.entries(STATUS_LABEL).map(([value, label]) => ({ value, label })),
 ]
+
+// 사람이 확인해야 하는 결제 상태 — 관리자 알림이 없어서(10-22 결정) 이 화면이 직원이 발견하는 통로다
+const MANUAL_PAYMENT_STATUSES = ['refund_manual_required', 'unknown_manual_required']
+
+function paymentBadgeClass(statusKey: string): string {
+  if (MANUAL_PAYMENT_STATUSES.includes(statusKey) || statusKey === 'failed') return 'admin-badge is-bad'
+  if (statusKey === 'approved') return 'admin-badge is-good'
+  if (statusKey === 'refunded') return 'admin-badge'
+  return 'admin-badge is-warn'
+}
 
 function statusBadgeClass(status: string): string {
   if (status === 'RESERVED' || status === 'COMPLETED') return 'admin-badge is-good'
@@ -41,6 +58,8 @@ function AdminReservationsPage() {
   const [isCreating, setIsCreating] = useState(false)
   const [selected, setSelected] = useState<{ booking: AdminBooking; action: ReservationAction } | null>(null)
   const [notice, setNotice] = useState('')
+  // 예약 번호 → 그 예약의 가장 최근 결제. 화면에 보이는 예약의 회원별로 불러온다 (못 불러온 회원은 비워 둔다)
+  const [paymentsByReservation, setPaymentsByReservation] = useState<Map<number, Payment>>(new Map())
 
   // 지점·객실 종류·회원은 처음 한 번만 불러온다 (이름 표시·대리 예약 폼용)
   useEffect(() => {
@@ -103,6 +122,28 @@ function AdminReservationsPage() {
       .sort((a, b) => b.reservationId - a.reservationId)
   }, [bookings, hotelFilter, statusFilter, query, usersById])
 
+  // 검색어를 칠 때마다 다시 부르지 않게, 화면에 보이는 회원 묶음이 바뀌거나 새로고침할 때만 결제를 불러온다
+  const visibleUserKey = useMemo(() => [...new Set(visible.map((b) => b.userId))].sort((a, b) => a - b).join(','), [visible])
+
+  useEffect(() => {
+    const userIds = visibleUserKey ? visibleUserKey.split(',').map(Number) : []
+    if (userIds.length === 0) return
+    let ignore = false
+    Promise.allSettled(userIds.map((id) => fetchAdminUserPayments(id))).then((results) => {
+      if (ignore) return
+      const all = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []))
+      setPaymentsByReservation(latestPaymentByReservation(all))
+    })
+    return () => {
+      ignore = true
+    }
+  }, [visibleUserKey, reloadKey])
+
+  const needsCheck = visible.filter((b) => {
+    const p = paymentsByReservation.get(b.reservationId)
+    return p && MANUAL_PAYMENT_STATUSES.includes(p.status.toLowerCase())
+  })
+
   // 연장 묶음: linkedReservationId = 맨 처음 원래 예약. 원래 예약을 취소하면 진행 중인 연장 예약도 함께 취소되고,
   // 연장의 연장은 가장 최근 연장 예약에서 요청해야 한다.
   const extensionsOf = (booking: AdminBooking) => {
@@ -146,6 +187,13 @@ function AdminReservationsPage() {
 
       {notice && <p className="admin-state is-success">{notice}</p>}
 
+      {needsCheck.length > 0 && (
+        <p className="admin-state is-error">
+          ⚠ 결제·환불을 직원이 확인해야 하는 예약이 {needsCheck.length}건 있습니다:{' '}
+          {needsCheck.map((b) => `#${b.reservationId}`).join(', ')} — 토스 상점관리자에서 결제·환불 결과를 확인해 주세요.
+        </p>
+      )}
+
       {isCreating && (
         <AdminProxyBookingForm
           hotels={hotels}
@@ -167,6 +215,7 @@ function AdminReservationsPage() {
           action={selected.action}
           roomLabel={`${hotelName(selected.booking.hotelId)} · ${roomName(selected.booking.hotelId, selected.booking.roomId)}`}
           guestName={guestLabel(selected.booking.userId)}
+          payment={paymentsByReservation.get(selected.booking.reservationId)}
           activeExtensions={selected.booking.linkedReservationId ? [] : extensionsOf(selected.booking)}
           nextExtension={extensionsOf(selected.booking).find(
             (e) => e.checkInDate === selected.booking.checkOutDate && e.reservationId !== selected.booking.reservationId,
@@ -236,6 +285,7 @@ function AdminReservationsPage() {
                     <th>인원</th>
                     <th>금액</th>
                     <th>상태</th>
+                    <th>결제</th>
                     <th>호실</th>
                     <th>비고</th>
                     <th>관리</th>
@@ -259,6 +309,14 @@ function AdminReservationsPage() {
                         <td>{b.totalAmount.toLocaleString()}원</td>
                         <td>
                           <span className={statusBadgeClass(b.status)}>{STATUS_LABEL[b.status] ?? b.status}</span>
+                        </td>
+                        <td>
+                          {(() => {
+                            const payment = paymentsByReservation.get(b.reservationId)
+                            if (!payment) return '-'
+                            const key = payment.status.toLowerCase()
+                            return <span className={paymentBadgeClass(key)}>{PAYMENT_STATUS_LABEL[key] ?? payment.status}</span>
+                          })()}
                         </td>
                         <td>{b.roomNumber ? `${b.roomNumber}호` : isActive ? '미배정' : '-'}</td>
                         <td className="admin-reservation-note">
