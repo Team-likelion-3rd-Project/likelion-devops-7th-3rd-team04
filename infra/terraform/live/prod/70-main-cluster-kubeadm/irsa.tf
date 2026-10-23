@@ -43,7 +43,27 @@ locals {
       namespace       = "backend"
       service_account = "seed"
     }
+    # 챗봇 (LDP-143). Vertex AI(GCP) 인증은 IRSA 가 아니라 14-gcp-llm Workload Identity Federation
+    chat-bot-service = {
+      description     = "chat-bot-service (chat session, message tables)"
+      namespace       = "backend"
+      service_account = "chat-bot-service"
+    }
+    llm-service = {
+      description     = "llm-service (RAG vector query)"
+      namespace       = "backend"
+      service_account = "llm-service"
+    }
+    # backend 차트 RAG 적재 Job (llmIngest.enabled 일 때 SA 생성)
+    llm-ingest = {
+      description     = "llm-ingest Job (RAG vector put)"
+      namespace       = "backend"
+      service_account = "llm-ingest"
+    }
   }
+
+  # 15-chatbot-vectors 인덱스 (s3vectors 리소스 ARN 형식 bucket/<버킷>/index/<인덱스>)
+  vector_index_arn = "arn:${data.aws_partition.current.partition}:s3vectors:${var.region}:${data.aws_caller_identity.current.account_id}:bucket/${var.vector_bucket_name}/index/${var.vector_index_name}"
 }
 
 data "aws_iam_policy_document" "irsa_assume" {
@@ -145,4 +165,55 @@ resource "aws_iam_role_policy" "seed" {
   name   = "seed-room-images"
   role   = aws_iam_role.irsa["seed"].id
   policy = data.aws_iam_policy_document.seed.json
+}
+
+# chat-bot-service: 41-main-data 대화 테이블 두 개만 (session.service.ts · message.service.ts 는 PutCommand · QueryCommand 만 사용).
+#   세션은 userId-index(GSI) 로 조회하므로 인덱스 ARN 도 넣는다
+data "aws_iam_policy_document" "chat_bot_service" {
+  statement {
+    sid     = "ChatTables"
+    actions = ["dynamodb:PutItem", "dynamodb:Query"]
+    resources = flatten([
+      for name in values(var.dynamodb_table_names) : [
+        "arn:${data.aws_partition.current.partition}:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${name}",
+        "arn:${data.aws_partition.current.partition}:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${name}/index/*",
+      ]
+    ])
+  }
+}
+
+resource "aws_iam_role_policy" "chat_bot_service" {
+  name   = "chat-tables"
+  role   = aws_iam_role.irsa["chat-bot-service"].id
+  policy = data.aws_iam_policy_document.chat_bot_service.json
+}
+
+# llm-service: RAG 인덱스 조회만 (vector_store.py query_vectors, returnMetadata 라 GetVectors 도 필요)
+data "aws_iam_policy_document" "llm_service" {
+  statement {
+    sid       = "QueryRagIndex"
+    actions   = ["s3vectors:QueryVectors", "s3vectors:GetVectors"]
+    resources = [local.vector_index_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "llm_service" {
+  name   = "rag-query"
+  role   = aws_iam_role.irsa["llm-service"].id
+  policy = data.aws_iam_policy_document.llm_service.json
+}
+
+# llm-ingest: RAG 인덱스 쓰기만 (scripts/ingest.py put_vectors, 문서 id 가 key 라 덮어쓰기)
+data "aws_iam_policy_document" "llm_ingest" {
+  statement {
+    sid       = "PutRagIndex"
+    actions   = ["s3vectors:PutVectors"]
+    resources = [local.vector_index_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "llm_ingest" {
+  name   = "rag-put"
+  role   = aws_iam_role.irsa["llm-ingest"].id
+  policy = data.aws_iam_policy_document.llm_ingest.json
 }

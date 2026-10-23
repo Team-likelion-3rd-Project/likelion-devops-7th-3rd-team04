@@ -55,7 +55,7 @@ variables:
   SMOKE_CLIENT_IMAGE: alpine:3.22
   # llm-service(langchain_rag/llm-service/Dockerfile 의 베이스와 같은 버전)
   PYTHON_IMAGE: python:3.12-slim
-  # n8n 은 빌드하지 않고 Docker Hub 이미지를 레지스트리로 미러링 (push job).
+  # n8n 은 빌드하지 않고 Docker Hub 이미지를 레지스트리로 미러링 (온프레미스: push job, 운영 ECR: release:mirror-n8n).
   # 차트 n8n.image.tag · langchain_rag/docker-compose.yml 과 같은 값으로 올림
   N8N_VERSION: "2.35.3"
 
@@ -330,14 +330,22 @@ release:prepare:
       key="$(aws ssm get-parameter --region us-east-1 --name /team04-hotel/prod/frontend/toss-client-key \
         --query Parameter.Value --output text 2>/dev/null)" || { key=""; echo "토스 클라이언트 키 Parameter 를 읽지 못했습니다 (release:frontend-build 가 실패합니다)"; }
       echo "VITE_TOSS_CLIENT_KEY=$key" >> release.env
+    # 있는지는 BatchGetImage 로 본다 (Runner Role 에 DescribeImages 가 없다. 없는 태그는 오류 대신 images 가 빈 목록)
     - |
+      image_exists() {
+        [ "$(aws ecr batch-get-image --region us-east-1 --repository-name "team04-hotel/$1" \
+               --image-ids imageTag="$2" --query 'length(images)' --output text 2>/dev/null)" = "1" ]
+      }
       for svc in $IMAGES $RELEASE_ONLY_IMAGES; do
-        if aws ecr describe-images --region us-east-1 --repository-name "team04-hotel/$svc" \
-             --image-ids imageTag="$CI_COMMIT_SHA" > /dev/null 2>&1; then
+        if image_exists "$svc" "$CI_COMMIT_SHA"; then
           echo "이미 있음: $svc"
           echo "RELEASE_SKIP_$(echo "$svc" | tr 'a-z-' 'A-Z_')=1" >> release.env
         fi
       done
+      if image_exists n8n "$N8N_VERSION"; then
+        echo "이미 있음: n8n:$N8N_VERSION"
+        echo "RELEASE_SKIP_N8N=1" >> release.env
+      fi
   artifacts:
     reports:
       dotenv: release.env
@@ -361,6 +369,7 @@ release:build:
           - payment-service
           - pg-mock-service
           - user-service
+          - llm-service
           - main-migrations
           - payment-migrations
           - seed
@@ -368,7 +377,9 @@ release:build:
     - 'test -n "$ECR_REGISTRY" || { echo "ECR_REGISTRY 가 비었습니다 — release:prepare 의 dotenv 아티팩트를 확인하세요"; exit 1; }'
     - 'eval "skip=\${RELEASE_SKIP_$(echo "$SERVICE" | tr "a-z-" "A-Z_"):-}"; if [ -n "$skip" ]; then echo "$SERVICE:$CI_COMMIT_SHA 는 이미 ECR 에 있어 건너뜀"; exit 0; fi'
     - |
-      if [ "$SERVICE" = "main-migrations" ]; then
+      if [ "$SERVICE" = "llm-service" ]; then
+        CONTEXT="$CI_PROJECT_DIR/langchain_rag/llm-service"; DOCKERFILE="$CONTEXT/Dockerfile"
+      elif [ "$SERVICE" = "main-migrations" ]; then
         CONTEXT="$CI_PROJECT_DIR/backend/migrations"; DOCKERFILE="$CONTEXT/Dockerfile"
       elif [ "$SERVICE" = "payment-migrations" ]; then
         CONTEXT="$CI_PROJECT_DIR/backend/apps/payment-service/migrations"; DOCKERFILE="$CONTEXT/Dockerfile"
@@ -405,6 +416,34 @@ release:build:
       /busybox/awk -v total="$(/busybox/awk '/^MemTotal:/ { print $2 }' /proc/meminfo)" \
         'NR == 1 || $1 < min { min = $1 } $2 > max { max = $2 }
          END { printf "[메모리] 호스트 %d MiB · 빌드 중 남은 메모리 최소 %d MiB · 이 job 사용량 최대 %d MiB (2초 간격 %d회)\n", total / 1024, min / 1024, max / 1048576, NR }' /kaniko/mem.log
+      exit $rc
+
+# n8n: Docker Hub 이미지를 ECR team04-hotel/n8n:<N8N_VERSION> 으로 옮깁니다 (운영 클러스터는 ECR 에서만 pull).
+#   빌드 없이 FROM 한 줄짜리 Dockerfile 을 kaniko 로 push — kaniko 의 ecr-login 헬퍼(Runner Role)를 그대로 써서 ECR 토큰을 다루지 않습니다.
+#   태그가 버전이라 커밋마다 바뀌지 않습니다. ECR 이 IMMUTABLE 이므로 이미 있으면(release:prepare RELEASE_SKIP_N8N) 건너뜁니다
+release:mirror-n8n:
+  extends: .release
+  stage: release
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  needs: [release:prepare]
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - 'test -n "$ECR_REGISTRY" || { echo "ECR_REGISTRY 가 비었습니다 — release:prepare 의 dotenv 아티팩트를 확인하세요"; exit 1; }'
+    - 'if [ -n "${RELEASE_SKIP_N8N:-}" ]; then echo "n8n:$N8N_VERSION 은 이미 ECR 에 있어 건너뜀"; exit 0; fi'
+    - mkdir -p /kaniko/.docker /kaniko/n8n
+    - printf '{"credHelpers":{"%s":"ecr-login"}}' "$ECR_REGISTRY" > /kaniko/.docker/config.json
+    - echo "FROM docker.io/n8nio/n8n:$N8N_VERSION" > /kaniko/n8n/Dockerfile
+    - |
+      if /kaniko/executor \
+          --context /kaniko/n8n \
+          --dockerfile /kaniko/n8n/Dockerfile \
+          --custom-platform linux/arm64 \
+          --destination "$ECR_REGISTRY/team04-hotel/n8n:$N8N_VERSION" \
+          > /kaniko/build.log 2>&1; then rc=0; else rc=$?; fi
+      /busybox/sed -E 's/[0-9]{12}/<account>/g' /kaniko/build.log
       exit $rc
 
 # 프론트 빌드 (Terraform 13-frontend). 운영 반영은 gitops 릴리스 PR merge 후 GitHub Actions 가 CloudFront KeyValueStore 를 바꿀 때
@@ -467,7 +506,7 @@ release:gitops-pr:
   image:
     name: $DEPLOY_IMAGE
     entrypoint: [""]
-  needs: [release:build, release:frontend]
+  needs: [release:build, release:mirror-n8n, release:frontend]
   variables:
     GITOPS_GITHUB_REPO: Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops
     MONOREPO_GITHUB_URL: https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04

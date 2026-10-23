@@ -1,0 +1,22 @@
+{{- if .Values.gcpWorkloadIdentity.enabled }}
+{{- $w := .Values.gcpWorkloadIdentity }}
+{{- $email := required "gcpWorkloadIdentity.serviceAccountEmail 이 필요합니다 (Terraform 14-gcp-llm output llm_service_account_email)" $w.serviceAccountEmail }}
+---
+# GCP external_account 설정 (공개 값만 — 키 없음). 토큰 파일은 같은 projected 볼륨의 token (_helpers.tpl backend.gcpWif.volume)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gcp-workload-identity
+  labels:
+    {{- include "backend.labels" (dict "root" $ "name" "gcp-workload-identity") | nindent 4 }}
+data:
+  credentials.json: |-
+    {{- dict
+      "type" "external_account"
+      "audience" (required "gcpWorkloadIdentity.audience 가 필요합니다" $w.audience)
+      "subject_token_type" "urn:ietf:params:oauth:token-type:jwt"
+      "token_url" "https://sts.googleapis.com/v1/token"
+      "service_account_impersonation_url" (printf "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/%s:generateAccessToken" $email)
+      "credential_source" (dict "file" (printf "%s/token" $w.mountPath) "format" (dict "type" "text"))
+      | toPrettyJson | nindent 4 }}
+{{- end }}

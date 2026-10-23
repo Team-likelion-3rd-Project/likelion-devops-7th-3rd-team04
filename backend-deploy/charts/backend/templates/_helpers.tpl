@@ -46,3 +46,34 @@ imagePullSecrets:
 {{- end }}
 {{- end }}
 {{- end -}}
+
+{{/*
+GCP Workload Identity Federation (prod llm-service · llm-ingest — Terraform 14-gcp-llm).
+파드 projected SA 토큰(aud = Provider)과 external_account 설정(credentials.json)을 한 projected 볼륨으로 넣고
+GOOGLE_APPLICATION_CREDENTIALS 로 가리킨다 → google-auth 가 STS 교환 후 운영 GCP 서비스 계정을 impersonate (키 없음)
+*/}}
+{{- define "backend.gcpWif.env" -}}
+- name: GOOGLE_APPLICATION_CREDENTIALS
+  value: {{ printf "%s/credentials.json" .Values.gcpWorkloadIdentity.mountPath | quote }}
+{{- end -}}
+
+{{- define "backend.gcpWif.volumeMount" -}}
+- name: gcp-workload-identity
+  mountPath: {{ .Values.gcpWorkloadIdentity.mountPath }}
+  readOnly: true
+{{- end -}}
+
+{{- define "backend.gcpWif.volume" -}}
+- name: gcp-workload-identity
+  projected:
+    sources:
+      - serviceAccountToken:
+          audience: {{ required "gcpWorkloadIdentity.audience 가 필요합니다 (Terraform 14-gcp-llm output workload_identity_audience)" .Values.gcpWorkloadIdentity.audience | quote }}
+          expirationSeconds: {{ .Values.gcpWorkloadIdentity.tokenExpirationSeconds }}
+          path: token
+      - configMap:
+          name: gcp-workload-identity
+          items:
+            - key: credentials.json
+              path: credentials.json
+{{- end -}}
