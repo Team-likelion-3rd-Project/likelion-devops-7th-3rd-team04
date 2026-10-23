@@ -87,3 +87,18 @@ migrations:
   # 결제 DB 는 결제 서버 쪽에서 적용 (클러스터에서 결제 DB 에 접근하지 않음)
   payment:
     enabled: false
+
+# 초기 데이터 시딩 Job (LDP-141) — 메인 DB 를 매일 새로 만들므로 배포마다 호텔 · 객실 · 재고 · 관리자 계정 · 객실 사진을 채운다.
+# 마이그레이션 hook 뒤에 실행되는 일반 Job 이라 실패해도 서비스 배포는 롤백되지 않는다. 이미지 태그는 global.imageTag 와 같음
+seed:
+  enabled: true
+  env:
+    # 객실 사진 버킷 (13-frontend, 매일 재생성되지 않음). 고정 키 room-types/<객실 종류 ID>/seed-<파일>, 이미 있으면 올리지 않음
+    # 엔드포인트 · 키를 비우면 AWS 기본 주소 + IRSA(team04-hotel-seed, room-types/* PutObject 만)
+    S3_BUCKET: team04-hotel-room-images
+    S3_REGION: us-east-1
+  # 관리자 계정 Secret (backend-secrets 앱의 ExternalSecret ← Secrets Manager team04-hotel/prod/seed-admin, Terraform 12-secrets)
+  adminSecretName: seed-admin
+  db:
+    # RDS 서버 인증서 · 호스트 이름 검증 TLS (require_secure_transport 를 켜도 접속됨)
+    caConfigMap: rds-ca-bundle   # backend-secrets 앱

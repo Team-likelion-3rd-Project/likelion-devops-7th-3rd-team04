@@ -19,6 +19,10 @@ config:
       "backend/hotel-service":
         RoleARN: "arn:aws:iam::{{ .Values.global.awsAccountId }}:role/team04-hotel-hotel-service"
         Audience: sts.amazonaws.com
+      # 시드 Job 의 객실 사진 올리기 (13-frontend 사진 버킷 room-types/* PutObject 만). SA 는 backend 차트(seed.enabled)가 만든다
+      "backend/seed":
+        RoleARN: "arn:aws:iam::{{ .Values.global.awsAccountId }}:role/team04-hotel-seed"
+        Audience: sts.amazonaws.com
 
 # 파드 생성마다 호출되므로 워커 2대에 나눠 띄운다
 replicaCount: 2

@@ -335,3 +335,35 @@ migrations:
       limits:
         cpu: 500m
         memory: 512Mi
+
+# 초기 데이터 시딩 Job (backend/scripts/seed.ts, 이미지 backend/scripts/Dockerfile.seed) — templates/seed-job.yaml
+# 기본 꺼 둠: dev(온프레미스)는 Ansible db_seed 가 DB 노드에서 실행. prod 는 DB 를 매일 새로 만들므로 prod gitops 에서 켬
+#   env           : 평문 환경변수 (tpl 렌더링). S3_* 를 비우면 객실 사진 단계만 건너뜀
+#   secretEnv     : global.secretName Secret 에서 같은 이름의 key 를 읽음 (메인 DB 접속 정보)
+#   adminSecretName : SEED_ADMIN_EMAIL · SEED_ADMIN_PASSWORD · SEED_ADMIN_NAME key 를 가진 Secret. 비우면 관리자 계정 시딩을 건너뜀
+#   db.caConfigMap  : 지정하면 /certs 에 마운트하고 DB_SSL=true · DB_SSL_CA_PATH=/certs/<db.caFile> (서버 인증서 · 호스트 이름 검증)
+seed:
+  enabled: false
+  image:
+    repository: seed
+    tag: ""
+  env:
+    DB_PORT: "3306"
+  secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+  adminSecretName: ""
+  db:
+    caConfigMap: ""
+    caFile: us-east-1-bundle.pem
+  # 일시적인 DB · S3 오류 대비 재시도. 실패해도 서비스 배포에는 영향 없음
+  backoffLimit: 2
+  # ts-node 로 바로 실행 + 예약 가능일 365일 × 객실 12개 insert
+  activeDeadlineSeconds: 900
+  # 끝난 Job · 파드는 이 시간 뒤 정리 (실패 로그 확인 시간). 정리된 뒤 같은 태그로 다시 배포하면 다시 실행되지만 멱등이라 영향 없음
+  ttlSecondsAfterFinished: 86400
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi

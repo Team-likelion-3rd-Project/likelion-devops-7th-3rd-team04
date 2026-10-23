@@ -230,6 +230,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 | `team04-hotel/prod/toss-payments` | `{secret_key}` | 토스페이먼츠 개발자센터 API 키 → 결제위젯 연동 키의 **시크릿 키**(테스트 `test_gsk_*`, 지금은 로컬 `backend/.env` 의 `TOSS_SECRET_KEY` 와 같은 값). 프론트 클라이언트 키(`test_gck_*`)와 같은 줄의 한 쌍 | `60-payment-app` 결제 서버 Role (`TOSS_SECRET_KEY`) |
 | `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `40-cicd` Runner Role (`release:gitops-pr` job) |
 | SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 Runner 가 시크릿 키까지 읽게 되므로 분리 | `40-cicd` Runner Role (`release:prepare` → `release:frontend-build` 의 `VITE_TOSS_CLIENT_KEY`) |
+| `team04-hotel/prod/seed-admin` | `{email, password, name}` | 운영 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*`, 비밀번호 12자 이상). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | `70` ESO Role (`team04-hotel-external-secrets`) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
 
 처음 등록 · 값 교체 (온프레미스 GitLab 재생성으로 토큰이 바뀐 경우 등):
 
@@ -239,7 +240,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 cd infra/terraform/live/prod/12-secrets
 cp .env.example .env   # 처음 한 번. 값을 채운다 (GitHub App 개인 키만 .pem 파일 경로)
 
-# 교체할 때는 variables.tf 의 해당 version(ci_runner_credentials_version · github_app_credentials_version · toss_credentials_version)을 올린 뒤
+# 교체할 때는 variables.tf 의 해당 version(ci_runner_credentials_version · github_app_credentials_version · toss_credentials_version · seed_admin_credentials_version)을 올린 뒤
 AWS_PROFILE=team04 terragrunt apply
 ```
 
@@ -249,7 +250,8 @@ AWS_PROFILE=team04 terragrunt apply
 - 값이 바뀌면 `.env` 를 고치고 해당 version 을 올립니다. 예: 온프레미스 GitLab 재생성으로 `aws-ci-runner.env` 의 토큰이 바뀜 → `GITLAB_RUNNER_TOKEN` 수정 + `ci_runner_credentials_version` 증가.
 - 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-` · `test_gsk_` 등 시크릿 키 · `test_gck_` 클라이언트 키)이 다르면 변수 검증에서 막힙니다.
 - 토스 시크릿 키와 클라이언트 키는 한 쌍이라 `toss_credentials_version` 하나로 함께 다시 넣습니다. 클라이언트 키는 다음 릴리스 빌드부터 반영됩니다 (변경 이력: `aws ssm get-parameter-history`).
-- Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(Runner Secret 은 `team04-hotel-ci-runner`, 토스는 `team04-hotel-payment-app`)과 apply 한 주체만 허용합니다.
+- Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(Runner Secret 은 `team04-hotel-ci-runner`, 토스는 `team04-hotel-payment-app`, 시드 관리자 계정은 `team04-hotel-external-secrets`)과 apply 한 주체만 허용합니다.
+- 시드 관리자 비밀번호를 바꾸면 다음 DB 재생성부터 새 값으로 만들어집니다. 이미 떠 있는 DB 의 계정은 그대로입니다 (시드는 이미 있는 계정을 건너뜀).
 - GitHub App 개인 키(`.pem`)는 GitHub 에서 다시 받을 수 없습니다. 분실하면 새 키를 만들고 `github_app_credentials_version` 을 올려 다시 등록합니다.
 - 이미 떠 있는 Runner 는 부팅 때 값을 읽었으므로, 교체 후에는 Runner 를 다시 만듭니다 (`40-cicd` apply 또는 ASG 인스턴스 종료).
 

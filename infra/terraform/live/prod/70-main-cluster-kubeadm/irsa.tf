@@ -9,6 +9,8 @@
 #   external-secrets  41-main-data external_secrets_role_name (Secret 리소스 정책)
 #   booking-service   43-messaging booking_role_name (큐 정책)
 #   hotel-service     13-frontend image_writer_role_name (사진 버킷 정책의 쓰기 허용)
+#   seed              13-frontend image_seed_role_name (사진 버킷 정책의 쓰기 허용)
+# ESO 가 읽는 Secret 리소스 정책도 Role 이름으로 허용한다: 41-main-data · 12-secrets 의 external_secrets_role_name
 
 data "aws_caller_identity" "current" {}
 
@@ -34,6 +36,12 @@ locals {
       description     = "hotel-service (room image presigned upload, delete)"
       namespace       = "backend"
       service_account = "hotel-service"
+    }
+    # backend 차트 seed Job (seed.enabled 일 때 SA 생성)
+    seed = {
+      description     = "seed Job (seed room image upload)"
+      namespace       = "backend"
+      service_account = "seed"
     }
   }
 }
@@ -71,13 +79,14 @@ resource "aws_iam_role" "irsa" {
   assume_role_policy = data.aws_iam_policy_document.irsa_assume[each.key].json
 }
 
-# ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키) 값 조회만. Secret ARN 끝의 무작위 6자는 ?????? 로 맞춘다
+# ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키)과 12-secrets 의 시드 관리자 계정 값 조회만.
+# Secret ARN 끝의 무작위 6자는 ?????? 로 맞춘다
 data "aws_iam_policy_document" "external_secrets" {
   statement {
     sid     = "GetAppSecrets"
     actions = ["secretsmanager:GetSecretValue"]
     resources = [
-      for name in values(var.secret_names) :
+      for name in concat(values(var.secret_names), [var.seed_admin_secret_name]) :
       "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${name}-??????"
     ]
   }
@@ -120,4 +129,20 @@ resource "aws_iam_role_policy" "hotel_service" {
   name   = "room-images"
   role   = aws_iam_role.irsa["hotel-service"].id
   policy = data.aws_iam_policy_document.hotel_service.json
+}
+
+# seed: 시드 사진을 고정 키(room-types/<객실 종류 ID>/seed-<파일>)로 올리기만 (backend/scripts/seed.ts).
+#   이미 있는지는 조건부 쓰기(If-None-Match, 있으면 412)로 판단해 HeadObject(GetObject) · ListBucket 이 필요 없다
+data "aws_iam_policy_document" "seed" {
+  statement {
+    sid       = "SeedRoomImages"
+    actions   = ["s3:PutObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.image_bucket_name}/room-types/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "seed" {
+  name   = "seed-room-images"
+  role   = aws_iam_role.irsa["seed"].id
+  policy = data.aws_iam_policy_document.seed.json
 }

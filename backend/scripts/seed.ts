@@ -1,10 +1,13 @@
 import 'reflect-metadata';
-import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Between, DataSource, In } from 'typeorm';
 import * as bcrypt from 'bcrypt';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  PutObjectCommand,
+  S3Client,
+  S3ServiceException,
+} from '@aws-sdk/client-s3';
 import { Admin } from '../apps/user-service/src/admin/entities/admin.entity';
 import { AdminCredential } from '../apps/auth-service/src/entities/admin-credential.entity';
 import { Hotel } from '../apps/hotel-service/src/entities/hotel.entity';
@@ -19,6 +22,7 @@ import { Facility } from '../apps/hotel-service/src/entities/facility.entity';
 import { mariaDbSslOptions } from '../libs/common/src/db/mariadb-ssl';
 
 // docker compose 기동 시(db-seed 서비스, scripts/Dockerfile.seed) 1회 실행되는 시딩 스크립트입니다.
+// 온프레미스 dev는 Ansible db_seed, 운영은 backend 차트의 seed Job(같은 Dockerfile 이미지, LDP-141)이 실행합니다.
 // NestFactory 대신 TypeORM DataSource를 직접 열어 admins/admin_credentials/hotels/rooms/facilities에
 // 필요한 초기 데이터를 넣습니다 — hotel-service에는 CreateHotel API가, auth-service에는
 // 관리자 자격증명을 만드는 API가 아직 없어서(테스트 편의를 위한 시딩 목적상) 직접 DB에
@@ -673,12 +677,46 @@ async function seedFacilities(dataSource: DataSource): Promise<void> {
 }
 
 // 객실 사진 시딩 (LDP-126): 사진이 하나도 없는 시드 객실 종류에만 scripts/seed-images/의 사진을 저장소
-// (로컬·dev MinIO / 운영 S3)에 올리고 room_images에 경로(object_key)를 저장한다. 경로 규칙은
-// hotel-service RoomImageStorage와 같다(room-types/{객실 종류 ID}/{uuid}.jpg) — 화면은 Presigned URL로 보여준다.
+// (로컬·dev MinIO / 운영 S3)에 올리고 room_images에 경로(object_key)를 저장한다.
+// - 경로는 고정 키 room-types/{객실 종류 ID}/seed-{파일 이름} (LDP-141). hotel-service RoomImageStorage가
+//   room-types/{객실 종류 ID}/ 접두사로 그 객실 사진인지 확인하므로 접두사는 같게 둔다. 관리자 업로드는 기존대로 uuid
+// - 운영은 DB만 매일 다시 만들고 사진 버킷은 유지된다 → 같은 키가 이미 있으면 올리지 않고(If-None-Match) DB만 다시 연결한다.
+//   그래서 매일 재생성·재실행해도 저장소 객체가 늘어나지 않는다. HeadObject 대신 조건부 쓰기를 쓰는 이유: 없는 키의
+//   HeadObject는 s3:ListBucket 권한이 없으면 404가 아니라 403이라, 확인하려면 버킷 목록 권한까지 줘야 한다
 // - 이미 사진이 있는 객실 종류(관리자가 올렸거나 이전 시딩)는 건너뛴다 → 여러 번 실행해도 늘어나지 않음
 // - 한 객실의 사진 파일이 하나라도 없으면 그 객실은 건너뛴다(일부만 올라가면 나머지를 다시 채울 수 없어서)
 // - 저장소 설정(S3_BUCKET)이 없는 환경에서는 사진 단계만 건너뛴다
 const SEED_IMAGES_DIR = join(__dirname, 'seed-images');
+
+function seedImageObjectKey(roomId: number, file: string): string {
+  return `room-types/${roomId}/seed-${file}`;
+}
+
+// 고정 키에 사진을 올린다. 같은 키가 이미 있으면(412) 올리지 않는다. 올렸으면 true
+async function putSeedImageIfAbsent(
+  s3: S3Client,
+  bucket: string,
+  objectKey: string,
+  file: string,
+): Promise<boolean> {
+  try {
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: objectKey,
+        Body: readFileSync(file),
+        ContentType: 'image/jpeg',
+        IfNoneMatch: '*',
+      }),
+    );
+    return true;
+  } catch (err) {
+    if ((err as S3ServiceException).$metadata?.httpStatusCode === 412) {
+      return false;
+    }
+    throw err;
+  }
+}
 
 function createSeedS3Client(): S3Client {
   const credentials =
@@ -710,6 +748,7 @@ async function seedRoomImages(dataSource: DataSource): Promise<void> {
   const imageRepository = dataSource.getRepository(RoomImage);
   const s3 = createSeedS3Client();
   let seededRooms = 0;
+  let uploadedObjects = 0;
 
   for (const seed of HOTEL_SEEDS) {
     const hotel = await hotelRepository.findOne({
@@ -738,16 +777,11 @@ async function seedRoomImages(dataSource: DataSource): Promise<void> {
       }
 
       const objectKeys: string[] = [];
-      for (const file of files) {
-        const objectKey = `room-types/${room.roomId}/${randomUUID()}.jpg`;
-        await s3.send(
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: objectKey,
-            Body: readFileSync(file),
-            ContentType: 'image/jpeg',
-          }),
-        );
+      for (const [i, file] of files.entries()) {
+        const objectKey = seedImageObjectKey(room.roomId, roomSeed.images[i]);
+        if (await putSeedImageIfAbsent(s3, bucket, objectKey, file)) {
+          uploadedObjects += 1;
+        }
         objectKeys.push(objectKey);
       }
       await imageRepository.save(
@@ -763,7 +797,9 @@ async function seedRoomImages(dataSource: DataSource): Promise<void> {
       seededRooms += 1;
     }
   }
-  console.log(`[seed] 객실 사진 시딩 완료: 객실 종류 ${seededRooms}개`);
+  console.log(
+    `[seed] 객실 사진 시딩 완료: 객실 종류 ${seededRooms}개 (새로 올린 파일 ${uploadedObjects}개, 나머지는 저장소에 이미 있음)`,
+  );
 }
 
 async function main(): Promise<void> {

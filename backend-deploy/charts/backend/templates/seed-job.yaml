@@ -1,0 +1,101 @@
+{{- if .Values.seed.enabled }}
+{{- $s := .Values.seed }}
+{{- $tag := $s.image.tag | default .Values.global.imageTag | toString }}
+{{- $jobName := printf "seed-%s" ($tag | trunc 8) }}
+{{- $env := merge (dict) ($s.env | default dict) .Values.global.env }}
+{{- if .Values.serviceAccounts.create }}
+---
+# 시드 Job 의 ServiceAccount — IRSA 매핑(prod pod-identity-webhook ConfigMap)은 backend/seed 기준 (객실 사진 올리기)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: seed
+  labels:
+    {{- include "backend.labels" (dict "root" $ "name" "seed") | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}
+---
+# 초기 데이터 시딩 (backend/scripts/seed.ts — 관리자 계정 · 호텔 · 객실 · 호실 · 편의시설 · 예약 가능일 · 객실 사진)
+# 운영은 DB 를 매일 새로 만들므로 배포 때마다 자동으로 채운다 (LDP-141). 온프레미스 dev 는 Ansible db_seed 라 기본 꺼 둠
+#
+# hook 이 아닌 일반 Job 이다 — 마이그레이션(pre-install/pre-upgrade hook)이 끝난 뒤 앱 Deployment 와 같이 만들어진다.
+#   helm --wait 는 Job 완료를 기다리지 않으므로(--wait-for-jobs 없음) 시드가 실패해도 서비스 배포는 롤백되지 않는다
+#   Job spec 은 바꿀 수 없어 이름에 이미지 태그를 넣는다 → 새 릴리스면 이전 Job 을 지우고 새 Job 으로 다시 시딩
+# seed.ts 는 멱등(이미 있으면 건너뜀)이라 같은 DB 에 여러 번 돌아도 데이터 · 사진이 늘지 않는다
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $jobName }}
+  labels:
+    {{- include "backend.labels" (dict "root" $ "name" "seed") | nindent 4 }}
+spec:
+  backoffLimit: {{ $s.backoffLimit }}
+  activeDeadlineSeconds: {{ $s.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ $s.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "backend.labels" (dict "root" $ "name" "seed") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- include "backend.imagePullSecrets" $ | trim | nindent 6 }}
+      {{- if .Values.serviceAccounts.create }}
+      serviceAccountName: seed
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: seed
+          image: {{ include "backend.image" (dict "root" $ "image" $s.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            {{- range $key := keys $env | sortAlpha }}
+            - name: {{ $key }}
+              value: {{ tpl (get $env $key | toString) $ | quote }}
+            {{- end }}
+            {{- range $key := $s.secretEnv }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.secretName }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- with $s.adminSecretName }}
+            # 관리자 계정 — 비밀번호가 backend-secrets 와 섞이지 않게 별도 Secret (prod: backend-secrets 앱의 ExternalSecret)
+            # 이름은 없으면 seed.ts 기본값('관리자')
+            {{- range $key := list "SEED_ADMIN_EMAIL" "SEED_ADMIN_PASSWORD" "SEED_ADMIN_NAME" }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.adminSecretName }}
+                  key: {{ $key }}
+                  {{- if eq $key "SEED_ADMIN_NAME" }}
+                  optional: true
+                  {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if $s.db.caConfigMap }}
+            - name: DB_SSL
+              value: "true"
+            - name: DB_SSL_CA_PATH
+              value: /certs/{{ $s.db.caFile }}
+            {{- end }}
+          resources:
+            {{- toYaml $s.resources | nindent 12 }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $s.db.caConfigMap }}
+          volumeMounts:
+            - name: db-ca
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: db-ca
+          configMap:
+            name: {{ $s.db.caConfigMap }}
+          {{- end }}
+{{- end }}

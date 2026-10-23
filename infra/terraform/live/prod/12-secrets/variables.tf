@@ -28,6 +28,12 @@ variable "payment_app_role_name" {
   default     = "team04-hotel-payment-app"
 }
 
+variable "external_secrets_role_name" {
+  description = "시드 관리자 계정 Secret 을 읽는 External Secrets Operator Role 이름 (Role 은 70 irsa_roles 에서 생성)"
+  type        = string
+  default     = "team04-hotel-external-secrets"
+}
+
 # ── 비밀값 (ephemeral: state · plan 에 남지 않음). terragrunt.hcl 이 .env 를 읽어 TF_VAR_* 로 넘긴다 (README 5절) ──
 
 variable "ci_runner_credentials_version" {
@@ -142,5 +148,48 @@ variable "toss_client_key" {
   validation {
     condition     = can(regex("^(test|live)_gck_", var.toss_client_key))
     error_message = "TF_VAR_toss_client_key 가 비었거나 결제위젯 클라이언트 키(test_gck_ · live_gck_) 형식이 아닙니다."
+  }
+}
+
+# ── 시드 관리자 계정 (backend 시드 Job 의 SEED_ADMIN_*, LDP-141). 운영 관리자 로그인 계정이라 사람이 정해 둔다 ──
+
+variable "seed_admin_credentials_version" {
+  description = "시드 관리자 계정 Secret 값을 다시 넣을 때 올리는 번호 (비밀번호 변경 등). 다음 DB 재생성부터 새 값으로 시딩된다"
+  type        = number
+  default     = 1
+}
+
+variable "seed_admin_email" {
+  description = "시드 관리자 로그인 이메일. 12-secrets/.env 의 SEED_ADMIN_EMAIL"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.seed_admin_email))
+    error_message = "TF_VAR_seed_admin_email 이 비었거나 이메일 형식이 아닙니다."
+  }
+}
+
+variable "seed_admin_password" {
+  description = "시드 관리자 비밀번호 (12자 이상). 12-secrets/.env 의 SEED_ADMIN_PASSWORD"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = length(var.seed_admin_password) >= 12
+    error_message = "TF_VAR_seed_admin_password 가 비었거나 12자보다 짧습니다."
+  }
+}
+
+variable "seed_admin_name" {
+  description = "시드 관리자 표시 이름. 12-secrets/.env 의 SEED_ADMIN_NAME"
+  type        = string
+  ephemeral   = true
+
+  validation {
+    condition     = length(trimspace(var.seed_admin_name)) > 0
+    error_message = "TF_VAR_seed_admin_name 이 비었습니다."
   }
 }
