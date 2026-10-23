@@ -78,3 +78,9 @@
   background: var(--text);
   opacity: 0.6;
 }
+
+/* 자동 처리를 멈추고 사람이 확인하는 상태 (LDP-97) — 결제 상세에서 문의 안내를 보여준다 */
+.payment-status-refund_manual_required,
+.payment-status-unknown_manual_required {
+  background: #e5484d;
+}

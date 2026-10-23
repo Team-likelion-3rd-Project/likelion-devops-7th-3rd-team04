@@ -87,6 +87,7 @@ export interface PaymentGrpcResponse {
   paidAt: string;
   userId: number;
   receiptUrl: string; // PG 영수증 주소 (없으면 빈 문자열)
+  refundedAt: string; // 환불 완료 시각 (환불 전이면 빈 문자열, LDP-139)
 }
 
 // 저장된 PG 응답(raw_response)에서 영수증 주소를 꺼낸다 — 토스 승인 응답의 receipt.url (LDP-124).
@@ -784,6 +785,8 @@ export class PaymentServiceService {
       paidAt: payment.paidAt ? payment.paidAt.toISOString() : '',
       userId: payment.userId,
       receiptUrl: receiptUrlOf(payment.rawResponse),
+      // 취소 결과 화면에서 "환불 완료 일시"로 보여 준다 (LDP-139)
+      refundedAt: payment.refundedAt ? payment.refundedAt.toISOString() : '',
     };
   }
 }

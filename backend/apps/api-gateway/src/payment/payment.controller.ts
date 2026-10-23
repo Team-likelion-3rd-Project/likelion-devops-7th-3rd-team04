@@ -48,6 +48,7 @@ interface PaymentDto {
   paidAt: string;
   userId: number;
   receiptUrl: string; // 토스 영수증 주소 (토스 결제만, 없으면 빈 문자열) — LDP-124
+  refundedAt: string; // 환불 완료 시각 ISO 문자열 (환불 전이면 빈 문자열) — LDP-139
 }
 
 // proto의 PaymentWebhookRequest 메시지와 1:1 대응 (signature는 여기서 검증만 하고 넘기지 않음)

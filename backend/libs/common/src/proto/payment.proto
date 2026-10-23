@@ -100,10 +100,13 @@ message Payment {
   string approvalNumber = 3; // PG승인번호 (승인 전이면 빈 문자열)
   int32 amount = 4;
   string paymentMethod = 5;
-  string status = 6; // PROCESSING | APPROVED | FAILED | UNKNOWN | REFUND_REQUESTED | REFUND_FAILED | REFUNDED
+  // PROCESSING | APPROVED | FAILED | UNKNOWN | REFUND_REQUESTED | REFUND_FAILED | REFUNDED
+  // | REFUND_MANUAL_REQUIRED | UNKNOWN_MANUAL_REQUIRED (수동 처리 2종, LDP-97)
+  string status = 6;
   string paidAt = 7; // 승인 시각 ISO 문자열 (승인 전이면 빈 문자열)
   int32 userId = 8;
   string receiptUrl = 9; // PG 영수증 주소 (토스 결제만, 없으면 빈 문자열) — LDP-124
+  string refundedAt = 10; // 환불 완료 시각 ISO 문자열 (환불 전이면 빈 문자열) — LDP-139
 }
 
 message PaymentListResponse {

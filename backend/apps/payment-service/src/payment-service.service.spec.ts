@@ -380,6 +380,41 @@ describe('PaymentServiceService', () => {
     });
   });
 
+  // LDP-139: 취소 결과 화면의 "환불 완료 일시" — 환불 전이면 빈 문자열
+  describe('결제 조회 응답 refundedAt', () => {
+    const base = {
+      paymentId: 3,
+      reservationId: 1,
+      amount: 1000,
+      paymentMethod: 'CARD',
+      paidAt: new Date('2026-10-22T01:00:00Z'),
+      userId: 1,
+      rawResponse: null,
+    };
+
+    it('환불이 끝났으면 환불 완료 시각을 ISO 문자열로 내려준다', async () => {
+      findOneMock.mockResolvedValue({
+        ...base,
+        status: PaymentStatus.REFUNDED,
+        refundedAt: new Date('2026-10-23T03:00:00Z'),
+      });
+
+      expect((await service.getPaymentById(3)).refundedAt).toBe(
+        '2026-10-23T03:00:00.000Z',
+      );
+    });
+
+    it('환불 전이면 빈 문자열', async () => {
+      findOneMock.mockResolvedValue({
+        ...base,
+        status: PaymentStatus.REFUND_REQUESTED,
+        refundedAt: null,
+      });
+
+      expect((await service.getPaymentById(3)).refundedAt).toBe('');
+    });
+  });
+
   describe('approvePayment', () => {
     const request = {
       idempotencyKey: '11111111-1111-1111-1111-111111111111',
