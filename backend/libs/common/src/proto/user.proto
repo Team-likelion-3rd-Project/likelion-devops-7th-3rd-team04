@@ -12,7 +12,8 @@ service UserService {
   rpc GetUserByEmail (GetUserByEmailRequest) returns (User);
 
   // api-gateway가 관리자 전용 "전체 유저 목록 조회"에서 호출합니다.
-  rpc GetUsers (Empty) returns (UserListResponse);
+  // 조건이 없으면 전체(가입 순), page가 1 이상이면 그 페이지만(최근 가입 순). total은 조건에 맞는 전체 개수 (LDP-136)
+  rpc GetUsers (GetUsersRequest) returns (UserListResponse);
 
   // api-gateway가 "내 정보 조회"(JWT의 userId) 및 관리자 "특정 유저 조회"에서 호출합니다. (없으면 에러)
   rpc GetUserById (GetUserByIdRequest) returns (User);
@@ -64,6 +65,13 @@ message CreateUserRequest {
   string phoneNumber = 3;
 }
 
+// 회원 목록 조건 (LDP-136). 모든 칸이 비어 있으면 전체 목록 — 예전 GetUsers(Empty)와 같다
+message GetUsersRequest {
+  int32 page = 1; // 1부터. 0 = 페이지를 나누지 않음
+  int32 size = 2; // 한 페이지 개수 (page가 1 이상일 때)
+  string keyword = 3; // 이름·이메일·연락처에 들어 있는 글자 (빈 문자열 = 전체)
+}
+
 message GetUserByEmailRequest {
   string email = 1;
 }
@@ -98,6 +106,7 @@ message DeleteUserResponse {
 
 message UserListResponse {
   repeated User users = 1;
+  int32 total = 2; // 조건에 맞는 전체 개수 (페이지와 무관, LDP-136)
 }
 
 message User {

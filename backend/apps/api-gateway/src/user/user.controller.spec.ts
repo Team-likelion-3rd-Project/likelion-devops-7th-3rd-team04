@@ -60,10 +60,35 @@ describe('UserController', () => {
       const users = [{ id: 1, email: 'a@example.com', name: 'A', phoneNumber: '010', role: 'USER', status: 'ACTIVE' }];
       getUsersMock.mockReturnValue(of({ users }));
 
-      const result = await controller.getUsers();
+      getUsersMock.mockReturnValue(of({ users, total: 1 }));
 
-      expect(getUsersMock).toHaveBeenCalledWith({});
-      expect(result).toEqual({ users });
+      const result = await controller.getUsers({});
+
+      // 조건이 없으면 페이지를 나누지 않는다 (예전과 같은 전체 목록, LDP-136)
+      expect(getUsersMock).toHaveBeenCalledWith({
+        page: 0,
+        size: 20,
+        keyword: '',
+      });
+      expect(result).toEqual({ users, total: 1 });
+    });
+
+    it('page·size·keyword를 user-service에 넘긴다 (검색어 앞뒤 공백 제거, LDP-136)', async () => {
+      getUsersMock.mockReturnValue(of({ users: [], total: 0 }));
+
+      await controller.getUsers({ page: 2, size: 10, keyword: ' 홍길동 ' });
+
+      expect(getUsersMock).toHaveBeenCalledWith({
+        page: 2,
+        size: 10,
+        keyword: '홍길동',
+      });
+    });
+
+    it('gRPC가 빈 목록을 생략해도 users·total을 채워 돌려준다', async () => {
+      getUsersMock.mockReturnValue(of({}));
+
+      expect(await controller.getUsers({})).toEqual({ users: [], total: 0 });
     });
   });
 

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { RpcException } from '@nestjs/microservices';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Like, Repository } from 'typeorm';
 import { User, UserRole, UserStatus } from './entities/user.entity';
 import { DeletedUser } from './entities/deleted-user.entity';
 
@@ -13,6 +13,18 @@ export interface UserGrpcResponse {
   phoneNumber: string;
   role: string;
   status: string;
+}
+
+// 회원 목록 조건 (proto GetUsersRequest, LDP-136). 비어 있는 칸은 조건 없음
+export interface UserListQuery {
+  page?: number;
+  size?: number;
+  keyword?: string;
+}
+
+// LIKE 검색어의 %·_·\ 를 글자 그대로 찾게 한다
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
 }
 
 // 비밀번호 없이 남은 프로필을 정리해도 되는 최소 경과 시간 (LDP-111). 정상 가입은 프로필을 만든 직후(1초 안) 비밀번호를
@@ -107,10 +119,35 @@ export class UserService {
     return this.toGrpcResponse(user);
   }
 
-  // api-gateway 관리자 전용 "전체 유저 목록 조회" 요청.
-  async getUsers(): Promise<{ users: UserGrpcResponse[] }> {
-    const users = await this.userRepository.find();
-    return { users: users.map((user) => this.toGrpcResponse(user)) };
+  // api-gateway 관리자 전용 "회원 목록 조회" 요청 (LDP-136). 조건이 없으면 전체(예전과 같음),
+  // 검색어·페이지가 있으면 최근 가입 순으로 그만큼만. 관리자 예약 목록의 회원 검색에도 쓴다.
+  async getUsers(
+    query: UserListQuery = {},
+  ): Promise<{ users: UserGrpcResponse[]; total: number }> {
+    const keyword = query.keyword?.trim() ?? '';
+    const page = query.page ?? 0;
+    if (!keyword && page <= 0) {
+      const users = await this.userRepository.find();
+      return {
+        users: users.map((user) => this.toGrpcResponse(user)),
+        total: users.length,
+      };
+    }
+
+    const pattern = `%${escapeLike(keyword)}%`;
+    const size = query.size && query.size > 0 ? query.size : 20;
+    const [users, total] = await this.userRepository.findAndCount({
+      where: keyword
+        ? [
+            { name: Like(pattern) },
+            { email: Like(pattern) },
+            { phoneNumber: Like(pattern) },
+          ]
+        : {},
+      order: { id: 'DESC' },
+      ...(page > 0 ? { skip: (page - 1) * size, take: size } : {}),
+    });
+    return { users: users.map((user) => this.toGrpcResponse(user)), total };
   }
 
   // api-gateway "내 정보 조회"(JWT의 userId) 및 관리자 "특정 유저 조회" 요청. 없으면 RpcException.

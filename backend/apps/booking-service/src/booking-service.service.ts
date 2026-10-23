@@ -6,6 +6,7 @@ import { CallOptions, Metadata } from '@grpc/grpc-js';
 import { Observable, firstValueFrom } from 'rxjs';
 import {
   DataSource,
+  Brackets,
   EntityManager,
   In,
   IsNull,
@@ -186,6 +187,19 @@ const ACTIVE_RESERVATION_STATUSES = [
   ReservationStatus.PENDING_PAYMENT,
   ReservationStatus.RESERVED,
 ];
+
+// 관리자 예약 목록 조건 (proto GetBookingsRequest, LDP-136). 비어 있는 칸은 조건 없음
+export interface BookingListQuery {
+  page?: number;
+  size?: number;
+  hotelId?: number;
+  statuses?: string[];
+  hasKeyword?: boolean;
+  keywordReservationId?: number;
+  keywordUserIds?: number[];
+  linkedTo?: number;
+  keywordRoomUnitIds?: number[];
+}
 
 // 끝난 예약 중 환불이 남아 있을 수 있는 상태 — 여기에 취소를 다시 요청하면 환불 상태를 확인해 알려 준다 (LDP-97).
 // 만료·결제 실패도 "예약이 끝난 뒤 승인"이 오면 자동 환불 대상이 된다.
@@ -441,11 +455,68 @@ export class BookingServiceService implements OnModuleInit {
   }
 
   // 전체 예약 목록 조회 (관리자 전용, 권한 검증은 api-gateway에서 수행)
-  async getBookings(): Promise<BookingGrpcResponse[]> {
-    const reservations = await this.reservationRepository.find({
-      order: { createdAt: 'DESC' },
-    });
-    return this.toGrpcResponsesWithLastAttempt(reservations);
+  // 관리자 예약 목록 (LDP-136). 조건이 없으면 전체(예전과 같음), page가 1 이상이면 그 페이지만. 최신순.
+  // 검색어는 api-gateway가 예약번호·회원 ID·호실 ID로 바꿔서 넘긴다 — 회원 이름·방 번호는 이 서비스 DB에 없다.
+  async getBookings(
+    query: BookingListQuery = {},
+  ): Promise<{ bookings: BookingGrpcResponse[]; total: number }> {
+    const keywordUserIds = query.keywordUserIds ?? [];
+    const keywordRoomUnitIds = query.keywordRoomUnitIds ?? [];
+    if (
+      query.hasKeyword &&
+      !query.keywordReservationId &&
+      keywordUserIds.length === 0 &&
+      keywordRoomUnitIds.length === 0
+    ) {
+      // 검색어에 맞는 예약번호도 회원도 호실도 없음
+      return { bookings: [], total: 0 };
+    }
+
+    const qb = this.reservationRepository.createQueryBuilder('r');
+    if (query.hotelId) {
+      qb.andWhere('r.hotelId = :hotelId', { hotelId: query.hotelId });
+    }
+    if (query.statuses?.length) {
+      qb.andWhere('r.status IN (:...statuses)', { statuses: query.statuses });
+    }
+    if (query.hasKeyword) {
+      qb.andWhere(
+        new Brackets((keyword) => {
+          if (query.keywordReservationId) {
+            keyword.orWhere('r.reservationId = :keywordReservationId', {
+              keywordReservationId: query.keywordReservationId,
+            });
+          }
+          if (keywordUserIds.length > 0) {
+            keyword.orWhere('r.userId IN (:...keywordUserIds)', {
+              keywordUserIds,
+            });
+          }
+          if (keywordRoomUnitIds.length > 0) {
+            keyword.orWhere('r.roomUnitId IN (:...keywordRoomUnitIds)', {
+              keywordRoomUnitIds,
+            });
+          }
+        }),
+      );
+    }
+    if (query.linkedTo) {
+      qb.andWhere(
+        '(r.reservationId = :linkedTo OR r.linkedReservationId = :linkedTo)',
+        { linkedTo: query.linkedTo },
+      );
+    }
+    qb.orderBy('r.createdAt', 'DESC').addOrderBy('r.reservationId', 'DESC');
+    if (query.page && query.page > 0) {
+      const size = query.size && query.size > 0 ? query.size : 20;
+      qb.skip((query.page - 1) * size).take(size);
+    }
+
+    const [reservations, total] = await qb.getManyAndCount();
+    return {
+      bookings: await this.toGrpcResponsesWithLastAttempt(reservations),
+      total,
+    };
   }
 
   // 특정 유저의 예약 목록 조회. userId가 이 서비스의 DB에 존재하지 않아도(유저 존재 여부는
