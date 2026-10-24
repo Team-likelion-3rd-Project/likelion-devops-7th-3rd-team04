@@ -49,6 +49,7 @@ variable "interface_endpoints" {
       secretsmanager                  결제 DB 접속 정보 · 토스 시크릿 키
       logs                            CloudWatch Logs
       autoscaling                     배포 중 결제 서버 Standby 진입 · 해제 (60 pull agent)
+      sns                             배포 결과 알림 (60 pull agent → 10-global 배포 토픽. Slack 으로 직접 나가지 않아 NFW 허용 목록 유지)
   EOT
   type        = set(string)
   default = [
@@ -61,5 +62,6 @@ variable "interface_endpoints" {
     "secretsmanager",
     "logs",
     "autoscaling",
+    "sns",
   ]
 }

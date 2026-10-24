@@ -64,6 +64,16 @@ variable "image_bucket_name" {
   type        = string
 }
 
+variable "deploy_topic_name" {
+  description = "10-global 의 deploy_topic_name. 배포 agent(gitops-sync) Role 이 발행한다"
+  type        = string
+}
+
+variable "notifications_kms_key_id" {
+  description = "10-global 의 notifications_kms_key_id (배포 토픽 암호화 키)"
+  type        = string
+}
+
 variable "log_bucket_name" {
   description = "10-global 의 log_bucket_name output. Fluent Bit Role 이 app-logs/main-cluster/ 에 쓴다"
   type        = string

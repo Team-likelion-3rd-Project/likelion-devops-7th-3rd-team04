@@ -7,6 +7,10 @@
 #
 # 앱 = APPS_PATH 아래 chart.yaml 이 있는 폴더. clusterValues: true 면 CLUSTER_VALUES(Ansible 이 만든 클러스터 값)도 -f 로 넘긴다. 앞 앱이 적용된 뒤 뒤 앱이 실패해도 앞 앱은 새 버전으로 남는다.
 # 폴더를 지워도 릴리스는 삭제하지 않는다 (helm uninstall 은 사람이 한다)
+#
+# 적용 결과(성공 · 실패)는 DEPLOY_TOPIC_ARN 이 있으면 배포 토픽(10-global → AWS Chatbot → Slack #deploy)에 발행한다.
+# 클러스터 생성 직후 첫 적용(applied_sha 없음, 매일 재생성)의 성공 · 변경 없음 · 가져오기 실패(재시도)는 발행하지 않는다.
+# 첫 적용의 실패는 서비스가 뜨지 않은 것이라 발행한다. 발행 실패는 배포 결과에 영향을 주지 않는다
 set -Eeuo pipefail
 
 : "${REPO_URL:?}" "${BRANCH:?}" "${APPS_PATH:?}" "${HELM_TIMEOUT:?}" "${POD_NAMESPACE:?}" "${CLUSTER_VALUES:?}"
@@ -27,6 +31,35 @@ patch_state() {
     kubectl -n "$POD_NAMESPACE" create configmap "$STATE_CM" >/dev/null
   kubectl -n "$POD_NAMESPACE" patch configmap "$STATE_CM" --type merge \
     -p "$(jq -cn --argjson d "$1" '{data: ($d + {updated_at: (now | todate)})}')" >/dev/null
+}
+
+# $1: success | failed, $2: 실패한 앱, $3: 실패 메시지
+notify() {
+  [[ -n "${DEPLOY_TOPIC_ARN:-}" ]] || return 0
+  [[ "$1" == "failed" || -n "${applied:-}" ]] || return 0
+  local title release
+  if [[ "$1" == "success" ]]; then
+    title=":white_check_mark: 메인 클러스터 배포 성공"
+  else
+    title=":x: 메인 클러스터 배포 실패 ($2, --atomic 롤백)"
+  fi
+  # 릴리스 SHA = backend 차트 revision (모노레포 main 커밋, 이미지 태그와 같음)
+  release="$(yq '.revision // ""' "$repo/$APPS_PATH/backend/chart.yaml" 2>/dev/null || true)"
+  aws sns publish --topic-arn "$DEPLOY_TOPIC_ARN" --message "$(
+    jq -cn --arg title "$title" --arg result "$1" --arg release "${release:-?}" --arg target "$target" \
+      --arg previous "${applied:-}" --arg seconds "$SECONDS" --arg applied_apps "${applied_apps[*]:-}" \
+      --arg failed_app "${2:-}" --arg message "${3:-}" '
+      {version: "1.0", source: "custom",
+       content: {
+         textType: "client-markdown",
+         title: $title,
+         description: ("*릴리스* `\($release[0:8])`\n*gitops* `\($target[0:7])`"
+                       + (if $previous == "" then " (클러스터 생성 후 첫 적용)" else " (이전 `\($previous[0:7])`)" end)
+                       + "\n*소요* \($seconds)초\n*적용한 앱* \(if $applied_apps == "" then "없음" else $applied_apps end)"
+                       + (if $failed_app == "" then "" else "\n*실패* `\($failed_app)` — 이 앱만 이전 릴리스로 되돌림, 앞 앱은 새 버전 유지\n```\($message)```" end))},
+       metadata: {summary: $title, eventType: ("main_deploy_" + $result),
+                  additionalContext: {release: $release, gitops: $target}}}')" \
+    >/dev/null 2>&1 || log "배포 알림 발행 실패 (배포 결과와 무관)"
 }
 
 # ── 1) 대상 SHA ──
@@ -108,9 +141,11 @@ apply_fail() {
   log "적용 실패: $app — $msg"
   patch_state "$(jq -cn --arg sha "$target" --arg app "$app" --arg msg "$msg" \
     '{failed_sha: $sha, failed_app: $app, message: $msg}')"
+  notify failed "$app" "$(tail -c 300 <<<"$msg")"
   exit 1
 }
 
+applied_apps=()
 for dir in "${apps[@]}"; do
   app="$(basename "$dir")"
   def="$dir/chart.yaml"
@@ -128,7 +163,9 @@ for dir in "${apps[@]}"; do
     "${values[@]}" --atomic --wait --timeout "$HELM_TIMEOUT" --history-max 5 2>&1 | tee "$WORK/helm.log"; then
     apply_fail "$app" "$(tail -c 800 "$WORK/helm.log")"
   fi
+  applied_apps+=("$app")
 done
 
 patch_state "$(jq -cn --arg sha "$target" '{applied_sha: $sha, failed_sha: "", failed_app: "", message: ""}')"
 log "적용 완료: $BRANCH $target (${#apps[@]}개 앱)"
+notify success

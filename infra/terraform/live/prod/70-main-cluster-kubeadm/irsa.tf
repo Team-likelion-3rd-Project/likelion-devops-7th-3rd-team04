@@ -60,6 +60,14 @@ locals {
       namespace       = "backend"
       service_account = "llm-ingest"
     }
+    # 배포 agent (Ansible gitops_sync) 의 배포 결과 알림. gitops-sync 네임스페이스는 webhook 대상이 아니라
+    # CronJob 이 토큰(aud sts.amazonaws.com)을 직접 마운트하고 AWS_ROLE_ARN 을 넣는다 (gitops-sync.yaml.j2).
+    # 10-global 배포 토픽 정책이 이 Role 이름으로 발행을 허용한다
+    gitops-sync = {
+      description     = "GitOps deploy agent (deploy result notification)"
+      namespace       = "gitops-sync"
+      service_account = "gitops-sync"
+    }
     # 클러스터 로그 수집 DaemonSet (LDP-144, gitops fluent-bit)
     fluent-bit = {
       description     = "Fluent Bit (cluster log groups, log bucket app-logs/main-cluster/)"
@@ -248,4 +256,25 @@ resource "aws_iam_role_policy" "fluent_bit" {
   name   = "cluster-logs"
   role   = aws_iam_role.irsa["fluent-bit"].id
   policy = data.aws_iam_policy_document.fluent_bit.json
+}
+
+# gitops-sync: 10-global 배포 토픽 Publish 만 (암호화된 토픽이라 키 권한 포함). 배포 권한(cluster-admin)은 클러스터 RBAC 이고 AWS 권한은 이것뿐
+data "aws_iam_policy_document" "gitops_sync" {
+  statement {
+    sid       = "PublishDeployResult"
+    actions   = ["sns:Publish"]
+    resources = ["arn:${data.aws_partition.current.partition}:sns:${var.region}:${data.aws_caller_identity.current.account_id}:${var.deploy_topic_name}"]
+  }
+
+  statement {
+    sid       = "EncryptDeployResult"
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+    resources = ["arn:${data.aws_partition.current.partition}:kms:${var.region}:${data.aws_caller_identity.current.account_id}:key/${var.notifications_kms_key_id}"]
+  }
+}
+
+resource "aws_iam_role_policy" "gitops_sync" {
+  name   = "deploy-notify"
+  role   = aws_iam_role.irsa["gitops-sync"].id
+  policy = data.aws_iam_policy_document.gitops_sync.json
 }
