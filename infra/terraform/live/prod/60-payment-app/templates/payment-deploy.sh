@@ -14,6 +14,13 @@
 #
 # 비밀값(결제 DB · 토스 시크릿 키)은 /run(tmpfs) 의 0600 파일로만 컨테이너에 넘기고 실행 후 지운다. 로그에 찍지 않는다.
 # 설정 값은 /etc/payment-deploy/config.env (Terraform 60-payment-app user-data 가 만든다).
+#
+# 배포 이벤트는 CloudWatch Logs(DEPLOY_LOG_GROUP)에 JSON 한 줄로 남긴다. 90-observability-alarms 지표 필터가 이 형식을 읽는다.
+#   {event, image_tag, provider, detail, instance, az, mode}
+#   event     deploy_start · deploy_success · deploy_retry · deploy_failed · invalid_release · rollback_success · rollback_failed · rollback_skipped
+#   provider  release env 의 PAYMENT_PROVIDER (TOSS · MOCK, 롤백이면 되돌린 release 의 값)
+# 릴리스 배포(이미 배포된 서버의 갱신, timer)의 결과 이벤트(시작 · 재시도 제외)는 배포 토픽(DEPLOY_TOPIC_NAME → Slack #deploy)에도
+# 발행한다 (44 sns 엔드포인트). 부팅 배포(매일 재생성 · ASG 교체)는 발행하지 않는다 — 부팅 실패는 deploy-failed 알람(#alerts)이 알린다.
 set -Eeuo pipefail
 
 # shellcheck source=/dev/null
@@ -51,6 +58,8 @@ AZ=$(imds meta-data/placement/availability-zone)
 ACCOUNT_ID=$(imds dynamic/instance-identity/document | jq -r .accountId)
 REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 QUEUE_URL="https://sqs.$REGION.amazonaws.com/$ACCOUNT_ID/$PAYMENT_RESULT_QUEUE_NAME"
+DEPLOY_TOPIC_ARN="arn:aws:sns:$REGION:$ACCOUNT_ID:$DEPLOY_TOPIC_NAME"
+PROVIDER=""
 
 log() {
   echo "[payment-deploy] $*"
@@ -60,14 +69,44 @@ log() {
 event() {
   local name=$1 detail=${2:-} message
   log "$name ${detail}"
-  message=$(jq -cn --arg event "$name" --arg detail "$detail" --arg tag "${TARGET_TAG:-}" \
+  message=$(jq -cn --arg event "$name" --arg detail "$detail" --arg tag "${TARGET_TAG:-}" --arg provider "$PROVIDER" \
     --arg instance "$INSTANCE_ID" --arg az "$AZ" --arg mode "$MODE" \
-    '{event: $event, image_tag: $tag, detail: $detail, instance: $instance, az: $az, mode: $mode}')
+    '{event: $event, image_tag: $tag, provider: $provider, detail: $detail, instance: $instance, az: $az, mode: $mode}')
   aws logs create-log-stream --region "$REGION" --log-group-name "$DEPLOY_LOG_GROUP" \
     --log-stream-name "$INSTANCE_ID" >/dev/null 2>&1 || true
   aws logs put-log-events --region "$REGION" --log-group-name "$DEPLOY_LOG_GROUP" --log-stream-name "$INSTANCE_ID" \
     --log-events "$(jq -cn --arg m "$message" --argjson t "$(date +%s%3N)" '[{timestamp: $t, message: $m}]')" \
     >/dev/null 2>&1 || log "CloudWatch Logs 기록 실패 (계속 진행)"
+  notify "$name" "$detail"
+}
+
+# 배포 결과를 Slack #deploy 로 (AWS Chatbot 사용자 정의 알림 형식). 실패해도 배포는 계속
+notify() {
+  local name=$1 detail=$2 title
+  if [[ "$MODE" != "timer" || -z "${CURRENT:-}" ]]; then
+    return 0
+  fi
+  case "$name" in
+    deploy_success) title=":white_check_mark: 결제 서버 배포 성공" ;;
+    deploy_failed) title=":x: 결제 서버 배포 실패" ;;
+    invalid_release) title=":x: 결제 서버 release 형식 오류" ;;
+    rollback_success) title=":leftwards_arrow_with_hook: 결제 서버 이전 release 로 롤백" ;;
+    rollback_failed) title=":rotating_light: 결제 서버 롤백 실패" ;;
+    rollback_skipped) title=":warning: 결제 서버 롤백 불가 (이전 release 없음)" ;;
+    *) return 0 ;;
+  esac
+  aws sns publish --region "$REGION" --topic-arn "$DEPLOY_TOPIC_ARN" --message "$(
+    jq -cn --arg title "$title" --arg event "$name" --arg detail "$detail" --arg tag "${TARGET_TAG:-}" \
+      --arg provider "${PROVIDER:-?}" --arg instance "$INSTANCE_ID" --arg az "$AZ" --arg mode "$MODE" '
+      {version: "1.0", source: "custom",
+       content: {
+         textType: "client-markdown",
+         title: $title,
+         description: ("*릴리스* `\($tag[0:8])`\n*인스턴스* `\($instance)` (\($az), \($mode))\n*PG* `\($provider)`"
+                       + (if $detail == "" then "" else "\n\($detail)" end))},
+       metadata: {summary: $title, eventType: $event,
+                  additionalContext: {release: $tag, instance: $instance}}}')" \
+    >/dev/null 2>&1 || log "배포 알림 발행 실패 (계속 진행)"
 }
 
 sha() {
@@ -292,6 +331,8 @@ if [[ "$TARGET_TAG" == "none" ]]; then
   exit 0
 fi
 
+PROVIDER=$(jq -r '.env.PAYMENT_PROVIDER // ""' <<<"$RELEASE" 2>/dev/null || true)
+
 if ! validate_release "$RELEASE"; then
   echo "$HASH" >"$STATE_DIR/failed"
   event invalid_release "image_tag 는 커밋 SHA, env 는 문자열 값의 객체여야 하고 인프라 소유 키($RESERVED_ENV_REGEX)는 쓸 수 없습니다"
@@ -383,6 +424,7 @@ fi
 
 # 이전 release 로 되돌린다 (이미지는 남아 있고, 비밀값은 다시 읽는다)
 TARGET_TAG=$(jq -r .image_tag <<<"$CURRENT")
+PROVIDER=$(jq -r '.env.PAYMENT_PROVIDER // ""' <<<"$CURRENT")
 render_env "$CURRENT"
 run_app "$REGISTRY/$APP_REPOSITORY:$TARGET_TAG"
 if wait_healthy; then

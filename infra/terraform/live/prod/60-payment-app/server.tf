@@ -31,6 +31,7 @@ locals {
     RDS_CA_PATH               = "/etc/payment-deploy/rds-ca-bundle.pem"
     APP_LOG_GROUP             = aws_cloudwatch_log_group.app.name
     DEPLOY_LOG_GROUP          = aws_cloudwatch_log_group.deploy.name
+    DEPLOY_TOPIC_NAME         = var.deploy_topic_name
     # AZ 접미사 순서(a b). 앞선 AZ 가 먼저 배포한다
     AZ_ORDER        = join(" ", sort(keys(local.network.subnet_ids_by_az.app)))
     STAGGER_SECONDS = var.deploy_stagger_seconds

@@ -47,3 +47,20 @@ output "gitops_ssm_sync_role_name" {
   description = "gitops 레포 GitHub Actions 가 assume 하는 Role 이름 (Actions 변수에는 계정 ID 를 붙인 ARN 을 넣는다)"
   value       = aws_iam_role.gitops_ssm_sync.name
 }
+
+# 계정 ID 가 로그에 찍히지 않도록 토픽 · 키 ARN 은 output 하지 않는다. 사용하는 쪽이 만든다:
+#   arn:aws:sns:<리전>:<계정>:<토픽 이름>     arn:aws:kms:<리전>:<계정>:key/<키 ID>
+output "alerts_topic_name" {
+  description = "CloudWatch 알람 토픽 이름 (90-observability-alarms 의 alarm_actions · ok_actions)"
+  value       = aws_sns_topic.alerts.name
+}
+
+output "deploy_topic_name" {
+  description = "배포 결과 토픽 이름 (메인 · 결제 배포 agent 가 발행)"
+  value       = aws_sns_topic.deploy.name
+}
+
+output "notifications_kms_key_id" {
+  description = "알림 토픽 암호화 키 ID. 발행 주체 Role 에 kms:GenerateDataKey · Decrypt 를 줄 때 ARN 을 만든다"
+  value       = aws_kms_key.notifications.key_id
+}
