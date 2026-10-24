@@ -35,6 +35,18 @@ dependency "network" {
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
+dependency "observability_base" {
+  config_path = "../21-observability-base"
+
+  mock_outputs = {
+    cluster_log_group_names = {
+      backend = "/team04-hotel/prod/cluster/backend"
+      other   = "/team04-hotel/prod/cluster/other"
+    }
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
+}
+
 dependency "security" {
   config_path = "../30-security"
 
@@ -81,6 +93,12 @@ dependency "messaging" {
 inputs = {
   oidc_issuer_url  = dependency.global.outputs.oidc_issuer_url
   oidc_bucket_name = dependency.global.outputs.oidc_bucket_name
+  log_bucket_name  = dependency.global.outputs.log_bucket_name
+
+  deploy_topic_name        = dependency.global.outputs.deploy_topic_name
+  notifications_kms_key_id = dependency.global.outputs.notifications_kms_key_id
+
+  cluster_log_group_names = dependency.observability_base.outputs.cluster_log_group_names
 
   image_bucket_name = dependency.frontend.outputs.image_bucket_name
 

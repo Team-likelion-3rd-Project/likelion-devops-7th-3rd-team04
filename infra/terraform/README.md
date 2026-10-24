@@ -36,7 +36,7 @@ infra/terraform/
         ├── 14-gcp-llm/              🔒 챗봇 Vertex AI 인증 (GCP Workload Identity Federation)
         ├── 15-chatbot-vectors/      🔒 챗봇 RAG 벡터 저장소 (S3 Vectors)
         ├── 20-network/              🔁
-        ├── 21-observability-base/   🔁
+        ├── 21-observability-base/   🔁 메인 클러스터 로그 그룹 (Fluent Bit)
         ├── 30-security/             🔁
         ├── 40-cicd/                 🔁
         ├── 41-main-data/            🔁
@@ -49,7 +49,7 @@ infra/terraform/
         ├── 70-main-cluster-kubeadm/ 🔁
         ├── 71-payment-link/         🔁 메인 VPC 결제 PrivateLink 엔드포인트 · 고정 이름
         ├── 80-main-edge/            🔁
-        └── 90-observability-alarms/ 🔁
+        └── 90-observability-alarms/ 🔁 필수 CloudWatch 알람 → Slack #alerts
 ```
 
 🔒 상시 유지 (destroy 하지 않음) / 🔁 매일 재생성
@@ -189,6 +189,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | **`run --all` (10 · 11 포함, 20 · 30 · 40 – 44 · 70 · 80)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-21) | **20분 07초** | **12분 56초** (10 · 11 제외) |
 | **`run --all` (10 포함, 20 · 30 · 41 · 43 · 70 · 80)** | 위 기본 조건, 인증서 발급 후 (2026-10-22, `--filter './80-main-edge...' --filter './41-main-data...' --filter './43-messaging...'`) | **18분 16초** | |
 | **`run --all` (10 포함, 20 · 30 · 41 – 44 · 60 · 61 · 70 · 71, 40 · 80 제외)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-22, 아래 `--filter`) | **19분 54초 – 21분 02초** | **11분 02초** (10 제외) |
+| **`run --all` (10 포함, 20 · 21 · 30 · 41 – 44 · 60 · 70 · 71 · 80 · 90, 40 · 61 제외)** | 기본 조건 (NFW · Multi-AZ 끔), 로그 · 알림 추가 후 (2026-10-24, `--filter './90-observability-alarms...' --filter './71-payment-link...' --filter './70-main-cluster-kubeadm...'`) | **17분 41초** | **11분 55초** (10 제외) |
 
 결제 쪽(`42` → `60` → `71`)이 메인 쪽(`41` → `70`)과 병렬이라 `60` · `61` · `71` 을 넣어도 전체 시간은 거의 늘지 않습니다. 가장 긴 경로는 `42` RDS(6분 40초 – 10분)에 따라 정해지고, `70` 은 `60` · `71` 을 기다리지 않습니다. 필요한 스택만 올릴 때는 `--filter '<스택>...'`(그 스택과 의존 스택)로 고릅니다.
 
@@ -682,4 +683,92 @@ gcloud iam service-accounts keys list --managed-by=user \
 ```bash
 curl -s -H 'Content-Type: application/json' -d '{"message":"체크인 시간이 언제예요?"}' https://api.meomulm.click/api/chat-bots/messages
 kubectl -n backend logs job/<llm-ingest-...> --tail=3        # "20 documents indexed into VECTOR_STORE=s3vectors"
+```
+
+---
+
+## 13. 클러스터 로그 (`21-observability-base` · Fluent Bit)
+
+```
+모든 노드(CP 포함) /var/log/containers ─ Fluent Bit DaemonSet (gitops fluent-bit, IRSA) ─┬→ CloudWatch Logs /team04-hotel/prod/cluster/<네임스페이스>  (21, 매일 재생성)
+                                                                                         └→ S3 team04-hotel-logs/app-logs/main-cluster/  (10-global 🔒, 90일)
+```
+
+| 위치 | 용도 | 보존 |
+|---|---|---|
+| CloudWatch Logs `/team04-hotel/prod/cluster/<네임스페이스>` | 당일 조회 · Logs Insights. 스트림 = `<파드>.<컨테이너>` | 매일 destroy 로 그룹째 삭제 |
+| CloudWatch Logs `/team04-hotel/prod/cluster/other` | `21` `cluster_log_namespaces` 에 없는 네임스페이스 | 같음 |
+| S3 `team04-hotel-logs/app-logs/main-cluster/<YYYY>/<MM>/<DD>/<노드>/` | 날짜를 넘긴 조회 (gzip JSON Lines, 5분마다 노드별 객체) | Object Lock 7일 · 90일 뒤 삭제 |
+
+- 레코드: `data`(JSON 로그를 펼친 값, JSON 이 아니면 `log` 원문) · `kubernetes`(네임스페이스 · 파드 · 컨테이너 · 노드, 라벨 · 어노테이션 없음) · `date` · `log_group_ns`.
+- S3 경로의 날짜 · 시각은 **UTC** 입니다 (한국 시간 오전 9시 전 로그는 전날 폴더).
+- **네임스페이스를 추가할 때**: `21` `cluster_log_namespaces` 와 gitops `fluent-bit/values.yaml` Lua 필터의 `known` 에 같이 추가합니다. Fluent Bit 은 그룹을 만들지 못하므로(권한 없음) 한쪽만 고치면 그 로그는 `other` 로 가거나(gitops 만 빠짐) 거부됩니다(21 만 빠짐).
+- Fluent Bit Role(`team04-hotel-fluent-bit`, 70 `irsa.tf`)은 위 그룹의 `CreateLogStream` · `PutLogEvents` 와 버킷 `app-logs/main-cluster/*` `PutObject` 만 가집니다.
+- 노드가 지워지면 아직 올리지 않은 마지막 5분 이내 로그는 S3 에 남지 않습니다 (CloudWatch 는 수 초 단위로 전송).
+
+```bash
+# 당일 — 최근 10분 backend 에러
+aws logs tail /team04-hotel/prod/cluster/backend --since 10m --filter-pattern ERROR
+
+# 날짜를 넘긴 조회 — 객체 목록 · 내용
+aws s3 ls s3://team04-hotel-logs/app-logs/main-cluster/2026/10/24/ --recursive
+aws s3 cp s3://team04-hotel-logs/app-logs/main-cluster/<경로>.gz - | gunzip | jq -c 'select(.kubernetes.namespace_name == "backend")'
+
+# 수집 상태 (DaemonSet · 출력 오류)
+kubectl -n fluent-bit get ds fluent-bit
+kubectl -n fluent-bit logs ds/fluent-bit --tail=50 | grep -iE 'error|warn'
+```
+
+---
+
+## 14. 알림 (Slack `#alerts` · `#deploy`)
+
+```
+CloudWatch 알람 ALARM (90) ─────────────────────┬→ SNS team04-hotel-alerts ─┐
+EventBridge 규칙 ALARM → OK 전환만 (10-global) ──┘                           │
+메인 배포 agent (gitops-sync, IRSA) ────────────┐                            ├→ AWS Chatbot (us-east-2) → Slack #alerts · #deploy
+결제 pull agent (60 Role, 44 sns 엔드포인트) ────┼→ SNS team04-hotel-deploy ──┘
+gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 · Chatbot 은 10-global 🔒, KMS 암호화)
+```
+
+- SNS 토픽 · KMS 키 · Chatbot 채널 설정은 `10-global` 🔒 이라 매일 재생성과 상관없이 유지됩니다. Chatbot 이 구독을 직접 관리하므로 구독 확인 · Slack 재연결이 없습니다.
+- 해소(OK) 알림은 알람의 `ok_actions` 가 아니라 `10-global` EventBridge 규칙 `team04-hotel-alarm-recovered` 가 보냅니다. `ok_actions` 는 알람을 새로 만들 때의 "데이터 부족 → OK" 에도 실행되어 매일 재생성마다 OK 가 오기 때문에, 이름이 `team04-hotel-` 로 시작하는 알람의 **ALARM → OK 전환만** 보냅니다. 새 알람도 이 접두사를 쓰고 `ok_actions` 는 넣지 않습니다.
+- Chatbot 은 EventBridge 의 알람 상태 변경 이벤트 원본을 지원하지 않아(`/aws/chatbot/team04-hotel-alerts` 로그: `Event received is not supported`), 규칙 대상의 입력 변환으로 사용자 정의 알림 형식(`✅ CloudWatch Alarm 해소 | <알람>`)으로 바꿔 보냅니다. Slack 에 메시지가 안 오면 이 로그 그룹(us-east-1)을 먼저 봅니다.
+- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람과 위 EventBridge 규칙만, 배포 토픽은 Role 3개(`team04-hotel-gitops-sync` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
+- Chatbot 채널 Role 에는 정책이 없고 guardrail 이 `AWSDenyAll` 이라 Slack 에서 AWS 명령을 실행할 수 없습니다.
+- 결제 VPC 는 Slack 으로 나가지 않습니다 (SNS 인터페이스 엔드포인트, NFW 허용 목록은 토스 API 만).
+- Slack 워크스페이스 · 채널 ID 는 `10-global/terraform.tfvars`(gitignore)에 둡니다 (`terraform.tfvars.example`). 기본값이 없어 파일이 없으면 `10-global` plan 이 멈춥니다. 비공개 채널이면 채널에서 `/invite @Amazon Q` 를 먼저 합니다.
+
+### `#alerts` 알람과 대응
+
+모든 알람은 ALARM 과, ALARM 에서 해소될 때 OK 를 보냅니다. 매일 재생성으로 알람을 새로 만들 때는 아무것도 오지 않습니다. 지표가 없으면(트래픽 · 이벤트 없음) 정상으로 봅니다.
+
+| 알람 | 조건 | 대응 |
+|---|---|---|
+| `team04-hotel-payment-result-dlq` | 결제 결과 DLQ 메시지 > 0 | booking-service 로그(`/team04-hotel/prod/cluster/backend`)에서 처리 실패 원인 확인 → 원인 수정 후 DLQ 메시지를 원래 큐로 재처리(콘솔 "DLQ 재처리") |
+| `team04-hotel-main-alb-5xx-rate` | ALB 5xx 비율 > 5% (1분 3번 중 2번, 요청 20건 이상) | `kubectl -n backend get pods`, api-gateway 로그. ELB 5xx 만 늘면 대상 없음(워커 · Traefik) |
+| `team04-hotel-main-alb-unhealthy` | 워커 Target Group unhealthy 5분 | 7절 Target Group 상태, 워커 교체 중인지(6절) 확인 |
+| `team04-hotel-payment-nlb-unhealthy` | 결제 NLB unhealthy 5분 | 9절 결제 서버 SSM 접속 → `docker ps` · app 로그. ASG 가 교체 중일 수 있음 |
+| `team04-hotel-payment-deploy-failed` | 결제 agent `deploy_failed` · `invalid_release` · `rollback_failed` | `#deploy` 의 인스턴스별 결과 → 9절 배포 이벤트 조회. 없는 태그면 gitops payment values 수정 PR |
+| `team04-hotel-payment-mock-deployed` | 결제 agent `deploy_success` 이면서 `provider = MOCK` | 부하 테스트가 아니면 gitops payment values `PAYMENT_PROVIDER` 를 `TOSS` 로 되돌리는 PR |
+
+- 결제 배포 · MOCK 알람은 이벤트가 생긴 1분만 ALARM 이고 다음 1분에 OK 로 돌아옵니다 ("발생 알림"). 이벤트가 있을 때만 생기는 지표라 `FILL(m, 0)` 수식으로 빈 분을 0 으로 채웁니다 — 채우지 않으면 평가 범위에 남은 마지막 1 때문에 ALARM 이 약 8분 이어집니다 (2026-10-24 실측). ALARM 중에 같은 이벤트가 또 생기면 새 메시지는 없습니다.
+- 매일 재생성 직후 결제 서버 · 워커가 부팅 중이면 unhealthy 알람이 한 번 올 수 있습니다 (5분 넘게 이어질 때만).
+
+### `#deploy` 배포 결과
+
+| 출처 | 보내는 때 | 내용 |
+|---|---|---|
+| 메인 클러스터 배포 agent | 떠 있는 클러스터에 새 gitops SHA 적용 성공 · 실패 (`--atomic` 롤백). 클러스터 생성 직후 첫 적용은 실패만 | 릴리스 SHA(backend `revision`), gitops SHA · 이전 SHA, 소요 시간, 적용한 앱, 실패한 앱 · 메시지 |
+| 결제 서버 pull agent (인스턴스별) | 떠 있는 서버의 release 갱신 결과: `deploy_success` · `deploy_failed`(없는 태그 · Flyway · 헬스) · `invalid_release` · `rollback_*`. 부팅 배포(매일 재생성 · ASG 교체)는 보내지 않음 — 실패는 `#alerts` deploy-failed 알람 | 릴리스 SHA, 인스턴스 · AZ · 실행 방식, PG(`TOSS` · `MOCK`), 사유 |
+| gitops `sync-frontend-version` | KeyValueStore 버전을 바꿨을 때 · 갱신 실패 | 릴리스 SHA, 이전 버전, Actions 실행 링크 |
+
+`#deploy` 는 릴리스(gitops merge)에만 옵니다. 매일 재생성은 메인 첫 적용이 실패했을 때만 "클러스터 생성 후 첫 적용" 실패로 옵니다.
+
+```bash
+# 알람 상태
+aws cloudwatch describe-alarms --alarm-name-prefix team04-hotel- --query 'MetricAlarms[].[AlarmName,StateValue]' --output table
+
+# 알림 경로 시험 (#alerts 에 ALARM 이 오고, 다음 평가에서 OK 로 돌아오면 EventBridge 경로로 OK 가 온다)
+aws cloudwatch set-alarm-state --alarm-name team04-hotel-payment-result-dlq --state-value ALARM --state-reason "알림 경로 시험"
 ```

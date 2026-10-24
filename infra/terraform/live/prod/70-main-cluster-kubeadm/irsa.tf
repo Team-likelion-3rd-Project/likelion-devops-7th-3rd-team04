@@ -60,6 +60,20 @@ locals {
       namespace       = "backend"
       service_account = "llm-ingest"
     }
+    # 배포 agent (Ansible gitops_sync) 의 배포 결과 알림. gitops-sync 네임스페이스는 webhook 대상이 아니라
+    # CronJob 이 토큰(aud sts.amazonaws.com)을 직접 마운트하고 AWS_ROLE_ARN 을 넣는다 (gitops-sync.yaml.j2).
+    # 10-global 배포 토픽 정책이 이 Role 이름으로 발행을 허용한다
+    gitops-sync = {
+      description     = "GitOps deploy agent (deploy result notification)"
+      namespace       = "gitops-sync"
+      service_account = "gitops-sync"
+    }
+    # 클러스터 로그 수집 DaemonSet (LDP-144, gitops fluent-bit)
+    fluent-bit = {
+      description     = "Fluent Bit (cluster log groups, log bucket app-logs/main-cluster/)"
+      namespace       = "fluent-bit"
+      service_account = "fluent-bit"
+    }
   }
 
   # 15-chatbot-vectors 인덱스 (s3vectors 리소스 ARN 형식 bucket/<버킷>/index/<인덱스>)
@@ -216,4 +230,51 @@ resource "aws_iam_role_policy" "llm_ingest" {
   name   = "rag-put"
   role   = aws_iam_role.irsa["llm-ingest"].id
   policy = data.aws_iam_policy_document.llm_ingest.json
+}
+
+# fluent-bit: 21-observability-base 의 클러스터 로그 그룹에 쓰기 + 로그 버킷 app-logs/main-cluster/ 올리기만.
+#   CreateLogStream · PutLogEvents  cloudwatch_logs 출력 (그룹은 Terraform 이 만들어 CreateLogGroup 없음, 스트림 ARN 은 그룹 ARN:*)
+#   PutObject                       s3 출력 (use_put_object, 멀티파트 미사용). 결제 서버 로그 등 다른 app-logs/ 경로는 쓸 수 없다
+data "aws_iam_policy_document" "fluent_bit" {
+  statement {
+    sid     = "ClusterLogGroups"
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = [
+      for name in values(var.cluster_log_group_names) :
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:${name}:*"
+    ]
+  }
+
+  statement {
+    sid       = "AppLogsMainCluster"
+    actions   = ["s3:PutObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.log_bucket_name}/app-logs/main-cluster/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "fluent_bit" {
+  name   = "cluster-logs"
+  role   = aws_iam_role.irsa["fluent-bit"].id
+  policy = data.aws_iam_policy_document.fluent_bit.json
+}
+
+# gitops-sync: 10-global 배포 토픽 Publish 만 (암호화된 토픽이라 키 권한 포함). 배포 권한(cluster-admin)은 클러스터 RBAC 이고 AWS 권한은 이것뿐
+data "aws_iam_policy_document" "gitops_sync" {
+  statement {
+    sid       = "PublishDeployResult"
+    actions   = ["sns:Publish"]
+    resources = ["arn:${data.aws_partition.current.partition}:sns:${var.region}:${data.aws_caller_identity.current.account_id}:${var.deploy_topic_name}"]
+  }
+
+  statement {
+    sid       = "EncryptDeployResult"
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+    resources = ["arn:${data.aws_partition.current.partition}:kms:${var.region}:${data.aws_caller_identity.current.account_id}:key/${var.notifications_kms_key_id}"]
+  }
+}
+
+resource "aws_iam_role_policy" "gitops_sync" {
+  name   = "deploy-notify"
+  role   = aws_iam_role.irsa["gitops-sync"].id
+  policy = data.aws_iam_policy_document.gitops_sync.json
 }

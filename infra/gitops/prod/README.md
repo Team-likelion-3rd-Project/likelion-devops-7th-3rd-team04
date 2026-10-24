@@ -19,6 +19,7 @@ infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── cert-manager/          chart.yaml · values.yaml          15  webhook TLS 인증서 발급 · caBundle 주입
 ├── pod-identity-webhook/  chart.yaml · values.yaml          20  IRSA 주입 (ns/SA → Role 매핑)
 ├── whoami/                chart.yaml · values.yaml · chart/ 20  수직 경로 검증용 테스트 백엔드 (/whoami)
+├── fluent-bit/            chart.yaml · values.yaml          25  파드 로그 수집 → CloudWatch Logs · 로그 버킷 app-logs/main-cluster/
 ├── external-secrets/      chart.yaml · values.yaml          30  External Secrets Operator
 ├── cluster-secret-store/  chart.yaml · chart/               40  ClusterSecretStore aws-secrets-manager
 ├── backend-secrets/       chart.yaml · chart/               45  backend Secret(ExternalSecret) · RDS CA ConfigMap
@@ -83,6 +84,7 @@ CronJob gitops-sync (1분, CP 노드, cluster-admin)
      전부 성공: applied_sha 기록
 ```
 
+- **적용 결과는 Slack `#deploy` 로 갑니다.** 성공 · 실패(실패한 앱, `--atomic` 롤백)를 릴리스 SHA · 소요 시간 · 적용한 앱과 함께 10-global 배포 토픽에 발행합니다 ([Terraform README](../../terraform/README.md) 14절). gitops-sync 는 pod-identity-webhook 대상이 아니라 CronJob 이 IRSA 토큰을 직접 마운트합니다 (Role `team04-hotel-gitops-sync`, 배포 토픽 발행만).
 - **가져오기와 적용 실패를 나눕니다.** 네트워크 장애(GitHub · 차트 저장소)로 SHA 가 실패로 기록되면 새 커밋 전까지 배포가 멈추므로, 네트워크를 쓰는 단계는 재시도하고 값 문제(렌더링 오류, readiness 실패)만 기록합니다. 존재하지 않는 차트 버전도 가져오기 실패라 매 분 재시도합니다 (클러스터는 바뀌지 않음).
 - **적용은 앱 단위입니다.** 앞 앱이 적용된 뒤 뒤 앱이 실패하면 앞 앱은 새 버전으로 남고, 실패한 앱만 `--atomic` 으로 이전 릴리스로 돌아갑니다.
 - **값이 같으면 파드는 바뀌지 않습니다.** SHA 가 바뀌면 모든 앱에 `helm upgrade` 를 하지만, 렌더 결과가 같은 앱은 revision 만 늘어납니다 (`--history-max 5`).

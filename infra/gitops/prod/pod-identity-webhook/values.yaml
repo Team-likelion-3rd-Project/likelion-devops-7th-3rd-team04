@@ -35,6 +35,10 @@ config:
       "backend/llm-ingest":
         RoleARN: "arn:aws:iam::{{ .Values.global.awsAccountId }}:role/team04-hotel-llm-ingest"
         Audience: sts.amazonaws.com
+      # 클러스터 로그 수집 (LDP-144). 21-observability-base 로그 그룹 쓰기 · 로그 버킷 app-logs/main-cluster/ PutObject 만
+      "fluent-bit/fluent-bit":
+        RoleARN: "arn:aws:iam::{{ .Values.global.awsAccountId }}:role/team04-hotel-fluent-bit"
+        Audience: sts.amazonaws.com
 
 # 파드 생성마다 호출되므로 워커 2대에 나눠 띄운다
 replicaCount: 2

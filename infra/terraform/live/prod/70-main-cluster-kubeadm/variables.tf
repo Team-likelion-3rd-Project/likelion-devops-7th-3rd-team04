@@ -64,6 +64,26 @@ variable "image_bucket_name" {
   type        = string
 }
 
+variable "deploy_topic_name" {
+  description = "10-global 의 deploy_topic_name. 배포 agent(gitops-sync) Role 이 발행한다"
+  type        = string
+}
+
+variable "notifications_kms_key_id" {
+  description = "10-global 의 notifications_kms_key_id (배포 토픽 암호화 키)"
+  type        = string
+}
+
+variable "log_bucket_name" {
+  description = "10-global 의 log_bucket_name output. Fluent Bit Role 이 app-logs/main-cluster/ 에 쓴다"
+  type        = string
+}
+
+variable "cluster_log_group_names" {
+  description = "21-observability-base 의 cluster_log_group_names (네임스페이스 → 로그 그룹). Fluent Bit Role 이 이 그룹에만 쓴다"
+  type        = map(string)
+}
+
 variable "main_network" {
   description = "20-network 의 main output (vpc_id, vpc_cidr, subnet_ids, subnet_ids_by_az)"
   type = object({

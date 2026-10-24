@@ -7,6 +7,11 @@ dependencies {
   paths = ["../44-payment-endpoints"]
 }
 
+# 🔒 10-global 은 destroy 하지 않으므로 mock 없이 실제 output 을 읽는다 (배포 결과 토픽 · 암호화 키)
+dependency "global" {
+  config_path = "../10-global"
+}
+
 # mock_outputs: 인프라가 내려가 있을 때(output 없음) plan · validate · destroy 를 돌리기 위한 값
 dependency "network" {
   config_path = "../20-network"
@@ -63,6 +68,9 @@ dependency "messaging" {
 }
 
 inputs = {
+  deploy_topic_name        = dependency.global.outputs.deploy_topic_name
+  notifications_kms_key_id = dependency.global.outputs.notifications_kms_key_id
+
   payment_network        = dependency.network.outputs.payment
   sg_ids                 = dependency.security.outputs.sg_ids
   payment_db_secret_name = dependency.payment_data.outputs.secret_name
