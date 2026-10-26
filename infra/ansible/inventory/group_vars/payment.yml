@@ -12,14 +12,18 @@ elasticmq_image: "softwaremill/elasticmq:1.7.1"
 payment_base_dir: /opt/payment-node        # compose / 설정 / client 자격증명 (0700)
 payment_data_dir: /var/lib/payment-node    # mariadb / elasticmq 데이터
 
-# ── GitLab: gitlab.yml --tags bootstrap 이 만든 .secrets/payment-node.env 에서 ──
-gitlab_url: "{{ lookup('env', 'GITLAB_URL') }}"
-gitlab_ts_ip: "{{ lookup('env', 'GITLAB_TS_IP') }}"
+# payment.yml 이 읽는 OpenBao 경로 (openbao_kv_prefix 아래, README 16절)
+payment_openbao_paths: [payment-node, payment-db, payment-db-root, toss-payments]
+
+# ── GitLab: OpenBao payment-node (gitlab.yml --tags bootstrap 이 저장) ──
+# OpenBao 도입 전에는 .secrets/payment-node.env 를 source 한 환경변수에서
+gitlab_url: "{{ openbao_kv['payment-node'].GITLAB_URL | default(lookup('env', 'GITLAB_URL'), true) }}"
+gitlab_ts_ip: "{{ openbao_kv['payment-node'].GITLAB_TS_IP | default(lookup('env', 'GITLAB_TS_IP'), true) }}"
 gitlab_fqdn: "{{ gitlab_url | urlsplit('hostname') }}"
-gitlab_registry: "{{ lookup('env', 'GITLAB_REGISTRY') }}"
+gitlab_registry: "{{ openbao_kv['payment-node'].GITLAB_REGISTRY | default(lookup('env', 'GITLAB_REGISTRY'), true) }}"
 # 결제 노드 전용 그룹 Deploy Token (read_registry + read_repository) — k8s 용 토큰과 별도로 폐기 가능
-payment_deploy_user: "{{ lookup('env', 'PAYMENT_DEPLOY_USER') }}"
-payment_deploy_token: "{{ lookup('env', 'PAYMENT_DEPLOY_TOKEN') }}"
+payment_deploy_user: "{{ openbao_kv['payment-node'].PAYMENT_DEPLOY_USER | default(lookup('env', 'PAYMENT_DEPLOY_USER'), true) }}"
+payment_deploy_token: "{{ openbao_kv['payment-node'].PAYMENT_DEPLOY_TOKEN | default(lookup('env', 'PAYMENT_DEPLOY_TOKEN'), true) }}"
 # 이미지 = <gitlab_registry>/<payment_image_prefix>/<이름>:<태그>  (CI 가 push 하는 경로와 같음)
 payment_image_prefix: team04/hotel
 
@@ -30,23 +34,25 @@ payment_gitops_repo: team04/infra/backend-gitops
 payment_gitops_branch: main
 payment_gitops_values: envs/dev/values.yaml
 
-# ── 결제 DB: backend/.env 를 단일 소스로 (db.yml 과 같은 방식) ──
+# ── 결제 DB: OpenBao payment-db · payment-db-root 가 단일 소스 (db.yml 과 같은 방식) ──
+# OpenBao 도입 전에는 backend/.env(PAYMENT_DB_*) · infra/ansible/.env(PAYMENT_DB_ROOT_PASSWORD) 에서
 backend_env_file: "{{ (lookup('env', 'BACKEND_ENV_FILE') | default(playbook_dir ~ '/../../backend/.env', true)) | expanduser | realpath }}"
-backend_env: "{{ lookup('file', backend_env_file) | parse_dotenv }}"
+backend_env: "{{ lookup('file', backend_env_file, errors='ignore') | default('', true) | parse_dotenv }}"
 
-payment_db_port: "{{ backend_env.PAYMENT_DB_PORT | default('3306', true) }}"
-payment_db_database: "{{ backend_env.PAYMENT_DB_DATABASE | default('') }}"
-payment_db_username: "{{ backend_env.PAYMENT_DB_USERNAME | default('') }}"
-payment_db_password: "{{ backend_env.PAYMENT_DB_PASSWORD | default('') }}"
-# 결제 DB root — 메인 DB(DB_ROOT_PASSWORD)와 분리. backend 서비스는 쓰지 않으므로 infra/ansible/.env 에 둠
-payment_db_root_password: "{{ lookup('env', 'PAYMENT_DB_ROOT_PASSWORD') }}"
+payment_db_port: "{{ openbao_kv['payment-db'].port | default(backend_env.PAYMENT_DB_PORT | default('3306', true), true) }}"
+payment_db_database: "{{ openbao_kv['payment-db'].dbname | default(backend_env.PAYMENT_DB_DATABASE | default(''), true) }}"
+payment_db_username: "{{ openbao_kv['payment-db'].username | default(backend_env.PAYMENT_DB_USERNAME | default(''), true) }}"
+payment_db_password: "{{ openbao_kv['payment-db'].password | default(backend_env.PAYMENT_DB_PASSWORD | default(''), true) }}"
+# 결제 DB root — 메인 DB(main-db-root)와 분리. backend 서비스는 쓰지 않음
+payment_db_root_password: "{{ openbao_kv['payment-db-root'].password | default(lookup('env', 'PAYMENT_DB_ROOT_PASSWORD'), true) }}"
 # 결제 DB TLS(PAYMENT_DB_SSL*)는 읽지 않음 — 같은 노드 loopback 이라 평문(앱 기본값)
 
-# ── 결제 PG: backend/.env 에서 (비운 값은 backend/.env.example 의 기본값과 같게) ──
+# ── 결제 PG: 설정은 backend/.env, 시크릿 키는 OpenBao toss-payments (비운 값은 backend/.env.example 의 기본값과 같게) ──
 # 비우면 MOCK. 앱은 'TOSS' 와 정확히 같을 때만 토스를 쓰므로 대문자로 맞추고 payment.yml 에서 MOCK/TOSS 만 허용
 payment_provider: "{{ backend_env.PAYMENT_PROVIDER | default('MOCK', true) | trim | upper }}"
 # 결제위젯 시크릿 키(test_gsk_…). TOSS 일 때만 필수 · env 파일에 기록
-toss_secret_key: "{{ backend_env.TOSS_SECRET_KEY | default('') | trim }}"
+# OpenBao toss-payments.secret_key — 운영 Secrets Manager team04-hotel/prod/toss-payments 와 같은 이름
+toss_secret_key: "{{ openbao_kv['toss-payments'].secret_key | default(backend_env.TOSS_SECRET_KEY | default(''), true) | trim }}"
 # 비우면 env 파일에 쓰지 않음 → 앱 기본값 https://api.tosspayments.com
 toss_api_base_url: "{{ backend_env.TOSS_API_BASE_URL | default('') | trim }}"
 

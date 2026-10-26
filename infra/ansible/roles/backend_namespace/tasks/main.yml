@@ -1,7 +1,7 @@
 ---
 # backend 네임스페이스와, 차트가 참조하는 Secret 2개를 만듭니다. (차트 · ArgoCD 는 Namespace 를 만들지 않음 — CreateNamespace=false)
-#   gitlab-registry : GitLab Container Registry pull (그룹 Deploy Token, read_registry)
-#   backend-secrets : DB 비밀번호·JWT secret 등 — backend/.env 를 단일 소스로 (db.yml 과 같은 방식)
+#   gitlab-registry : GitLab Container Registry pull (그룹 Deploy Token, read_registry) — Ansible 이 직접
+#   backend-secrets : DB 비밀번호·JWT secret 등 — OpenBao 원본을 ESO 가 동기화 (ExternalSecret, 운영과 같은 방식 · README 16절)
 # 값은 stdin 으로 kubectl apply 에 넘겨 노드 디스크에 남기지 않습니다.
 - name: 네임스페이스 ({{ backend_namespace }})
   vars:
@@ -47,106 +47,100 @@
   changed_when: "'configured' in pull_secret_apply.stdout or 'created' in pull_secret_apply.stdout"
   no_log: true
 
-- name: 객실 이미지 · 챗봇 AI 스택 값 확인 (infra/ansible/.env)
+# ExternalSecret 은 key 하나라도 원본에 없으면 Secret 전체를 만들지 않으므로 미리 확인 (값은 출력하지 않음)
+- name: backend-secrets 원본 확인 (OpenBao)
   ansible.builtin.assert:
-    that:
-      - lookup('env', 'MINIO_APP_ACCESS_KEY') | length > 0
-      - lookup('env', 'MINIO_APP_SECRET_KEY') | length > 0
-      - gcp_sa_key_file | length > 0
-      - lookup('env', 'MINIO_RAG_ACCESS_KEY') | length > 0
-      - lookup('env', 'MINIO_RAG_SECRET_KEY') | length > 0
-      - lookup('env', 'N8N_INIT_OWNER_PASSWORD') | length >= 8
-      - db_ts_ip | length > 0
+    that: openbao_kv[item.remote][item.property] | default('') | length > 0
     fail_msg: >-
-      MINIO_APP_ACCESS_KEY / MINIO_APP_SECRET_KEY / GCP_SA_KEY_FILE / MINIO_RAG_ACCESS_KEY / MINIO_RAG_SECRET_KEY /
-      N8N_INIT_OWNER_PASSWORD(8자 이상) / DB_TS_IP 가 비어 있습니다. infra/ansible/.env 를 채우고 다시 source 하세요 (README 7-6, 15절).
+      OpenBao {{ openbao_kv_prefix }}/{{ item.remote }} 의 {{ item.property }}({{ item.key }}) 가 없습니다.
+      db.yml --tags openbao_import 로 .env 값을 옮기거나 bao kv patch 로 넣으세요 (README 16-3).
     quiet: true
-  no_log: true
+  loop: "{{ backend_external_secret_refs }}"
+  loop_control:
+    label: "{{ item.remote }}.{{ item.property }}"
+  run_once: true
 
-- name: 서비스 계정 키 파일 확인
-  ansible.builtin.stat:
-    path: "{{ gcp_sa_key_path }}"
-  register: gcp_sa_key_stat
-  delegate_to: localhost
-  become: false
+# Ansible 이 만들던 backend-secrets 는 ESO(creationPolicy: Owner)가 넘겨받지 않으므로 지우고 ExternalSecret 이 다시 만들게 함.
+# 실행 중인 Pod 는 기동 때 읽은 env 를 그대로 쓰므로 영향 없음
+- name: 기존 backend-secrets 관리 주체 조회
+  ansible.builtin.command: >-
+    kubectl -n {{ backend_namespace }} get secret {{ backend_secret_name }} --ignore-not-found
+    -o 'jsonpath={.metadata.labels.app\.kubernetes\.io/managed-by}'
+  environment: *kubeconfig
+  register: backend_secret_owner
+  changed_when: false
 
-- name: 서비스 계정 키 파일 없음 안내
-  ansible.builtin.fail:
-    msg: >-
-      GCP_SA_KEY_FILE({{ gcp_sa_key_path }}) 이 없습니다. infra/gcp-terraform/README 의 "키 발급" 으로
-      llm-service-dev 서비스 계정 키를 만들고 경로를 지정하세요.
-  when: not gcp_sa_key_stat.stat.exists
+- name: Ansible 이 만든 backend-secrets 삭제 (ESO 로 전환)
+  ansible.builtin.command: >-
+    kubectl -n {{ backend_namespace }} delete secret {{ backend_secret_name }}
+  environment: *kubeconfig
+  when: backend_secret_owner.stdout == 'ansible'
+  changed_when: true
 
-- name: backend-secrets 값 계산
-  # backend/.env 에서 차트가 쓰는 key 만 고르고, DB/Redis 주소는 DB 노드 Tailscale IP(DB_TS_IP)로 덮어씀
-  # (backend/.env 의 *_HOST 는 로컬 docker compose 용 컨테이너 이름일 수 있음)
-  ansible.builtin.set_fact:
-    backend_secret_data: >-
-      {%- set data = {} -%}
-      {%- for key in backend_secret_keys -%}
-        {%- set _ = data.update({key: backend_env[key] | default('')}) -%}
-      {%- endfor -%}
-      {#- 선택 key 는 값이 있을 때만 넣음 -#}
-      {%- for key in backend_secret_optional_keys if backend_env[key] | default('') | length > 0 -%}
-        {%- set _ = data.update({key: backend_env[key]}) -%}
-      {%- endfor -%}
-      {{ data | combine(backend_secret_host_overrides if db_ts_ip | length > 0 else {}) | combine(backend_secret_extra) }}
-  no_log: true
-
-- name: backend-secrets 필수값 확인
-  ansible.builtin.assert:
-    that: backend_secret_data[item] | default('') | length > 0
-    fail_msg: >-
-      {{ item }} 가 비어 있습니다. {{ backend_env_file }} 에 값을 채우세요
-      (DB_HOST / REDIS_HOST 는 .env 의 DB_TS_IP 로도 지정 가능).
-    quiet: true
-  loop: "{{ backend_secret_required_keys }}"
-
-- name: 선택 key 확인 (전부 채우거나 전부 비우기)
-  vars:
-    optional_filled: "{{ backend_secret_optional_keys | select('in', backend_secret_data) | list }}"
-  ansible.builtin.assert:
-    that: optional_filled | length in [0, backend_secret_optional_keys | length]
-    fail_msg: >-
-      선택 key 가 일부만 채워져 있습니다 ({{ optional_filled | join(', ') }}).
-      {{ backend_secret_optional_keys | join(', ') }} 를 모두 채우거나 모두 비우세요.
-    quiet: true
-
-- name: 선택 key 미설정 안내
-  ansible.builtin.debug:
-    msg: >-
-      {{ backend_secret_optional_keys | join(', ') }} 가 비어 있어 backend-secrets 에서 제외했습니다.
-  when:
-    - backend_secret_optional_keys | length > 0
-    - backend_secret_optional_keys | select('in', backend_secret_data) | list | length == 0
-
-- name: backend-secrets ({{ backend_namespace }}/{{ backend_secret_name }})
+- name: backend-secrets ExternalSecret ({{ backend_namespace }}/{{ backend_secret_name }})
   vars:
     manifest:
-      apiVersion: v1
-      kind: Secret
-      type: Opaque
+      apiVersion: external-secrets.io/v1
+      kind: ExternalSecret
       metadata:
         name: "{{ backend_secret_name }}"
         namespace: "{{ backend_namespace }}"
         labels:
           app.kubernetes.io/managed-by: ansible
-      # JSON 파일은 base64(data)로 — stringData 와 함께 쓰면 kubectl 이 합쳐서 저장
-      data:
-        GCP_SA_KEY_JSON: "{{ gcp_sa_key_b64 }}"
-      stringData: "{{ backend_secret_data }}"
+      spec:
+        refreshInterval: "{{ backend_secret_refresh_interval }}"
+        secretStoreRef:
+          kind: ClusterSecretStore
+          name: "{{ cluster_secret_store_name }}"
+        target:
+          name: "{{ backend_secret_name }}"
+          creationPolicy: Owner
+        data: >-
+          {%- set out = [] -%}
+          {%- for ref in backend_external_secret_refs -%}
+            {%- set remote = {'key': openbao_kv_prefix ~ '/' ~ ref.remote, 'property': ref.property} -%}
+            {%- if ref.key in backend_external_secret_base64_keys -%}
+              {%- set _ = remote.update({'decodingStrategy': 'Base64'}) -%}
+            {%- endif -%}
+            {%- set _ = out.append({'secretKey': ref.key, 'remoteRef': remote}) -%}
+          {%- endfor -%}
+          {{ out }}
   ansible.builtin.command:
     cmd: kubectl apply -f -
     stdin: "{{ manifest | to_json }}"
   environment: *kubeconfig
-  register: backend_secret_apply
-  changed_when: "'configured' in backend_secret_apply.stdout or 'created' in backend_secret_apply.stdout"
-  no_log: true
+  register: backend_external_secret_apply
+  changed_when: "'configured' in backend_external_secret_apply.stdout or 'created' in backend_external_secret_apply.stdout"
+
+- name: backend-secrets 동기화 대기
+  ansible.builtin.command: >-
+    kubectl -n {{ backend_namespace }} wait --for=condition=Ready
+    externalsecret/{{ backend_secret_name }} --timeout=120s
+  environment: *kubeconfig
+  register: backend_external_secret_ready
+  changed_when: false
+  failed_when: false
+
+- name: 동기화 실패 원인
+  ansible.builtin.command: >-
+    kubectl -n {{ backend_namespace }} get externalsecret {{ backend_secret_name }}
+    -o 'jsonpath={.status.conditions[?(@.type=="Ready")].message}'
+  environment: *kubeconfig
+  register: backend_external_secret_message
+  changed_when: false
+  when: backend_external_secret_ready.rc != 0
+
+- name: 동기화 실패 안내
+  ansible.builtin.fail:
+    msg: >-
+      ExternalSecret {{ backend_namespace }}/{{ backend_secret_name }} 이 Ready 가 아닙니다:
+      {{ backend_external_secret_message.stdout | default('?') }} (README 16-6)
+  when: backend_external_secret_ready.rc != 0
 
 - name: 안내
   ansible.builtin.debug:
     msg:
-      - "Secret {{ backend_namespace }}/gitlab-registry ({{ gitlab_registry }}), {{ backend_namespace }}/{{ backend_secret_name }} 적용"
+      - "Secret {{ backend_namespace }}/gitlab-registry ({{ gitlab_registry }}) 적용, {{ backend_namespace }}/{{ backend_secret_name }} 은 ESO 가 OpenBao 에서 동기화"
       - >-
-        backend-secrets 는 Pod 기동 시에만 읽힙니다. 값을 바꿨다면
-        kubectl -n {{ backend_namespace }} rollout restart deployment 로 재기동하세요 (ArgoCD selfHeal 이 되돌리지 않음).
+        backend-secrets 는 Pod 기동 시에만 읽힙니다. OpenBao 값을 바꿨다면 ESO 반영({{ backend_secret_refresh_interval }} 주기 또는
+        force-sync annotation, README 16-4) 후 kubectl -n {{ backend_namespace }} rollout restart deployment 로 재기동하세요.

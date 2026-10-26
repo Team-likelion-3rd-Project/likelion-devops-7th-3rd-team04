@@ -1,6 +1,9 @@
 import { Controller } from '@nestjs/common';
 import { GrpcMethod } from '@nestjs/microservices';
-import { BookingServiceService } from './booking-service.service';
+import {
+  BookingListQuery,
+  BookingServiceService,
+} from './booking-service.service';
 import { ReservationFacilityService } from './reservation-facility.service';
 import { RoomAssignmentService } from './room-assignment.service';
 import { AdminBookingService } from './admin-booking.service';
@@ -19,11 +22,10 @@ export class BookingServiceController {
     return { message: this.bookingServiceService.getHello() };
   }
 
-  // 관리자 전용: 전체 예약 목록 조회
+  // 관리자 전용: 예약 목록 조회 — 조건·페이지 (LDP-136)
   @GrpcMethod('BookingService', 'GetBookings')
-  async getBookings() {
-    const bookings = await this.bookingServiceService.getBookings();
-    return { bookings };
+  async getBookings(data: BookingListQuery) {
+    return this.bookingServiceService.getBookings(data);
   }
 
   // 특정 유저의 예약 목록 조회 (/me, /:userId 양쪽에서 재사용)

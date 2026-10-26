@@ -1,13 +1,30 @@
 import { authedFetch, authedJsonFetch } from './adminApi'
 import { ApiError, type Booking } from './gateway'
+import type { Payment } from './payments'
 
 // ─── 관리자 예약 관리 — 예약 목록, 대리 예약·직원 취소·투숙 연장 (LDP-90 #172, PR #204) ─────────────
 // 대리 예약·연장 예약은 손님 앱의 "결제 대기"에 나타나고, 손님이 결제해야 확정된다.
 // 결제 마감은 서버가 정한다 — 직원이 만든 예약은 만든 날 밤 자정(한국 시간), 최소 30분 (LDP-92).
 
-// 관리자 전체 예약 목록의 예약 한 건 (손님 예약 응답 + 지점)
+// 관리자 전체 예약 목록의 예약 한 건 (손님 예약 응답 + 지점 + 예약자 — LDP-150 #301)
 export interface AdminBooking extends Booking {
   hotelId: number
+  /** 예약자 이름·이메일 (목록 응답에만 있음, 탈퇴 회원이면 빈 문자열) */
+  guestName?: string
+  guestEmail?: string
+}
+
+// GET /api/bookings 조건 (LDP-136 #287) — 생략한 칸은 조건 없음
+export interface AdminBookingQuery {
+  page?: number
+  size?: number
+  hotelId?: number
+  /** 예약 상태 여러 개 (쉼표로 보낸다) */
+  status?: string[]
+  /** 예약번호·회원 이름·이메일·연락처·호실 일부 */
+  keyword?: string
+  /** 이 예약과 그 연장 예약만 */
+  linkedTo?: number
 }
 
 // POST /api/bookings/admin 요청 — 손님 예약(5.2) 항목 + 예약할 회원
@@ -34,6 +51,8 @@ const ADMIN_RESERVATION_ERROR_MESSAGE: Record<string, string> = {
   INVALID_BOOKING_DATES: '체크아웃은 체크인보다 뒤 날짜여야 합니다.',
   INVALID_CANCEL_REASON: '취소 사유를 1~255자로 입력해 주세요.',
   USER_SERVICE_UNAVAILABLE: '회원 정보를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+  BOOKING_SERVICE_UNAVAILABLE: '예약 정보를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.',
+  HOTEL_SERVICE_UNAVAILABLE: '지점·객실 정보를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
 }
 
 export function adminReservationErrorMessage(err: unknown, fallback: string): string {
@@ -54,11 +73,43 @@ async function parseAdminResponse<T>(res: Response): Promise<T> {
   return body as T
 }
 
-// GET /api/bookings (관리자 전용) - 전체 예약 목록. 서버에 필터가 없어 화면에서 지점·상태로 거른다.
-export async function fetchAdminBookings(): Promise<AdminBooking[]> {
-  const res = await authedFetch('/api/bookings')
-  const data = await parseAdminResponse<{ bookings?: AdminBooking[] }>(res)
-  return data.bookings ?? []
+// GET /api/bookings (관리자 전용) - 조건에 맞는 예약 (최신순). page를 주면 그 페이지만, total은 조건에 맞는 전체 개수.
+export async function fetchAdminBookings(
+  query: AdminBookingQuery = {},
+): Promise<{ bookings: AdminBooking[]; total: number }> {
+  const params = new URLSearchParams()
+  if (query.page) params.set('page', String(query.page))
+  if (query.size) params.set('size', String(query.size))
+  if (query.hotelId) params.set('hotelId', String(query.hotelId))
+  if (query.status?.length) params.set('status', query.status.join(','))
+  if (query.keyword?.trim()) params.set('keyword', query.keyword.trim())
+  if (query.linkedTo) params.set('linkedTo', String(query.linkedTo))
+  const qs = params.toString()
+  const res = await authedFetch(`/api/bookings${qs ? `?${qs}` : ''}`)
+  const data = await parseAdminResponse<{ bookings?: AdminBooking[]; total?: number }>(res)
+  return { bookings: data.bookings ?? [], total: data.total ?? 0 }
+}
+
+// 연장 묶음 — 원래 예약과 그 연장 예약 전부. 연장 예약이 목록의 다른 페이지에 있을 수 있어 따로 조회한다.
+export async function fetchLinkedBookings(rootReservationId: number): Promise<AdminBooking[]> {
+  return (await fetchAdminBookings({ linkedTo: rootReservationId })).bookings
+}
+
+// GET /api/payments/users/{userId} (관리자 전용) - 회원의 결제 목록 (결제 상태·금액·환불 시각)
+export async function fetchAdminUserPayments(userId: number): Promise<Payment[]> {
+  const res = await authedFetch(`/api/payments/users/${userId}`)
+  const data = await parseAdminResponse<{ payments?: Payment[] }>(res)
+  return data.payments ?? []
+}
+
+// 예약별 가장 최근 결제(결제 번호가 큰 것) — 한 예약에 결제 시도가 여러 번이면 마지막 것이 지금 상태다
+export function latestPaymentByReservation(payments: Payment[]): Map<number, Payment> {
+  const map = new Map<number, Payment>()
+  for (const p of payments) {
+    const prev = map.get(p.reservationId)
+    if (!prev || p.paymentId > prev.paymentId) map.set(p.reservationId, p)
+  }
+  return map
 }
 
 // POST /api/bookings/admin (관리자 전용) - 대리 예약 생성 (만든 직원이 기록됨)

@@ -254,6 +254,49 @@ describe('PaymentServiceService', () => {
       expect(pgMockRefundMock).not.toHaveBeenCalled();
     });
 
+    // LDP-137: 손님이 끝난 예약에 취소를 연달아 다시 요청해도 실패한 환불을 그 자리에서 재시도하지 않는다
+    it('skipFailedRetry면 REFUND_FAILED를 다시 시도하지 않고 상태만 돌려준다 — 여러 번 불러도 PG 호출·시도 횟수 그대로', async () => {
+      findOneMock.mockResolvedValue({
+        ...approved,
+        status: PaymentStatus.REFUND_FAILED,
+        refundIdempotencyKey: refundKey,
+        rawResponse: { refundAttempts: 3 },
+      });
+
+      for (let i = 0; i < 5; i++) {
+        const result = await service.refundPayment({
+          reservationId: 1,
+          refundIdempotencyKey: refundKey,
+          skipFailedRetry: true,
+        });
+        expect(result).toEqual({
+          refunded: false,
+          status: PaymentStatus.REFUND_FAILED,
+        });
+      }
+
+      expect(repoUpdateMock).not.toHaveBeenCalled();
+      expect(managerUpdateMock).not.toHaveBeenCalled();
+      expect(pgMockRefundMock).not.toHaveBeenCalled();
+    });
+
+    it('skipFailedRetry여도 아직 환불을 시작하지 않은 승인 결제(APPROVED)는 환불을 시작한다 (첫 시도)', async () => {
+      findOneMock.mockResolvedValue(approved);
+      pgMockRefundMock.mockResolvedValue({ outcome: 'CANCELED' });
+
+      const result = await service.refundPayment({
+        reservationId: 1,
+        refundIdempotencyKey: refundKey,
+        skipFailedRetry: true,
+      });
+
+      expect(pgMockRefundMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        refunded: true,
+        status: PaymentStatus.REFUNDED,
+      });
+    });
+
     it('REFUND_FAILED 재시도는 처음 기록한 환불 키를 그대로 쓴다 (PG가 한 번만 취소)', async () => {
       findOneMock.mockResolvedValue({
         ...approved,
@@ -334,6 +377,41 @@ describe('PaymentServiceService', () => {
       });
 
       expect((await service.getPaymentById(2)).receiptUrl).toBe('');
+    });
+  });
+
+  // LDP-139: 취소 결과 화면의 "환불 완료 일시" — 환불 전이면 빈 문자열
+  describe('결제 조회 응답 refundedAt', () => {
+    const base = {
+      paymentId: 3,
+      reservationId: 1,
+      amount: 1000,
+      paymentMethod: 'CARD',
+      paidAt: new Date('2026-10-22T01:00:00Z'),
+      userId: 1,
+      rawResponse: null,
+    };
+
+    it('환불이 끝났으면 환불 완료 시각을 ISO 문자열로 내려준다', async () => {
+      findOneMock.mockResolvedValue({
+        ...base,
+        status: PaymentStatus.REFUNDED,
+        refundedAt: new Date('2026-10-23T03:00:00Z'),
+      });
+
+      expect((await service.getPaymentById(3)).refundedAt).toBe(
+        '2026-10-23T03:00:00.000Z',
+      );
+    });
+
+    it('환불 전이면 빈 문자열', async () => {
+      findOneMock.mockResolvedValue({
+        ...base,
+        status: PaymentStatus.REFUND_REQUESTED,
+        refundedAt: null,
+      });
+
+      expect((await service.getPaymentById(3)).refundedAt).toBe('');
     });
   });
 

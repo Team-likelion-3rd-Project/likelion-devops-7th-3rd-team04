@@ -128,12 +128,17 @@ export function authedJsonFetch(path: string, method: 'POST' | 'PUT', body: unkn
   })
 }
 
-// GET /api/users (관리자 전용) - 전체 유저 목록
-export async function fetchAdminUsers(): Promise<AdminUser[]> {
-  const res = await authedFetch('/api/users')
-  const data = await parseJson<{ users: AdminUser[] }>(res)
-  // 목록이 비어있으면 gRPC 응답의 repeated 필드가 undefined로 내려올 수 있어 방어적으로 처리한다.
-  return data.users ?? []
+// GET /api/users?keyword=&page=&size= (관리자 전용) - 이름·이메일·연락처로 회원 검색 (LDP-136, 최근 가입 순)
+export async function searchAdminUsers(
+  keyword: string,
+  page = 1,
+  size = 20,
+): Promise<{ users: AdminUser[]; total: number }> {
+  const params = new URLSearchParams({ page: String(page), size: String(size) })
+  if (keyword.trim()) params.set('keyword', keyword.trim())
+  const res = await authedFetch(`/api/users?${params}`)
+  const data = await parseJson<{ users?: AdminUser[]; total?: number }>(res)
+  return { users: data.users ?? [], total: data.total ?? 0 }
 }
 
 // GET /api/users/:userId (관리자 전용) - 유저 상세

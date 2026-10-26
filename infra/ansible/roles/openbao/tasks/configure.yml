@@ -1,0 +1,133 @@
+---
+# root token 으로 맞추는 기본 설정 (roles/openbao main.yml 에서 include). 모두 멱등 — 원하는 상태와 다를 때만 바꿈
+#   mount : KV v2(secret/), Kubernetes auth(ESO 로그인 — 설정 · role 은 k8s-cicd.yml 의 external_secrets role)
+#   정책  : eso-dev(ESO 읽기 전용) · ansible-dev(playbook)
+#   토큰  : ansible-dev periodic 토큰 → 로컬 .secrets/openbao.env (없거나 무효일 때만 발급)
+- name: root token 읽기
+  ansible.builtin.set_fact:
+    openbao_root_token: "{{ (lookup('ansible.builtin.file', openbao_local_dir ~ '/init.json') | from_json).root_token }}"
+  no_log: true
+
+- name: OpenBao 설정 (root token)
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Vault-Token: "{{ openbao_root_token }}"
+      body_format: json
+  block:
+    - name: secrets engine 조회
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ openbao_port }}/v1/sys/mounts"
+      register: openbao_mounts
+
+    - name: "KV v2 mount ({{ openbao_kv_mount }}/)"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ openbao_port }}/v1/sys/mounts/{{ openbao_kv_mount }}"
+        method: POST
+        body:
+          type: kv
+          description: dev 비밀값 (Ansible · ESO)
+          options:
+            version: "2"
+        status_code: [200, 204]
+      when: (openbao_kv_mount ~ '/') not in openbao_mounts.json.data
+      changed_when: true
+
+    - name: auth method 조회
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ openbao_port }}/v1/sys/auth"
+      register: openbao_auths
+
+    - name: Kubernetes auth mount (kubernetes/)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ openbao_port }}/v1/sys/auth/kubernetes"
+        method: POST
+        body:
+          type: kubernetes
+          description: dev 클러스터 External Secrets Operator
+        status_code: [200, 204]
+      when: "'kubernetes/' not in openbao_auths.json.data"
+      changed_when: true
+
+    - name: 정책 조회
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ openbao_port }}/v1/sys/policies/acl/{{ item }}"
+        status_code: [200, 404]
+      loop: "{{ openbao_policies }}"
+      register: openbao_policy_current
+
+    - name: 정책 적용
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ openbao_port }}/v1/sys/policies/acl/{{ item.item }}"
+        method: PUT
+        body:
+          policy: "{{ lookup('ansible.builtin.template', item.item ~ '.hcl.j2') }}"
+        status_code: [200, 204]
+      loop: "{{ openbao_policy_current.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: >-
+        item.status == 404 or
+        item.json.data.policy != lookup('ansible.builtin.template', item.item ~ '.hcl.j2')
+      changed_when: true
+
+    # ── ansible-dev 토큰 ─────────────────────────────────
+    - name: openbao.env 확인 (로컬)
+      ansible.builtin.stat:
+        path: "{{ local_secrets_dir }}/openbao.env"
+      register: openbao_env_current
+      delegate_to: localhost
+      become: false
+
+    - name: 기존 ansible-dev 토큰 확인
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ openbao_port }}/v1/auth/token/lookup-self"
+        headers:
+          X-Vault-Token: "{{ (lookup('ansible.builtin.file', local_secrets_dir ~ '/openbao.env') | parse_dotenv).OPENBAO_TOKEN | default('') }}"
+        status_code: [200, 403]
+      register: openbao_ansible_token_lookup
+      when: openbao_env_current.stat.exists
+      no_log: true
+
+    - name: ansible-dev 토큰 발급 / openbao.env 생성
+      when: >-
+        not openbao_env_current.stat.exists
+        or openbao_ansible_token_lookup.status != 200
+        or 'ansible-dev' not in openbao_ansible_token_lookup.json.data.policies
+      block:
+        # orphan(no_parent) 이라 root token 을 폐기해도 남음. period 안에 갱신(roles/openbao_kv read 가 renew-self)하면 만료되지 않음
+        - name: ansible-dev 토큰 발급
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ openbao_port }}/v1/auth/token/create"
+            method: POST
+            body:
+              policies: [ansible-dev]
+              no_parent: true
+              no_default_policy: false
+              renewable: true
+              period: "{{ openbao_ansible_token_period }}"
+              display_name: ansible-dev
+          register: openbao_ansible_token
+          changed_when: true
+          no_log: true
+
+        - name: openbao.env 생성 (로컬)
+          ansible.builtin.copy:
+            dest: "{{ local_secrets_dir }}/openbao.env"
+            content: |
+              # db.yml(roles/openbao) 이 생성 — 커밋 금지, 팀 비밀 채널로만 공유
+              # 다른 playbook 실행 전: set -a; source .env; source .secrets/openbao.env; set +a  (README 16-2)
+              # 토큰 정책 ansible-dev: {{ openbao_kv_mount }}/{{ openbao_kv_prefix }}/* 읽기·쓰기. {{ openbao_ansible_token_period }} 안에 한 번이라도 쓰면 만료되지 않음
+              OPENBAO_ADDR=http://{{ ts_ip }}:{{ openbao_port }}
+              OPENBAO_TOKEN={{ openbao_ansible_token.json.auth.client_token }}
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        # 다음 task(main.yml)가 이번 실행에서 새 토큰을 쓰도록 — source 한 옛 값보다 우선
+        - name: 새 토큰을 이번 실행에 사용
+          ansible.builtin.set_fact:
+            openbao_addr: "http://{{ ts_ip }}:{{ openbao_port }}"
+            openbao_token: "{{ openbao_ansible_token.json.auth.client_token }}"
+          no_log: true

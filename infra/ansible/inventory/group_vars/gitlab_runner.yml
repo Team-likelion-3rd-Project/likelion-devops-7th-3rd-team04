@@ -6,10 +6,11 @@ ts_oauth_secret: "{{ lookup('env', 'TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET') }}"
 # ── 버전 고정 (GitLab 이미지와 major.minor 를 맞춤, apt 버전 문자열) ──
 gitlab_runner_version: "19.4.1-1"
 
-# ── GitLab 접속 정보: gitlab.yml 이 생성한 .secrets/gitlab-runner.env 에서 ──
-gitlab_url: "{{ lookup('env', 'GITLAB_URL') }}"
-gitlab_ts_ip: "{{ lookup('env', 'GITLAB_TS_IP') }}"
-gitlab_runner_token: "{{ lookup('env', 'GITLAB_RUNNER_TOKEN') }}"
+# ── GitLab 접속 정보: OpenBao gitlab-runner (gitlab.yml 이 저장) ──
+# OpenBao 도입 전에는 gitlab.yml 이 생성한 .secrets/gitlab-runner.env 를 source 한 환경변수에서
+gitlab_url: "{{ openbao_kv['gitlab-runner'].GITLAB_URL | default(lookup('env', 'GITLAB_URL'), true) }}"
+gitlab_ts_ip: "{{ openbao_kv['gitlab-runner'].GITLAB_TS_IP | default(lookup('env', 'GITLAB_TS_IP'), true) }}"
+gitlab_runner_token: "{{ openbao_kv['gitlab-runner'].GITLAB_RUNNER_TOKEN | default(lookup('env', 'GITLAB_RUNNER_TOKEN'), true) }}"
 gitlab_fqdn: "{{ gitlab_url | urlsplit('hostname') }}"
 
 # ── Runner 설정 ───────────────────────────────────────────

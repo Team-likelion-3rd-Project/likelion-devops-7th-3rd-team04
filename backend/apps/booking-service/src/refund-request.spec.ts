@@ -182,11 +182,12 @@ describe('환불 요청 대기열 (pending_refunds)', () => {
           code,
           retryable,
         });
-        // 같은 환불 키·기한으로 결제 쪽에 다시 요청한다 (실패로 남은 환불이면 그 자리에서 재시도)
+        // 같은 환불 키·기한으로 결제 쪽에 요청하되, 실패로 남은 환불은 다시 시도하지 않게 한다 (LDP-137)
         expect(refundPayment).toHaveBeenCalledWith(
           {
             reservationId: 1,
             refundIdempotencyKey: expect.any(String) as string,
+            skipFailedRetry: true,
           },
           expect.anything(),
           { deadline: expect.any(Date) as Date },

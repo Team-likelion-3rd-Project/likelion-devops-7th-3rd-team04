@@ -14,6 +14,8 @@ import { PAYMENT_BLOCK_MESSAGE, formatPaymentDue, paymentBlockReason } from '../
 import type { Hotel } from '../data/hotels'
 import { CalendarIcon, PersonIcon, PinIcon } from '../components/reservation/icons'
 import PaymentModal from '../components/reservation/PaymentModal'
+import RefundResultModal from '../components/reservation/RefundResultModal'
+import RefundStatusSection from '../components/reservation/RefundStatusSection'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { STATUS_LABEL, fetchRoomLookup } from './reservationHistoryUtils'
 import { currentLoginState } from '../utils/loginRedirect'
@@ -23,6 +25,10 @@ import './ReservationDetailPage.css'
 interface ReservationDetailLocationState {
   booking?: Booking
 }
+
+// 끝난 예약 중 환불이 있을 수 있는 상태 — 환불 진행 상황을 보여준다 (LDP-139).
+// 만료·결제 실패도 "예약이 끝난 뒤 승인"이 오면 서버가 자동으로 환불한다 (#236).
+const REFUNDABLE_CLOSED_STATUSES: Booking['status'][] = ['CANCELLED', 'EXPIRED', 'PAYMENT_FAILED']
 
 // 예약 목록(ReservationHistoryPage)에서 카드를 클릭하면 넘어오는 상세 페이지.
 // 목록에서 state로 넘겨준 booking이 있으면 그대로 쓰고, 새로고침/직접 URL 접근 등으로
@@ -44,6 +50,8 @@ function ReservationDetailPage() {
   const [isCancelling, setIsCancelling] = useState(false)
   const [cancelError, setCancelError] = useState('')
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false)
+  // 방금 이 화면에서 취소했으면 환불 결과 창을 띄운다 (LDP-139)
+  const [showRefundResult, setShowRefundResult] = useState(false)
   const [showPaymentModal, setShowPaymentModal] = useState(false)
 
   const [roomInfo, setRoomInfo] = useState<{ hotel: Hotel; room: Room } | null>(null)
@@ -172,6 +180,7 @@ function ReservationDetailPage() {
       const updated = await cancelBooking(booking.reservationId)
       setBooking(updated)
       setIsCancelModalOpen(false)
+      setShowRefundResult(true)
     } catch (err) {
       setCancelError(err instanceof Error ? err.message : '예약 취소에 실패했습니다.')
     } finally {
@@ -336,6 +345,10 @@ function ReservationDetailPage() {
                 )}
               </div>
 
+              {REFUNDABLE_CLOSED_STATUSES.includes(booking.status) && !showRefundResult && (
+                <RefundStatusSection reservationId={booking.reservationId} />
+              )}
+
               <div className="reservation-detail-notice">
                 <p className="reservation-detail-notice-title">이용 안내</p>
                 <ul>
@@ -407,6 +420,10 @@ function ReservationDetailPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {showRefundResult && booking && (
+        <RefundResultModal reservationId={booking.reservationId} onClose={() => setShowRefundResult(false)} />
       )}
 
       {showPaymentModal && booking && (

@@ -8,3 +8,58 @@
   flex: 1;
   text-align: left;
 }
+
+/* 로그아웃 등 상태가 바뀐 뒤 화면이 새로 뜨는 느낌 */
+.root-layout-main.is-fresh {
+  animation: root-layout-fresh 0.5s ease-out;
+}
+
+@keyframes root-layout-fresh {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 짧은 안내 문구 — 위쪽 가운데에 잠깐 떴다가 사라진다 */
+.root-layout-toast {
+  position: fixed;
+  top: 88px;
+  left: 50%;
+  z-index: 1000;
+  padding: 10px 20px;
+  border-radius: 999px;
+  background: var(--text-h);
+  color: var(--bg);
+  font-size: 14px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  animation: root-layout-toast 2.6s ease forwards;
+}
+
+@keyframes root-layout-toast {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  12%,
+  80% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root-layout-main.is-fresh {
+    animation: none;
+  }
+}

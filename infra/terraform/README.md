@@ -10,7 +10,11 @@ AWS 운영 환경(`us-east-1`)을 구성하는 Terraform 코드입니다.
   # 터미널 세션 단위로 지정 (TG_PROVIDER_CACHE 는 4절)
   export AWS_PROFILE=team04 TG_PROVIDER_CACHE=1
   ```
-- 버전: Terraform `>= 1.11`, Terragrunt `>= 1.1`, AWS provider `~> 6.0`. `.terraform.lock.hcl` 은 커밋합니다.
+- `14-gcp-llm` 은 GCP 리소스를 만들어 **gcloud ADC 도 필요합니다** (`run --all` 에 포함). 본인 Google 계정에 terraform 서비스 계정의 Token Creator 권한이 있어야 합니다 ([`infra/gcp-terraform/README.md`](../gcp-terraform/README.md) 0절).
+  ```bash
+  gcloud auth application-default login
+  ```
+- 버전: Terraform `>= 1.11`, Terragrunt `>= 1.1`, AWS provider `~> 6.0`, Google provider `~> 8.5`. `.terraform.lock.hcl` 은 커밋합니다.
 
 ---
 
@@ -29,8 +33,10 @@ infra/terraform/
         ├── 11-registry/             🔒
         ├── 12-secrets/              🔒 외부에서 발급한 비밀값 (값 등록 때만 직접 apply)
         ├── 13-frontend/             🔒 프론트 · 객실 사진 (S3 · CloudFront · KeyValueStore)
+        ├── 14-gcp-llm/              🔒 챗봇 Vertex AI 인증 (GCP Workload Identity Federation)
+        ├── 15-chatbot-vectors/      🔒 챗봇 RAG 벡터 저장소 (S3 Vectors)
         ├── 20-network/              🔁
-        ├── 21-observability-base/   🔁
+        ├── 21-observability-base/   🔁 메인 클러스터 로그 그룹 (Fluent Bit)
         ├── 30-security/             🔁
         ├── 40-cicd/                 🔁
         ├── 41-main-data/            🔁
@@ -43,13 +49,12 @@ infra/terraform/
         ├── 70-main-cluster-kubeadm/ 🔁
         ├── 71-payment-link/         🔁 메인 VPC 결제 PrivateLink 엔드포인트 · 고정 이름
         ├── 80-main-edge/            🔁
-        ├── 82-gcp-llm/              🔁
-        └── 90-observability-alarms/ 🔁
+        └── 90-observability-alarms/ 🔁 필수 CloudWatch 알람 → Slack #alerts
 ```
 
 🔒 상시 유지 (destroy 하지 않음) / 🔁 매일 재생성
 
-각 스택 디렉터리는 `*.tf` 와 `terragrunt.hcl` 로 이루어집니다. `backend.tf` · `providers.tf` 는 두지 않습니다 (`root.hcl` 이 생성).
+각 스택 디렉터리는 `*.tf` 와 `terragrunt.hcl` 로 이루어집니다. `backend.tf` · `providers.tf` 는 두지 않습니다 (`root.hcl` 이 생성). AWS 리소스가 없는 `14-gcp-llm` 은 `root.hcl` 의 `non_aws_stacks` 로 AWS provider 생성을 끄고, 자기 `terragrunt.hcl` 에서 google provider 를 생성합니다.
 
 ---
 
@@ -128,8 +133,8 @@ terragrunt output -raw api_url
 ```
 
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
-- `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
-- `10-global` · `11-registry` · `13-frontend` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
+- `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
+- `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
 - `10-global` 의 GitHub OIDC 공급자(`token.actions.githubusercontent.com`)는 URL 이 고정이라 **계정에 하나뿐인 공용 리소스**입니다 (공유 계정의 다른 팀도 같은 공급자를 씀). 지우거나 audience 를 바꾸지 않습니다 (`prevent_destroy`). 다른 팀이 먼저 만들었으면 `create_github_oidc_provider = false` 로 기존 공급자를 씁니다.
 - `12-secrets` 는 `exclude`(all) 로 `run --all` 의 plan · apply · destroy 모두에서 빠집니다. 값(ephemeral 변수)이 있어야 plan 이 되므로 **값을 등록할 때만 스택 디렉터리에서 직접 apply** 합니다 (5절 "외부에서 발급한 비밀값"). 대기열 확인: `terragrunt list --queue-construct-as=apply`
 - **`TG_PROVIDER_CACHE=1` 을 켭니다.** 끄면 스택마다 캐시 디렉터리에 AWS provider 를 따로 받아 스택당 약 760MB 를 쓰고 첫 실행이 오래 걸립니다. 켜면 provider 를 한 번만 받아 공유합니다 (`run --all plan` 캐시가 찬 상태 약 1분).
@@ -140,7 +145,7 @@ terragrunt output -raw api_url
 
 ```
 bootstrap                                  🔒 최초 1회 (terraform)
-10-global   11-registry   12-secrets   13-frontend   🔒 최초 1회, 이후 변경 시에만 (12-secrets 는 직접 apply)
+10-global   11-registry   12-secrets   13-frontend   14-gcp-llm   15-chatbot-vectors   🔒 최초 1회, 이후 변경 시에만 (12-secrets 는 직접 apply)
 ─────────────────────── 매일 재생성 ───────────────────────
 20-network   21-observability-base
 30-security
@@ -148,13 +153,13 @@ bootstrap                                  🔒 최초 1회 (terraform)
 50-payment-webhook
 60-payment-app   61-payment-mock
 70-main-cluster-kubeadm   71-payment-link
-80-main-edge   82-gcp-llm
+80-main-edge
 90-observability-alarms
 ```
 
 - 서비스 도메인은 운영 계정 Route53 에서 등록한 `meomulm.click` 이고, `10-global` 의 `domain_name` · `enable_certificate` 기본값에 들어 있습니다. 등록 시 자동 생성된 Zone 을 import 해 씁니다 ([`dns.tf`](live/prod/10-global/dns.tf) 상단 주석 [A] 절차). `domain_name = null` 로 두면 도메인 없이도 apply 할 수 있습니다.
-- `bootstrap`, `10-global`, `11-registry`, `12-secrets`, `13-frontend` 는 **destroy 하지 않습니다.**
-  Hosted Zone 을 다시 만들면 NS 가 바뀌고, CloudFront 는 생성 · 삭제가 느리고 사이트 릴리스 · 객실 사진이 사라지고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 합니다.
+- `bootstrap`, `10-global`, `11-registry`, `12-secrets`, `13-frontend`, `14-gcp-llm`, `15-chatbot-vectors` 는 **destroy 하지 않습니다.**
+  Hosted Zone 을 다시 만들면 NS 가 바뀌고, CloudFront 는 생성 · 삭제가 느리고 사이트 릴리스 · 객실 사진이 사라지고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 하고, Workload Identity Pool · Provider 는 삭제 후 30일 동안 같은 ID 를 쓸 수 없습니다.
 
 ### 스택별 소요 시간
 
@@ -163,6 +168,8 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | 스택 | 조건 | apply | destroy |
 |---|---|---|---|
 | `13-frontend` 🔒 | 최초 1회. 버킷 2개 · CloudFront(2분 49초) · KeyValueStore(1분 24초) · Function · 레코드 4개 (2026-10-22) | 5분 07초 | (destroy 안 함) |
+| `14-gcp-llm` 🔒 | 최초 1회. API 4개(STS 25초) · 서비스 계정 · Pool · Provider · IAM 3개, 사전 작업 때문에 2번 나눠 apply (2026-10-23) | 52초 + 37초 | (destroy 안 함) |
+| `15-chatbot-vectors` 🔒 | 최초 1회. 벡터 버킷 · 인덱스 (각 1초, 2026-10-23) | 약 4초 | (destroy 안 함) |
 | `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
 | `20-network` | `single_nat_gateway = false` (NAT 5개, NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
@@ -182,6 +189,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | **`run --all` (10 · 11 포함, 20 · 30 · 40 – 44 · 70 · 80)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-21) | **20분 07초** | **12분 56초** (10 · 11 제외) |
 | **`run --all` (10 포함, 20 · 30 · 41 · 43 · 70 · 80)** | 위 기본 조건, 인증서 발급 후 (2026-10-22, `--filter './80-main-edge...' --filter './41-main-data...' --filter './43-messaging...'`) | **18분 16초** | |
 | **`run --all` (10 포함, 20 · 30 · 41 – 44 · 60 · 61 · 70 · 71, 40 · 80 제외)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-22, 아래 `--filter`) | **19분 54초 – 21분 02초** | **11분 02초** (10 제외) |
+| **`run --all` (10 포함, 20 · 21 · 30 · 41 – 44 · 60 · 70 · 71 · 80 · 90, 40 · 61 제외)** | 기본 조건 (NFW · Multi-AZ 끔), 로그 · 알림 추가 후 (2026-10-24, `--filter './90-observability-alarms...' --filter './71-payment-link...' --filter './70-main-cluster-kubeadm...'`) | **17분 41초** | **11분 55초** (10 제외) |
 
 결제 쪽(`42` → `60` → `71`)이 메인 쪽(`41` → `70`)과 병렬이라 `60` · `61` · `71` 을 넣어도 전체 시간은 거의 늘지 않습니다. 가장 긴 경로는 `42` RDS(6분 40초 – 10분)에 따라 정해지고, `70` 은 `60` · `71` 을 기다리지 않습니다. 필요한 스택만 올릴 때는 `--filter '<스택>...'`(그 스택과 의존 스택)로 고릅니다.
 
@@ -230,6 +238,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 | `team04-hotel/prod/toss-payments` | `{secret_key}` | 토스페이먼츠 개발자센터 API 키 → 결제위젯 연동 키의 **시크릿 키**(테스트 `test_gsk_*`, 지금은 로컬 `backend/.env` 의 `TOSS_SECRET_KEY` 와 같은 값). 프론트 클라이언트 키(`test_gck_*`)와 같은 줄의 한 쌍 | `60-payment-app` 결제 서버 Role (`TOSS_SECRET_KEY`) |
 | `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `40-cicd` Runner Role (`release:gitops-pr` job) |
 | SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 Runner 가 시크릿 키까지 읽게 되므로 분리 | `40-cicd` Runner Role (`release:prepare` → `release:frontend-build` 의 `VITE_TOSS_CLIENT_KEY`) |
+| `team04-hotel/prod/seed-admin` | `{email, password, name}` | 운영 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*`, 비밀번호 12자 이상). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | `70` ESO Role (`team04-hotel-external-secrets`) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
 
 처음 등록 · 값 교체 (온프레미스 GitLab 재생성으로 토큰이 바뀐 경우 등):
 
@@ -239,7 +248,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 cd infra/terraform/live/prod/12-secrets
 cp .env.example .env   # 처음 한 번. 값을 채운다 (GitHub App 개인 키만 .pem 파일 경로)
 
-# 교체할 때는 variables.tf 의 해당 version(ci_runner_credentials_version · github_app_credentials_version · toss_credentials_version)을 올린 뒤
+# 교체할 때는 variables.tf 의 해당 version(ci_runner_credentials_version · github_app_credentials_version · toss_credentials_version · seed_admin_credentials_version)을 올린 뒤
 AWS_PROFILE=team04 terragrunt apply
 ```
 
@@ -249,7 +258,8 @@ AWS_PROFILE=team04 terragrunt apply
 - 값이 바뀌면 `.env` 를 고치고 해당 version 을 올립니다. 예: 온프레미스 GitLab 재생성으로 `aws-ci-runner.env` 의 토큰이 바뀜 → `GITLAB_RUNNER_TOKEN` 수정 + `ci_runner_credentials_version` 증가.
 - 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-` · `test_gsk_` 등 시크릿 키 · `test_gck_` 클라이언트 키)이 다르면 변수 검증에서 막힙니다.
 - 토스 시크릿 키와 클라이언트 키는 한 쌍이라 `toss_credentials_version` 하나로 함께 다시 넣습니다. 클라이언트 키는 다음 릴리스 빌드부터 반영됩니다 (변경 이력: `aws ssm get-parameter-history`).
-- Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(Runner Secret 은 `team04-hotel-ci-runner`, 토스는 `team04-hotel-payment-app`)과 apply 한 주체만 허용합니다.
+- Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(Runner Secret 은 `team04-hotel-ci-runner`, 토스는 `team04-hotel-payment-app`, 시드 관리자 계정은 `team04-hotel-external-secrets`)과 apply 한 주체만 허용합니다.
+- 시드 관리자 비밀번호를 바꾸면 다음 DB 재생성부터 새 값으로 만들어집니다. 이미 떠 있는 DB 의 계정은 그대로입니다 (시드는 이미 있는 계정을 건너뜀).
 - GitHub App 개인 키(`.pem`)는 GitHub 에서 다시 받을 수 없습니다. 분실하면 새 키를 만들고 `github_app_credentials_version` 을 올려 다시 등록합니다.
 - 이미 떠 있는 Runner 는 부팅 때 값을 읽었으므로, 교체 후에는 Runner 를 다시 만듭니다 (`40-cicd` apply 또는 ASG 인스턴스 종료).
 
@@ -595,4 +605,170 @@ curl -sI https://www.meomulm.click/a?b=1 | grep -i location                 # ht
 curl -sI https://team04-hotel-frontend.s3.us-east-1.amazonaws.com/releases/ | head -1   # 직접 접근 403
 AWS_PROFILE=team04 aws cloudfront-keyvaluestore get-key --key version \
   --kvs-arn "<위 ARN>" --query Value --output text                          # 현재 버전
+```
+
+---
+
+## 11. 챗봇 Vertex AI 인증 (`14-gcp-llm`)
+
+```
+llm-service 파드 projected 토큰 (iss = 메인 클러스터 OIDC 발급자, aud = Provider)
+  → sts.googleapis.com 토큰 교환   Provider 가 발급자의 keys.json 으로 서명 검증, backend 네임스페이스만 허용
+  → llm-service-prod impersonate   backend:llm-service · backend:llm-ingest 만 workloadIdentityUser
+  → Vertex AI
+```
+
+- 서비스 계정 키를 만들지 않습니다. 파드는 output `credential_config`(external_account JSON, 공개 값)와 projected 토큰만으로 인증합니다 (llm-service 는 `GCP_SA_KEY_JSON` 이 없으면 ADC 사용).
+- 발급자는 IRSA 와 같은 `10-global` OIDC 버킷입니다. 같은 1x 단계라 dependency 대신 버킷 이름(`oidc_bucket_name`)으로 주소를 만듭니다.
+- 🔒 상시 유지: Pool · Provider 는 삭제 후 30일 동안 같은 ID 를 쓸 수 없습니다.
+- 온프레미스 dev 는 [`infra/gcp-terraform`](../gcp-terraform/README.md) (SA 키 방식) 그대로입니다.
+
+### 사전 작업 (프로젝트 관리자 계정, 최초 1회)
+
+terraform 서비스 계정은 IAM 을 스스로 넓힐 수 없어 관리자가 직접 부여합니다.
+
+```bash
+P=likelion-devops-7th-3rd-team4
+TF=terraform@$P.iam.gserviceaccount.com
+
+# 1. Pool · Provider 관리
+gcloud projects add-iam-policy-binding $P --member=serviceAccount:$TF \
+  --role=roles/iam.workloadIdentityPoolAdmin --condition=None
+
+# 2. 운영 서비스 계정만 먼저 만든다 (이 유닛 디렉터리에서, terraform SA 로 실행)
+terragrunt apply -target=google_service_account.llm_service
+
+# 3. 그 서비스 계정 한정으로 IAM 정책 관리 권한 (workloadIdentityUser 바인딩용)
+gcloud iam service-accounts add-iam-policy-binding llm-service-prod@$P.iam.gserviceaccount.com \
+  --project=$P --member=serviceAccount:$TF --role=roles/iam.serviceAccountAdmin
+
+# 4. 나머지
+terragrunt apply
+```
+
+이후에는 `run --all apply` 에 포함되어 변경이 없으면 No changes 로 끝납니다.
+
+### 확인
+
+```bash
+terragrunt output -raw credential_config | jq .
+gcloud iam service-accounts keys list --managed-by=user \
+  --iam-account=llm-service-prod@likelion-devops-7th-3rd-team4.iam.gserviceaccount.com   # 키 0개
+```
+
+---
+
+## 12. 챗봇 운영 구성 (`15-chatbot-vectors` · 70 IRSA)
+
+```
+프론트 → api-gateway → chat-bot-service ──(IRSA)──→ DynamoDB 대화 테이블 (41, 매일 재생성)
+                           └→ n8n → llm-service ──(IRSA)──→ S3 Vectors 인덱스 조회 (15 🔒)
+                                         └──(GCP WIF)──→ Vertex AI (14 🔒)
+릴리스마다 llm-ingest Job ──(IRSA)──→ S3 Vectors PutVectors   (문서 = llm-service 이미지의 app/corpus.py)
+```
+
+| ServiceAccount (backend) | AWS 권한 (70 `irsa.tf`) | GCP |
+|---|---|---|
+| `chat-bot-service` | 대화 테이블 2개 `PutItem` · `Query` (GSI 포함) | – |
+| `llm-service` | 인덱스 `QueryVectors` · `GetVectors` | `llm-service-prod` impersonate |
+| `llm-ingest` | 인덱스 `PutVectors` | `llm-service-prod` impersonate |
+
+- 이미지: `llm-service` 는 `release:build`(태그 = main SHA), `n8n` 은 `release:mirror-n8n` 이 Docker Hub 에서 ECR 로 옮김 (태그 = `N8N_VERSION`, 이미 있으면 건너뜀).
+- RAG 적재는 backend 차트 `llmIngest` Job 이 릴리스마다 실행합니다. 문서 id 가 key 라 다시 넣어도 중복되지 않습니다. corpus 에서 **지운 문서는 인덱스에 남으므로**, 문서를 지우거나 임베딩 모델 · 차원을 바꿀 때는 `vector_index_name` 을 새 이름으로 바꿔 인덱스를 새로 만들고 gitops `VECTOR_INDEX_NAME` 도 함께 바꿉니다.
+- n8n owner 비밀번호(워크플로 활성화용 내부 계정)는 `41` 의 `backend-app` Secret `n8n_owner_password` 입니다 (매일 새 값).
+- pod-identity-webhook 은 **파드를 만들 때만** 자격 증명을 주입합니다. 떠 있는 클러스터에 매핑만 추가하면 기존 파드는 그대로이므로 `kubectl -n backend rollout restart deploy/<서비스>` 로 다시 만듭니다 (매일 재생성 · 이미지 태그가 바뀌는 릴리스에서는 해당 없음).
+
+확인:
+
+```bash
+curl -s -H 'Content-Type: application/json' -d '{"message":"체크인 시간이 언제예요?"}' https://api.meomulm.click/api/chat-bots/messages
+kubectl -n backend logs job/<llm-ingest-...> --tail=3        # "20 documents indexed into VECTOR_STORE=s3vectors"
+```
+
+---
+
+## 13. 클러스터 로그 (`21-observability-base` · Fluent Bit)
+
+```
+모든 노드(CP 포함) /var/log/containers ─ Fluent Bit DaemonSet (gitops fluent-bit, IRSA) ─┬→ CloudWatch Logs /team04-hotel/prod/cluster/<네임스페이스>  (21, 매일 재생성)
+                                                                                         └→ S3 team04-hotel-logs/app-logs/main-cluster/  (10-global 🔒, 90일)
+```
+
+| 위치 | 용도 | 보존 |
+|---|---|---|
+| CloudWatch Logs `/team04-hotel/prod/cluster/<네임스페이스>` | 당일 조회 · Logs Insights. 스트림 = `<파드>.<컨테이너>` | 매일 destroy 로 그룹째 삭제 |
+| CloudWatch Logs `/team04-hotel/prod/cluster/other` | `21` `cluster_log_namespaces` 에 없는 네임스페이스 | 같음 |
+| S3 `team04-hotel-logs/app-logs/main-cluster/<YYYY>/<MM>/<DD>/<노드>/` | 날짜를 넘긴 조회 (gzip JSON Lines, 5분마다 노드별 객체) | Object Lock 7일 · 90일 뒤 삭제 |
+
+- 레코드: `data`(JSON 로그를 펼친 값, JSON 이 아니면 `log` 원문) · `kubernetes`(네임스페이스 · 파드 · 컨테이너 · 노드, 라벨 · 어노테이션 없음) · `date` · `log_group_ns`.
+- S3 경로의 날짜 · 시각은 **UTC** 입니다 (한국 시간 오전 9시 전 로그는 전날 폴더).
+- **네임스페이스를 추가할 때**: `21` `cluster_log_namespaces` 와 gitops `fluent-bit/values.yaml` Lua 필터의 `known` 에 같이 추가합니다. Fluent Bit 은 그룹을 만들지 못하므로(권한 없음) 한쪽만 고치면 그 로그는 `other` 로 가거나(gitops 만 빠짐) 거부됩니다(21 만 빠짐).
+- Fluent Bit Role(`team04-hotel-fluent-bit`, 70 `irsa.tf`)은 위 그룹의 `CreateLogStream` · `PutLogEvents` 와 버킷 `app-logs/main-cluster/*` `PutObject` 만 가집니다.
+- 노드가 지워지면 아직 올리지 않은 마지막 5분 이내 로그는 S3 에 남지 않습니다 (CloudWatch 는 수 초 단위로 전송).
+
+```bash
+# 당일 — 최근 10분 backend 에러
+aws logs tail /team04-hotel/prod/cluster/backend --since 10m --filter-pattern ERROR
+
+# 날짜를 넘긴 조회 — 객체 목록 · 내용
+aws s3 ls s3://team04-hotel-logs/app-logs/main-cluster/2026/10/24/ --recursive
+aws s3 cp s3://team04-hotel-logs/app-logs/main-cluster/<경로>.gz - | gunzip | jq -c 'select(.kubernetes.namespace_name == "backend")'
+
+# 수집 상태 (DaemonSet · 출력 오류)
+kubectl -n fluent-bit get ds fluent-bit
+kubectl -n fluent-bit logs ds/fluent-bit --tail=50 | grep -iE 'error|warn'
+```
+
+---
+
+## 14. 알림 (Slack `#alerts` · `#deploy`)
+
+```
+CloudWatch 알람 ALARM (90) ─────────────────────┬→ SNS team04-hotel-alerts ─┐
+EventBridge 규칙 ALARM → OK 전환만 (10-global) ──┘                           │
+메인 배포 agent (gitops-sync, IRSA) ────────────┐                            ├→ AWS Chatbot (us-east-2) → Slack #alerts · #deploy
+결제 pull agent (60 Role, 44 sns 엔드포인트) ────┼→ SNS team04-hotel-deploy ──┘
+gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 · Chatbot 은 10-global 🔒, KMS 암호화)
+```
+
+- SNS 토픽 · KMS 키 · Chatbot 채널 설정은 `10-global` 🔒 이라 매일 재생성과 상관없이 유지됩니다. Chatbot 이 구독을 직접 관리하므로 구독 확인 · Slack 재연결이 없습니다.
+- 해소(OK) 알림은 알람의 `ok_actions` 가 아니라 `10-global` EventBridge 규칙 `team04-hotel-alarm-recovered` 가 보냅니다. `ok_actions` 는 알람을 새로 만들 때의 "데이터 부족 → OK" 에도 실행되어 매일 재생성마다 OK 가 오기 때문에, 이름이 `team04-hotel-` 로 시작하는 알람의 **ALARM → OK 전환만** 보냅니다. 새 알람도 이 접두사를 쓰고 `ok_actions` 는 넣지 않습니다.
+- Chatbot 은 EventBridge 의 알람 상태 변경 이벤트 원본을 지원하지 않아(`/aws/chatbot/team04-hotel-alerts` 로그: `Event received is not supported`), 규칙 대상의 입력 변환으로 사용자 정의 알림 형식(`✅ CloudWatch Alarm 해소 | <알람>`)으로 바꿔 보냅니다. Slack 에 메시지가 안 오면 이 로그 그룹(us-east-1)을 먼저 봅니다.
+- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람과 위 EventBridge 규칙만, 배포 토픽은 Role 3개(`team04-hotel-gitops-sync` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
+- Chatbot 채널 Role 에는 정책이 없고 guardrail 이 `AWSDenyAll` 이라 Slack 에서 AWS 명령을 실행할 수 없습니다.
+- 결제 VPC 는 Slack 으로 나가지 않습니다 (SNS 인터페이스 엔드포인트, NFW 허용 목록은 토스 API 만).
+- Slack 워크스페이스 · 채널 ID 는 `10-global/terraform.tfvars`(gitignore)에 둡니다 (`terraform.tfvars.example`). 기본값이 없어 파일이 없으면 `10-global` plan 이 멈춥니다. 비공개 채널이면 채널에서 `/invite @Amazon Q` 를 먼저 합니다.
+
+### `#alerts` 알람과 대응
+
+모든 알람은 ALARM 과, ALARM 에서 해소될 때 OK 를 보냅니다. 매일 재생성으로 알람을 새로 만들 때는 아무것도 오지 않습니다. 지표가 없으면(트래픽 · 이벤트 없음) 정상으로 봅니다.
+
+| 알람 | 조건 | 대응 |
+|---|---|---|
+| `team04-hotel-payment-result-dlq` | 결제 결과 DLQ 메시지 > 0 | booking-service 로그(`/team04-hotel/prod/cluster/backend`)에서 처리 실패 원인 확인 → 원인 수정 후 DLQ 메시지를 원래 큐로 재처리(콘솔 "DLQ 재처리") |
+| `team04-hotel-main-alb-5xx-rate` | ALB 5xx 비율 > 5% (1분 3번 중 2번, 요청 20건 이상) | `kubectl -n backend get pods`, api-gateway 로그. ELB 5xx 만 늘면 대상 없음(워커 · Traefik) |
+| `team04-hotel-main-alb-unhealthy` | 워커 Target Group unhealthy 5분 | 7절 Target Group 상태, 워커 교체 중인지(6절) 확인 |
+| `team04-hotel-payment-nlb-unhealthy` | 결제 NLB unhealthy 5분 | 9절 결제 서버 SSM 접속 → `docker ps` · app 로그. ASG 가 교체 중일 수 있음 |
+| `team04-hotel-payment-deploy-failed` | 결제 agent `deploy_failed` · `invalid_release` · `rollback_failed` | `#deploy` 의 인스턴스별 결과 → 9절 배포 이벤트 조회. 없는 태그면 gitops payment values 수정 PR |
+| `team04-hotel-payment-mock-deployed` | 결제 agent `deploy_success` 이면서 `provider = MOCK` | 부하 테스트가 아니면 gitops payment values `PAYMENT_PROVIDER` 를 `TOSS` 로 되돌리는 PR |
+
+- 결제 배포 · MOCK 알람은 이벤트가 생긴 1분만 ALARM 이고 다음 1분에 OK 로 돌아옵니다 ("발생 알림"). 이벤트가 있을 때만 생기는 지표라 `FILL(m, 0)` 수식으로 빈 분을 0 으로 채웁니다 — 채우지 않으면 평가 범위에 남은 마지막 1 때문에 ALARM 이 약 8분 이어집니다 (2026-10-24 실측). ALARM 중에 같은 이벤트가 또 생기면 새 메시지는 없습니다.
+- 매일 재생성 직후 결제 서버 · 워커가 부팅 중이면 unhealthy 알람이 한 번 올 수 있습니다 (5분 넘게 이어질 때만).
+
+### `#deploy` 배포 결과
+
+| 출처 | 보내는 때 | 내용 |
+|---|---|---|
+| 메인 클러스터 배포 agent | 떠 있는 클러스터에 새 gitops SHA 적용 성공 · 실패 (`--atomic` 롤백). 클러스터 생성 직후 첫 적용은 실패만 | 릴리스 SHA(backend `revision`), gitops SHA · 이전 SHA, 소요 시간, 적용한 앱, 실패한 앱 · 메시지 |
+| 결제 서버 pull agent (인스턴스별) | 떠 있는 서버의 release 갱신 결과: `deploy_success` · `deploy_failed`(없는 태그 · Flyway · 헬스) · `invalid_release` · `rollback_*`. 부팅 배포(매일 재생성 · ASG 교체)는 보내지 않음 — 실패는 `#alerts` deploy-failed 알람 | 릴리스 SHA, 인스턴스 · AZ · 실행 방식, PG(`TOSS` · `MOCK`), 사유 |
+| gitops `sync-frontend-version` | KeyValueStore 버전을 바꿨을 때 · 갱신 실패 | 릴리스 SHA, 이전 버전, Actions 실행 링크 |
+
+`#deploy` 는 릴리스(gitops merge)에만 옵니다. 매일 재생성은 메인 첫 적용이 실패했을 때만 "클러스터 생성 후 첫 적용" 실패로 옵니다.
+
+```bash
+# 알람 상태
+aws cloudwatch describe-alarms --alarm-name-prefix team04-hotel- --query 'MetricAlarms[].[AlarmName,StateValue]' --output table
+
+# 알림 경로 시험 (#alerts 에 ALARM 이 오고, 다음 평가에서 OK 로 돌아오면 EventBridge 경로로 OK 가 온다)
+aws cloudwatch set-alarm-state --alarm-name team04-hotel-payment-result-dlq --state-value ALARM --state-reason "알림 경로 시험"
 ```

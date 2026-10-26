@@ -7,6 +7,7 @@
 | `bootstrap/` | state 버킷 `likelion-devops-7th-3rd-team4-tfstate`, IAM Credentials API | **로컬** (자기가 만들 버킷에 state 를 둘 수 없음) |
 | `dev/` | IAM API 활성화, 서비스 계정 `llm-service-dev`, `roles/aiplatform.user` 부여 | GCS `dev/` |
 
+- AWS 운영 클러스터용 GCP 구성(키 없는 Workload Identity Federation, 서비스 계정 `llm-service-prod`)은 여기가 아니라 Terragrunt 유닛 [`infra/terraform/live/prod/14-gcp-llm`](../terraform/README.md) 에 있습니다 (state 는 AWS S3).
 - 프로젝트: `likelion-devops-7th-3rd-team4` / 기본 리전: `asia-northeast3`
 - 서비스 계정 **키는 Terraform 으로 만들지 않습니다.** `google_service_account_key` 로 만들면 비밀키가 state 에 평문으로 남기 때문입니다. 아래 "키 발급" 처럼 gcloud 로 따로 발급합니다.
 

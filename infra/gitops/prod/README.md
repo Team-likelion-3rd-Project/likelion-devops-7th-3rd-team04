@@ -7,7 +7,7 @@
 - **이 폴더가 원본입니다.** 값을 바꿀 때는 여기를 먼저 고치고, gitops 레포 `envs/prod/` 에 같은 내용을 반영합니다.
 - 반영 방법
   - v1.0.0(2026-10-27) 전(구축 기간): 이 폴더 변경과 같은 내용으로 gitops 레포에 PR 을 직접 작성합니다.
-  - 이후: 모노레포 릴리스 PR(develop → main) merge 때 GitLab main 파이프라인이 gitops 레포에 PR 을 엽니다(values 복사 + 이미지 태그 + chart revision). 사람이 gitops 레포에 직접 PR 을 여는 것은 비상 경로뿐입니다.
+  - 이후: 모노레포 릴리스 PR(release/<버전> → main) merge 때 GitLab main 파이프라인이 gitops 레포에 PR 을 엽니다(values 복사 + 이미지 태그 + chart revision). 사람이 gitops 레포에 직접 PR 을 여는 것은 비상 경로뿐입니다.
 - gitops 레포에만 있는 값을 만들지 않습니다. 두 곳이 다르면 이 폴더 기준으로 맞춥니다.
 - public 레포로 그대로 복사되므로 **비밀값을 넣지 않습니다** (AWS Secrets Manager → External Secrets).
 - 아직 옮기지 않은 `payment`(결제 서버 이미지 태그, 앱 정의 아님)는 gitops 레포 쪽이 기준입니다 (결제 단계에서 이관).
@@ -19,6 +19,7 @@ infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── cert-manager/          chart.yaml · values.yaml          15  webhook TLS 인증서 발급 · caBundle 주입
 ├── pod-identity-webhook/  chart.yaml · values.yaml          20  IRSA 주입 (ns/SA → Role 매핑)
 ├── whoami/                chart.yaml · values.yaml · chart/ 20  수직 경로 검증용 테스트 백엔드 (/whoami)
+├── fluent-bit/            chart.yaml · values.yaml          25  파드 로그 수집 → CloudWatch Logs · 로그 버킷 app-logs/main-cluster/
 ├── external-secrets/      chart.yaml · values.yaml          30  External Secrets Operator
 ├── cluster-secret-store/  chart.yaml · chart/               40  ClusterSecretStore aws-secrets-manager
 ├── backend-secrets/       chart.yaml · chart/               45  backend Secret(ExternalSecret) · RDS CA ConfigMap
@@ -41,6 +42,7 @@ pod-identity-webhook ns/SA → Role 매핑(values.yaml) 의 파드에 AWS_ROLE_A
 - **비밀값**: 앱은 `ExternalSecret` 에서 `ClusterSecretStore` `aws-secrets-manager` 를 참조해 Secrets Manager 값(`team04-hotel/prod/*`)을 받습니다. 읽을 수 있는 Secret 은 ESO Role 정책(70 `irsa.tf`)과 Secret 리소스 정책(41-main-data)이 제한합니다.
 - **backend Secret**: `backend-secrets` 앱이 Secret `backend-secrets` 를 만듭니다 (`chart/values.yaml` 의 `data` = Secret key ← Secrets Manager 이름 · 속성). backend 차트의 Flyway hook Job 은 차트의 일반 리소스보다 먼저 돌기 때문에 Secret 을 backend 릴리스 밖에 둡니다. 서비스가 새 `secretEnv` 를 쓰면 여기와 Terraform 41-main-data Secret 에 같이 추가합니다.
 - **backend IRSA**: backend 차트가 서비스마다 같은 이름의 ServiceAccount 를 만듭니다 (`serviceAccounts.create: true`). 매핑은 `backend/<서비스 이름>` 으로 추가합니다.
+- **시드 관리자 계정**: `backend-secrets` 앱이 별도 ExternalSecret 으로 Secret `seed-admin` 을 만듭니다 (`chart/values.yaml` 의 `seedAdmin`, 원본 Terraform 12-secrets `team04-hotel/prod/seed-admin`). `backend-secrets` 에 합치지 않아 이 값이 없어도 서비스 Secret 동기화는 영향을 받지 않습니다 (아래 "운영 시드").
 - webhook 은 `failurePolicy: Fail` 입니다. webhook 이 준비되기 전에 만든 파드가 자격 증명 없이 남지 않고, 생성이 거부된 뒤 다시 만들어집니다. 노드 · 네트워크 · 인증서 · 배포 agent 네임스페이스는 호출하지 않습니다 (`values.yaml` namespaceSelector).
 
 ## 클러스터 값 (`clusterValues`)
@@ -82,6 +84,7 @@ CronJob gitops-sync (1분, CP 노드, cluster-admin)
      전부 성공: applied_sha 기록
 ```
 
+- **적용 결과는 Slack `#deploy` 로 갑니다.** 성공 · 실패(실패한 앱, `--atomic` 롤백)를 릴리스 SHA · 소요 시간 · 적용한 앱과 함께 10-global 배포 토픽에 발행합니다 ([Terraform README](../../terraform/README.md) 14절). gitops-sync 는 pod-identity-webhook 대상이 아니라 CronJob 이 IRSA 토큰을 직접 마운트합니다 (Role `team04-hotel-gitops-sync`, 배포 토픽 발행만).
 - **가져오기와 적용 실패를 나눕니다.** 네트워크 장애(GitHub · 차트 저장소)로 SHA 가 실패로 기록되면 새 커밋 전까지 배포가 멈추므로, 네트워크를 쓰는 단계는 재시도하고 값 문제(렌더링 오류, readiness 실패)만 기록합니다. 존재하지 않는 차트 버전도 가져오기 실패라 매 분 재시도합니다 (클러스터는 바뀌지 않음).
 - **적용은 앱 단위입니다.** 앞 앱이 적용된 뒤 뒤 앱이 실패하면 앞 앱은 새 버전으로 남고, 실패한 앱만 `--atomic` 으로 이전 릴리스로 돌아갑니다.
 - **값이 같으면 파드는 바뀌지 않습니다.** SHA 가 바뀌면 모든 앱에 `helm upgrade` 를 하지만, 렌더 결과가 같은 앱은 revision 만 늘어납니다 (`--history-max 5`).
@@ -118,12 +121,14 @@ k -n gitops-sync patch configmap gitops-sync-config --type merge -p '{"data":{"B
 ## 릴리스
 
 ```
-develop ──릴리스 PR (merge commit, release-source check · 승인)──▶ main
-   │                                                            │ GitHub → GitLab 미러
-   │                                                            ▼
+develop ─▶ release/<버전> ──릴리스 PR (merge commit, release-source check · 승인)──▶ main
+   │        (범위 고정, merge 후 삭제)                                            │ GitHub → GitLab 미러
+   │                                                                               ▼
    │                         GitLab main 파이프라인 (AWS Runner, 보호 브랜치 · tags aws — release job 만)
-   │                           release:prepare → release:build ×10 (ECR 캐시) ─┐
-   │                           release:frontend-build → release:frontend ───────┴→ release:gitops-pr
+   │                           [release-prepare]  [release-build]                      [release-gitops]
+   │                           release:prepare → release:build ×12 (ECR 캐시) ─┐
+   │                                           → release:mirror-n8n ───────────┤
+   │                                           → release:frontend-build → release:frontend ┴→ release:gitops-pr
    │                           ECR team04-hotel/<서비스>:<main SHA> (arm64)          gitops 레포 PR release/<main SHA>
    │                           S3 team04-hotel-frontend/releases/<main SHA>/              │ validate · 승인 (사람)
    ▼                                                                                        ▼ merge
@@ -150,9 +155,11 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
 ### 절차 (runbook)
 
 1. **준비**: develop 이 dev 에 배포 · 검증된 상태인지 확인합니다. 결제 쪽 계약(payment.proto · SQS 메시지 · 결제 마이그레이션)이 바뀌었으면 결제 서버를 먼저 반영할 계획을 세웁니다.
-   - **develop 파이프라인 성공 확인 (필수)**: 릴리스 PR 의 head 커밋(develop 최신 커밋)에 대한 GitLab `team04/hotel` develop 파이프라인이 **passed** 인지 확인합니다 (Pipelines → 브랜치 develop → 커밋 SHA 비교). 실행 중이면 끝날 때까지 기다리고, 실패했으면 develop 에서 고친 뒤 다시 확인합니다. main 파이프라인은 test · 이미지 smoke test 를 다시 돌리지 않습니다.
-2. **릴리스 PR**: GitHub 에서 `develop → main` PR 을 엽니다 (제목 예: `release: v1.0.0`). `release-source` · GitHub CI(`Backend Build & Test` 등) check 와 승인 후 **merge commit** 으로 합칩니다.
-3. **파이프라인**: GitLab `team04/hotel` → Pipelines 의 main 파이프라인이 `release:gitops-pr` 까지 끝나는지 확인합니다.
+   - **develop 파이프라인 성공 확인 (필수)**: 릴리스 브랜치로 고정할 develop 커밋에 대한 GitLab `team04/hotel` develop 파이프라인이 **passed** 인지 확인합니다 (Pipelines → 브랜치 develop → 커밋 SHA 비교). 실행 중이면 끝날 때까지 기다리고, 실패했으면 develop 에서 고친 뒤 다시 확인합니다. main 파이프라인은 test · 이미지 smoke test 를 다시 돌리지 않습니다.
+2. **릴리스 PR**: 1 에서 확인한 develop 커밋으로 `release/<버전>` 브랜치를 만들고 (`git push origin <SHA>:refs/heads/release/v1.0.0`), GitHub 에서 `release/<버전> → main` PR 을 엽니다 (제목 예: `release: v1.0.0`). 이후 develop 에 merge 되는 변경은 이번 릴리스에 들어가지 않습니다. `release-source` · GitHub CI(`Backend Build & Test` 등) check 와 승인 후 **merge commit** 으로 합치고 브랜치를 삭제합니다.
+   - 릴리스 브랜치에는 직접 커밋하지 않습니다 (GitLab 검증을 거치지 않은 커밋이 main 으로 감). 수정이 필요하면 develop 에 먼저 merge → develop 파이프라인 passed 확인 → 브랜치를 그 커밋으로 옮깁니다 (`git push origin <새 SHA>:refs/heads/release/<버전> --force-with-lease`).
+   - `develop → main` PR 은 `release-source` check 가 거부합니다.
+3. **파이프라인**: GitLab `team04/hotel` → Pipelines 의 main 파이프라인이 `release-prepare` → `release-build` → `release-gitops` stage 의 `release:gitops-pr` 까지 끝나는지 확인합니다.
    - 소요 시간 (merge → gitops PR 생성): rc.1(2026-10-21, t4g.medium · 캐시 없음 · main 에 dev job 포함) 약 28분 — 온프레미스 Runner 대기 + compile · helm-lint 17분, `release:build` 9분. 개선 후 실측은 rc.2 때 여기에 적습니다.
    - `release:build` 로그 끝의 `[메모리]` 줄(호스트 남은 메모리 최소 · job 최대 사용량)로 Runner 사양을 판단합니다.
 4. **gitops PR**: gitops 레포에 `chore(prod): backend · payment · frontend → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
@@ -178,6 +185,32 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
 | `release:frontend-build` 실패 | 로그 확인 (토스 클라이언트 키 Parameter 미등록이면 `12-secrets` 에 `TOSS_CLIENT_KEY` 등록 후 파이프라인 재실행 — `release:prepare` 부터) → 고친 뒤 재시도. gitops PR 은 프론트 업로드가 끝나야 만들어집니다 |
 | `sync-frontend-version` 실패 | gitops 레포 Actions 에서 재실행 (`workflow_dispatch`). `releases/<SHA>/index.html 이 없습니다` 면 그 SHA 의 `release:frontend` 를 확인 |
 | main 에 잘못 merge 됨 | gitops PR 을 merge 하지 않으면 운영은 바뀌지 않습니다. 모노레포는 revert PR(develop) → 다음 릴리스 |
+
+## 운영 시드
+
+메인 DB(RDS)는 매일 새로 만들어지므로, backend 배포 때마다 backend 차트의 **seed Job** 이 초기 데이터를 채웁니다 (`backend/values.yaml` 의 `seed`, LDP-141). 사람이 실행할 단계는 없습니다.
+
+| 항목 | 내용 |
+|---|---|
+| 실행 | `backend/scripts/seed.ts` (이미지 ECR `team04-hotel/seed:<main SHA>`, `backend/scripts/Dockerfile.seed`, `release:build` 가 빌드). Job 이름 `seed-<태그 앞 8자>-<spec 해시 6자>` — Job spec 은 바꿀 수 없어 seed 설정 · 차트가 바뀌면 새 이름으로 다시 만든다 (같은 이름으로 spec 이 바뀌면 helm 이 실패해 backend 전체가 롤백됨) |
+| 순서 | Flyway hook(`main-db-migration`) 다음, 앱 Deployment 와 같이 생성. hook 이 아니라 helm `--wait` 가 기다리지 않음 → **시드가 실패해도 서비스 배포는 롤백되지 않음** |
+| 데이터 | 관리자 계정 · 호텔 3 · 객실 종류 12 · 호실 60 · 편의시설 · 예약 가능일 365일 · 객실 사진 24장. 이미 있으면 건너뜀(멱등) |
+| 관리자 계정 | Secret `seed-admin` ← Secrets Manager `team04-hotel/prod/seed-admin` (Terraform 12-secrets 🔒, 값은 그 디렉터리 `.env` 의 `SEED_ADMIN_*`) |
+| 객실 사진 | 사진 버킷(13-frontend 🔒, 매일 재생성 안 함)에 고정 키 `room-types/<객실 종류 ID>/seed-<파일>` 로 올림. 같은 키가 있으면 올리지 않고(조건부 쓰기 `If-None-Match`) DB 만 다시 연결 → 매일 재생성해도 객체가 늘지 않음. 관리자가 올린 사진은 기존대로 uuid 키 |
+| DB 접속 | `DB_SSL=true` + RDS CA(`rds-ca-bundle`) — 서버 인증서 · 호스트 이름 검증(`libs/common` `mariaDbSslOptions` 의 `verifyIdentity`, 서비스와 같은 코드). `require_secure_transport` 를 켜도 접속 |
+| 권한 | SA `backend/seed` → IRSA `team04-hotel-seed` (사진 버킷 `room-types/*` PutObject 만, 버킷 정책 쓰기 허용 목록에도 포함) |
+
+확인 (CP 에 SSM 접속 후):
+
+```bash
+k -n backend get jobs -l app.kubernetes.io/name=seed     # COMPLETIONS 1/1
+k -n backend logs -l app.kubernetes.io/name=seed --tail=-1  # "[seed] 시딩 완료", 사진 "새로 올린 파일 N개"
+k -n backend get externalsecret seed-admin                # SecretSynced
+```
+
+- 끝난 Job 은 하루 뒤 정리됩니다 (`ttlSecondsAfterFinished`). 실패하면 2번 다시 시도하고(`backoffLimit`) 파드 로그를 남깁니다.
+- 다시 돌리려면 `k -n backend delete job -l app.kubernetes.io/name=seed` 후 위 "확인 · 운영" 표의 "같은 SHA 를 다시 적용하고 싶음" 으로 backend 를 다시 적용합니다 (helm 이 없어진 Job 을 다시 만듦). 멱등이라 데이터가 늘지 않습니다.
+- 관리자 비밀번호를 바꾸면(12-secrets version 증가) 다음 DB 재생성부터 반영됩니다.
 
 ## ArgoCD 전환
 

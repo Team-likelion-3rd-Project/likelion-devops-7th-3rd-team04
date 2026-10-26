@@ -4,6 +4,9 @@
 
 locals {
   stack = regex("^\\d+-(.+)$", basename(get_terragrunt_dir()))[0]
+
+  # AWS 리소스가 없어 AWS provider 를 생성하지 않는 유닛 (자기 terragrunt.hcl 에서 provider 를 생성한다)
+  non_aws_stacks = ["gcp-llm"]
 }
 
 # Terragrunt 는 유닛을 .terragrunt-cache 로 복사해 실행한다.
@@ -36,6 +39,7 @@ remote_state {
 }
 
 generate "provider" {
+  disable   = contains(local.non_aws_stacks, local.stack)
   path      = "providers.generated.tf"
   if_exists = "overwrite_terragrunt"
   contents  = <<-EOF

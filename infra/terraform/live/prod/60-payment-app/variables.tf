@@ -45,6 +45,16 @@ variable "queue_names" {
 
 # ── 결제 서버 ──
 
+variable "deploy_topic_name" {
+  description = "10-global 의 deploy_topic_name. pull agent 가 배포 결과를 발행한다 (44 sns 엔드포인트)"
+  type        = string
+}
+
+variable "notifications_kms_key_id" {
+  description = "10-global 의 notifications_kms_key_id (배포 토픽 암호화 키)"
+  type        = string
+}
+
 variable "payment_app_role_name" {
   description = "결제 서버 Role · Instance Profile 이름. 42 Secret · 12 토스 Secret · 43 큐 정책이 이 이름을 허용한다 (바꾸면 셋 다 같이)"
   type        = string

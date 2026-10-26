@@ -12,11 +12,13 @@
 }
 
 .site-logo {
-  font-family: var(--heading);
-  font-size: 20px;
-  letter-spacing: 0.08em;
-  color: var(--text-h);
-  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  height: 44px;
+
+  @media (max-width: 640px) {
+    height: 32px;
+  }
 }
 
 .site-nav {

@@ -6,6 +6,9 @@ import {
   createExtensionBooking,
 } from '../../api/adminReservations'
 import type { AdminBooking } from '../../api/adminReservations'
+import type { Payment } from '../../api/payments'
+import { PAYMENT_STATUS_LABEL, formatPaidAt } from '../../utils/payment'
+import { openDatePicker } from '../../utils/date'
 
 export type ReservationAction = 'cancel' | 'extend'
 
@@ -15,6 +18,8 @@ interface AdminReservationActionPanelProps {
   /** 표시용 "지점 · 객실 종류" */
   roomLabel: string
   guestName: string
+  /** 이 예약의 가장 최근 결제 (결제 기록이 없거나 못 불러왔으면 없음) */
+  payment?: Payment
   /** 이 예약을 원래 예약으로 하는 활성 연장 예약 (직원 취소 시 함께 취소됨) */
   activeExtensions: AdminBooking[]
   /** 이 예약 다음으로 이어지는 연장 예약 — 있으면 그 예약에서 연장해야 한다 */
@@ -40,6 +45,7 @@ function AdminReservationActionPanel({
   action,
   roomLabel,
   guestName,
+  payment,
   activeExtensions,
   nextExtension,
   onDone,
@@ -59,7 +65,14 @@ function AdminReservationActionPanel({
     }
     const withExtensions =
       activeExtensions.length > 0 ? `\n연결된 연장 예약 ${activeExtensions.length}건도 함께 취소됩니다.` : ''
-    if (!window.confirm(`예약 #${booking.reservationId}을(를) 취소할까요? 결제됐으면 전액 환불됩니다.${withExtensions}`)) {
+    // 결제 상태에 맞춰 환불 여부를 안내한다 (결제 기록을 못 불러왔으면 예전 문구)
+    const refundNote =
+      payment?.status.toLowerCase() === 'approved'
+        ? ` 결제된 ${payment.amount.toLocaleString()}원이 전액 환불됩니다.`
+        : payment
+          ? ''
+          : ' 결제됐으면 전액 환불됩니다.'
+    if (!window.confirm(`예약 #${booking.reservationId}을(를) 취소할까요?${refundNote}${withExtensions}`)) {
       return
     }
     setIsSaving(true)
@@ -115,6 +128,18 @@ function AdminReservationActionPanel({
         {guestName} · {roomLabel} · {booking.checkInDate} ~ {booking.checkOutDate}
         {booking.roomNumber && ` · ${booking.roomNumber}호`}
       </p>
+      <p className="admin-stat-note">
+        결제:{' '}
+        {payment ? (
+          <>
+            <strong>{PAYMENT_STATUS_LABEL[payment.status.toLowerCase()] ?? payment.status}</strong> ·{' '}
+            {payment.amount.toLocaleString()}원{payment.paidAt && ` · 결제 ${formatPaidAt(payment.paidAt)}`}
+            {payment.refundedAt && ` · 환불 ${formatPaidAt(payment.refundedAt)}`}
+          </>
+        ) : (
+          '결제 기록 없음'
+        )}
+      </p>
 
       {action === 'cancel' ? (
         <div className="admin-form">
@@ -157,6 +182,7 @@ function AdminReservationActionPanel({
                 type="date"
                 value={checkOutDate}
                 min={addDays(booking.checkOutDate, 1)}
+                onClick={openDatePicker}
                 onChange={(e) => setCheckOutDate(e.target.value)}
               />
             </label>

@@ -9,34 +9,57 @@
   vars:
     # compose env_file / cnf / SQL 에 따옴표 없이 들어가므로 특수문자 제한
     secret_charset_regex: '^[^\s''"\\$#`]+$'
+    # preflight(Tailnet 연결 전)는 Tailscale · 클러스터 주소만 확인
     required_env:
       TS_PAYMENT_OAUTH_CLIENT_SECRET: "{{ ts_oauth_secret }}"
-      PAYMENT_DB_ROOT_PASSWORD: "{{ payment_db_root_password }}"
       CLUSTER_ENTRY_IP: "{{ cluster_entry_ip }}"
-      GITLAB_URL (.secrets/payment-node.env): "{{ gitlab_url }}"
-      GITLAB_TS_IP (.secrets/payment-node.env): "{{ gitlab_ts_ip }}"
-      GITLAB_REGISTRY (.secrets/payment-node.env): "{{ gitlab_registry }}"
-      PAYMENT_DEPLOY_USER (.secrets/payment-node.env): "{{ payment_deploy_user }}"
-      PAYMENT_DEPLOY_TOKEN (.secrets/payment-node.env): "{{ payment_deploy_token }}"
-      PAYMENT_DB_DATABASE (backend/.env): "{{ payment_db_database }}"
-      PAYMENT_DB_USERNAME (backend/.env): "{{ payment_db_username }}"
-      PAYMENT_DB_PASSWORD (backend/.env): "{{ payment_db_password }}"
+    # OpenBao(payment-node · payment-db · payment-db-root)를 읽은 뒤 확인.
+    # 도입 전에는 .secrets/payment-node.env · backend/.env · infra/ansible/.env 값
+    required_values:
+      PAYMENT_DB_ROOT_PASSWORD: "{{ payment_db_root_password }}"
+      GITLAB_URL: "{{ gitlab_url }}"
+      GITLAB_TS_IP: "{{ gitlab_ts_ip }}"
+      GITLAB_REGISTRY: "{{ gitlab_registry }}"
+      PAYMENT_DEPLOY_USER: "{{ payment_deploy_user }}"
+      PAYMENT_DEPLOY_TOKEN: "{{ payment_deploy_token }}"
+      PAYMENT_DB_DATABASE: "{{ payment_db_database }}"
+      PAYMENT_DB_USERNAME: "{{ payment_db_username }}"
+      PAYMENT_DB_PASSWORD: "{{ payment_db_password }}"
   pre_tasks:
-    - name: backend env 파일 확인
-      ansible.builtin.stat:
-        path: "{{ backend_env_file }}"
-      register: backend_env_stat
-      run_once: true
-      delegate_to: localhost
-      become: false
+    - name: 선행 패키지 설치
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, git, python3-debian, ufw]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+  roles:
+    - preflight
+    - tailscale
+    - docker
+    - firewall
+
+  # OpenBao 는 Tailnet 으로 읽으므로 tailscale role 뒤에서 (ACL: tag:payment → tag:db tcp:8200)
+  tasks:
+    - name: OpenBao 값 읽기
+      ansible.builtin.import_role:
+        name: openbao_kv
+        tasks_from: read
+      vars:
+        openbao_read_paths: "{{ payment_openbao_paths }}"
       tags: [always]
 
-    - name: backend env 파일 없음 안내
-      ansible.builtin.fail:
-        msg: >-
-          {{ backend_env_file }} 가 없습니다. backend/.env.example 을 backend/.env 로 복사해 값을 채우거나,
-          BACKEND_ENV_FILE 로 다른 경로를 지정하세요.
-      when: not backend_env_stat.stat.exists
+    # 값 대신 [이름, 길이] 만 넘겨 no_log 없이 어떤 값이 비었는지 보여줌
+    - name: 필수 값 확인
+      ansible.builtin.assert:
+        that: item.1 > 0
+        fail_msg: >-
+          {{ item.0 }} 가 비어 있습니다. OpenBao({{ openbao_kv_prefix }}/payment-*)에 값을 넣거나,
+          도입 전이면 .secrets/payment-node.env · backend/.env · .env 를 채우고 다시 실행하세요 (README 14-2, 16-3).
+        quiet: true
+      loop: "{{ required_values | dict2items | map(attribute='key') | zip(required_values | dict2items | map(attribute='value') | map('length')) | list }}"
+      loop_control:
+        label: "{{ item.0 }}"
       run_once: true
       tags: [always]
 
@@ -56,7 +79,7 @@
       tags: [always]
 
     # 항목마다 결과(bool)만 넘겨 값은 출력하지 않음 — no_log 없이 원인별 메시지를 보여줌
-    - name: 결제 PG 설정 확인 (backend/.env)
+    - name: 결제 PG 설정 확인 (backend/.env · OpenBao toss-payments)
       ansible.builtin.assert:
         that: item.ok | bool
         fail_msg: "{{ item.msg }}"
@@ -68,7 +91,7 @@
         - name: TOSS_SECRET_KEY
           ok: "{{ payment_provider != 'TOSS' or toss_secret_key is regex('^(test|live)_gsk_[A-Za-z0-9_-]+$') }}"
           msg: >-
-            PAYMENT_PROVIDER=TOSS 이면 TOSS_SECRET_KEY 에 결제위젯 연동 키의 시크릿 키(test_gsk_… / live_gsk_…)가 필요합니다.
+            PAYMENT_PROVIDER=TOSS 이면 TOSS_SECRET_KEY(OpenBao toss-payments.secret_key)에 결제위젯 연동 키의 시크릿 키(test_gsk_… / live_gsk_…)가 필요합니다.
             API 개별 연동 키(test_sk_…)나 클라이언트 키(test_gck_…)는 쓸 수 없습니다.
         - name: TOSS_API_BASE_URL
           ok: >-
@@ -84,17 +107,7 @@
       become: false
       tags: [always]
 
-    - name: 선행 패키지 설치
-      ansible.builtin.apt:
-        name: [ca-certificates, curl, git, python3-debian, ufw]
-        state: present
-        update_cache: true
-        cache_valid_time: 3600
-
-  roles:
-    - preflight
-    - tailscale
-    - docker
-    - firewall
-    - role: payment_stack
+    - name: 결제 노드 스택
+      ansible.builtin.import_role:
+        name: payment_stack
       tags: [deploy]

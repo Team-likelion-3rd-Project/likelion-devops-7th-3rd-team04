@@ -3,11 +3,13 @@
 #
 #   team04-hotel/prod/main-db     : {engine, host, port, dbname, username, password}  → DB_HOST · DB_PORT · DB_DATABASE · DB_USERNAME · DB_PASSWORD
 #   team04-hotel/prod/main-valkey : {host, port, password}                            → REDIS_HOST · REDIS_PORT · REDIS_PASSWORD
-#   team04-hotel/prod/backend-app : {jwt_access_secret, jwt_refresh_secret, mock_pg_secret} → JWT_ACCESS_SECRET · JWT_REFRESH_SECRET · MOCK_PG_SECRET
+#   team04-hotel/prod/backend-app : {jwt_access_secret, jwt_refresh_secret, mock_pg_secret, n8n_owner_password}
+#                                   → JWT_ACCESS_SECRET · JWT_REFRESH_SECRET · MOCK_PG_SECRET · N8N_INIT_OWNER_PASSWORD
 #
 # backend-app 은 DB · Valkey 와 상관없는 앱 서명 키다. 매일 재생성 때 새로 만들어지므로 그날 발급한 토큰은 다음 재생성 후 무효가 된다.
 # MOCK_PG_SECRET 은 prod 에서 쓰지 않는 pg-mock 웹훅(api-gateway /api/payments/webhook)의 HMAC 키다.
 # 비우면 앱이 공개된 기본값으로 검증하므로 무작위 값을 넣어 위조 요청을 막는다.
+# n8n_owner_password 는 n8n 워크플로 활성화용 내부 owner 계정이다 (사람이 로그인하지 않으므로 매일 새 값이어도 된다).
 #
 # 값은 secret_string_wo 라 state 에 남지 않는다. DB · Valkey 와 같은 실행에서 같은 ephemeral 값을 넣는다.
 # DB · Valkey 가 교체되면(새 비밀번호로 생성) Secret 값도 같은 실행에서 다시 넣도록 replace_triggered_by 를 건다.
@@ -24,16 +26,22 @@ locals {
     }
     backend_app = {
       name        = "${local.secret_prefix}/backend-app"
-      description = "Backend app signing keys (JWT, mock PG webhook HMAC)"
+      description = "Backend app signing keys (JWT, mock PG webhook HMAC), n8n owner password"
     }
   }
 }
 
-# HMAC 키라 길이만 충분하면 된다 (HS256 은 32바이트 이상 권장)
+# HMAC 키라 길이만 충분하면 된다 (HS256 은 32바이트 이상 권장).
+# n8n 비밀번호 규칙은 8 – 64자, 대문자 · 숫자 포함 (require_each_included_type 로 충족)
 ephemeral "aws_secretsmanager_random_password" "backend_app" {
-  for_each = toset(["jwt_access_secret", "jwt_refresh_secret", "mock_pg_secret"])
+  for_each = {
+    jwt_access_secret  = 64
+    jwt_refresh_secret = 64
+    mock_pg_secret     = 64
+    n8n_owner_password = 32
+  }
 
-  password_length            = 64
+  password_length            = each.value
   exclude_punctuation        = true
   require_each_included_type = true
 }

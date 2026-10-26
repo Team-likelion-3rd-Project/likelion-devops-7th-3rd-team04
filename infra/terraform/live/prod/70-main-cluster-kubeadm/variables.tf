@@ -33,14 +33,55 @@ variable "secret_names" {
   type        = map(string)
 }
 
+variable "seed_admin_secret_name" {
+  description = "12-secrets 🔒 의 시드 관리자 계정 Secret 이름. ESO Role 이 읽는다 (12 는 run --all 대상이 아니라 dependency 대신 고정 이름)"
+  type        = string
+  default     = "team04-hotel/prod/seed-admin"
+}
+
 variable "queue_names" {
   description = "43-messaging 의 queue_names (payment_result, payment_result_dlq). booking-service Role 이 받는 큐"
   type        = map(string)
 }
 
+variable "dynamodb_table_names" {
+  description = "41-main-data 의 dynamodb_table_names (chat_sessions, chat_messages). chat-bot-service Role 이 읽고 쓴다"
+  type        = map(string)
+}
+
+variable "vector_bucket_name" {
+  description = "15-chatbot-vectors 의 vector_bucket_name output. llm-service(조회) · llm-ingest(쓰기) Role 대상"
+  type        = string
+}
+
+variable "vector_index_name" {
+  description = "15-chatbot-vectors 의 vector_index_name output"
+  type        = string
+}
+
 variable "image_bucket_name" {
   description = "13-frontend 의 image_bucket_name output. hotel-service Role 이 객실 사진을 올리고 지운다"
   type        = string
+}
+
+variable "deploy_topic_name" {
+  description = "10-global 의 deploy_topic_name. 배포 agent(gitops-sync) Role 이 발행한다"
+  type        = string
+}
+
+variable "notifications_kms_key_id" {
+  description = "10-global 의 notifications_kms_key_id (배포 토픽 암호화 키)"
+  type        = string
+}
+
+variable "log_bucket_name" {
+  description = "10-global 의 log_bucket_name output. Fluent Bit Role 이 app-logs/main-cluster/ 에 쓴다"
+  type        = string
+}
+
+variable "cluster_log_group_names" {
+  description = "21-observability-base 의 cluster_log_group_names (네임스페이스 → 로그 그룹). Fluent Bit Role 이 이 그룹에만 쓴다"
+  type        = map(string)
 }
 
 variable "main_network" {

@@ -6,7 +6,13 @@ import type { Hotel } from '../data/hotels'
 import { fetchMyPayments, type Payment } from '../api/payments'
 import { CalendarIcon } from '../components/reservation/icons'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
-import { PAYMENT_METHOD_LABEL, PAYMENT_STATUS_LABEL, formatPaidAt } from '../utils/payment'
+import {
+  PAYMENT_METHOD_LABEL,
+  PAYMENT_STATUS_LABEL,
+  PAYMENT_STATUS_NOTICE,
+  formatPaidAt,
+  isManualPaymentStatus,
+} from '../utils/payment'
 import { fetchRoomLookup } from './reservationHistoryUtils'
 import { currentLoginState } from '../utils/loginRedirect'
 import './MyPage.css'
@@ -217,6 +223,14 @@ function PaymentDetailPage() {
                   <span className="reservation-detail-value">{formatPaidAt(payment.paidAt)}</span>
                 </div>
 
+                {/* 환불이 끝난 결제만 (LDP-139) */}
+                {payment.refundedAt && (
+                  <div className="reservation-detail-row">
+                    <span className="reservation-detail-label">환불일시</span>
+                    <span className="reservation-detail-value">{formatPaidAt(payment.refundedAt)}</span>
+                  </div>
+                )}
+
                 {checkIn && checkOut && (
                   <div className="reservation-detail-row">
                     <span className="reservation-detail-label">
@@ -241,6 +255,13 @@ function PaymentDetailPage() {
                   <span className="reservation-detail-value">#{payment.reservationId}</span>
                 </div>
               </div>
+
+              {/* 환불 진행 중·수동 확인 필요 등 상태별 안내 (LDP-139) */}
+              {PAYMENT_STATUS_NOTICE[statusKey] && (
+                <p className={isManualPaymentStatus(statusKey) ? 'mypage-warning' : 'mypage-hint'}>
+                  {PAYMENT_STATUS_NOTICE[statusKey]}
+                </p>
+              )}
 
               <div className="mypage-actions">
                 <Link

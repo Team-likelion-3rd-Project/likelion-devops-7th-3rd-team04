@@ -2,6 +2,7 @@
 {{- if $svc.enabled }}
 {{- $ctx := dict "root" $ "name" $name }}
 {{- $env := merge (dict) ($svc.env | default dict) $.Values.global.env }}
+{{- $gcpWif := and $svc.gcpWorkloadIdentity $.Values.gcpWorkloadIdentity.enabled }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -44,6 +45,10 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if $gcpWif }}
+      volumes:
+        {{- include "backend.gcpWif.volume" $ | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ $name }}
           image: {{ include "backend.image" (dict "root" $ "image" $svc.image) }}
@@ -67,6 +72,13 @@ spec:
                   name: {{ $.Values.global.secretName }}
                   key: {{ $key }}
             {{- end }}
+            {{- if $gcpWif }}
+            {{- include "backend.gcpWif.env" $ | nindent 12 }}
+            {{- end }}
+          {{- if $gcpWif }}
+          volumeMounts:
+            {{- include "backend.gcpWif.volumeMount" $ | nindent 12 }}
+          {{- end }}
           # 기동(DB 연결 대기 포함)이 끝날 때까지 liveness/readiness 를 미룸
           startupProbe:
             httpGet:

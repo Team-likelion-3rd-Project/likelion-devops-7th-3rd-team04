@@ -1,6 +1,6 @@
 import { Controller } from '@nestjs/common';
 import { GrpcMethod } from '@nestjs/microservices';
-import { UserService } from './user.service';
+import { UserListQuery, UserService } from './user.service';
 
 // proto의 UserService(고객 도메인)와 매핑됩니다. 관리자 도메인은 ../admin/admin.controller.ts가 따로 갖습니다.
 @Controller()
@@ -19,10 +19,16 @@ export class UserController {
     return this.userService.getUserByEmail(data.email);
   }
 
-  // api-gateway가 관리자 전용 "전체 유저 목록 조회"(GET /users)에서 호출
+  // api-gateway가 관리자 "회원 목록 조회"(GET /users)·관리자 예약 목록 회원 검색에서 호출 (LDP-136)
   @GrpcMethod('UserService', 'GetUsers')
-  async getUsers() {
-    return this.userService.getUsers();
+  async getUsers(data: UserListQuery) {
+    return this.userService.getUsers(data);
+  }
+
+  // api-gateway가 관리자 예약 목록에 예약자 이름·이메일을 붙일 때 호출 (LDP-150)
+  @GrpcMethod('UserService', 'GetUsersByIds')
+  async getUsersByIds(data: { ids: number[] }) {
+    return this.userService.getUsersByIds(data.ids);
   }
 
   // api-gateway가 "내 정보 조회"(GET /users/me), 관리자 "특정 유저 조회"(GET /users/:userId)에서 호출
@@ -51,5 +57,11 @@ export class UserController {
   @GrpcMethod('UserService', 'DeleteUser')
   async deleteUser(data: { id: number }) {
     return this.userService.deleteUser(data.id);
+  }
+
+  // auth-service가 회원가입 전에 호출: 탈퇴가 중간에 멈춰 비밀번호 없이 남은 프로필을 deleted_user로 정리 (LDP-111)
+  @GrpcMethod('UserService', 'ArchiveOrphanProfile')
+  async archiveOrphanProfile(data: { id: number; email: string }) {
+    return this.userService.archiveOrphanProfile(data.id, data.email);
   }
 }

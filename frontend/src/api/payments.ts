@@ -14,6 +14,8 @@ export interface Payment {
   userId: number
   /** 토스 영수증 주소. 토스 결제만 있고 MOCK 결제는 빈 문자열 (#244, 배포 전 서버에서는 없을 수 있음) */
   receiptUrl?: string
+  /** 환불 완료 시각(ISO). 환불 전이면 빈 문자열 (LDP-139, 배포 전 서버에서는 없을 수 있음) */
+  refundedAt?: string
 }
 
 // GET /api/payments/me — 로그인한 사용자 본인의 결제 목록을 조회한다 (인증 필요).

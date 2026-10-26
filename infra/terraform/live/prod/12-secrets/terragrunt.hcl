@@ -45,4 +45,8 @@ inputs = {
 
   toss_secret_key = lookup(local.env, "TOSS_SECRET_KEY", "")
   toss_client_key = lookup(local.env, "TOSS_CLIENT_KEY", "")
+
+  seed_admin_email    = lookup(local.env, "SEED_ADMIN_EMAIL", "")
+  seed_admin_password = lookup(local.env, "SEED_ADMIN_PASSWORD", "")
+  seed_admin_name     = lookup(local.env, "SEED_ADMIN_NAME", "")
 }

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
+import BrandLogo from './BrandLogo'
 import { useHotels } from '../data/hotelStore'
 import { logout } from '../api/gateway'
 import { customerAuth } from '../api/tokenStore'
@@ -29,14 +30,15 @@ function Header() {
   const handleLogout = async () => {
     closeMenu()
     await logout()
-    navigate('/')
+    // 로그아웃이 너무 빨라 티가 안 나서, 메인으로 가며 안내 문구와 화면 전환 효과를 보여 준다 (RootLayout)
+    window.scrollTo({ top: 0 })
+    navigate('/', { state: { notice: '로그아웃되었습니다.' } })
   }
 
   return (
     <header className="site-header">
-      {/* TODO: 확정된 브랜드 로고/명칭으로 교체 */}
-      <Link to="/" className="site-logo" onClick={closeMenu}>
-        LOGO
+      <Link to="/" className="site-logo" onClick={closeMenu} aria-label="머묾 홈">
+        <BrandLogo />
       </Link>
 
       <nav className="site-nav" aria-label="주요 메뉴">

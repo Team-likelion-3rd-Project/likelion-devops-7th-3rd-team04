@@ -1,3 +1,4 @@
+import BrandLogo from './BrandLogo'
 import './Footer.css'
 
 function Footer() {
@@ -5,7 +6,9 @@ function Footer() {
     <footer className="site-footer">
       <div className="footer-top">
         {/* TODO: 실제 상호/사업자 정보로 교체 */}
-        <p className="footer-brand">LOGO</p>
+        <p className="footer-brand">
+          <BrandLogo />
+        </p>
         <ul className="footer-links">
           <li>
             <a href="#">이용약관</a>
@@ -21,7 +24,7 @@ function Footer() {
 
       <div className="footer-bottom">
         <address className="footer-info">
-          상호: (팀04) RAG 호텔 예약 · 대표: OOO · 사업자등록번호: 000-00-00000
+          상호: 머묾(MEOMULM) · 대표: OOO · 사업자등록번호: 000-00-00000
           <br />
           주소: 서울특별시 OO구 OO로 00 · 고객센터: 1588-0000
         </address>
@@ -46,7 +49,7 @@ function Footer() {
         </ul>
       </div>
 
-      <p className="footer-copyright">&copy; {new Date().getFullYear()} Team 04. All rights reserved.</p>
+      <p className="footer-copyright">&copy; {new Date().getFullYear()} MEOMULM (Team 04). All rights reserved.</p>
     </footer>
   )
 }

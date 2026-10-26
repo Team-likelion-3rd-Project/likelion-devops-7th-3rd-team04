@@ -1,0 +1,139 @@
+.notices-page {
+  padding-bottom: 96px;
+}
+
+/* 위쪽 띠 — 배경을 살짝 물들이고 목록 카드가 띠에 걸쳐 올라오게 한다 */
+.notices-header {
+  padding: 72px 24px 96px;
+  text-align: center;
+  background: var(--accent-bg);
+
+  h1 {
+    margin: 0 0 8px;
+  }
+}
+
+.notices-eyebrow {
+  margin: 0 0 8px;
+  font-size: 13px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.notices-intro {
+  margin: 0;
+  color: var(--text);
+}
+
+.notice-list {
+  max-width: 880px;
+  margin: -56px auto 0;
+  padding: 8px 24px;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+
+  > li:last-child .notice-item {
+    border-bottom: none;
+  }
+
+  @media (max-width: 920px) {
+    margin-inline: 16px;
+    padding-inline: 12px;
+  }
+}
+
+.notice-item {
+  border-bottom: 1px solid var(--border);
+
+  summary {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 20px 8px;
+    cursor: pointer;
+    list-style: none;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+
+    &:hover .notice-title {
+      color: var(--accent);
+    }
+
+    @media (max-width: 640px) {
+      flex-wrap: wrap;
+      gap: 8px 12px;
+    }
+  }
+
+  &[open] .notice-title {
+    color: var(--accent);
+  }
+}
+
+.notice-category {
+  flex: 0 0 auto;
+  min-width: 48px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text);
+
+  &.is-pinned {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    color: var(--accent);
+  }
+}
+
+.notice-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  color: var(--text-h);
+}
+
+.notice-date {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.notice-body {
+  margin: 0;
+  padding: 0 8px 24px 80px;
+  /* 본문은 일반 텍스트 — 관리자가 넣은 줄바꿈을 그대로 보여 준다 (HTML로 해석하지 않음) */
+  white-space: pre-line;
+  font-size: 15px;
+  line-height: 170%;
+  color: var(--text);
+
+  @media (max-width: 640px) {
+    padding-left: 8px;
+  }
+}
+
+.notice-status {
+  padding: 32px 8px;
+  text-align: center;
+  color: var(--text);
+}
+
+.notice-retry {
+  margin-left: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-h);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}

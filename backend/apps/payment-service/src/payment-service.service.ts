@@ -87,6 +87,7 @@ export interface PaymentGrpcResponse {
   paidAt: string;
   userId: number;
   receiptUrl: string; // PG 영수증 주소 (없으면 빈 문자열)
+  refundedAt: string; // 환불 완료 시각 (환불 전이면 빈 문자열, LDP-139)
 }
 
 // 저장된 PG 응답(raw_response)에서 영수증 주소를 꺼낸다 — 토스 승인 응답의 receipt.url (LDP-124).
@@ -499,11 +500,13 @@ export class PaymentServiceService {
   //   3) PG(MOCK: pg-mock / TOSS: 토스 취소 API)에 같은 멱등 키로 취소를 요청한다.
   //   4) 한 트랜잭션에서 REFUNDED(또는 REFUND_FAILED) 전환 + payment_outbox(PAYMENT_REFUNDED / PAYMENT_REFUND_FAILED).
   //      결과는 큐를 통해 booking-service의 payment_result_inbox에 기록된다 (LDP-26 경로).
-  // PG 취소에 실패해도 에러를 던지지 않고 REFUND_FAILED로 남긴다 — 같은 키로 다시 시도하면 되고(대사 배치·재요청),
+  // PG 취소에 실패해도 에러를 던지지 않고 REFUND_FAILED로 남긴다 — 같은 키로 다시 시도하면 되고(대사 배치),
   // 실제로 환불되지 않은 결제를 환불된 것처럼 기록하지 않는다.
+  // skipFailedRetry(LDP-137): 손님의 환불 재요청은 REFUND_FAILED를 다시 시도하지 않고 상태만 돌려준다.
   async refundPayment(data: {
     reservationId: number;
     refundIdempotencyKey?: string;
+    skipFailedRetry?: boolean;
   }): Promise<{ refunded: boolean; status: string }> {
     const payment = await this.paymentRepository.findOne({
       where: { approvedReservationId: data.reservationId },
@@ -526,6 +529,14 @@ export class PaymentServiceService {
         refunded: false,
         status: PaymentStatus.REFUND_MANUAL_REQUIRED,
       };
+    }
+    if (
+      payment.status === PaymentStatus.REFUND_FAILED &&
+      data.skipFailedRetry
+    ) {
+      // 손님의 환불 재요청 (LDP-137) — 누를 때마다 PG를 부르면 대사 배치의 재시도 간격(2·4·8…60분)을 건너뛰고
+      // 시도 횟수를 금방 다 써서 바로 수동 처리로 넘어간다. 재시도는 대사 배치에 맡기고 상태만 알려 준다.
+      return { refunded: false, status: PaymentStatus.REFUND_FAILED };
     }
 
     // 한 번 정한 환불 멱등 키는 바꾸지 않는다 (REFUND_FAILED 재시도도 같은 키 → PG가 한 번만 취소)
@@ -774,6 +785,8 @@ export class PaymentServiceService {
       paidAt: payment.paidAt ? payment.paidAt.toISOString() : '',
       userId: payment.userId,
       receiptUrl: receiptUrlOf(payment.rawResponse),
+      // 취소 결과 화면에서 "환불 완료 일시"로 보여 준다 (LDP-139)
+      refundedAt: payment.refundedAt ? payment.refundedAt.toISOString() : '',
     };
   }
 }

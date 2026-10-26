@@ -9,6 +9,8 @@
 #   external-secrets  41-main-data external_secrets_role_name (Secret 리소스 정책)
 #   booking-service   43-messaging booking_role_name (큐 정책)
 #   hotel-service     13-frontend image_writer_role_name (사진 버킷 정책의 쓰기 허용)
+#   seed              13-frontend image_seed_role_name (사진 버킷 정책의 쓰기 허용)
+# ESO 가 읽는 Secret 리소스 정책도 Role 이름으로 허용한다: 41-main-data · 12-secrets 의 external_secrets_role_name
 
 data "aws_caller_identity" "current" {}
 
@@ -35,7 +37,47 @@ locals {
       namespace       = "backend"
       service_account = "hotel-service"
     }
+    # backend 차트 seed Job (seed.enabled 일 때 SA 생성)
+    seed = {
+      description     = "seed Job (seed room image upload)"
+      namespace       = "backend"
+      service_account = "seed"
+    }
+    # 챗봇 (LDP-143). Vertex AI(GCP) 인증은 IRSA 가 아니라 14-gcp-llm Workload Identity Federation
+    chat-bot-service = {
+      description     = "chat-bot-service (chat session, message tables)"
+      namespace       = "backend"
+      service_account = "chat-bot-service"
+    }
+    llm-service = {
+      description     = "llm-service (RAG vector query)"
+      namespace       = "backend"
+      service_account = "llm-service"
+    }
+    # backend 차트 RAG 적재 Job (llmIngest.enabled 일 때 SA 생성)
+    llm-ingest = {
+      description     = "llm-ingest Job (RAG vector put)"
+      namespace       = "backend"
+      service_account = "llm-ingest"
+    }
+    # 배포 agent (Ansible gitops_sync) 의 배포 결과 알림. gitops-sync 네임스페이스는 webhook 대상이 아니라
+    # CronJob 이 토큰(aud sts.amazonaws.com)을 직접 마운트하고 AWS_ROLE_ARN 을 넣는다 (gitops-sync.yaml.j2).
+    # 10-global 배포 토픽 정책이 이 Role 이름으로 발행을 허용한다
+    gitops-sync = {
+      description     = "GitOps deploy agent (deploy result notification)"
+      namespace       = "gitops-sync"
+      service_account = "gitops-sync"
+    }
+    # 클러스터 로그 수집 DaemonSet (LDP-144, gitops fluent-bit)
+    fluent-bit = {
+      description     = "Fluent Bit (cluster log groups, log bucket app-logs/main-cluster/)"
+      namespace       = "fluent-bit"
+      service_account = "fluent-bit"
+    }
   }
+
+  # 15-chatbot-vectors 인덱스 (s3vectors 리소스 ARN 형식 bucket/<버킷>/index/<인덱스>)
+  vector_index_arn = "arn:${data.aws_partition.current.partition}:s3vectors:${var.region}:${data.aws_caller_identity.current.account_id}:bucket/${var.vector_bucket_name}/index/${var.vector_index_name}"
 }
 
 data "aws_iam_policy_document" "irsa_assume" {
@@ -71,13 +113,14 @@ resource "aws_iam_role" "irsa" {
   assume_role_policy = data.aws_iam_policy_document.irsa_assume[each.key].json
 }
 
-# ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키) 값 조회만. Secret ARN 끝의 무작위 6자는 ?????? 로 맞춘다
+# ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키)과 12-secrets 의 시드 관리자 계정 값 조회만.
+# Secret ARN 끝의 무작위 6자는 ?????? 로 맞춘다
 data "aws_iam_policy_document" "external_secrets" {
   statement {
     sid     = "GetAppSecrets"
     actions = ["secretsmanager:GetSecretValue"]
     resources = [
-      for name in values(var.secret_names) :
+      for name in concat(values(var.secret_names), [var.seed_admin_secret_name]) :
       "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${name}-??????"
     ]
   }
@@ -120,4 +163,118 @@ resource "aws_iam_role_policy" "hotel_service" {
   name   = "room-images"
   role   = aws_iam_role.irsa["hotel-service"].id
   policy = data.aws_iam_policy_document.hotel_service.json
+}
+
+# seed: 시드 사진을 고정 키(room-types/<객실 종류 ID>/seed-<파일>)로 올리기만 (backend/scripts/seed.ts).
+#   이미 있는지는 조건부 쓰기(If-None-Match, 있으면 412)로 판단해 HeadObject(GetObject) · ListBucket 이 필요 없다
+data "aws_iam_policy_document" "seed" {
+  statement {
+    sid       = "SeedRoomImages"
+    actions   = ["s3:PutObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.image_bucket_name}/room-types/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "seed" {
+  name   = "seed-room-images"
+  role   = aws_iam_role.irsa["seed"].id
+  policy = data.aws_iam_policy_document.seed.json
+}
+
+# chat-bot-service: 41-main-data 대화 테이블 두 개만 (session.service.ts · message.service.ts 는 PutCommand · QueryCommand 만 사용).
+#   세션은 userId-index(GSI) 로 조회하므로 인덱스 ARN 도 넣는다
+data "aws_iam_policy_document" "chat_bot_service" {
+  statement {
+    sid     = "ChatTables"
+    actions = ["dynamodb:PutItem", "dynamodb:Query"]
+    resources = flatten([
+      for name in values(var.dynamodb_table_names) : [
+        "arn:${data.aws_partition.current.partition}:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${name}",
+        "arn:${data.aws_partition.current.partition}:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${name}/index/*",
+      ]
+    ])
+  }
+}
+
+resource "aws_iam_role_policy" "chat_bot_service" {
+  name   = "chat-tables"
+  role   = aws_iam_role.irsa["chat-bot-service"].id
+  policy = data.aws_iam_policy_document.chat_bot_service.json
+}
+
+# llm-service: RAG 인덱스 조회만 (vector_store.py query_vectors, returnMetadata 라 GetVectors 도 필요)
+data "aws_iam_policy_document" "llm_service" {
+  statement {
+    sid       = "QueryRagIndex"
+    actions   = ["s3vectors:QueryVectors", "s3vectors:GetVectors"]
+    resources = [local.vector_index_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "llm_service" {
+  name   = "rag-query"
+  role   = aws_iam_role.irsa["llm-service"].id
+  policy = data.aws_iam_policy_document.llm_service.json
+}
+
+# llm-ingest: RAG 인덱스 쓰기만 (scripts/ingest.py put_vectors, 문서 id 가 key 라 덮어쓰기)
+data "aws_iam_policy_document" "llm_ingest" {
+  statement {
+    sid       = "PutRagIndex"
+    actions   = ["s3vectors:PutVectors"]
+    resources = [local.vector_index_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "llm_ingest" {
+  name   = "rag-put"
+  role   = aws_iam_role.irsa["llm-ingest"].id
+  policy = data.aws_iam_policy_document.llm_ingest.json
+}
+
+# fluent-bit: 21-observability-base 의 클러스터 로그 그룹에 쓰기 + 로그 버킷 app-logs/main-cluster/ 올리기만.
+#   CreateLogStream · PutLogEvents  cloudwatch_logs 출력 (그룹은 Terraform 이 만들어 CreateLogGroup 없음, 스트림 ARN 은 그룹 ARN:*)
+#   PutObject                       s3 출력 (use_put_object, 멀티파트 미사용). 결제 서버 로그 등 다른 app-logs/ 경로는 쓸 수 없다
+data "aws_iam_policy_document" "fluent_bit" {
+  statement {
+    sid     = "ClusterLogGroups"
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = [
+      for name in values(var.cluster_log_group_names) :
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:${name}:*"
+    ]
+  }
+
+  statement {
+    sid       = "AppLogsMainCluster"
+    actions   = ["s3:PutObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.log_bucket_name}/app-logs/main-cluster/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "fluent_bit" {
+  name   = "cluster-logs"
+  role   = aws_iam_role.irsa["fluent-bit"].id
+  policy = data.aws_iam_policy_document.fluent_bit.json
+}
+
+# gitops-sync: 10-global 배포 토픽 Publish 만 (암호화된 토픽이라 키 권한 포함). 배포 권한(cluster-admin)은 클러스터 RBAC 이고 AWS 권한은 이것뿐
+data "aws_iam_policy_document" "gitops_sync" {
+  statement {
+    sid       = "PublishDeployResult"
+    actions   = ["sns:Publish"]
+    resources = ["arn:${data.aws_partition.current.partition}:sns:${var.region}:${data.aws_caller_identity.current.account_id}:${var.deploy_topic_name}"]
+  }
+
+  statement {
+    sid       = "EncryptDeployResult"
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+    resources = ["arn:${data.aws_partition.current.partition}:kms:${var.region}:${data.aws_caller_identity.current.account_id}:key/${var.notifications_kms_key_id}"]
+  }
+}
+
+resource "aws_iam_role_policy" "gitops_sync" {
+  name   = "deploy-notify"
+  role   = aws_iam_role.irsa["gitops-sync"].id
+  policy = data.aws_iam_policy_document.gitops_sync.json
 }

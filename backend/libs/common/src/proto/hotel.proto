@@ -80,6 +80,65 @@ service HotelService {
   rpc SetRoomUnitStatus (SetRoomUnitStatusRequest) returns (RoomUnit);
 }
 
+// 공지사항 (LDP-147, 메인 V12 notices). hotel-service가 소유한다.
+// 조회는 고객도(로그인 없이), 작성·수정·삭제는 관리자만 — 권한 검사는 api-gateway가 한다.
+service NoticeService {
+  // 중요 고정 먼저, 최신순. page가 0이면 전체, 1 이상이면 그 페이지만. total은 전체 개수
+  rpc ListNotices (ListNoticesRequest) returns (NoticeListResponse);
+  // 없으면 404 NOTICE_NOT_FOUND
+  rpc GetNotice (NoticeIdRequest) returns (Notice);
+  rpc CreateNotice (CreateNoticeRequest) returns (Notice);
+  // 제목·본문·분류·고정을 한 번에 바꾼다. 없으면 404
+  rpc UpdateNotice (UpdateNoticeRequest) returns (Notice);
+  // 실제 삭제. 없으면 404
+  rpc DeleteNotice (NoticeIdRequest) returns (DeleteNoticeResponse);
+}
+
+message Notice {
+  int32 noticeId = 1;
+  string title = 2;
+  string body = 3; // 일반 텍스트
+  string category = 4; // NOTICE(안내) | EVENT(이벤트) | MAINTENANCE(점검)
+  bool isPinned = 5; // 중요 공지 — 목록 맨 위
+  int32 createdByAdminId = 6; // 작성 직원. seed 공지는 0
+  string createdAt = 7; // ISO 8601
+  string updatedAt = 8;
+}
+
+message ListNoticesRequest {
+  int32 page = 1; // 1부터. 0 = 전체
+  int32 size = 2; // 한 페이지 개수 (page가 1 이상일 때)
+}
+
+message NoticeListResponse {
+  repeated Notice notices = 1;
+  int32 total = 2;
+}
+
+message NoticeIdRequest {
+  int32 noticeId = 1;
+}
+
+message CreateNoticeRequest {
+  string title = 1;
+  string body = 2;
+  string category = 3;
+  bool isPinned = 4;
+  int32 adminId = 5; // 작성 직원 (api-gateway가 토큰에서)
+}
+
+message UpdateNoticeRequest {
+  int32 noticeId = 1;
+  string title = 2;
+  string body = 3;
+  string category = 4;
+  bool isPinned = 5;
+}
+
+message DeleteNoticeResponse {
+  bool success = 1;
+}
+
 message Empty {}
 
 message HelloResponse {

@@ -91,6 +91,10 @@ export interface RoomAvailabilityDay {
   date: string
   isAvailable: boolean
   price: number
+  /** 그날 남은 방 수 (0이면 매진) */
+  remainingCount?: number
+  /** 관리자가 그날 판매를 멈췄는지 */
+  isSaleStopped?: boolean
 }
 
 // proto의 RoomAvailabilityResponse 메시지 / gateway RoomAvailabilityDto와 1:1 대응

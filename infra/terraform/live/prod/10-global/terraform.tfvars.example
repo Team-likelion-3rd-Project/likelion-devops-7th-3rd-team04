@@ -1,6 +1,14 @@
-# 도메인 · 인증서는 variables.tf 기본값(meomulm.click, enable_certificate = true)을 쓰므로 tfvars 가 필요 없다.
-# 다른 도메인으로 시험할 때만 cp terraform.tfvars.example terraform.tfvars 후 수정
-domain_name = "example.click"
+# cp terraform.tfvars.example terraform.tfvars 후 수정 (terraform.tfvars 는 gitignore)
 
+# ── 알림 Slack (필수, notifications.tf) ──
+# 워크스페이스 ID: Chatbot 콘솔(us-east-2) → 구성된 클라이언트 → Slack 워크스페이스. 채널 ID: Slack 채널 정보 하단
+slack_team_id           = "T00000000"
+slack_alerts_channel_id = "C00000000"
+slack_deploy_channel_id = "C00000001"
+
+# ── 도메인 (선택) ──
+# 도메인 · 인증서는 variables.tf 기본값(meomulm.click, enable_certificate = true)을 쓴다.
+# 다른 도메인으로 시험할 때만 주석을 풀어 수정
+# domain_name = "example.click"
 # 이 계정에서 구매했으면 import 와 함께 바로 true, 다른 계정이면 NS 위임 확인 후 true (dns.tf 상단 주석 참고)
-enable_certificate = false
+# enable_certificate = false

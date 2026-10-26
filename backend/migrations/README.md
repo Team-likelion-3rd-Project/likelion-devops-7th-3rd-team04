@@ -32,6 +32,7 @@ payment-service의 마이그레이션 규칙과 동일합니다.
 | V9 | 객실 종류·호실 분리: `rooms` → `room_types`(`room_type_id`), 객실 종류 컬럼 `room_type_id`로 이름 변경, 실제 호실 `rooms` 생성, 예약 칸(`room_id` 배정 호실, `linked_reservation_id`, `created_by_admin_*`, `cancelled_by_admin_id`, `cancel_reason`), 보유 수량 CHECK `>= 0` (LDP-86, ERD #161·#162) | hotel-service, booking-service |
 | V10 | room_images.image_base64 삭제 → object_key(저장소 경로) 추가 — 사진은 MinIO·S3에 두고 경로만 저장 (LDP-88) | hotel-service |
 | V11 | pending_refunds(결제 서비스에 환불 요청을 전달할 때까지 재시도하는 대기열) 생성 (LDP-97) | booking-service |
+| V12 | notices(공지사항) 생성 — 관리자가 작성·수정·삭제, 고객은 조회 (LDP-147) | hotel-service |
 
 payment_due_at을 실제로 채우는 로직(예약 생성 시 +30분 설정), payment_attempts/
 payment_result_inbox를 실제로 쓰는 로직(토스 승인 연동, SQS 수신)은 스키마만 다루는 이
