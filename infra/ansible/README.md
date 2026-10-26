@@ -755,6 +755,7 @@ GitLab 파이프라인 (.gitlab-ci.yml)
   build      : kaniko → <registry>/team04/hotel/<svc>:ci-<sha>             (develop 만 push)
   image-test : ci_<id>(결제) · ci_main_<id>(메인) DB 생성 → flyway(main, payment) → 후보 이미지 기동 → GET /health
   push       : crane tag ci-<sha> → <sha>                                  (레이어 재업로드 없음)
+               push:ghcr → ghcr.io/team-likelion-3rd-project/team04-hotel/<svc>:<full sha>  (운영 릴리스 원본, 12-4)
   deploy-dev : (수동 ▶) team04/infra/backend-gitops 에 커밋 1개
                  envs/dev/values.yaml   global.imageTag             = <short sha>
                  apps/dev/backend.yaml  sources[0].targetRevision   = <full sha>   (차트도 같은 커밋)
@@ -789,7 +790,7 @@ ArgoCD (온프레미스, argocd ns) ◀── poll 최대 3분
 - 그룹 `team04`, `team04/infra` / 프로젝트 `team04/hotel`(미러), `team04/infra/backend-gitops`
 - gitops 레포(dev 전용) 초기 내용 커밋(레포가 비어 있을 때만: `envs/dev/values.yaml`, `apps/dev/backend.yaml`)과 `apps/dev/README.md`(매번 동기화)
 - 그룹 Deploy Token — `k8s-registry-pull`(`read_registry`, 클러스터 imagePullSecret), `argocd-repo-read`(`read_repository`, ArgoCD), `payment-node`(결제 노드)
-- `team04/hotel` CI 변수: `GITOPS_PUSH_TOKEN`(gitops 레포 Project Access Token), `SMOKE_DB_*`, `SMOKE_REDIS_*` (모두 protected)
+- `team04/hotel` CI 변수: `GITOPS_PUSH_TOKEN`(gitops 레포 Project Access Token), `SMOKE_DB_*`, `SMOKE_REDIS_*`, `GHCR_USER` · `GHCR_TOKEN`(GHCR 봇 계정, 12-4) (모두 protected)
 - 미러용 Project Access Token, `main`/`develop` 보호 브랜치(force push 허용), 레지스트리 cleanup policy(`ci-*` 후보 태그·kaniko 캐시 7일)
 
 ```bash
@@ -839,9 +840,24 @@ GitHub 레포 Settings → Secrets and variables → Actions:
 
 develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니다. GitHub 이 원본이므로 **GitLab `team04/hotel` 에는 직접 커밋하지 않습니다** (다음 미러링 때 덮어써짐). 처음 한 번은 Actions → Mirror to GitLab → Run workflow 로 develop 을 수동 미러링합니다.
 
+#### GHCR (develop 통과 이미지 → 운영 릴리스 원본)
+
+develop 파이프라인의 `push:ghcr` 가 승격한 이미지 12개를 `ghcr.io/team-likelion-3rd-project/team04-hotel/<svc>:<커밋 SHA 40자>` 로 복사합니다 (digest 그대로, 재빌드 없음). 운영 릴리스는 이 이미지를 ECR 로 옮깁니다 — GHCR 에는 Tailscale 없이 접근할 수 있어서입니다. GHCR 장애는 `deploy-dev` 를 막지 않습니다 (`deploy-dev` 는 `push` 만 기다림).
+
+설정 (org Owner · 레포 관리자, 1회):
+
+1. GitHub 봇(machine user) 계정을 만들어 org `Team-likelion-3rd-Project` 멤버로 초대합니다. org Settings → Packages 에서 멤버의 private 패키지 생성이 허용돼 있는지 확인합니다.
+2. 봇 계정으로 **classic PAT** 발급 — scope `write:packages` 만, 만료 기한 설정. (GHCR 은 fine-grained PAT 를 공식 지원하지 않음)
+3. `.env` 의 `GHCR_PUSH_USER`(봇 계정 이름) · `GHCR_PUSH_TOKEN` 을 채우고 `db.yml --tags openbao_import` 로 OpenBao `ghcr-push` 에 옮긴 뒤(16-3), 12-1 bootstrap 을 실행하면 CI 변수 `GHCR_USER` · `GHCR_TOKEN`(masked) 이 등록됩니다.
+4. 첫 `push:ghcr` 뒤 org Packages 에 `team04-hotel/<svc>` 12개가 생깁니다. 이미지 label `org.opencontainers.image.source` 로 모노레포에 자동 연결됩니다. 각 패키지 Settings → **Manage Actions access** 에 모노레포가 **Admin** 인지 확인합니다 (보존 workflow 의 버전 삭제에 필요). visibility 는 private 그대로 둡니다.
+
+- **보존**: `.github/workflows/ghcr-retention.yml` 이 매일 패키지마다 최근 20개 버전만 남깁니다. 열려 있는 `release/*` 가 가리키는 SHA 는 오래돼도 남깁니다. 수동 실행(Run workflow)은 기본 dry run 입니다 — 처음에는 dry run 으로 목록을 확인합니다. 운영은 ECR 에서만 pull 하므로 GHCR 정리는 운영 · 롤백에 영향이 없습니다.
+- **비용**: GitHub 문서상 Container registry 저장 · 전송은 현재 무료입니다 (변경 시 1개월 전 공지). 무료 org 한도(500MB)가 컨테이너에도 걸리는지는 문서에 명시돼 있지 않아, 첫 push 다음 날 org Settings → Billing and licensing → Usage(Packages)에서 과금 0 인지 확인합니다.
+- **토큰 교체**: 새 PAT 를 OpenBao `ghcr-push` 에 쓰고(16-4) 12-1 bootstrap 을 다시 실행합니다.
+
 ### 12-5. 파이프라인 사용 · dev 배포 절차
 
-develop 에 merge → 미러 → 파이프라인 자동 실행(test → build → image-test → push). 배포는 **배포 일정에 맞춰** 아래처럼 합니다.
+develop 에 merge → 미러 → 파이프라인 자동 실행(test → build → image-test → push · push:ghcr). 배포는 **배포 일정에 맞춰** 아래처럼 합니다.
 
 | 배포 내용 | 방법 |
 |---|---|
@@ -909,6 +925,8 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
 
 - **`deploy-dev` 가 `sources[0].path 가 … 가 아닙니다`**: gitops `apps/dev/backend.yaml` 의 sources 순서가 바뀐 경우입니다. 차트 source(`path: backend-deploy/charts/backend`)를 첫 번째로 둡니다.
 - **`deploy-dev` 의 git push 실패**: CI 변수 `GITOPS_PUSH_TOKEN` 만료(364일) → 변수를 삭제하고 12-1 bootstrap 재실행.
+- **`push:ghcr` 실패**: `GHCR_USER · GHCR_TOKEN 이 없습니다` 면 12-4 GHCR 설정 3. `crane auth login ghcr.io` 의 401/403 이면 봇 PAT 만료 · scope(`write:packages`) · org 멤버 여부 → 토큰 교체(12-4). `denied: permission_denied` 로 push 가 거부되면 패키지 Settings 에서 봇 계정에 Write 권한이 있는지 확인합니다.
+- **`GHCR retention` workflow 의 버전 조회 · 삭제 실패**: 패키지 Manage Actions access 에 모노레포가 Admin 인지 확인합니다 (12-4).
 - **ImagePullBackOff**: `kubectl -n backend describe pod` → 401 이면 `gitlab-registry` Secret(Deploy Token), `no such host` 면 노드의 MagicDNS, timeout 이면 ACL `tag:k8s-node → tag:gitlab tcp:5050` 입니다.
 - **smoke test 에서 DB 접속 실패**: ACL `tag:gitlab-runner → tag:db tcp:3306,6379`, CI 변수 `SMOKE_DB_HOST`(Tailscale IP), `db.yml` 로 `ci_smoke` 계정을 만들었는지 확인합니다.
 - ArgoCD 쪽(sync 실패 · OutOfSync · 레포 접근)은 12-9 "트러블슈팅".
@@ -1346,6 +1364,7 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `gcp-sa` | key_json_b64 (서비스 계정 키 JSON 의 base64 — ESO 가 풀어서 `GCP_SA_KEY_JSON`) | ESO |
 | `seed-admin` | email, password (`seed` Job 의 `SEED_ADMIN_*`, 7-5) | ESO, db.yml(`-e db_seed_mariadb=true`) |
 | `main-db-root` · `minio-root` · `ci-smoke-db` | password (· user) | db.yml, gitlab.yml — **ESO 는 못 읽음** |
+| `ghcr-push` | username, token (GHCR 봇 classic PAT — 12-4) | gitlab.yml(bootstrap → CI 변수 `GHCR_USER` · `GHCR_TOKEN`) — **ESO 는 못 읽음** |
 | `payment-db` · `payment-db-root` · `toss-payments` | (운영과 같은 이름) | payment.yml |
 | `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `aws-ci-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
 

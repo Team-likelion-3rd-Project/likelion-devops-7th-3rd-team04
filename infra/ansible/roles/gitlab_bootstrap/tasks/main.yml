@@ -361,6 +361,27 @@
         msg: "DB_TS_IP / CI_SMOKE_DB_PASSWORD 가 비어 있어 smoke test 변수를 건너뜁니다 — test:image job 이 실패합니다 (README 12-2)"
       when: smoke_db_host | length == 0 or smoke_db_password | length == 0
 
+    # ── GHCR 봇 계정 → CI 변수 (push:ghcr) ───────────────────
+    - name: GHCR CI 변수
+      ansible.builtin.include_tasks: ci_variable.yml
+      loop:
+        - {key: GHCR_USER, value: "{{ ghcr_push_user }}", masked: false}
+        - {key: GHCR_TOKEN, value: "{{ ghcr_push_token }}", masked: true}
+      loop_control:
+        loop_var: civar
+        label: "{{ civar.key }}"
+      vars:
+        var_project: "{{ gitlab_app_project_path }}"
+        var_key: "{{ civar.key }}"
+        var_value: "{{ civar.value }}"
+        var_masked: "{{ civar.masked }}"
+      when: ghcr_push_user | length > 0 and ghcr_push_token | length > 0
+
+    - name: GHCR 변수 누락 안내
+      ansible.builtin.debug:
+        msg: "GHCR_PUSH_USER / GHCR_PUSH_TOKEN 이 비어 있어 GHCR CI 변수를 건너뜁니다 — push:ghcr job 이 실패합니다 (README 12-4)"
+      when: ghcr_push_user | length == 0 or ghcr_push_token | length == 0
+
     # ── 레지스트리 cleanup: smoke 전 후보 태그(ci-*) 정리 ──────────
     # 승격된 최종 태그(<sha>)는 대상이 아님. GitLab registry 는 태그 단위로 지우므로
     # 같은 digest 를 가리키는 최종 태그는 남음
