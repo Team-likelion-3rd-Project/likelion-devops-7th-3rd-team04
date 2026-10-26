@@ -8,7 +8,11 @@ import { AdminModule } from './admin/admin.module';
 import { User } from './user/entities/user.entity';
 import { DeletedUser } from './user/entities/deleted-user.entity';
 import { Admin } from './admin/entities/admin.entity';
-import { HealthModule, mariaDbSslOptions } from '@app/common';
+import {
+  HealthModule,
+  mariaDbSslOptions,
+  typeOrmLoggingOptions,
+} from '@app/common';
 
 // 루트 모듈은 DB 커넥션 설정과 도메인 모듈(UserModule/AdminModule) 조립만 담당합니다.
 // 실제 고객/관리자 도메인 로직은 각 모듈 안에 캡슐화되어 있습니다.
@@ -43,7 +47,8 @@ import { HealthModule, mariaDbSslOptions } from '@app/common';
         // 테이블 구조는 Flyway(backend/migrations, V6)만 바꿉니다. true로 두면 Flyway보다 먼저 떠서
         // 테이블을 만들어 버려 Flyway가 "non-empty schema"로 멈춥니다(LDP-60).
         synchronize: false,
-        logging: true, // SQL 실행 쿼리 로깅
+        // 쿼리 로그는 값(PARAMETERS) 없이 — 실행 쿼리는 DB_LOGGING=true일 때만, 실패·느린 쿼리는 항상 (LDP-163)
+        ...typeOrmLoggingOptions(),
       }),
     }),
 

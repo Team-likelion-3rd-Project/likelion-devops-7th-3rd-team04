@@ -7,6 +7,7 @@ import {
   HealthModule,
   mariaDbSslOptions,
   SQS_CLIENT,
+  typeOrmLoggingOptions,
 } from '@app/common';
 import { PaymentServiceController } from './payment-service.controller';
 import { PaymentServiceService } from './payment-service.service';
@@ -54,7 +55,8 @@ import { PaymentReconciliationService } from './reconciliation/payment-reconcili
         // 드라이버 기본값(10)에 기대지 않고 명시 — 결제 DB max_connections(온프레미스 100)를 인스턴스 수로 나눠 넘지 않게
         poolSize:
           Number(configService.get<string>('PAYMENT_DB_POOL_SIZE')) || 10,
-        logging: true, // SQL 실행 쿼리 로깅
+        // 쿼리 로그는 값(PARAMETERS) 없이 — 실행 쿼리는 DB_LOGGING=true일 때만, 실패·느린 쿼리는 항상 (LDP-163)
+        ...typeOrmLoggingOptions(),
       }),
     }),
 

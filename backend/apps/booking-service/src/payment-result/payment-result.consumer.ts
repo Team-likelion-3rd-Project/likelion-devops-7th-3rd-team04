@@ -15,6 +15,7 @@ import {
   PaymentResultEvent,
   SQS_CLIENT,
   paymentResultQueueUrl,
+  errorTrace,
 } from '@app/common';
 import { BookingServiceService } from '../booking-service.service';
 
@@ -87,7 +88,7 @@ export class PaymentResultConsumer
         }
         this.logger.error(
           '결제 결과 큐 수신 오류 — 잠시 후 다시 시도합니다.',
-          error instanceof Error ? error.stack : String(error),
+          errorTrace(error),
         );
         await new Promise((resolve) => setTimeout(resolve, ERROR_BACKOFF_MS));
       }
@@ -112,7 +113,7 @@ export class PaymentResultConsumer
     } catch (error: unknown) {
       this.logger.error(
         `결제 결과 이벤트 반영 실패 (event_id=${event.eventId}, type=${event.eventType}) — 큐가 다시 보냅니다.`,
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
       return;
     }

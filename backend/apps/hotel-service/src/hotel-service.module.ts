@@ -16,7 +16,11 @@ import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
 import { Facility } from './entities/facility.entity';
 import { Notice } from './entities/notice.entity';
-import { HealthModule, mariaDbSslOptions } from '@app/common';
+import {
+  HealthModule,
+  mariaDbSslOptions,
+  typeOrmLoggingOptions,
+} from '@app/common';
 
 @Module({
   imports: [
@@ -55,7 +59,8 @@ import { HealthModule, mariaDbSslOptions } from '@app/common';
         // 테이블 구조는 Flyway(backend/migrations)만 바꿉니다. true로 두면 TypeORM이
         // 재기동 때마다 엔티티에 맞춰 테이블을 고치면서 Flyway가 만든 FK를 지워버립니다.
         synchronize: false,
-        logging: true, // SQL 실행 쿼리 로깅
+        // 쿼리 로그는 값(PARAMETERS) 없이 — 실행 쿼리는 DB_LOGGING=true일 때만, 실패·느린 쿼리는 항상 (LDP-163)
+        ...typeOrmLoggingOptions(),
       }),
     }),
 

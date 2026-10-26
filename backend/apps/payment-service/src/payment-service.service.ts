@@ -25,6 +25,7 @@ import { TossPaymentsClient } from './pg/toss-payments.client';
 import { PgConfirmResult } from './pg/pg-confirm-result';
 import { PgCancelResult } from './pg/pg-cancel-result';
 import { PgLookupResult } from './pg/pg-lookup-result';
+import { errorTrace } from '@app/common';
 
 // 결제 승인 결과 (proto ApprovePaymentResponse.result, 위키 API 명세 5.9의 result와 같은 값)
 export type ApproveResultType =
@@ -401,7 +402,7 @@ export class PaymentServiceService {
       .catch((error: unknown) => {
         this.logger.error(
           `[알람] pg-mock 중복 승인 취소 실패 (paymentKey=${pgResult.paymentKey})`,
-          error instanceof Error ? error.stack : String(error),
+          errorTrace(error),
         );
       });
   }
