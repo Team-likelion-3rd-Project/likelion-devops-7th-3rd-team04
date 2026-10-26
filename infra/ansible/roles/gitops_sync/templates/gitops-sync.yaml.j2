@@ -38,6 +38,15 @@ data:
   APPS_PATH: {{ gitops_sync_apps_path | to_json }}
   HELM_TIMEOUT: {{ gitops_sync_helm_timeout | to_json }}
   CLUSTER_VALUES: /opt/gitops-sync-cluster/values.yaml
+{% if gitops_sync_deploy_topic_name %}
+  # 배포 결과 알림. gitops-sync 는 pod-identity-webhook 대상이 아니라(webhook 장애가 배포 agent 를 막지 않게)
+  # IRSA 환경 변수를 직접 넣고 토큰(aud sts.amazonaws.com)은 CronJob 이 마운트한다
+  DEPLOY_TOPIC_ARN: {{ ('arn:aws:sns:' ~ aws_region ~ ':' ~ aws_account_id ~ ':' ~ gitops_sync_deploy_topic_name) | to_json }}
+  AWS_ROLE_ARN: {{ ('arn:aws:iam::' ~ aws_account_id ~ ':role/' ~ gitops_sync_deploy_role_name) | to_json }}
+  AWS_WEB_IDENTITY_TOKEN_FILE: /var/run/secrets/sts.amazonaws.com/serviceaccount/token
+  AWS_DEFAULT_REGION: {{ aws_region | to_json }}
+  AWS_STS_REGIONAL_ENDPOINTS: regional
+{% endif %}
 ---
 # chart.yaml 에 clusterValues: true 인 앱에만 넘기는 values. public gitops 레포에 둘 수 없는 클러스터 값 (계정 ID 등)
 apiVersion: v1
@@ -130,6 +139,11 @@ spec:
                   readOnly: true
                 - name: tmp
                   mountPath: /tmp
+{% if gitops_sync_deploy_topic_name %}
+                - name: aws-token
+                  mountPath: /var/run/secrets/sts.amazonaws.com/serviceaccount
+                  readOnly: true
+{% endif %}
           volumes:
             - name: script
               configMap:
@@ -140,3 +154,14 @@ spec:
             - name: tmp
               emptyDir:
                 sizeLimit: 1Gi
+{% if gitops_sync_deploy_topic_name %}
+            # 70 irsa.tf gitops-sync Role 신뢰 정책(sub system:serviceaccount:gitops-sync:gitops-sync, aud sts.amazonaws.com)
+            - name: aws-token
+              projected:
+                defaultMode: 0444
+                sources:
+                  - serviceAccountToken:
+                      audience: sts.amazonaws.com
+                      expirationSeconds: 3600
+                      path: token
+{% endif %}

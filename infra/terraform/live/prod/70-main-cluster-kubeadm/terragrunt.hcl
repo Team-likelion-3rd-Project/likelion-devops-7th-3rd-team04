@@ -95,6 +95,9 @@ inputs = {
   oidc_bucket_name = dependency.global.outputs.oidc_bucket_name
   log_bucket_name  = dependency.global.outputs.log_bucket_name
 
+  deploy_topic_name        = dependency.global.outputs.deploy_topic_name
+  notifications_kms_key_id = dependency.global.outputs.notifications_kms_key_id
+
   cluster_log_group_names = dependency.observability_base.outputs.cluster_log_group_names
 
   image_bucket_name = dependency.frontend.outputs.image_bucket_name

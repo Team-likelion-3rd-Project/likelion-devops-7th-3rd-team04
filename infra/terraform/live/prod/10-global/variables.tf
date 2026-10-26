@@ -75,3 +75,37 @@ variable "gitops_oidc_subject_prefix" {
   type        = string
   default     = "repo:Team-likelion-3rd-Project@336729042/likelion-devops-7th-3rd-team04-gitops@1421753380"
 }
+
+# ── 알림 (notifications.tf) ──
+
+variable "deploy_publisher_role_names" {
+  description = "배포 토픽에 발행하는 Role 이름 (매일 재생성 스택이 고정 이름으로 만든다). gitops_ssm_sync Role 은 자동 포함"
+  type        = list(string)
+  default = [
+    "team04-hotel-gitops-sync", # 70 irsa.tf — 메인 클러스터 배포 agent
+    "team04-hotel-payment-app", # 60 iam.tf — 결제 서버 pull agent
+  ]
+}
+
+variable "chatbot_region" {
+  description = "AWS Chatbot 설정을 만들 리전. Chatbot API 는 us-east-1 엔드포인트가 없다"
+  type        = string
+  default     = "us-east-2"
+}
+
+# Slack ID 는 레포에 두지 않는다 — terraform.tfvars(gitignore) 에 넣는다. 기본값이 없어 빠지면 plan 이 멈춘다
+# (null 로 건너뛰게 하면 tfvars 가 없는 apply 가 Chatbot 설정을 지운다)
+variable "slack_team_id" {
+  description = "Slack 워크스페이스 ID (T 로 시작). Chatbot 콘솔의 워크스페이스 상세"
+  type        = string
+}
+
+variable "slack_alerts_channel_id" {
+  description = "알람 채널(#alerts) ID (C 로 시작). Slack 채널 정보 하단"
+  type        = string
+}
+
+variable "slack_deploy_channel_id" {
+  description = "배포 결과 채널(#deploy) ID"
+  type        = string
+}

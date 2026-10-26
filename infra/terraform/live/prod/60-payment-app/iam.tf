@@ -8,6 +8,7 @@
 #   SQS SendMessage       결제 결과 큐(43)
 #   ASG Standby           배포 중 자기 ASG 에서 Standby 진입 · 해제 (NLB drain)
 #   CloudWatch Logs       컨테이너 로그 · 배포 이벤트 (logs.tf 로그 그룹만)
+#   SNS Publish           배포 결과 알림 (10-global 배포 토픽만, 토픽 정책도 이 Role 이름으로 허용)
 #
 # AmazonSSMManagedInstanceCore 에는 ssm:PutParameter 가 없다 (Session Manager · Run Command 수신용 권한만)
 
@@ -110,6 +111,19 @@ data "aws_iam_policy_document" "app" {
       "${aws_cloudwatch_log_group.app.arn}:log-stream:*",
       "${aws_cloudwatch_log_group.deploy.arn}:log-stream:*",
     ]
+  }
+
+  statement {
+    sid       = "PublishDeployResult"
+    actions   = ["sns:Publish"]
+    resources = ["${local.arn_prefix}:sns:${var.region}:${local.account_id}:${var.deploy_topic_name}"]
+  }
+
+  # 암호화된 토픽에 발행하려면 키 권한도 필요하다 (SNS 가 이 Role 로 데이터 키를 만든다)
+  statement {
+    sid       = "EncryptDeployResult"
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+    resources = ["${local.arn_prefix}:kms:${var.region}:${local.account_id}:key/${var.notifications_kms_key_id}"]
   }
 }
 
