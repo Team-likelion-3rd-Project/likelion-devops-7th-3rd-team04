@@ -30,7 +30,9 @@ function Header() {
   const handleLogout = async () => {
     closeMenu()
     await logout()
-    navigate('/')
+    // 로그아웃이 너무 빨라 티가 안 나서, 메인으로 가며 안내 문구와 화면 전환 효과를 보여 준다 (RootLayout)
+    window.scrollTo({ top: 0 })
+    navigate('/', { state: { notice: '로그아웃되었습니다.' } })
   }
 
   return (
