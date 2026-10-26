@@ -65,6 +65,10 @@
         password: "{{ lookup('env', 'PAYMENT_DB_ROOT_PASSWORD') }}"
       toss-payments:
         secret_key: "{{ backend_env.TOSS_SECRET_KEY | default('') | trim }}"
+      # 차트 seed Job 의 관리자 계정 (backend/.env 의 SEED_ADMIN_*)
+      seed-admin:
+        email: "{{ backend_env.SEED_ADMIN_EMAIL | default('') }}"
+        password: "{{ backend_env.SEED_ADMIN_PASSWORD | default('') }}"
       # ── playbook 이 만든 .secrets/*.env (gitlab.yml · k8s-cicd.yml · control-plane.yml) — 속성 = 파일의 변수 이름 ──
       gitlab-k8s: "{{ openbao_import_files['gitlab-k8s.env'] }}"
       payment-node: "{{ openbao_import_files['payment-node.env'] }}"
