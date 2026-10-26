@@ -7,7 +7,7 @@
 - **이 폴더가 원본입니다.** 값을 바꿀 때는 여기를 먼저 고치고, gitops 레포 `envs/prod/` 에 같은 내용을 반영합니다.
 - 반영 방법
   - v1.0.0(2026-10-27) 전(구축 기간): 이 폴더 변경과 같은 내용으로 gitops 레포에 PR 을 직접 작성합니다.
-  - 이후: 모노레포 릴리스 PR(develop → main) merge 때 GitLab main 파이프라인이 gitops 레포에 PR 을 엽니다(values 복사 + 이미지 태그 + chart revision). 사람이 gitops 레포에 직접 PR 을 여는 것은 비상 경로뿐입니다.
+  - 이후: 모노레포 릴리스 PR(release/<버전> → main) merge 때 GitLab main 파이프라인이 gitops 레포에 PR 을 엽니다(values 복사 + 이미지 태그 + chart revision). 사람이 gitops 레포에 직접 PR 을 여는 것은 비상 경로뿐입니다.
 - gitops 레포에만 있는 값을 만들지 않습니다. 두 곳이 다르면 이 폴더 기준으로 맞춥니다.
 - public 레포로 그대로 복사되므로 **비밀값을 넣지 않습니다** (AWS Secrets Manager → External Secrets).
 - 아직 옮기지 않은 `payment`(결제 서버 이미지 태그, 앱 정의 아님)는 gitops 레포 쪽이 기준입니다 (결제 단계에서 이관).
@@ -121,12 +121,14 @@ k -n gitops-sync patch configmap gitops-sync-config --type merge -p '{"data":{"B
 ## 릴리스
 
 ```
-develop ──릴리스 PR (merge commit, release-source check · 승인)──▶ main
-   │                                                            │ GitHub → GitLab 미러
-   │                                                            ▼
+develop ─▶ release/<버전> ──릴리스 PR (merge commit, release-source check · 승인)──▶ main
+   │        (범위 고정, merge 후 삭제)                                            │ GitHub → GitLab 미러
+   │                                                                               ▼
    │                         GitLab main 파이프라인 (AWS Runner, 보호 브랜치 · tags aws — release job 만)
-   │                           release:prepare → release:build ×10 (ECR 캐시) ─┐
-   │                           release:frontend-build → release:frontend ───────┴→ release:gitops-pr
+   │                           [release-prepare]  [release-build]                      [release-gitops]
+   │                           release:prepare → release:build ×12 (ECR 캐시) ─┐
+   │                                           → release:mirror-n8n ───────────┤
+   │                                           → release:frontend-build → release:frontend ┴→ release:gitops-pr
    │                           ECR team04-hotel/<서비스>:<main SHA> (arm64)          gitops 레포 PR release/<main SHA>
    │                           S3 team04-hotel-frontend/releases/<main SHA>/              │ validate · 승인 (사람)
    ▼                                                                                        ▼ merge
@@ -153,9 +155,11 @@ develop ──릴리스 PR (merge commit, release-source check · 승인)──�
 ### 절차 (runbook)
 
 1. **준비**: develop 이 dev 에 배포 · 검증된 상태인지 확인합니다. 결제 쪽 계약(payment.proto · SQS 메시지 · 결제 마이그레이션)이 바뀌었으면 결제 서버를 먼저 반영할 계획을 세웁니다.
-   - **develop 파이프라인 성공 확인 (필수)**: 릴리스 PR 의 head 커밋(develop 최신 커밋)에 대한 GitLab `team04/hotel` develop 파이프라인이 **passed** 인지 확인합니다 (Pipelines → 브랜치 develop → 커밋 SHA 비교). 실행 중이면 끝날 때까지 기다리고, 실패했으면 develop 에서 고친 뒤 다시 확인합니다. main 파이프라인은 test · 이미지 smoke test 를 다시 돌리지 않습니다.
-2. **릴리스 PR**: GitHub 에서 `develop → main` PR 을 엽니다 (제목 예: `release: v1.0.0`). `release-source` · GitHub CI(`Backend Build & Test` 등) check 와 승인 후 **merge commit** 으로 합칩니다.
-3. **파이프라인**: GitLab `team04/hotel` → Pipelines 의 main 파이프라인이 `release:gitops-pr` 까지 끝나는지 확인합니다.
+   - **develop 파이프라인 성공 확인 (필수)**: 릴리스 브랜치로 고정할 develop 커밋에 대한 GitLab `team04/hotel` develop 파이프라인이 **passed** 인지 확인합니다 (Pipelines → 브랜치 develop → 커밋 SHA 비교). 실행 중이면 끝날 때까지 기다리고, 실패했으면 develop 에서 고친 뒤 다시 확인합니다. main 파이프라인은 test · 이미지 smoke test 를 다시 돌리지 않습니다.
+2. **릴리스 PR**: 1 에서 확인한 develop 커밋으로 `release/<버전>` 브랜치를 만들고 (`git push origin <SHA>:refs/heads/release/v1.0.0`), GitHub 에서 `release/<버전> → main` PR 을 엽니다 (제목 예: `release: v1.0.0`). 이후 develop 에 merge 되는 변경은 이번 릴리스에 들어가지 않습니다. `release-source` · GitHub CI(`Backend Build & Test` 등) check 와 승인 후 **merge commit** 으로 합치고 브랜치를 삭제합니다.
+   - 릴리스 브랜치에는 직접 커밋하지 않습니다 (GitLab 검증을 거치지 않은 커밋이 main 으로 감). 수정이 필요하면 develop 에 먼저 merge → develop 파이프라인 passed 확인 → 브랜치를 그 커밋으로 옮깁니다 (`git push origin <새 SHA>:refs/heads/release/<버전> --force-with-lease`).
+   - `develop → main` PR 은 `release-source` check 가 거부합니다.
+3. **파이프라인**: GitLab `team04/hotel` → Pipelines 의 main 파이프라인이 `release-prepare` → `release-build` → `release-gitops` stage 의 `release:gitops-pr` 까지 끝나는지 확인합니다.
    - 소요 시간 (merge → gitops PR 생성): rc.1(2026-10-21, t4g.medium · 캐시 없음 · main 에 dev job 포함) 약 28분 — 온프레미스 Runner 대기 + compile · helm-lint 17분, `release:build` 9분. 개선 후 실측은 rc.2 때 여기에 적습니다.
    - `release:build` 로그 끝의 `[메모리]` 줄(호스트 남은 메모리 최소 · job 최대 사용량)로 Runner 사양을 판단합니다.
 4. **gitops PR**: gitops 레포에 `chore(prod): backend · payment · frontend → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
