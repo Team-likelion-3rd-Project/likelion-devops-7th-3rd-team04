@@ -6,7 +6,14 @@ import { Repository } from 'typeorm';
 import { Observable, firstValueFrom } from 'rxjs';
 import * as bcrypt from 'bcrypt';
 import Redis from 'ioredis';
-import { REDIS_CLIENT, JwtPayload, PrincipalType, apiRpcException, getRequiredEnv } from '@app/common';
+import {
+  REDIS_CLIENT,
+  JwtPayload,
+  PrincipalType,
+  apiRpcException,
+  getRequiredEnv,
+  errorTrace,
+} from '@app/common';
 import { Credential } from './entities/credential.entity';
 import { AdminCredential } from './entities/admin-credential.entity';
 
@@ -159,13 +166,13 @@ export class AuthServiceService implements OnModuleInit {
     } catch (error) {
       this.logger.error(
         `회원가입 비밀번호 저장 실패 (userId=${user.id}) — 프로필 되돌림`,
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
       await firstValueFrom(this.userService.cancelSignup({ id: user.id, email: user.email })).catch((cancelError) => {
         // 되돌리기도 실패하면 프로필만 남는다 — 이 이메일은 운영자가 정리해야 다시 가입할 수 있다
         this.logger.error(
-          `[알람] 회원가입 프로필 되돌리기 실패 (userId=${user.id}, email=${user.email}) — 수동 정리 필요`,
-          cancelError instanceof Error ? cancelError.stack : String(cancelError),
+          `[알람] 회원가입 프로필 되돌리기 실패 (userId=${user.id}) — 수동 정리 필요`,
+          errorTrace(cancelError),
         );
       });
       throw apiRpcException({
@@ -189,7 +196,7 @@ export class AuthServiceService implements OnModuleInit {
     } catch (error) {
       this.logger.error(
         `회원가입 후 토큰 발급 실패 (userId=${user.id}) — 가입은 완료`,
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
       throw apiRpcException({
         status: 503,
@@ -228,8 +235,8 @@ export class AuthServiceService implements OnModuleInit {
       }
     } catch (error) {
       this.logger.error(
-        `남은 프로필 정리 실패 — 가입은 기존대로 진행 (email=${email})`,
-        error instanceof Error ? error.stack : String(error),
+        '남은 프로필 정리 실패 — 가입은 기존대로 진행',
+        errorTrace(error),
       );
     }
   }
@@ -441,7 +448,7 @@ export class AuthServiceService implements OnModuleInit {
     } catch (error) {
       this.logger.error(
         `회원 탈퇴 중 세션·비밀번호 삭제 실패 (userId=${data.userId})`,
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
       throw this.withdrawIncomplete();
     }
@@ -451,7 +458,7 @@ export class AuthServiceService implements OnModuleInit {
       if (err?.details?.includes('존재하지 않는')) {
         return;
       }
-      this.logger.error(`회원 탈퇴 중 프로필 이관 실패 (userId=${data.userId})`, err?.stack ?? String(err));
+      this.logger.error(`회원 탈퇴 중 프로필 이관 실패 (userId=${data.userId})`, errorTrace(err));
       throw this.withdrawIncomplete();
     });
 

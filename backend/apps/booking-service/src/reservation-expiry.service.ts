@@ -8,6 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, LessThan, Repository } from 'typeorm';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
 import { BookingServiceService } from './booking-service.service';
+import { errorTrace } from '@app/common';
 
 // 한 번에 확인할 최대 예약 수 (남으면 다음 실행에서 이어서)
 const BATCH_SIZE = 100;
@@ -82,7 +83,7 @@ export class ReservationExpiryService
     } catch (error) {
       this.logger.error(
         '결제 대기 예약 만료 배치 실패 — 다음 실행에서 다시 시도',
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
     } finally {
       this.running = false;

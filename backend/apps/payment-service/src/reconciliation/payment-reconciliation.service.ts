@@ -15,6 +15,7 @@ import { PaymentServiceService } from '../payment-service.service';
 import { TossPaymentsClient } from '../pg/toss-payments.client';
 import { PgMockClient } from '../pg-mock/pg-mock.client';
 import { PgLookupResult } from '../pg/pg-lookup-result';
+import { errorTrace } from '@app/common';
 
 const DEFAULT_INTERVAL_SECONDS = 60;
 // 한 번에 처리할 최대 건수 (남으면 다음 실행에서)
@@ -179,7 +180,7 @@ export class PaymentReconciliationService
     } catch (error) {
       this.logger.error(
         '결제 대사 배치 실패 — 다음 실행에서 다시 시도',
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
     } finally {
       this.running = false;
@@ -358,7 +359,7 @@ export class PaymentReconciliationService
           result.errors++;
           this.logger.error(
             `결제 대사 중 오류 — 다음 실행에서 다시 (paymentId=${payment.paymentId})`,
-            error instanceof Error ? error.stack : String(error),
+            errorTrace(error),
           );
         }
       }

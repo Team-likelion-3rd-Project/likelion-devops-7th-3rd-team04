@@ -16,7 +16,7 @@ import {
   QueryFailedError,
   Repository,
 } from 'typeorm';
-import { apiRpcException, PaymentResultEvent } from '@app/common';
+import { apiRpcException, PaymentResultEvent, errorTrace } from '@app/common';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
 import {
   PaymentAttempt,
@@ -667,7 +667,7 @@ export class BookingServiceService implements OnModuleInit {
     } catch (error) {
       this.logger.error(
         `예약(#${reservationId}) 환불 재요청 — 결제 서비스 호출 실패`,
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
       throw apiRpcException({
         status: 503,
@@ -827,7 +827,7 @@ export class BookingServiceService implements OnModuleInit {
     } catch (error) {
       this.logger.error(
         `예약(#${reservationId}) 결제 환불 요청 실패 — 환불 요청 워커가 다시 시도합니다`,
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
       return error instanceof Error ? error.message : String(error);
     }
@@ -1002,7 +1002,7 @@ export class BookingServiceService implements OnModuleInit {
       // 같은 orderId로 다시 호출하면 같은 멱등 키로 재요청되어 결제가 중복으로 생기지 않는다.
       this.logger.error(
         `결제 승인 요청 실패 (reservationId=${data.reservationId}, orderId=${data.orderId})`,
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
       return null;
     });
@@ -1301,7 +1301,7 @@ export class BookingServiceService implements OnModuleInit {
     } catch (error) {
       this.logger.error(
         `예약(#${reservation.reservationId}) ${reason} 후 room_availabilities 복구 요청 실패`,
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
     }
   }

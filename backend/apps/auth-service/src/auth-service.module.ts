@@ -8,6 +8,7 @@ import {
   RedisModule,
   HealthModule,
   mariaDbSslOptions,
+  typeOrmLoggingOptions,
 } from '@app/common';
 import { AuthServiceController } from './auth-service.controller';
 import { AuthServiceService } from './auth-service.service';
@@ -44,7 +45,8 @@ import { AdminCredential } from './entities/admin-credential.entity';
         // 테이블 구조는 Flyway(backend/migrations, V6)만 바꿉니다. true로 두면 Flyway보다 먼저 떠서
         // 테이블을 만들어 버려 Flyway가 "non-empty schema"로 멈춥니다(LDP-60).
         synchronize: false,
-        logging: true, // SQL 실행 쿼리 로깅
+        // 쿼리 로그는 값(PARAMETERS) 없이 — 실행 쿼리는 DB_LOGGING=true일 때만, 실패·느린 쿼리는 항상 (LDP-163)
+        ...typeOrmLoggingOptions(),
       }),
     }),
 

@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { SendMessageBatchCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { DataSource } from 'typeorm';
-import { SQS_CLIENT, paymentResultQueueUrl } from '@app/common';
+import { SQS_CLIENT, paymentResultQueueUrl, errorTrace } from '@app/common';
 
 // 한 번에 가져와 보낼 최대 행 수 (SQS SendMessageBatch 한도 10)
 const BATCH_SIZE = 10;
@@ -88,7 +88,7 @@ export class OutboxPublisherService
     } catch (error: unknown) {
       this.logger.error(
         '결제 결과 이벤트 발행 중 오류 — 잠시 후 다시 시도합니다.',
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
       this.schedule(ERROR_BACKOFF_MS);
     }
