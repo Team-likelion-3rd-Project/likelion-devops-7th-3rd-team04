@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { searchAdminUsers } from '../../api/adminApi'
 import type { AdminUser } from '../../api/adminApi'
 import { adminReservationErrorMessage } from '../../api/adminReservations'
@@ -13,6 +13,7 @@ const PAGE_SIZE = 20
 // 페이지·검색어를 주소(?page=&q=)에 두어 회원 상세에서 뒤로 와도 보던 목록이 유지된다.
 function AdminUsersPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const page = Math.max(1, Number(searchParams.get('page')) || 1)
   const keyword = searchParams.get('q') ?? ''
@@ -100,7 +101,7 @@ function AdminUsersPage() {
                 </thead>
                 <tbody>
                   {users.map((user) => (
-                    <tr key={user.id} onClick={() => navigate(`/admin/users/${user.id}`)}>
+                    <tr key={user.id} onClick={() => navigate(`/admin/users/${user.id}`, { state: { listSearch: location.search } })}>
                       <td>{user.id}</td>
                       <td>{user.email}</td>
                       <td>{user.name}</td>

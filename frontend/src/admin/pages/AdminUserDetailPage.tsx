@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { fetchAdminUserById } from '../../api/adminApi'
 import type { AdminUser } from '../../api/adminApi'
 import './AdminPages.css'
@@ -7,6 +7,8 @@ import './AdminPages.css'
 function AdminUserDetailPage() {
   const { userId } = useParams<{ userId: string }>()
   const navigate = useNavigate()
+  // 목록에서 들어왔으면 보던 목록 조건(?page=&q=)으로 돌아간다 — 주소로 바로 들어왔으면 첫 페이지
+  const listSearch = (useLocation().state as { listSearch?: string } | null)?.listSearch ?? ''
   const [loadedFor, setLoadedFor] = useState<string | undefined>(undefined)
   const [user, setUser] = useState<AdminUser | null>(null)
   const [error, setError] = useState('')
@@ -38,7 +40,7 @@ function AdminUserDetailPage() {
 
   return (
     <section>
-      <button type="button" className="admin-back-link" onClick={() => navigate('/admin/users')}>
+      <button type="button" className="admin-back-link" onClick={() => navigate(`/admin/users${listSearch}`)}>
         ← 유저 목록으로
       </button>
 
