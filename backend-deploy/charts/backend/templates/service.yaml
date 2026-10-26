@@ -23,3 +23,27 @@ spec:
       {{- end }}
 {{- end }}
 {{- end }}
+{{- if .Values.grpcHeadless.enabled }}
+{{- range $name, $svc := .Values.services }}
+{{- if and $svc.enabled (has $name $.Values.grpcHeadless.services) }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+# gRPC 로드 밸런싱용 Headless Service (LDP-159). 대표 IP 없이 DNS 로 Ready Pod 주소 목록을 알려 준다.
+# 클라이언트는 dns:///{{ $name }}-headless:{{ $svc.port }} 로 연결해 요청마다 Pod 를 돌아가며 부른다 (round_robin)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-headless
+  labels:
+    {{- include "backend.labels" $ctx | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "backend.selectorLabels" $ctx | nindent 4 }}
+  ports:
+    - name: app
+      port: {{ $svc.port }}
+      targetPort: app
+{{- end }}
+{{- end }}
+{{- end }}
