@@ -6,7 +6,9 @@
 #   image-test  : 파이프라인 전용 DB(ci_<id>, ci_main_<id>) 준비 → 후보 이미지를 띄워 /health smoke test
 #   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
 #   deploy      : (수동) deploy-dev: develop → GitLab gitops 에 커밋 1개 (envs/dev 이미지 태그 + apps/dev 차트 revision)
-#                 → 온프레미스 ArgoCD 가 sync (클러스터에 직접 배포하지 않음)
+#                 + 배포 태그 dev/p<pipeline id>-<sha> → 온프레미스 ArgoCD 가 sync (클러스터에 직접 배포하지 않음)
+#                 롤백: Run pipeline 에 ROLLBACK_TO=<gitops 태그 | previous> → rollback-dev:resolve · check → rollback-dev ▶
+#                 (롤백 파이프라인에는 다른 job 이 생기지 않음. infra/ansible README 12-5)
 #   release     : (main 만) AWS Runner 가 이미지 10개를 arm64 로 빌드 → ECR push(태그 = main 커밋 SHA)
 #                 + 프론트 빌드 → S3 releases/<SHA>/
 #                 → prod gitops 레포에 릴리스 PR 자동 생성 (GitHub App). 운영 반영은 사람이 그 PR 을 승인 · merge 할 때
@@ -66,11 +68,12 @@ variables:
   # ── 이미지 태그: 커밋 SHA (latest 미사용) ──
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
   CANDIDATE_TAG: ci-$CI_COMMIT_SHORT_SHA
-  # build 와 push 가 같은 목록을 써야 함 (8 서비스 + llm-service + 메인 / 결제 DB 마이그레이션)
-  IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations"
+  # build 와 push 가 같은 목록을 써야 함 (8 서비스 + llm-service + 메인 / 결제 DB 마이그레이션 + 시딩)
+  #   seed: backend 차트 seed Job (backend/scripts/Dockerfile.seed) — 운영(ECR)과 온프레미스 dev 모두 배포 버전과 같은 태그로 실행
+  #         (dev 는 롤백으로 DB 를 다시 만든 뒤 그 버전의 seed.ts 가 다시 채움)
+  IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations seed"
   # 운영(ECR)에만 올리는 이미지 — 온프레미스 GitLab Registry 로는 push · 승격하지 않음 (build 는 빌드 검증만, release:build 가 ECR push)
-  #   seed: backend 차트 seed Job (backend/scripts/Dockerfile.seed). 온프레미스 시딩은 Ansible db_seed 가 DB 노드에서 빌드
-  RELEASE_ONLY_IMAGES: "seed"
+  RELEASE_ONLY_IMAGES: ""
 
   # ── 차트 (helm-lint) · 배포 ──
   CHART_PATH: backend-deploy/charts/backend
@@ -92,13 +95,18 @@ default:
   interruptible: true
 
 # ── 공통 rules ─────────────────────────────────────────────
+# 롤백 파이프라인(Run pipeline + ROLLBACK_TO)에는 rollback-dev:* 만 생긴다 — 아래 rules 와 smoke:db-drop · deploy-dev 에서 제외
 .rules-develop:
   rules:
+    - if: $ROLLBACK_TO
+      when: never
     - if: $CI_COMMIT_BRANCH == "develop"
 
 # main 은 release job 만 돈다 (위 머리말)
 .rules-not-main:
   rules:
+    - if: $ROLLBACK_TO
+      when: never
     - if: $CI_COMMIT_BRANCH == "main"
       when: never
     - when: on_success
@@ -171,6 +179,8 @@ helm-lint:
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set services.booking-service.nodePort=30303 > /dev/null
     # dev 의 챗봇 AI 스택(llm-service · n8n) 렌더링
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set services.llm-service.enabled=true --set n8n.enabled=true > /dev/null
+    # dev 의 롤백 대비(마이그레이션 resetOnDowngrade) · 시딩 Job 렌더링
+    - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set migrations.main.resetOnDowngrade=true --set seed.enabled=true > /dev/null
     # 차트의 n8n 워크플로 · 활성화 스크립트(files/n8n)는 langchain_rag/n8n 의 사본 — 원본만 고치고 복사를 잊지 않도록 검사
     - |
       for pair in "workflows/chat-orchestration.json:chat-orchestration.json" "scripts/activate-workflow.js:activate-workflow.js"; do
@@ -181,6 +191,12 @@ helm-lint:
           echo "$dst 가 $src 와 다릅니다 — 원본을 복사해 커밋하세요"; exit 1
         fi
       done
+    # 결제 마이그레이션 이미지의 migrate.sh 는 메인 쪽 사본 (빌드 컨텍스트가 달라서)
+    - |
+      tr -d '\r' < backend/migrations/migrate.sh > /tmp/src; tr -d '\r' < backend/apps/payment-service/migrations/migrate.sh > /tmp/dst
+      if ! cmp -s /tmp/src /tmp/dst; then
+        echo "backend/apps/payment-service/migrations/migrate.sh 가 backend/migrations/migrate.sh 와 다릅니다 — 원본을 복사해 커밋하세요"; exit 1
+      fi
 
 # ── build: kaniko (Docker 데몬 / DinD 불필요) ────────────────────
 build:
@@ -217,6 +233,7 @@ build:
         CONTEXT="$CI_PROJECT_DIR/backend/apps/payment-service/migrations"
         DOCKERFILE="$CONTEXT/Dockerfile"
       elif [ "$SERVICE" = "seed" ]; then
+        # 시딩(scripts/seed.ts) — 차트 seed Job 이 배포 버전과 같은 태그로 실행
         CONTEXT="$CI_PROJECT_DIR/backend"
         DOCKERFILE="$CONTEXT/scripts/Dockerfile.seed"
       else
@@ -553,13 +570,46 @@ smoke:migrate:
           - SERVICE: payment-migrations
   variables:
     GIT_STRATEGY: none
+    # 이미지 진입점(migrate.sh)을 그대로 거치게 해 dev 와 같은 경로로 검증 (빈 DB 라 되돌릴 버전은 없음)
+    MIGRATE_RESET_ON_DOWNGRADE: "true"
   script:
     - if [ "$MIGRATIONS" = "main" ]; then DB="$SMOKE_MAIN_DB"; else DB="$SMOKE_DB"; fi
     - >-
-      flyway migrate
+      /flyway/migrate.sh migrate
       -url="jdbc:mariadb://$SMOKE_DB_HOST:$SMOKE_DB_PORT/$DB"
       -user="$SMOKE_DB_USER" -password="$SMOKE_DB_PASSWORD"
       -connectRetries=5
+
+# 시딩 이미지가 이 커밋의 메인 DB 스키마에 맞는지 (seed.ts 는 스키마와 같이 바뀌어야 함 — 롤백 후 그 버전 데이터를 다시 채우는 이미지)
+# 객실 사진(S3_*) · 관리자 계정(SEED_ADMIN_*)은 넣지 않아 그 단계는 건너뜀
+smoke:seed:
+  extends: .rules-develop
+  stage: image-test
+  image:
+    name: $CI_REGISTRY_IMAGE/seed:$CANDIDATE_TAG
+    entrypoint: [""]
+  needs:
+    - job: smoke:migrate
+      parallel:
+        matrix:
+          - MIGRATIONS: main
+    - job: build
+      parallel:
+        matrix:
+          - SERVICE: seed
+  variables:
+    GIT_STRATEGY: none
+    DB_HOST: $SMOKE_DB_HOST
+    DB_PORT: $SMOKE_DB_PORT
+    DB_USERNAME: $SMOKE_DB_USER
+    DB_PASSWORD: $SMOKE_DB_PASSWORD
+    DB_DATABASE: $SMOKE_MAIN_DB
+    SEED_AVAILABILITY_DAYS: "7"
+  script:
+    - cd /usr/src/app
+    # 두 번 실행해 멱등(두 번째는 "이미 존재 — 건너뜀")까지 확인
+    - npx ts-node --transpile-only -r tsconfig-paths/register scripts/seed.ts
+    - npx ts-node --transpile-only -r tsconfig-paths/register scripts/seed.ts
 
 test:image:
   extends: .rules-develop
@@ -653,6 +703,8 @@ smoke:db-drop:
   # needs 를 지정하면 .post 라도 바로 시작되므로 지정하지 않음 (모든 stage 가 끝난 뒤 실행)
   interruptible: false
   rules:
+    - if: $ROLLBACK_TO
+      when: never
     - if: $CI_COMMIT_BRANCH == "develop"
       when: always
   variables:
@@ -690,12 +742,14 @@ push:
       fi
 
 # ── deploy (수동) ─────────────────────────────────────────────
-# gitops 레포(dev) 에 커밋 1개만 합니다. 클러스터 반영은 ArgoCD 의 backend Application(자동 sync)이 합니다 (infra/ansible README 12-9)
-#   envs/<env>/values.yaml    global.imageTag                 = 이 커밋 short SHA (이미지 태그)
-#   apps/<env>/backend.yaml   spec.sources[0].targetRevision  = 이 커밋 full SHA (차트도 이미지와 같은 커밋에 고정)
-# job 성공 = gitops 커밋 성공. 배포 결과(sync · health · 마이그레이션 hook)는 ArgoCD UI 에서 확인합니다.
-# 롤백: 이전 파이프라인의 deploy-dev 를 다시 실행 (그 SHA 로 다시 커밋)
-.deploy:
+# gitops 레포(dev) 에 커밋 1개 + 배포 태그 1개를 만듭니다. 클러스터 반영은 ArgoCD 의 backend Application(자동 sync)이 합니다 (infra/ansible README 12-9)
+#   envs/<env>/values.yaml    global.imageTag                 = DEPLOY_IMAGE_TAG (이미지 태그 = 모노레포 short SHA)
+#   apps/<env>/backend.yaml   spec.sources[0].targetRevision  = DEPLOY_CHART_REV (차트도 이미지와 같은 커밋에 고정)
+#   태그 <env>/p<pipeline id>-<이미지 태그> (annotated) — 메시지에 pipeline · job · 모노레포 commit · 실행자. 어느 파이프라인의 배포인지,
+#        롤백 대상(ROLLBACK_TO)을 이 이름으로 가리킴. 같은 파이프라인의 job 을 다시 실행하면 같은 이름으로 갱신
+# job 성공 = gitops 커밋 성공. 배포 결과(sync · health · 마이그레이션 hook · seed Job)는 ArgoCD UI 에서 확인합니다.
+# deploy-dev 와 rollback-dev 가 이 job 을 같이 씀 (DEPLOY_KIND = deploy | rollback)
+.gitops-commit:
   stage: deploy
   image: $DEPLOY_IMAGE
   interruptible: false
@@ -710,6 +764,7 @@ push:
       git clone --depth 20         "$CI_SERVER_PROTOCOL://ci-gitops:${GITOPS_PUSH_TOKEN}@$CI_SERVER_HOST/$GITOPS_REPO.git" gitops
       VALUES="gitops/envs/$GITOPS_ENV/values.yaml"
       APP="gitops/apps/$GITOPS_ENV/backend.yaml"
+      DEPLOY_TAG="$GITOPS_ENV/p$CI_PIPELINE_ID-$DEPLOY_IMAGE_TAG"
 
       # sources[0] 이 차트 source 인지 확인 (순서가 바뀌면 values source 의 브랜치를 SHA 로 덮어쓰게 됨)
       CHART_SOURCE_PATH="$(yq '.spec.sources[0].path' "$APP")"
@@ -717,30 +772,150 @@ push:
         echo "$APP 의 sources[0].path 가 $CHART_PATH 가 아닙니다 ($CHART_SOURCE_PATH) — 차트 source 를 첫 번째로 두세요"; exit 1
       fi
 
-      yq -i ".global.imageTag = \"$IMAGE_TAG\"" "$VALUES"
-      yq -i ".spec.sources[0].targetRevision = \"$CI_COMMIT_SHA\"" "$APP"
+      yq -i ".global.imageTag = \"$DEPLOY_IMAGE_TAG\"" "$VALUES"
+      yq -i ".spec.sources[0].targetRevision = \"$DEPLOY_CHART_REV\"" "$APP"
       if git -C gitops diff --quiet; then
-        echo "gitops 가 이미 $IMAGE_TAG — 변경 없음 (ArgoCD 가 지금 상태를 유지)"
+        CURRENT_TAGS="$(git -C gitops tag --points-at HEAD -l "$GITOPS_ENV/p*" | tr '\n' ' ')"
+        echo "gitops 가 이미 $DEPLOY_IMAGE_TAG — 변경 없음 (ArgoCD 가 지금 상태를 유지, 현재 배포 태그: ${CURRENT_TAGS:-없음})"
         exit 0
       fi
-      git -C gitops commit -qam "chore(gitops): $GITOPS_ENV backend → $IMAGE_TAG"         -m "pipeline: $CI_PIPELINE_URL" -m "commit: $CI_PROJECT_URL/-/commit/$CI_COMMIT_SHA"
 
+      if [ "$DEPLOY_KIND" = "rollback" ]; then
+        SUBJECT="chore(gitops): $GITOPS_ENV backend rollback → $DEPLOY_IMAGE_TAG (from $ROLLBACK_FROM)"
+      else
+        SUBJECT="chore(gitops): $GITOPS_ENV backend → $DEPLOY_IMAGE_TAG"
+      fi
+      git -C gitops commit -qam "$SUBJECT" -m "pipeline: $CI_PIPELINE_URL" -m "commit: $CI_PROJECT_URL/-/commit/$DEPLOY_CHART_REV"
+
+      TAG_MESSAGE="$(printf '%s\n\nkind: %s\nimage tag: %s\nchart revision: %s\npipeline: %s\njob: %s\ncommit: %s\nby: %s' \
+        "$SUBJECT" "$DEPLOY_KIND" "$DEPLOY_IMAGE_TAG" "$DEPLOY_CHART_REV" "$CI_PIPELINE_URL" "$CI_JOB_URL" \
+        "$CI_PROJECT_URL/-/commit/$DEPLOY_CHART_REV" "${GITLAB_USER_LOGIN:-unknown}")"
+      if [ "$DEPLOY_KIND" = "rollback" ]; then TAG_MESSAGE="$(printf '%s\nrollback from: %s' "$TAG_MESSAGE" "$ROLLBACK_FROM")"; fi
+
+      # rebase 후 커밋이 바뀌면 태그도 새 커밋을 가리키도록 시도마다 다시 만듦 (같은 이름이면 -f 로 갱신)
       for i in 1 2 3; do
-        git -C gitops push origin HEAD && break
+        git -C gitops tag -fa "$DEPLOY_TAG" -m "$TAG_MESSAGE"
+        git -C gitops push origin HEAD && git -C gitops push -f origin "refs/tags/$DEPLOY_TAG" && break
         [ "$i" = 3 ] && { echo "gitops push 실패 (3회)"; exit 1; }
         git -C gitops pull --rebase origin "$(git -C gitops rev-parse --abbrev-ref HEAD)"
       done
-      echo "gitops $GITOPS_REPO 커밋 완료 ($(git -C gitops rev-parse --short HEAD)) — ArgoCD 의 backend 앱이 최대 3분 안에 sync 합니다"
+      echo "gitops $GITOPS_REPO 커밋 완료 ($(git -C gitops rev-parse --short HEAD)), 태그 $DEPLOY_TAG — ArgoCD 의 backend 앱이 최대 3분 안에 sync 합니다"
 
 deploy-dev:
-  extends: .deploy
+  extends: .gitops-commit
   needs: [push]
   variables:
     GITOPS_ENV: dev
+    DEPLOY_KIND: deploy
+    DEPLOY_IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+    DEPLOY_CHART_REV: $CI_COMMIT_SHA
   # 같은 환경의 gitops 커밋이 겹치지 않게 직렬화
   resource_group: dev
   environment:
     name: dev
   rules:
+    - if: $ROLLBACK_TO
+      when: never
     - if: $CI_COMMIT_BRANCH == "develop"
+      when: manual
+
+# ── rollback (Run pipeline + 변수 ROLLBACK_TO) ─────────────────────
+# ROLLBACK_TO = gitops 배포 태그(dev/p<pipeline id>-<sha>) 또는 previous(지금 배포 바로 전에 배포됐던 다른 이미지)
+#   resolve : 태그에서 이미지 태그 · 차트 revision 을 꺼냄 (values 의 다른 값은 되돌리지 않음 — values 는 MR revert)
+#   check   : 그 태그의 이미지가 레지스트리에 모두 있는지, 마이그레이션 이미지가 DB 를 그 버전으로 맞출 수 있는지(label) 확인
+#   rollback-dev ▶ : resolve 결과로 gitops 커밋 + 태그 (.gitops-commit). DB 는 ArgoCD sync 때 그 버전의 마이그레이션 hook 이
+#                   비우고 다시 만들고(resetOnDowngrade), seed Job 이 채움 → dev DB 데이터는 시드 상태로 초기화됨
+# 결제 노드는 따로: 롤백 후 ansible-playbook payment.yml -K --tags deploy (infra/ansible README 12-5)
+# 이전 파이프라인이 남아 있으면 Deployments → Environments → dev 에서 그 deploy-dev 를 다시 실행해도 같은 결과입니다.
+.rules-rollback:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" && $ROLLBACK_TO && $CI_COMMIT_BRANCH == "develop"
+
+rollback-dev:resolve:
+  extends: .rules-rollback
+  stage: deploy
+  image: $DEPLOY_IMAGE
+  interruptible: false
+  needs: []
+  variables:
+    GIT_STRATEGY: none
+    GITOPS_ENV: dev
+  script:
+    - |
+      set -eu
+      # 태그 이력이 필요하므로 전체 clone (작은 레포)
+      git clone -q "$CI_SERVER_PROTOCOL://ci-gitops:${GITOPS_PUSH_TOKEN}@$CI_SERVER_HOST/$GITOPS_REPO.git" gitops
+      VALUES_PATH="envs/$GITOPS_ENV/values.yaml"
+      APP_PATH="apps/$GITOPS_ENV/backend.yaml"
+      CURRENT="$(yq '.global.imageTag' "gitops/$VALUES_PATH")"
+
+      if [ "$ROLLBACK_TO" = "previous" ]; then
+        TARGET=""
+        for t in $(git -C gitops tag -l "$GITOPS_ENV/p*" --sort=-creatordate); do
+          if [ "$(git -C gitops show "$t:$VALUES_PATH" | yq '.global.imageTag')" != "$CURRENT" ]; then TARGET="$t"; break; fi
+        done
+        [ -n "$TARGET" ] || { echo "지금($CURRENT)과 다른 이미지의 배포 태그($GITOPS_ENV/p*)가 없습니다 — gitops Tags 를 확인하세요"; exit 1; }
+      else
+        git -C gitops rev-parse -q --verify "refs/tags/$ROLLBACK_TO" > /dev/null \
+          || { echo "gitops 에 태그 $ROLLBACK_TO 가 없습니다 — $GITOPS_REPO 의 Repository → Tags 에서 이름을 확인하세요"; exit 1; }
+        TARGET="$ROLLBACK_TO"
+      fi
+
+      IMAGE="$(git -C gitops show "$TARGET:$VALUES_PATH" | yq '.global.imageTag')"
+      CHART_REV="$(git -C gitops show "$TARGET:$APP_PATH" | yq '.spec.sources[0].targetRevision')"
+      [ "$IMAGE" != "$CURRENT" ] || { echo "$TARGET 의 이미지($IMAGE)가 이미 배포돼 있습니다"; exit 1; }
+      printf 'DEPLOY_IMAGE_TAG=%s\nDEPLOY_CHART_REV=%s\nROLLBACK_FROM=%s\n' "$IMAGE" "$CHART_REV" "$TARGET" > rollback.env
+
+      echo "롤백 대상: $TARGET → 이미지 $IMAGE, 차트 $CHART_REV (지금 $CURRENT)"
+      git -C gitops tag -l -n20 "$TARGET"
+  artifacts:
+    reports:
+      dotenv: rollback.env
+    # rollback-dev 는 수동(▶)이라 늦게 눌러도 받을 수 있게 하루 둔다
+    expire_in: 1 day
+
+rollback-dev:check:
+  extends: .rules-rollback
+  stage: deploy
+  image:
+    name: $CRANE_IMAGE
+    entrypoint: [""]
+  interruptible: false
+  needs: [rollback-dev:resolve]
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - crane auth login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    - |
+      missing=""
+      for svc in $IMAGES; do
+        if digest="$(crane digest "$CI_REGISTRY_IMAGE/$svc:$DEPLOY_IMAGE_TAG" 2>/dev/null)"; then
+          echo "$svc:$DEPLOY_IMAGE_TAG  $digest"
+        elif [ "$svc" = "seed" ]; then
+          # 온프레미스 레지스트리의 seed 이미지는 이 기능 이후 버전부터 있음 (그 전에는 운영 ECR 에만 올림)
+          echo "경고: seed:$DEPLOY_IMAGE_TAG 가 없습니다 — 롤백 후 dev 데이터는 ansible-playbook db.yml -K --tags seed -e db_seed_mariadb=true 로 채우세요"
+        else
+          missing="$missing $svc"
+        fi
+      done
+      [ -z "$missing" ] || { echo "레지스트리에 $DEPLOY_IMAGE_TAG 태그가 없는 이미지:$missing — 이 버전으로는 롤백할 수 없습니다"; exit 1; }
+    # 마이그레이션 이미지가 migrate.sh(롤백 때 DB 를 그 버전으로 다시 만듦)를 가진 버전인지
+    - |
+      if crane config "$CI_REGISTRY_IMAGE/main-migrations:$DEPLOY_IMAGE_TAG" | grep -q '"team04.migrations.reset":"1"'; then
+        echo "main-migrations:$DEPLOY_IMAGE_TAG — 롤백 때 메인 DB 를 이 버전으로 다시 만듭니다 (dev DB 데이터는 시드 상태로 초기화)"
+      else
+        echo "경고: main-migrations:$DEPLOY_IMAGE_TAG 는 DB 를 내리지 못하는 이전 이미지입니다 — 스키마는 지금 버전 그대로 남고, 이전 앱이 새 스키마 위에서 돕니다"
+      fi
+
+rollback-dev:
+  extends: .gitops-commit
+  needs: [rollback-dev:resolve, rollback-dev:check]
+  variables:
+    GITOPS_ENV: dev
+    DEPLOY_KIND: rollback
+  resource_group: dev
+  environment:
+    name: dev
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" && $ROLLBACK_TO && $CI_COMMIT_BRANCH == "develop"
       when: manual

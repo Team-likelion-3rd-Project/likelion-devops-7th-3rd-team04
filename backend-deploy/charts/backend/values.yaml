@@ -307,6 +307,8 @@ migrations:
     image:
       repository: main-migrations
       tag: ""
+    # true 면 롤백(DB 가 이 이미지보다 앞섬) 때 DB 를 비우고 이 버전까지 다시 적용 — dev 전용, 운영은 false (migrate.sh)
+    resetOnDowngrade: false
     db:
       envPrefix: DB
       port: "3306"
@@ -326,6 +328,7 @@ migrations:
     image:
       repository: payment-migrations
       tag: ""
+    resetOnDowngrade: false
     db:
       envPrefix: PAYMENT_DB
       jdbcParams: ""
@@ -340,7 +343,8 @@ migrations:
         memory: 512Mi
 
 # 초기 데이터 시딩 Job (backend/scripts/seed.ts, 이미지 backend/scripts/Dockerfile.seed) — templates/seed-job.yaml
-# 기본 꺼 둠: dev(온프레미스)는 Ansible db_seed 가 DB 노드에서 실행. prod 는 DB 를 매일 새로 만들므로 prod gitops 에서 켬
+# 기본 꺼 둠: prod 는 DB 를 매일 새로 만들므로 prod gitops 에서 켬.
+#   dev(온프레미스)도 gitops envs/dev 에서 켬 — 롤백으로 DB 를 다시 만든 뒤(migrations.*.resetOnDowngrade) 그 버전의 seed.ts 가 다시 채움
 #   env           : 평문 환경변수 (tpl 렌더링). S3_* 를 비우면 객실 사진 단계만 건너뜀
 #   secretEnv     : global.secretName Secret 에서 같은 이름의 key 를 읽음 (메인 DB 접속 정보)
 #   adminSecretName : SEED_ADMIN_EMAIL · SEED_ADMIN_PASSWORD · SEED_ADMIN_NAME key 를 가진 Secret. 비우면 관리자 계정 시딩을 건너뜀

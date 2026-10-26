@@ -408,16 +408,21 @@ kubectl run vktest --rm -it --image=valkey/valkey:9.1 --restart=Never --   valke
 | 단계 | 하는 곳 | 내용 |
 |---|---|---|
 | 스키마 | 클러스터 — 차트의 `main-db-migration` hook Job | ArgoCD sync 때(PreSync) 앱보다 먼저 `main-migrations:<tag>`(backend/migrations V1~) 적용. 실패하면 sync 중단 (앱은 이전 버전 유지) |
-| 초기 데이터 | DB 노드 — `db.yml --tags seed` (`db_seed` role) | `backend/scripts/seed.ts` 를 `scripts/Dockerfile.seed` 로 빌드해 1회 실행 — 관리자 계정, 호텔 3 · 객실, 편의시설, 객실 재고(오늘부터 30일) |
+| 초기 데이터 | 클러스터 — 차트의 `seed` Job (운영과 같은 템플릿) | ArgoCD sync 때 마이그레이션 hook 뒤에 `seed:<tag>`(배포 버전과 같은 `scripts/seed.ts`) 실행 — 관리자 계정, 호텔 3 · 객실 · 사진, 편의시설, 객실 재고. Job 이름이 `seed-<태그 8자>-<spec 해시>` 라 새 버전마다 다시 돌고, 멱등이라 이미 있는 데이터는 건너뜀 |
+| DynamoDB 테이블 | DB 노드 — `db.yml --tags seed` (`db_seed` role) | `scripts/dynamodb-init.ts` (스키마 버전과 무관) |
+
+- 관리자 계정은 OpenBao `seed-admin`(`email`, `password`, 이관 원본: `backend/.env` 의 `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`) → `backend-secrets` → `seed` Job 으로 들어갑니다 (gitops `seed.secretEnv`).
+- gitops `envs/dev/values.yaml` 에 `seed` 설정(`enabled: true`, 객실 사진용 `env`, `secretEnv`)이 있어야 합니다 (gitops-seed 로 만든 레포에는 들어 있음, 기존 레포는 MR — `backend-deploy/gitops-seed/envs/dev/values.yaml.j2` 의 `seed:` 블록을 그대로 복사).
+- `seed` Job 로그: `kubectl -n backend logs -l app.kubernetes.io/name=seed --tail=50` (끝난 Job 은 하루 뒤 정리 — `ttlSecondsAfterFinished`). 실패해도 앱 배포는 되돌리지 않습니다.
+- **이 PC 의 소스로 직접 시딩**(seed Job 이 없는 이전 버전으로 롤백했을 때 등): `ansible-playbook db.yml -K --tags seed -e db_seed_mariadb=true`. 아래는 이 경우의 설명입니다.
 
 ```bash
-# 순서: db.yml(DB 기동) → 첫 배포(deploy-dev → ArgoCD sync, 스키마 생성) → 시딩
 cd infra/ansible
-set -a; source .env; set +a
-ansible-playbook db.yml -K --tags seed
+set -a; source .env; source .secrets/openbao.env; set +a
+ansible-playbook db.yml -K --tags seed                         # DynamoDB 테이블만
+ansible-playbook db.yml -K --tags seed -e db_seed_mariadb=true  # + 이 PC 의 backend/ 소스로 메인 DB 시딩
 ```
 
-- 관리자 계정은 `backend/.env` 의 `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` / `SEED_ADMIN_NAME` 으로 만듭니다 (비우면 관리자만 건너뜀).
 - 스키마(`flyway_schema_history`, `hotels`, `admins`)가 아직 없으면 시딩을 **건너뛰고 안내만** 합니다. 그래서 `db.yml` 전체 실행에 포함되어 있어도 최초 구성이 깨지지 않습니다.
 - 시딩 이미지는 로컬 `backend/` 소스 해시를 태그로 씁니다(`hotel-db-seed:<hash>`). 소스가 바뀔 때만 업로드 · 빌드하고(`node_modules`, `dist`, `.env*` 는 올리지 않음), 이전 태그는 지웁니다.
 - seed.ts 는 멱등입니다. 다시 실행하면 이미 있는 관리자 · 호텔 · 편의시설 · 방별 재고는 건너뜁니다. (재고 기간을 늘리는 기능은 없음 — 재고를 새로 채우려면 해당 방의 `room_availabilities` 를 지운 뒤 다시 실행)
@@ -843,11 +848,32 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
 | 새 버전 (코드 · 차트 · 차트 기본값) | 배포할 버전 파이프라인의 **`deploy-dev` ▶** → gitops 에 `chore(gitops): dev backend → <sha>` 커밋 → ArgoCD 가 최대 3분 안에 sync |
 | dev values (`envs/dev/values.yaml` 의 env, 서비스 활성화 등) | backend-gitops 에 브랜치 · MR 로 미리 준비 → **배포 일정에 merge**. `main` 에 바로 커밋하면 그 즉시 배포됩니다 |
 | 둘 다 (예: 새 차트에 생긴 서비스를 켜기) | ① `deploy-dev` ▶ → 새 버전 Healthy 확인 → ② MR merge. 나눠서 반영하면 문제가 생겼을 때 원인을 구분할 수 있습니다 |
-| 롤백 | Deployments → Environments → dev 에서 이전 배포의 `deploy-dev` 를 다시 실행 (그 SHA 로 다시 커밋 — 최종 태그 이미지는 cleanup 대상이 아님). values 는 MR merge 커밋을 revert |
+| 롤백 | 아래 "롤백" — Run pipeline 에 `ROLLBACK_TO` 를 넣거나, Environments 에서 이전 `deploy-dev` 재실행. values 는 MR merge 커밋을 revert |
 
+- **배포 태그**: `deploy-dev` 는 gitops 커밋에 annotated tag `dev/p<pipeline id>-<이미지 태그>` 를 같이 push 합니다 (예: `dev/p1234-abc1234`).
+  - 태그 메시지에 pipeline · job · 모노레포 commit URL, 차트 revision, 실행자가 들어 있습니다. 어느 파이프라인이 배포했는지는 gitops 레포 Repository → Tags 에서 봅니다.
+  - 같은 파이프라인의 `deploy-dev` 를 다시 실행하면 같은 이름의 태그가 새 커밋으로 갱신됩니다. gitops 가 이미 그 버전이면 커밋 · 태그 없이 끝납니다.
 - **job 성공 = gitops 커밋 성공**입니다. 배포 결과(sync · health · `main-db-migration` hook)는 ArgoCD UI 의 `backend` 앱에서 확인합니다 (12-9).
 - 배포가 실패해도 자동으로 되돌리지 않습니다. 롤링 업데이트라 이전 파드가 계속 서비스하고 앱이 Degraded · Progressing 으로 남습니다. 마이그레이션 hook 이 실패하면 앱 리소스는 적용되지 않습니다. 수정 커밋이나 위 롤백으로 복구합니다.
 - 결제 노드는 따로 배포합니다 (14-5, 순서 주의).
+
+#### 롤백
+
+| 방법 | 언제 | 하는 일 |
+|---|---|---|
+| **(a) Run pipeline + `ROLLBACK_TO`** | 기본 | GitLab `team04/hotel` → Build → Pipelines → Run pipeline (branch `develop`), 변수 `ROLLBACK_TO` = gitops 배포 태그(`dev/p1234-abc1234`) 또는 `previous`(지금 배포 바로 전에 배포됐던 다른 이미지). 다른 job 없이 `rollback-dev:resolve` → `rollback-dev:check` 가 돌고, 로그의 대상을 확인한 뒤 `rollback-dev` ▶ |
+| (b) Environments 재실행 | 그 버전의 파이프라인이 남아 있을 때 | Operate → Environments → dev → 이전 배포의 `deploy-dev` 를 다시 실행 (GitLab 설정 "Allow job retries for rollback deployments" 가 켜져 있어야 함 — 기본값) |
+
+- `rollback-dev:resolve` 는 태그에서 이미지 태그 · 차트 revision 만 꺼냅니다. `envs/dev/values.yaml` 의 다른 값(env 등)은 되돌리지 않습니다 (values 는 MR revert).
+- `rollback-dev:check` 는 그 태그의 이미지가 레지스트리에 모두 있는지 확인합니다. 하나라도 없으면 중단합니다(`seed` 만 없으면 경고 — 이 기능 전 버전은 온프레미스 레지스트리에 seed 이미지가 없음).
+  - 마이그레이션 이미지가 DB 를 그 버전으로 맞출 수 있는 이미지(`migrate.sh`, label `team04.migrations.reset`)인지도 확인합니다. 이 기능 전 이미지면 경고합니다. 그 경우 스키마는 내려가지 않습니다.
+- `rollback-dev` 도 gitops 커밋 + 배포 태그(`dev/p<롤백 pipeline>-<이미지 태그>`, 메시지에 `rollback from`)를 남깁니다. 롤백 뒤 `previous` 는 "롤백 전 버전" 을 가리킵니다.
+- **DB 가 시드 상태로 초기화됩니다.**
+  - ArgoCD sync 때 그 버전의 `main-db-migration` 이 "DB 가 이미지보다 앞섬" 을 보고 메인 DB 를 비운 뒤 그 버전까지 다시 적용합니다(`migrations.main.resetOnDowngrade: true`, backend/migrations/README.md "롤백 때 DB").
+  - 이어서 그 버전의 `seed` Job 이 데이터를 채웁니다. 팀원이 만든 예약 · 계정 등은 사라지므로 롤백 전에 알립니다.
+  - MinIO 객체 · DynamoDB(대화 이력)는 그대로입니다.
+- **결제 노드**: 롤백 후 `ansible-playbook payment.yml -K --tags deploy` 를 실행합니다. 결제 DB 도 같은 방식으로 그 버전으로 다시 만들어지고 이전 payment-service 가 뜹니다 (14-5).
+- 다시 최신으로 가려면 최신 파이프라인의 `deploy-dev` ▶ (또는 `ROLLBACK_TO=<최신 태그>`) 를 실행합니다. 새 V 가 다시 적용되고 seed 는 "이미 존재 — 건너뜀" 으로 끝납니다.
 - lint/jest 는 기존 실패가 남아 있어 non-blocking 입니다. 정리되면 `.gitlab-ci.yml` 의 `allow_failure: true` 를 지웁니다.
 - smoke test 가 실패하면 job 로그 위쪽의 service(`app`) 로그(`CI_DEBUG_SERVICES`)에서 앱 기동 오류를 확인합니다. 파이프라인이 중간에 끊겨 남은 DB 는 DB 노드에서 확인 후 `DROP DATABASE` 합니다.
   ```bash
@@ -902,6 +928,8 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
 | 추적 | `application.resourceTrackingMethod: annotation` — 차트의 `app.kubernetes.io/instance` 라벨과 섞이지 않게 |
 | UI | argocd-server(`--insecure`) NodePort `30880` ← control plane 의 `tailscale serve --https=8443` (443 은 Traefik HTTPS 용으로 비워 둠) |
 | admin | 최초 설치 때 랜덤 생성(`argocd-initial-admin-secret`) → 로컬 `.secrets/argocd.env` |
+| 배포 이력 | 지금 어떤 배포인지는 gitops 레포 HEAD 의 태그 `dev/p<pipeline id>-<sha>` (12-5 "배포 태그") |
+| 순서 | PreSync hook `main-db-migration`(Flyway, 롤백 때 DB 다시 만듦) → 앱 · `seed` Job(시딩, 7-5) |
 
 #### 설치
 
@@ -1316,11 +1344,13 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `dynamodb` | endpoint | ESO |
 | `n8n` | init_owner_password | ESO |
 | `gcp-sa` | key_json_b64 (서비스 계정 키 JSON 의 base64 — ESO 가 풀어서 `GCP_SA_KEY_JSON`) | ESO |
+| `seed-admin` | email, password (`seed` Job 의 `SEED_ADMIN_*`, 7-5) | ESO, db.yml(`-e db_seed_mariadb=true`) |
 | `main-db-root` · `minio-root` · `ci-smoke-db` | password (· user) | db.yml, gitlab.yml — **ESO 는 못 읽음** |
 | `payment-db` · `payment-db-root` · `toss-payments` | (운영과 같은 이름) | payment.yml |
 | `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `aws-ci-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
 
 - `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책도 이 목록에서 만듭니다.
+  - 경로를 추가하면 OpenBao 관리자가 `db.yml --tags openbao` 로 `eso-dev` 정책을 갱신해야 ESO 가 읽을 수 있습니다. 그다음 `db.yml --tags openbao_import`(값 이관), `k8s-cicd.yml --tags backend_secrets` 순서로 실행합니다.
 - 모든 playbook 은 `OPENBAO_ADDR` 이 비어 있으면 OpenBao 를 건너뛰고 예전처럼 `.env` · `backend/.env` · `.secrets/*.env` 를 읽습니다 (`k8s-cicd.yml` 은 ESO 때문에 OpenBao 필수).
 - OpenBao 호출은 Ansible 을 실행하는 PC 가 아니라 **play 대상 노드**에서 합니다 (PC 는 Tailnet 에 없을 수 있음). 그래서 1-1 의 `→ tag:db tcp:8200` grant 가 필요합니다.
 

@@ -35,7 +35,7 @@ openbao_policies: [eso-dev, ansible-dev]
 backend_env_file: "{{ (lookup('env', 'BACKEND_ENV_FILE') | default(playbook_dir ~ '/../../backend/.env', true)) | expanduser | realpath }}"
 backend_env: "{{ lookup('file', backend_env_file, errors='ignore') | default('', true) | parse_dotenv }}"
 # db.yml 이 읽는 OpenBao 경로 (openbao_kv_prefix 아래)
-db_openbao_paths: [main-db, main-db-root, main-valkey, minio-root, minio-app, minio-rag, ci-smoke-db]
+db_openbao_paths: [main-db, main-db-root, main-valkey, minio-root, minio-app, minio-rag, ci-smoke-db, seed-admin]
 
 db_port: "{{ openbao_kv['main-db'].port | default(backend_env.DB_PORT | default('3306', true), true) }}"
 db_database: "{{ openbao_kv['main-db'].dbname | default(backend_env.DB_DATABASE | default('hotel_service', true), true) }}"
@@ -51,8 +51,8 @@ ci_smoke_db_password: "{{ openbao_kv['ci-smoke-db'].password | default(lookup('e
 
 # ── dev DB 시딩 (db_seed role, db.yml --tags seed — README 7-5) ──────
 # backend/scripts/seed.ts 를 scripts/Dockerfile.seed 로 DB 노드에서 빌드해 실행. 관리자 계정 값은 backend/.env
-seed_admin_email: "{{ backend_env.SEED_ADMIN_EMAIL | default('') }}"
-seed_admin_password: "{{ backend_env.SEED_ADMIN_PASSWORD | default('') }}"
+seed_admin_email: "{{ openbao_kv['seed-admin'].email | default(backend_env.SEED_ADMIN_EMAIL | default(''), true) }}"
+seed_admin_password: "{{ openbao_kv['seed-admin'].password | default(backend_env.SEED_ADMIN_PASSWORD | default(''), true) }}"
 seed_admin_name: "{{ backend_env.SEED_ADMIN_NAME | default('관리자', true) }}"
 db_seed_backend_dir: "{{ backend_env_file | dirname }}"   # backend/.env 가 있는 backend 디렉토리
 db_seed_dir: "{{ db_base_dir }}/seed"                      # 빌드 소스 / seed.env (root 전용)
@@ -60,6 +60,9 @@ db_seed_image_name: hotel-db-seed
 db_seed_local_archive: "{{ local_secrets_dir }}/db-seed-src.tar.gz"   # 업로드 후 삭제
 # 이 테이블이 모두 있어야(= main-db-migration 이 적용돼야) 시딩
 db_seed_required_tables: [flyway_schema_history, hotels, admins]
+# 메인 DB(MariaDB) 시딩은 클러스터의 seed Job(차트 seed, 마이그레이션 hook 뒤)이 배포 버전에 맞춰 합니다 (README 7-5).
+# 이 role 은 기본으로 DynamoDB Local 테이블만 만들고, MariaDB 시딩은 -e db_seed_mariadb=true 일 때만 (seed Job 이 없는 이전 버전으로 롤백했을 때 등)
+db_seed_mariadb: false
 
 # ── Valkey: 비밀번호는 OpenBao main-valkey (도입 전: infra/ansible/.env 의 VALKEY_PASSWORD) ──
 valkey_port: 6379

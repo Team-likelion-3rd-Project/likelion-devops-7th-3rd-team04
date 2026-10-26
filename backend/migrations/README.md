@@ -46,6 +46,20 @@ payment_result_inbox를 실제로 쓰는 로직(토스 승인 연동, SQS 수신
 - 클러스터: 이 폴더의 `Dockerfile`로 만든 메인 DB 마이그레이션 이미지를 앱 배포 전에 실행합니다
   (결제 DB의 `payment-migrations`와 같은 방식 — CI 이미지 목록·Helm hook Job 연결은 인프라 작업).
   → 반영 완료(LDP-64): CI가 `main-migrations` 이미지를 빌드하고, 차트의 `main-db-migration` hook Job이 배포 전에 적용합니다.
-  dev 초기 데이터(seed.ts)는 Ansible `db.yml --tags seed`가 넣습니다 (infra/ansible/README.md 7-5).
+  dev 초기 데이터(seed.ts)는 운영과 같은 차트의 `seed` Job(마이그레이션 hook 뒤에 실행)이 배포 버전과 같은 `seed` 이미지로 넣습니다 (infra/ansible/README.md 7-5).
   이미 synchronize로 테이블이 만들어진 DB에는 그대로 적용할 수 없으니, 비우고 V1부터 적용합니다.
 - 적용 현황 확인: 메인 DB의 `flyway_schema_history` 테이블을 조회합니다.
+
+## 롤백 때 DB (dev 전용)
+
+마이그레이션 이미지의 진입점 `migrate.sh`가 `migrate`를 감쌉니다.
+- `MIGRATE_RESET_ON_DOWNGRADE=true` 이면(dev 메인 DB: gitops `migrations.main.resetOnDowngrade: true`, 결제 노드: `flyway.env`), DB에는 적용됐는데 이 이미지에 없는 버전이 있으면 이전 버전으로 롤백한 것으로 봅니다.
+  - 이때 `flyway clean`으로 이 DB의 모든 객체를 지우고, 이 이미지의 V1부터 최고 버전까지 다시 적용합니다.
+  - 데이터는 메인 DB는 차트의 `seed` Job(같은 버전의 `scripts/seed.ts`)이 다시 채웁니다. 결제 DB는 빈 테이블로 시작합니다.
+- 값이 없으면(운영 · 로컬) 예전과 같이 `flyway migrate`만 합니다. 운영은 이전 release로 되돌려도 DB를 건드리지 않습니다.
+- `migrate` 외의 인자(`info`, `validate` 등)는 그대로 `flyway`에 넘깁니다.
+- 결제 마이그레이션 이미지의 `migrate.sh`는 이 파일의 사본입니다. 이 파일만 고치고 복사하세요. CI `helm-lint`가 두 파일이 같은지 검사합니다.
+
+**새 버전(V)을 추가할 때 롤백을 위해 따로 할 일은 없습니다.** 되돌리기(U) 스크립트도 쓰지 않습니다.
+지킬 것은 `scripts/seed.ts`를 그 버전의 스키마에 맞게 함께 고치는 것 하나입니다. 롤백 · 초기화 뒤 dev 데이터는 그 버전의 seed.ts가 다시 만듭니다. CI `smoke:seed`가 이 커밋의 스키마에 seed.ts를 두 번(멱등) 돌려 확인합니다.
+

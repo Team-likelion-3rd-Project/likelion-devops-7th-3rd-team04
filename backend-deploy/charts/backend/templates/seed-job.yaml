@@ -91,7 +91,9 @@ automountServiceAccountToken: false
 {{- end }}
 ---
 # 초기 데이터 시딩 (backend/scripts/seed.ts — 관리자 계정 · 호텔 · 객실 · 호실 · 편의시설 · 예약 가능일 · 객실 사진)
-# 운영은 DB 를 매일 새로 만들므로 배포 때마다 자동으로 채운다 (LDP-141). 온프레미스 dev 는 Ansible db_seed 라 기본 꺼 둠
+# 운영은 DB 를 매일 새로 만들므로 배포 때마다 자동으로 채운다 (LDP-141).
+# 온프레미스 dev 도 gitops 에서 켬 — 롤백으로 DB 를 다시 만들면(migrations.*.resetOnDowngrade) 그 버전의 seed.ts 가 다시 채운다
+#   (ArgoCD 는 이 Job 을 일반 리소스로 sync — ttlSecondsAfterFinished 로 지워지면 selfHeal 이 다시 만들지만 멱등이라 영향 없음)
 #
 # hook 이 아닌 일반 Job 이다 — 마이그레이션(pre-install/pre-upgrade hook)이 끝난 뒤 앱 Deployment 와 같이 만들어진다.
 #   helm --wait 는 Job 완료를 기다리지 않으므로(--wait-for-jobs 없음) 시드가 실패해도 서비스 배포는 롤백되지 않는다
