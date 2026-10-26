@@ -10,6 +10,7 @@
 #   helm(prod 배포 agent) : pre-upgrade hook, --atomic 이 릴리스를 되돌림
 #   ArgoCD(온프레미스 dev): PreSync hook 으로 실행, 실패하면 sync 실패 (앱 리소스는 적용하지 않음)
 # 실패한 Job 은 로그 확인을 위해 남기고, 다음 배포 때 before-hook-creation 으로 정리
+# resetOnDowngrade(dev 전용): 이전 버전으로 롤백하면 DB 를 비우고 이 이미지 버전까지 다시 적용 (backend/migrations/migrate.sh)
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -58,6 +59,12 @@ spec:
               value: "$({{ $prefix }}_PASSWORD)"
             - name: FLYWAY_CONNECT_RETRIES
               value: "10"
+            {{- if $m.resetOnDowngrade }}
+            # dev 전용: DB 가 이 이미지보다 앞서 있으면(롤백) 스키마를 비우고 이 버전까지 다시 적용 — 이미지의 migrate.sh.
+            # 데이터는 차트의 seed Job(seed.enabled)이 다시 채움
+            - name: MIGRATE_RESET_ON_DOWNGRADE
+              value: "true"
+            {{- end }}
           resources:
             {{- toYaml $m.resources | nindent 12 }}
           {{- with $.Values.containerSecurityContext }}
