@@ -5,6 +5,8 @@
 #   build       : kaniko 로 이미지 10개 빌드 → 후보 태그 ci-<sha> 로 push (develop 만, 그 외는 빌드만)
 #   image-test  : 파이프라인 전용 DB(ci_<id>, ci_main_<id>) 준비 → 후보 이미지를 띄워 /health smoke test
 #   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
+#                 push:ghcr: 승격한 이미지를 GHCR 에 커밋 SHA 40자 태그로 복사 — 운영 릴리스가 ECR 로 옮겨 갈 원본
+#                 (보존: .github/workflows/ghcr-retention.yml, infra/ansible README 12-4)
 #   deploy      : (수동) deploy-dev: develop → GitLab gitops 에 커밋 1개 (envs/dev 이미지 태그 + apps/dev 차트 revision)
 #                 + 배포 태그 dev/p<pipeline id>-<sha> → 온프레미스 ArgoCD 가 sync (클러스터에 직접 배포하지 않음)
 #                 롤백: Run pipeline 에 ROLLBACK_TO=<gitops 태그 | previous> → rollback-dev:resolve · check → rollback-dev ▶
@@ -74,6 +76,12 @@ variables:
   IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations seed"
   # 운영(ECR)에만 올리는 이미지 — 온프레미스 GitLab Registry 로는 push · 승격하지 않음 (build 는 빌드 검증만, release:build 가 ECR push)
   RELEASE_ONLY_IMAGES: ""
+
+  # ── GHCR: develop 을 통과한 이미지의 운영 릴리스용 사본 (push:ghcr) ──
+  # GHCR 은 소문자 이름만 받음. 저장소 이름은 ECR(team04-hotel/<서비스>)과 같은 구조
+  GHCR_IMAGE_PREFIX: ghcr.io/team-likelion-3rd-project/team04-hotel
+  # 이미지 label org.opencontainers.image.source — GHCR 이 이 값으로 패키지를 모노레포에 연결 (Actions GITHUB_TOKEN 접근)
+  GITHUB_REPO_URL: https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04
 
   # ── 차트 (helm-lint) · 배포 ──
   CHART_PATH: backend-deploy/charts/backend
@@ -259,7 +267,7 @@ build:
         --dockerfile "$DOCKERFILE" \
         --cache=true --cache-repo "$CI_REGISTRY_IMAGE/cache/$SERVICE" --cache-ttl=168h \
         --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
-        --label "org.opencontainers.image.source=$CI_PROJECT_URL" \
+        --label "org.opencontainers.image.source=$GITHUB_REPO_URL" \
         "$@"
 
 # ── AWS Runner 검증 (Terraform 40-cicd, infra/ansible README 13절) ──────────
@@ -740,6 +748,43 @@ push:
       else
         crane copy "docker.io/n8nio/n8n:$N8N_VERSION" "$CI_REGISTRY_IMAGE/n8n:$N8N_VERSION" --platform linux/amd64
       fi
+
+# 승격한 이미지를 GHCR 로 복사 — 운영 릴리스(GitHub Actions)가 Tailscale 없이 GHCR → ECR 로 옮김. 재빌드 없이 같은 digest
+#   태그 = 커밋 SHA 40자 (release/* 가 가리키는 develop 커밋과 바로 대응). 이미 있으면 건너뜀 (재시도 멱등)
+#   deploy-dev 는 push 만 기다림 — GHCR 장애가 dev 배포를 막지 않음. n8n 은 운영이 Docker Hub 에서 직접 옮김
+#   GHCR_USER · GHCR_TOKEN: 봇 계정 classic PAT(write:packages) — OpenBao ghcr-push → gitlab.yml --tags bootstrap (README 12-4)
+push:ghcr:
+  extends: .rules-develop
+  stage: push
+  image:
+    name: $CRANE_IMAGE
+    entrypoint: [""]
+  needs: [push]
+  interruptible: false
+  retry: 1
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - 'test -n "${GHCR_TOKEN:-}" || { echo "CI 변수 GHCR_USER · GHCR_TOKEN 이 없습니다 — infra/ansible README 12-4 (OpenBao ghcr-push → gitlab.yml --tags bootstrap)"; exit 1; }'
+    - crane auth login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    # 토큰을 명령 인자로 넘기지 않음
+    - printf '%s' "$GHCR_TOKEN" | crane auth login ghcr.io -u "$GHCR_USER" --password-stdin
+    - |
+      for svc in $IMAGES; do
+        dst="$GHCR_IMAGE_PREFIX/$svc:$CI_COMMIT_SHA"
+        src_digest="$(crane digest "$CI_REGISTRY_IMAGE/$svc:$IMAGE_TAG")"
+        dst_digest="$(crane digest "$dst" 2>/dev/null || true)"
+        if [ "$dst_digest" = "$src_digest" ]; then
+          echo "이미 있음: $dst"
+        else
+          # 같은 커밋을 새 파이프라인으로 다시 빌드하면 digest 가 달라짐 — 이번에 승격한 이미지로 맞춤
+          [ -z "$dst_digest" ] || echo "덮어씀: $dst ($dst_digest → $src_digest)"
+          crane copy "$CI_REGISTRY_IMAGE/$svc:$IMAGE_TAG" "$dst"
+          dst_digest="$(crane digest "$dst")"
+        fi
+        [ "$src_digest" = "$dst_digest" ] || { echo "$svc digest 불일치 — GitLab $src_digest / GHCR $dst_digest"; exit 1; }
+        echo "$dst  ($dst_digest)"
+      done
 
 # ── deploy (수동) ─────────────────────────────────────────────
 # gitops 레포(dev) 에 커밋 1개 + 배포 태그 1개를 만듭니다. 클러스터 반영은 ArgoCD 의 backend Application(자동 sync)이 합니다 (infra/ansible README 12-9)
