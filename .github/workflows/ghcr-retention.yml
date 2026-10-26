@@ -1,0 +1,74 @@
+name: GHCR retention
+
+# GHCR team04-hotel/<서비스> 패키지의 오래된 버전 정리 (GitLab push:ghcr 가 develop 통과마다 올림).
+#   패키지마다 최근 KEEP 개 버전은 유지하고, 그보다 오래된 버전은 삭제합니다.
+#   열려 있는 release/* 브랜치가 가리키는 커밋 SHA 태그는 오래돼도 삭제하지 않습니다 (릴리스 대기 중인 이미지).
+#   운영은 ECR 에서만 pull 하므로 여기서 지워도 운영 · 롤백에는 영향이 없습니다.
+#
+# 필요한 설정 (infra/ansible/README.md 12-4):
+#   각 패키지 Settings → Manage Actions access 에 이 레포를 Admin 으로 (버전 삭제에 필요)
+#   수동 실행(workflow_dispatch)은 기본이 dry run — 지울 목록만 출력
+
+on:
+  schedule:
+    - cron: "0 18 * * *" # 매일 03:00 KST
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "삭제하지 않고 목록만 출력"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ghcr-retention
+  cancel-in-progress: false
+
+jobs:
+  retention:
+    name: Delete old versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ORG: ${{ github.repository_owner }}
+      KEEP: "20"
+      DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+      # .gitlab-ci.yml 의 IMAGES 와 같은 목록
+      IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations seed"
+    steps:
+      - name: 오래된 버전 삭제
+        run: |
+          set -euo pipefail
+          keep_shas="$(gh api --paginate "/repos/$GITHUB_REPOSITORY/git/matching-refs/heads/release/" --jq '.[].object.sha' | sort -u)"
+          echo "유지(열린 release/*): ${keep_shas:-없음}" | tr '\n' ' '; echo
+          echo "dry run: $DRY_RUN · 패키지별 최근 $KEEP 개 유지"
+
+          for svc in $IMAGES; do
+            pkg="team04-hotel%2F$svc"
+            if ! versions="$(gh api --paginate "/orgs/$ORG/packages/container/$pkg/versions?per_page=100" \
+                  --jq '.[] | [.id, .created_at, (.metadata.container.tags | join(","))] | @tsv' 2> err.txt)"; then
+              if grep -q "HTTP 404" err.txt; then echo "$svc: 패키지 없음 — 건너뜀"; continue; fi
+              cat err.txt; echo "::error::$svc 버전 조회 실패 (패키지 Actions access 에 이 레포가 있는지 확인)"; exit 1
+            fi
+
+            deleted=0
+            # created_at 내림차순으로 KEEP 개 다음부터가 삭제 후보
+            while IFS=$'\t' read -r id created tags; do
+              [ -n "$id" ] || continue
+              keep=""
+              for t in ${tags//,/ }; do
+                if printf '%s\n' "$keep_shas" | grep -qx "$t"; then keep="$t"; fi
+              done
+              if [ -n "$keep" ]; then echo "$svc: 유지 $keep (열린 release/*)"; continue; fi
+              echo "$svc: 삭제 ${tags:-<태그 없음>} ($created)"
+              if [ "$DRY_RUN" != "true" ]; then
+                gh api -X DELETE "/orgs/$ORG/packages/container/$pkg/versions/$id" > /dev/null
+              fi
+              deleted=$((deleted + 1))
+            done < <(printf '%s\n' "$versions" | sort -t $'\t' -k2,2r | tail -n +$((KEEP + 1)))
+            echo "$svc: 버전 $(printf '%s\n' "$versions" | grep -c . ) 개 중 $deleted 개 삭제 대상"
+          done
