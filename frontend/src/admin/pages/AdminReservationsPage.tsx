@@ -12,6 +12,7 @@ import type { AdminBooking } from '../../api/adminReservations'
 import type { Payment } from '../../api/payments'
 import { STATUS_LABEL } from '../../pages/reservationHistoryUtils'
 import { PAYMENT_STATUS_LABEL } from '../../utils/payment'
+import AdminPagination from '../components/AdminPagination'
 import AdminProxyBookingForm from '../components/AdminProxyBookingForm'
 import AdminReservationActionPanel from '../components/AdminReservationActionPanel'
 import type { ReservationAction } from '../components/AdminReservationActionPanel'
@@ -33,16 +34,6 @@ function statusQuery(filter: string): string[] | undefined {
 function guestLabel(booking: Pick<AdminBooking, 'userId' | 'guestName' | 'guestEmail'>): string {
   if (!booking.guestName) return `회원 #${booking.userId}`
   return booking.guestEmail ? `${booking.guestName} (${booking.guestEmail})` : booking.guestName
-}
-
-// 페이지 번호 줄 — 지금 페이지 앞뒤 2개씩, 처음·끝은 항상
-function pageNumbers(current: number, last: number): (number | '…')[] {
-  const pages: (number | '…')[] = []
-  for (let p = 1; p <= last; p++) {
-    if (p === 1 || p === last || Math.abs(p - current) <= 2) pages.push(p)
-    else if (pages[pages.length - 1] !== '…') pages.push('…')
-  }
-  return pages
 }
 
 const STATUS_FILTERS: { value: string; label: string }[] = [
@@ -396,33 +387,7 @@ function AdminReservationsPage() {
               </table>
             </div>
           )}
-          {lastPage > 1 && (
-            <nav className="admin-pagination" aria-label="예약 목록 페이지">
-              <button type="button" className="admin-btn" onClick={() => setPage(page - 1)} disabled={page <= 1}>
-                ‹ 이전
-              </button>
-              {pageNumbers(page, lastPage).map((p, i) =>
-                p === '…' ? (
-                  <span key={`gap-${i}`} className="admin-pagination-gap">
-                    …
-                  </span>
-                ) : (
-                  <button
-                    key={p}
-                    type="button"
-                    className={`admin-btn${p === page ? ' is-primary' : ''}`}
-                    onClick={() => setPage(p)}
-                    aria-current={p === page ? 'page' : undefined}
-                  >
-                    {p}
-                  </button>
-                ),
-              )}
-              <button type="button" className="admin-btn" onClick={() => setPage(page + 1)} disabled={page >= lastPage}>
-                다음 ›
-              </button>
-            </nav>
-          )}
+          <AdminPagination page={page} lastPage={lastPage} onChange={setPage} label="예약 목록 페이지" />
         </div>
       )}
     </section>
