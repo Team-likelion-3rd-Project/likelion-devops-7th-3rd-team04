@@ -141,14 +141,6 @@ export async function searchAdminUsers(
   return { users: data.users ?? [], total: data.total ?? 0 }
 }
 
-// GET /api/users (관리자 전용) - 전체 유저 목록
-export async function fetchAdminUsers(): Promise<AdminUser[]> {
-  const res = await authedFetch('/api/users')
-  const data = await parseJson<{ users: AdminUser[] }>(res)
-  // 목록이 비어있으면 gRPC 응답의 repeated 필드가 undefined로 내려올 수 있어 방어적으로 처리한다.
-  return data.users ?? []
-}
-
 // GET /api/users/:userId (관리자 전용) - 유저 상세
 export async function fetchAdminUserById(userId: string | number): Promise<AdminUser> {
   const res = await authedFetch(`/api/users/${userId}`)
