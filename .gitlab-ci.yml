@@ -40,7 +40,11 @@ stages:
   - image-test
   - push
   - deploy
-  - release
+  # main 릴리스 — 준비(ECR 주소 · push 된 이미지) → 산출물(ECR 이미지 · 프론트 빌드 업로드) → gitops 릴리스 PR.
+  # 실행 순서는 job 의 needs 가 정하고 stage 는 화면 구분용 (prepare 가 끝나면 build 가 바로 시작)
+  - release-prepare
+  - release-build
+  - release-gitops
 
 variables:
   # ── 이미지 버전 고정 ──
@@ -306,7 +310,7 @@ aws-runner:push:
       exit $rc
 
 # ── release: main → ECR push → prod gitops 릴리스 PR (AWS Runner, infra/gitops/prod/README.md "릴리스") ──
-# main 은 릴리스 PR(develop · hotfix → main, merge commit) 로만 바뀝니다. 태그 = main 커밋 SHA(40자) — chart revision 과 같은 값.
+# main 은 릴리스 PR(release/* · hotfix/* → main, merge commit) 로만 바뀝니다. 태그 = main 커밋 SHA(40자) — chart revision 과 같은 값.
 # 계정 ID · ECR 토큰 · GitHub 토큰은 레포 · CI 변수에 두지 않습니다 (Runner Role 로 조회, 로그에서 가림).
 .release:
   tags: [aws]
@@ -318,7 +322,7 @@ aws-runner:push:
 # 프론트 빌드용 토스 클라이언트 키(공개용, 12-secrets Parameter Store)도 넘깁니다 — 레포에 두지 않으려고 SSM 에 둠
 release:prepare:
   extends: .release
-  stage: release
+  stage: release-prepare
   image:
     name: amazon/aws-cli:2.31.0
     entrypoint: [""]
@@ -353,7 +357,7 @@ release:prepare:
 
 release:build:
   extends: .release
-  stage: release
+  stage: release-build
   image:
     name: $KANIKO_IMAGE
     entrypoint: [""]
@@ -423,7 +427,7 @@ release:build:
 #   태그가 버전이라 커밋마다 바뀌지 않습니다. ECR 이 IMMUTABLE 이므로 이미 있으면(release:prepare RELEASE_SKIP_N8N) 건너뜁니다
 release:mirror-n8n:
   extends: .release
-  stage: release
+  stage: release-build
   image:
     name: $KANIKO_IMAGE
     entrypoint: [""]
@@ -452,7 +456,7 @@ release:mirror-n8n:
 #   npm ci --ignore-scripts: job 컨테이너도 IMDS 로 Runner Role 을 받으므로 의존성 설치 스크립트를 실행하지 않습니다
 release:frontend-build:
   extends: .release
-  stage: release
+  stage: release-build
   image: $NODE_IMAGE
   needs: [release:prepare]
   variables:
@@ -483,7 +487,7 @@ release:frontend-build:
 # 같은 SHA 로 재시도하면 같은 내용을 덮어씁니다
 release:frontend:
   extends: .release
-  stage: release
+  stage: release-build
   image:
     name: amazon/aws-cli:2.31.0
     entrypoint: [""]
@@ -502,7 +506,7 @@ release:frontend:
 #   같은 SHA 의 PR 이 이미 열려 있으면 건너뜁니다 (job 재시도 대비)
 release:gitops-pr:
   extends: .release
-  stage: release
+  stage: release-gitops
   image:
     name: $DEPLOY_IMAGE
     entrypoint: [""]
