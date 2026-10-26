@@ -60,6 +60,12 @@ locals {
       namespace       = "backend"
       service_account = "llm-ingest"
     }
+    # 클러스터 로그 수집 DaemonSet (LDP-144, gitops fluent-bit)
+    fluent-bit = {
+      description     = "Fluent Bit (cluster log groups, log bucket app-logs/main-cluster/)"
+      namespace       = "fluent-bit"
+      service_account = "fluent-bit"
+    }
   }
 
   # 15-chatbot-vectors 인덱스 (s3vectors 리소스 ARN 형식 bucket/<버킷>/index/<인덱스>)
@@ -216,4 +222,30 @@ resource "aws_iam_role_policy" "llm_ingest" {
   name   = "rag-put"
   role   = aws_iam_role.irsa["llm-ingest"].id
   policy = data.aws_iam_policy_document.llm_ingest.json
+}
+
+# fluent-bit: 21-observability-base 의 클러스터 로그 그룹에 쓰기 + 로그 버킷 app-logs/main-cluster/ 올리기만.
+#   CreateLogStream · PutLogEvents  cloudwatch_logs 출력 (그룹은 Terraform 이 만들어 CreateLogGroup 없음, 스트림 ARN 은 그룹 ARN:*)
+#   PutObject                       s3 출력 (use_put_object, 멀티파트 미사용). 결제 서버 로그 등 다른 app-logs/ 경로는 쓸 수 없다
+data "aws_iam_policy_document" "fluent_bit" {
+  statement {
+    sid     = "ClusterLogGroups"
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = [
+      for name in values(var.cluster_log_group_names) :
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:${name}:*"
+    ]
+  }
+
+  statement {
+    sid       = "AppLogsMainCluster"
+    actions   = ["s3:PutObject"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.log_bucket_name}/app-logs/main-cluster/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "fluent_bit" {
+  name   = "cluster-logs"
+  role   = aws_iam_role.irsa["fluent-bit"].id
+  policy = data.aws_iam_policy_document.fluent_bit.json
 }
