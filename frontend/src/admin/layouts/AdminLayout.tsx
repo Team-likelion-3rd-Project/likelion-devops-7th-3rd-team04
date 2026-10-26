@@ -1,6 +1,8 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { adminLogout } from '../../api/gateway'
 import { adminAuth } from '../../api/tokenStore'
+import ErrorBoundary from '../../components/ErrorBoundary'
+import { AdminErrorFallback } from '../components/AdminStatusCard'
 import './AdminLayout.css'
 
 const NAV_ITEMS = [
@@ -16,6 +18,7 @@ const NAV_ITEMS = [
 function AdminLayout() {
   const user = adminAuth.useUser()
   const navigate = useNavigate()
+  const location = useLocation()
 
   const handleLogout = async () => {
     await adminLogout()
@@ -49,7 +52,10 @@ function AdminLayout() {
         </header>
 
         <main className="admin-content">
-          <Outlet />
+          {/* 화면 오류는 본문만 안내로 바꾸고 메뉴는 남긴다 — 다른 메뉴로 이동하면 풀린다 (LDP-158) */}
+          <ErrorBoundary resetKey={location.pathname} fallback={<AdminErrorFallback />}>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

@@ -3,6 +3,8 @@ import Header from '../components/Header'
 import Footer from '../components/Footer'
 import MobileDock from '../components/MobileDock'
 import ChatWidget from '../components/ChatWidget'
+import ErrorBoundary from '../components/ErrorBoundary'
+import ErrorPage from '../pages/ErrorPage'
 import { customerAuth } from '../api/tokenStore'
 import './RootLayout.css'
 
@@ -22,7 +24,10 @@ function RootLayout() {
         </div>
       )}
       <main key={notice ? location.key : 'main'} className={`root-layout-main${notice ? ' is-fresh' : ''}`}>
-        <Outlet />
+        {/* 페이지 오류는 본문만 안내 화면으로 바꾸고 헤더는 남겨 다른 메뉴로 이동할 수 있게 한다 (LDP-158) */}
+        <ErrorBoundary resetKey={location.pathname} fallback={<ErrorPage />}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
       <Footer />
       <MobileDock />
