@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClientGrpc, RpcException } from '@nestjs/microservices';
-import { CallOptions, Metadata } from '@grpc/grpc-js';
+import { CallOptions, Metadata, status as GrpcStatus } from '@grpc/grpc-js';
 import { Observable, firstValueFrom } from 'rxjs';
 import {
   DataSource,
@@ -16,7 +16,13 @@ import {
   QueryFailedError,
   Repository,
 } from 'typeorm';
-import { apiRpcException, PaymentResultEvent, errorTrace } from '@app/common';
+import {
+  apiRpcException,
+  PaymentResultEvent,
+  errorTrace,
+  grpcStatusForHttp,
+  rpcError,
+} from '@app/common';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
 import {
   PaymentAttempt,
@@ -339,7 +345,7 @@ export class BookingServiceService implements OnModuleInit {
     ) =>
       admin
         ? apiRpcException({ status, code, message, retryable })
-        : new RpcException(message);
+        : rpcError(grpcStatusForHttp(status), message);
 
     if (data.checkInDate >= data.checkOutDate) {
       throw fail(
@@ -554,7 +560,7 @@ export class BookingServiceService implements OnModuleInit {
       where: { reservationId },
     });
     if (!reservation) {
-      throw new RpcException('존재하지 않는 예약입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 예약입니다.');
     }
     const [response] = await this.attachRoomNumbers([
       this.toGrpcResponse(reservation),
@@ -583,10 +589,13 @@ export class BookingServiceService implements OnModuleInit {
       where: { reservationId },
     });
     if (!reservation) {
-      throw new RpcException('존재하지 않는 예약입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 예약입니다.');
     }
     if (reservation.userId !== userId) {
-      throw new RpcException('본인의 예약만 취소할 수 있습니다.');
+      throw rpcError(
+        GrpcStatus.PERMISSION_DENIED,
+        '본인의 예약만 취소할 수 있습니다.',
+      );
     }
     if (REFUNDABLE_CLOSED_STATUSES.includes(reservation.status)) {
       return this.refundStatusOnRecancel(reservationId);
@@ -595,11 +604,17 @@ export class BookingServiceService implements OnModuleInit {
       reservation.status !== ReservationStatus.PENDING_PAYMENT &&
       reservation.status !== ReservationStatus.RESERVED
     ) {
-      throw new RpcException('이미 취소되었거나 완료된 예약입니다.');
+      throw rpcError(
+        GrpcStatus.FAILED_PRECONDITION,
+        '이미 취소되었거나 완료된 예약입니다.',
+      );
     }
 
     if (!(await this.cancelReservation(reservation))) {
-      throw new RpcException('이미 취소되었거나 완료된 예약입니다.');
+      throw rpcError(
+        GrpcStatus.FAILED_PRECONDITION,
+        '이미 취소되었거나 완료된 예약입니다.',
+      );
     }
     // 원래 예약을 취소하면 연결된 연장 예약도 함께 취소한다 (LDP-90). 연장 예약만 취소하면 원래 예약은 유지
     if (!reservation.linkedReservationId) {

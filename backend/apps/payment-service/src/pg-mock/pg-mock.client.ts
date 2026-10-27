@@ -1,11 +1,12 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
-import { RpcException } from '@nestjs/microservices';
 import { AxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import { PgConfirmResult } from '../pg/pg-confirm-result';
 import { PgCancelResult } from '../pg/pg-cancel-result';
 import { PgLookupOutcome, PgLookupResult } from '../pg/pg-lookup-result';
+import { rpcError } from '@app/common';
 
 export interface PgMockPaymentResult {
   paymentKey: string;
@@ -196,7 +197,7 @@ export class PgMockClient {
       params,
     ).catch((error: unknown) => {
       this.logError('PG 결제 취소 실패', error);
-      throw new RpcException('PG 결제 취소에 실패했습니다.');
+      throw rpcError(GrpcStatus.UNAVAILABLE, 'PG 결제 취소에 실패했습니다.');
     });
   }
 

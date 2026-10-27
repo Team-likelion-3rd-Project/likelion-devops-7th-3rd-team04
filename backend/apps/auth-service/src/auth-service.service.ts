@@ -1,6 +1,7 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ClientGrpc, RpcException } from '@nestjs/microservices';
+import { ClientGrpc } from '@nestjs/microservices';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { Repository } from 'typeorm';
 import { Observable, firstValueFrom } from 'rxjs';
@@ -13,6 +14,8 @@ import {
   apiRpcException,
   getRequiredEnv,
   errorTrace,
+  grpcStatusOf,
+  rpcError,
 } from '@app/common';
 import { Credential } from './entities/credential.entity';
 import { AdminCredential } from './entities/admin-credential.entity';
@@ -149,9 +152,10 @@ export class AuthServiceService implements OnModuleInit {
         name: data.name,
         phoneNumber: data.phoneNumber,
       }),
-    ).catch((err) => {
-      // user-service가 이메일 중복 등으로 던진 RpcException 메시지를 그대로 전달
-      throw new RpcException(
+    ).catch((err: { code?: number; details?: string; message?: string }) => {
+      // user-service가 이메일 중복 등으로 던진 오류의 메시지·상태 코드를 그대로 전달
+      throw rpcError(
+        grpcStatusOf(err),
         err?.details || err?.message || '회원가입에 실패했습니다.',
       );
     });
@@ -245,17 +249,17 @@ export class AuthServiceService implements OnModuleInit {
   async login(data: { email: string; password: string }): Promise<AuthTokens> {
     const user = await firstValueFrom(this.userService.getUserByEmail({ email: data.email })).catch(() => {
       // 미가입 이메일도 동일한 메시지로 응답 (계정 존재 여부 비노출)
-      throw new RpcException(INVALID_CREDENTIALS_MESSAGE);
+      throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_CREDENTIALS_MESSAGE);
     });
 
     const credential = await this.credentialRepository.findOne({ where: { userId: user.id } });
     if (!credential) {
-      throw new RpcException(INVALID_CREDENTIALS_MESSAGE);
+      throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_CREDENTIALS_MESSAGE);
     }
 
     const isPasswordValid = await bcrypt.compare(data.password, credential.passwordHash);
     if (!isPasswordValid) {
-      throw new RpcException(INVALID_CREDENTIALS_MESSAGE);
+      throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_CREDENTIALS_MESSAGE);
     }
 
     return this.issueTokens({
@@ -273,17 +277,17 @@ export class AuthServiceService implements OnModuleInit {
   async adminLogin(data: { email: string; password: string }): Promise<AuthTokens> {
     const admin = await firstValueFrom(this.adminService.getAdminByEmail({ email: data.email })).catch(() => {
       // 미등록 이메일도 동일한 메시지로 응답 (계정 존재 여부 비노출)
-      throw new RpcException(INVALID_CREDENTIALS_MESSAGE);
+      throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_CREDENTIALS_MESSAGE);
     });
 
     const credential = await this.adminCredentialRepository.findOne({ where: { adminId: admin.id } });
     if (!credential) {
-      throw new RpcException(INVALID_CREDENTIALS_MESSAGE);
+      throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_CREDENTIALS_MESSAGE);
     }
 
     const isPasswordValid = await bcrypt.compare(data.password, credential.passwordHash);
     if (!isPasswordValid) {
-      throw new RpcException(INVALID_CREDENTIALS_MESSAGE);
+      throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_CREDENTIALS_MESSAGE);
     }
 
     return this.issueTokens({
@@ -305,7 +309,7 @@ export class AuthServiceService implements OnModuleInit {
         secret: getRequiredEnv('JWT_REFRESH_SECRET'),
       });
     } catch {
-      throw new RpcException(INVALID_REFRESH_TOKEN_MESSAGE);
+      throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_REFRESH_TOKEN_MESSAGE);
     }
 
     // 로테이션/grace 어느 경로든 절대 만료 상한을 넘긴 세션은 여기서 끊는다(강제 재로그인 유도).
@@ -337,7 +341,7 @@ export class AuthServiceService implements OnModuleInit {
       }
     }
 
-    throw new RpcException(INVALID_REFRESH_TOKEN_MESSAGE);
+    throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_REFRESH_TOKEN_MESSAGE);
   }
 
   // 최초 로그인으로부터 JWT_REFRESH_ABSOLUTE_MAX_DAYS가 지났으면 로테이션/grace를 막고 세션을 끊는다.
@@ -358,7 +362,7 @@ export class AuthServiceService implements OnModuleInit {
     await this.redis.del(refreshTokenKey(type, id));
     await this.redis.del(refreshGraceKey(type, id));
     await this.redis.del(issuedAtKey(type, id));
-    throw new RpcException(INVALID_REFRESH_TOKEN_MESSAGE);
+    throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_REFRESH_TOKEN_MESSAGE);
   }
 
   private getAbsoluteMaxAgeSeconds(): number {
@@ -379,13 +383,16 @@ export class AuthServiceService implements OnModuleInit {
   private async resolvePrincipal(payload: JwtPayload): Promise<Principal> {
     if (payload.type === 'ADMIN') {
       const admin = await firstValueFrom(this.adminService.getAdminByEmail({ email: payload.email })).catch(() => {
-        throw new RpcException(INVALID_REFRESH_TOKEN_MESSAGE);
+        throw rpcError(
+          GrpcStatus.UNAUTHENTICATED,
+          INVALID_REFRESH_TOKEN_MESSAGE,
+        );
       });
       return { id: admin.id, email: admin.email, name: admin.name, role: 'ADMIN', type: 'ADMIN' };
     }
 
     const user = await firstValueFrom(this.userService.getUserByEmail({ email: payload.email })).catch(() => {
-      throw new RpcException(INVALID_REFRESH_TOKEN_MESSAGE);
+      throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_REFRESH_TOKEN_MESSAGE);
     });
     return { id: user.id, email: user.email, name: user.name, role: user.role, type: 'USER' };
   }
@@ -412,12 +419,18 @@ export class AuthServiceService implements OnModuleInit {
   }): Promise<{ success: boolean }> {
     const credential = await this.credentialRepository.findOne({ where: { userId: data.userId } });
     if (!credential) {
-      throw new RpcException(INVALID_CURRENT_PASSWORD_MESSAGE);
+      throw rpcError(
+        GrpcStatus.UNAUTHENTICATED,
+        INVALID_CURRENT_PASSWORD_MESSAGE,
+      );
     }
 
     const isCurrentPasswordValid = await bcrypt.compare(data.currentPassword, credential.passwordHash);
     if (!isCurrentPasswordValid) {
-      throw new RpcException(INVALID_CURRENT_PASSWORD_MESSAGE);
+      throw rpcError(
+        GrpcStatus.UNAUTHENTICATED,
+        INVALID_CURRENT_PASSWORD_MESSAGE,
+      );
     }
 
     credential.passwordHash = await bcrypt.hash(data.newPassword, SALT_ROUNDS);

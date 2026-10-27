@@ -1,7 +1,7 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { randomUUID } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RpcException } from '@nestjs/microservices';
 import {
   DataSource,
   EntityManager,
@@ -25,7 +25,7 @@ import { TossPaymentsClient } from './pg/toss-payments.client';
 import { PgConfirmResult } from './pg/pg-confirm-result';
 import { PgCancelResult } from './pg/pg-cancel-result';
 import { PgLookupResult } from './pg/pg-lookup-result';
-import { errorTrace } from '@app/common';
+import { errorTrace, rpcError } from '@app/common';
 
 // 결제 승인 결과 (proto ApprovePaymentResponse.result, 위키 API 명세 5.9의 result와 같은 값)
 export type ApproveResultType =
@@ -480,7 +480,7 @@ export class PaymentServiceService {
       where: { paymentId },
     });
     if (!payment) {
-      throw new RpcException('존재하지 않는 결제내역입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 결제내역입니다.');
     }
     return this.toGrpcResponse(payment);
   }

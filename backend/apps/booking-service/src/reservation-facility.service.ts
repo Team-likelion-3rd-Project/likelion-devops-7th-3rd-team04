@@ -1,9 +1,10 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RpcException } from '@nestjs/microservices';
 import { Repository } from 'typeorm';
 import { ReservationFacility } from './entities/reservation-facility.entity';
 import { Reservation } from './entities/reservation.entity';
+import { rpcError } from '@app/common';
 
 // proto의 ReservationFacilityItem 메시지와 1:1 대응되는 응답 형태
 export interface ReservationFacilityGrpcResponse {
@@ -40,7 +41,7 @@ export class ReservationFacilityService {
       where: { reservationId: data.reservationId },
     });
     if (!reservation) {
-      throw new RpcException('존재하지 않는 예약입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 예약입니다.');
     }
 
     const reservationFacility = this.reservationFacilityRepository.create({
@@ -63,7 +64,7 @@ export class ReservationFacilityService {
       where: { reservationId },
     });
     if (!reservation) {
-      throw new RpcException('존재하지 않는 예약입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 예약입니다.');
     }
     const reservationFacilities = await this.reservationFacilityRepository.find(
       {
