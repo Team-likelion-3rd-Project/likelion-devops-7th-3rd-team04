@@ -37,11 +37,19 @@ services:
     env:
       # 프론트(13-frontend) 출처. 하나만 허용하므로 www 는 CloudFront 에서 루트로 리다이렉트
       CORS_ORIGIN: "https://meomulm.click"
+      # 서비스 간 gRPC 는 Headless Service 로 Pod 주소 목록을 받아 요청마다 분배 (LDP-160, 차트 grpcHeadless · round_robin)
+      # 롤백 = 아래 *_SERVICE_HOST 줄 삭제 → 차트 기본값 <이름>:<포트>(ClusterIP) 로 복귀
+      USER_SERVICE_HOST: "dns:///user-service-headless:3001"
+      HOTEL_SERVICE_HOST: "dns:///hotel-service-headless:3002"
+      BOOKING_SERVICE_HOST: "dns:///booking-service-headless:3003"
+      CHAT_BOT_SERVICE_HOST: "dns:///chat-bot-service-headless:3005"
+      AUTH_SERVICE_HOST: "dns:///auth-service-headless:3006"
       # 결제 서버는 결제 VPC — 메인 VPC 의 PrivateLink 엔드포인트 고정 이름으로 호출 (Terraform 71-payment-link, 재생성해도 같음)
       PAYMENT_SERVICE_HOST: "payment.team04-hotel.internal:3004"
   booking-service:
     replicas: 2
     env:
+      HOTEL_SERVICE_HOST: "dns:///hotel-service-headless:3002"   # LDP-160
       # 결제 서버 gRPC (PrivateLink, Terraform 71-payment-link)
       PAYMENT_SERVICE_HOST: "payment.team04-hotel.internal:3004"
       # 결제 결과 이벤트 (SQS FIFO, 43-messaging). SQS_ENDPOINT 비움 = AWS 기본 주소, 자격 증명은 IRSA(team04-hotel-booking-service)
@@ -62,6 +70,9 @@ services:
     env:
       # ElastiCache Valkey 는 전송 암호화 required (41-main-data)
       REDIS_TLS: "true"
+      # LDP-160 (api-gateway 주석 참고)
+      USER_SERVICE_HOST: "dns:///user-service-headless:3001"
+      BOOKING_SERVICE_HOST: "dns:///booking-service-headless:3003"
   chat-bot-service:
     env:
       # DYNAMODB_ENDPOINT 미설정 = AWS 기본 주소, 자격 증명은 IRSA(team04-hotel-chat-bot-service, 두 테이블 PutItem · Query 만)
