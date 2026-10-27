@@ -3,11 +3,12 @@
 # 공식 바이너리(artifacts.k8s.io/binaries/cloud-provider-aws)는 v1.31.7 이후 게시되지 않아
 # EKS AMI 가 쓰는 공개 버킷의 빌드를 받는다. 버전 · 날짜 · sha256 은 같은 버킷의 .sha256 파일과 맞춰 고정한다
 #   https://amazon-eks.s3.us-west-2.amazonaws.com/<eks 버전>/<빌드 날짜>/bin/linux/<arch>/ecr-credential-provider
-ecr_credential_provider_eks_version: "1.33.8"
-ecr_credential_provider_build_date: "2026-03-24"
+# Kubernetes 마이너 버전(group_vars/aws.yml kube_version)과 맞춘다
+ecr_credential_provider_eks_version: "1.35.9"
+ecr_credential_provider_build_date: "2026-10-23"
 ecr_credential_provider_sha256:
-  arm64: 661021afb542b834cf77f4f294220e8271877c7a3e259130f083f1c975814830
-  amd64: be6df51c47fefb2ea64f0f7a2314924fab36b2d42adcf8689cfdb08548f88f0a
+  arm64: f601c8afc44312377f55adba41f3fbf1db6b175e1e5ef2f9b35404af87e68e6b
+  amd64: 9589cdea0d1ff3efd4d65d48eaed0b0ca6853f92334b3cd0f2d368b670e303b4
 
 # 이 리전의 ECR 이미지에만 플러그인을 쓴다. 어느 저장소를 pull 할 수 있는지는 워커 Role 정책(70 iam.tf)이 제한한다
 ecr_credential_provider_match_images:

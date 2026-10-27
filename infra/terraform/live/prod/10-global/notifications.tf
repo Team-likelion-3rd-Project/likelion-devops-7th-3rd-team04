@@ -2,7 +2,7 @@
 #
 #   team04-hotel-alerts  ← CloudWatch 알람 ALARM (90-observability-alarms alarm_actions)    → #alerts
 #                          EventBridge 규칙: 알람 ALARM → OK 전환만 (아래 alarm_recovered)
-#   team04-hotel-deploy  ← 메인 클러스터 배포 agent (70 IRSA gitops-sync)                  → #deploy
+#   team04-hotel-deploy  ← 메인 클러스터 ArgoCD 알림 hook (70 IRSA deploy-notify)          → #deploy
 #                          결제 서버 pull agent (60 Instance Role, 44 sns 엔드포인트)
 #                          gitops sync-frontend-version workflow (gitops_ssm_sync Role)
 #

@@ -56,7 +56,7 @@ output "alerts_topic_name" {
 }
 
 output "deploy_topic_name" {
-  description = "배포 결과 토픽 이름 (메인 · 결제 배포 agent 가 발행)"
+  description = "배포 결과 토픽 이름 (메인 ArgoCD 알림 hook · 결제 배포 agent 가 발행)"
   value       = aws_sns_topic.deploy.name
 }
 

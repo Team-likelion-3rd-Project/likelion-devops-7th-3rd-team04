@@ -24,18 +24,34 @@ kubeadm_join_token_renew_ttl: 24h
 kubeadm_cp_reconcile_interval: 1min
 
 # ── 노드 수명주기 (CP-a 만 설치, aws_node_lifecycle role) ──
-# CCM 이미지는 Kubernetes 마이너 버전(kube_version) 과 맞춘다. 차트 0.0.9 기본값(v1.33.0) 대신 최신 패치
-aws_ccm_chart_version: "0.0.9"
-aws_ccm_image_tag: "v1.33.4"
+# CCM 이미지는 Kubernetes 마이너 버전(kube_version) 과 맞춘다. 차트 0.0.12 기본값(v1.35.0) 대신 최신 패치.
+# 차트 0.0.12 부터 controller ServiceAccount token 권한이 kube-system Role 로 옮겨졌다 (clusterRoleRules 는 덮어쓰지 않음)
+aws_ccm_chart_version: "0.0.12"
+aws_ccm_image_tag: "v1.35.2"
 aws_nth_chart_version: "0.27.6"   # NTH v1.25.6
 
-# ── GitOps pull 배포 agent (CP-a 만 설치, gitops_sync role) ──
-# Traefik · whoami 등 클러스터 서비스의 원본은 gitops 레포 envs/prod (모노레포 infra/gitops/prod)
-# 대상 브랜치. 작업 브랜치 검증은 이 값이 아니라 ConfigMap gitops-sync-config 의 BRANCH 를 바꾼다 — 머지 시 main
-gitops_sync_branch: main
+# ── ArgoCD (CP-a 만 설치, roles/argocd aws.yml) ──
+# 차트 버전 · 네임스페이스는 온프레미스와 같다 (control_plane.yml). Traefik · backend 등 클러스터 서비스의 원본은
+# gitops 레포 envs/prod (모노레포 infra/gitops/prod) — root 앱 prod-apps 가 그 root 차트를 렌더링한다
+# public 레포라 자격 증명 없이 읽는다. main 은 ruleset(PR · 승인 1 · validate)으로 보호
+argocd_prod_repo_url: https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops.git
+argocd_prod_apps_path: envs/prod
+# 대상 브랜치. 작업 브랜치 검증은 이 값이 아니라 root 앱의 targetRevision 을 patch 한다 — 머지 시 main
+argocd_prod_branch: main
 
-# public gitops 레포에 두지 않는 클러스터 값. chart.yaml 에 clusterValues: true 인 앱에만 넘긴다 (roles/gitops_sync).
-# 계정 ID 는 IRSA Role ARN 에 쓴다 (pod-identity-webhook). aws_account_id 는 aws-control-plane.yml 이 STS 로 조회
-gitops_sync_cluster_values:
+# public gitops 레포에 두지 않는 클러스터 값. chart.yaml 에 clusterValues: true 인 앱에만 넘긴다 (root 차트).
+# 계정 ID 는 IRSA Role ARN · ECR 주소에 쓴다. aws_account_id 는 aws-control-plane.yml 이 STS 로 조회
+argocd_prod_cluster_values:
   global:
     awsAccountId: "{{ aws_account_id }}"
+
+# 배포 결과 알림 (Slack #deploy, root 차트의 hook Job). 이름은 Terraform 과 같아야 한다 —
+# 토픽 10-global deploy_topic_name, Role 70 irsa.tf deploy-notify
+argocd_prod_deploy_topic_name: team04-hotel-deploy
+argocd_prod_deploy_role_name: team04-hotel-deploy-notify
+
+# root sync 시간 제한 (argocd-cmd-params-cm controller.sync.timeout.seconds). 넘으면 실패 알림, 하위 앱은 계속 재시도.
+# 첫 sync(재생성, 전체 설치) 실측 약 5분(2026-10-27)의 3배. 아래 부트스트랩 대기와 같게 둔다 — 다음 실측으로 다시 정함
+argocd_prod_sync_timeout_seconds: 900
+# CP-a 부트스트랩이 root 첫 sync 를 기다리는 시간 = retries × 10초. 넘겨도 부트스트랩은 성공으로 끝난다
+argocd_prod_bootstrap_wait_retries: 90

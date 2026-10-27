@@ -10,6 +10,14 @@
 # Tailscale 없이 VPC private IP 를 노드 IP 로 쓴다
 use_tailscale: false
 
+# ── 버전 (all.yml 은 온프레미스와 공용이라 여기서 덮어쓴다, LDP-166) ──
+# Kubernetes 1.35 — EKS 전환(72)과 같은 버전. apt 저장소 v1.35 의 최신 패치를 설치한다
+kube_version: "1.35"
+# Calico v3.30 은 1.35 테스트 대상이 아니다. v3.31 은 1.32 – 1.35 를 테스트한다 (docs.tigera.io requirements)
+calico_version: "v3.31.7"
+# kubeadm 1.35 의 pause 버전 (cmd/kubeadm/app/constants PauseVersion). containerd sandbox 이미지와 맞춘다
+pause_image: "registry.k8s.io/pause:3.10.1"
+
 # 워커는 ASG 가 관리하므로 애드온 배치를 operator / kubeadm 기본값 그대로 둔다
 addons_on_control_plane: false
 

@@ -3,7 +3,7 @@
 #
 #   1) GitHub App 자격 증명(Secrets Manager) → JWT → 설치 토큰 (1시간, gitops 레포 contents · pull_requests 쓰기만)
 #   2) 같은 SHA 의 PR 이 이미 열려 있으면 종료 (job 재시도 대비)
-#   3) gitops 클론 → infra/gitops/prod/<앱> · frontend 를 envs/prod/ 로 복사 (gitops 에만 있는 envs/prod/payment 는 유지)
+#   3) gitops 클론 → infra/gitops/prod/<앱> · root 앱 차트 · frontend 를 envs/prod/ 로 복사 (gitops 에만 있는 envs/prod/payment 는 유지)
 #   4) backend 이미지 태그 · chart revision · payment 이미지 태그 · frontend version = 이 main 커밋 SHA
 #   5) release/<SHA> 브랜치 push → PR 생성. merge 는 사람 (gitops main ruleset — App 은 우회 불가)
 #
@@ -73,7 +73,7 @@ git checkout -q -b "$BRANCH"
 
 PREV_REVISION="$(yq '.revision' envs/prod/backend/chart.yaml)"
 
-# 앱 정의(chart.yaml)가 있는 폴더만 통째로 바꾼다. 모노레포에서 지운 앱은 지우지 않는다 (agent 도 릴리스를 지우지 않음)
+# 앱 정의(chart.yaml)가 있는 폴더만 통째로 바꾼다. 모노레포에서 지운 앱은 지우지 않는다 (앱 삭제는 사람이 gitops 레포에서)
 for dir in "$CI_PROJECT_DIR"/infra/gitops/prod/*/; do
   app="$(basename "$dir")"
   [ -f "$dir/chart.yaml" ] || continue
@@ -81,7 +81,13 @@ for dir in "$CI_PROJECT_DIR"/infra/gitops/prod/*/; do
   cp -R "$dir" "envs/prod/$app"
 done
 
-# 프론트는 앱 정의가 아니라(agent 가 읽지 않음) 위 반복에서 빠진다. merge 후 gitops sync-frontend-version 이 반영한다
+# root 앱 차트(ArgoCD prod-apps 가 렌더링, 앱 정의가 아니라 위 반복에서 빠짐)
+for item in Chart.yaml values.yaml templates files; do
+  rm -rf "envs/prod/$item"
+  cp -R "$CI_PROJECT_DIR/infra/gitops/prod/$item" "envs/prod/$item"
+done
+
+# 프론트는 앱 정의가 아니라(ArgoCD 가 읽지 않음) 위 반복에서 빠진다. merge 후 gitops sync-frontend-version 이 반영한다
 rm -rf envs/prod/frontend
 cp -R "$CI_PROJECT_DIR/infra/gitops/prod/frontend" envs/prod/frontend
 
@@ -105,7 +111,7 @@ git -c user.name="team04-hotel-release-bot" -c user.email="release-bot@users.nor
 git_auth push -q --force origin "$BRANCH"
 
 BODY="$(cat <<EOF
-GitLab main 파이프라인이 자동으로 만든 릴리스 PR 입니다. **리뷰 · 승인 후 merge 하면 운영에 반영됩니다** (메인 클러스터 배포 agent, 결제 서버는 Parameter Store 동기화 후 pull agent, 프론트는 CloudFront KeyValueStore 전환).
+GitLab main 파이프라인이 자동으로 만든 릴리스 PR 입니다. **리뷰 · 승인 후 merge 하면 운영에 반영됩니다** (메인 클러스터는 ArgoCD, 결제 서버는 Parameter Store 동기화 후 pull agent, 프론트는 CloudFront KeyValueStore 전환).
 
 ## 변경 대상
 

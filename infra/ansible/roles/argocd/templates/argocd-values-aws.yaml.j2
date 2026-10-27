@@ -1,0 +1,105 @@
+# argo-cd chart {{ argocd_chart_version }} values — AWS Main 클러스터 (roles/argocd aws.yml). 직접 수정 금지
+#
+# 온프레미스(argocd-values.yaml.j2)와 다른 점: UI · API 를 노출하지 않음(ClusterIP, 접속은 SSM 후 port-forward),
+# gitops 레포가 public 이라 레포 자격 증명 · hostAliases · 사설 CA 없음, 하위 앱 순서 · 시간 제한 설정
+global:
+  # cluster-admin 을 가진 application-controller 를 앱 파드가 뜨는 워커와 분리한다 (이전 배포 agent 와 같은 이유)
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
+configs:
+  cm:
+    # 추적은 annotation 으로 — 차트가 붙이는 app.kubernetes.io/instance 라벨과 섞이지 않게
+    application.resourceTrackingMethod: annotation
+    admin.enabled: true
+    # root(app-of-apps)가 sync-wave 순서대로 하위 Application 이 준비되기를 기다리게 하는 헬스 체크.
+    # Healthy = 하위 앱 Healthy + Synced + 마지막 source(gitops ref values)가 root 가 넘긴 커밋을 반영함.
+    # 커밋 비교가 없으면 root 가 하위 앱 spec 을 바꾼 직후, 이전 비교 결과(Synced)로 먼저 통과할 수 있다
+    resource.customizations.health.argoproj.io_Application: |
+      hs = {status = "Progressing", message = ""}
+      if obj.status == nil or obj.status.health == nil then
+        return hs
+      end
+      hs.status = obj.status.health.status
+      if obj.status.health.message ~= nil then
+        hs.message = obj.status.health.message
+      end
+      if hs.status ~= "Healthy" then
+        return hs
+      end
+      if obj.status.sync == nil or obj.status.sync.status ~= "Synced" then
+        hs.status = "Progressing"
+        hs.message = "sync 대기"
+        return hs
+      end
+      if obj.spec.sources ~= nil then
+        local want = obj.spec.sources[#obj.spec.sources].targetRevision
+        local revs = obj.status.sync.revisions
+        if revs == nil or revs[#revs] ~= want then
+          hs.status = "Progressing"
+          hs.message = "커밋 반영 대기 " .. tostring(want)
+        end
+      end
+      return hs
+    # 컨트롤러가 런타임에 넣는 caBundle 은 비교에서 뺀다 (cert-manager cainjector · ESO cert-controller)
+    resource.customizations.ignoreDifferences.admissionregistration.k8s.io_MutatingWebhookConfiguration: |
+      jqPathExpressions:
+        - '.webhooks[]?.clientConfig.caBundle'
+    resource.customizations.ignoreDifferences.admissionregistration.k8s.io_ValidatingWebhookConfiguration: |
+      jqPathExpressions:
+        - '.webhooks[]?.clientConfig.caBundle'
+    resource.customizations.ignoreDifferences.apiextensions.k8s.io_CustomResourceDefinition: |
+      jqPathExpressions:
+        - '.spec.conversion.webhook.clientConfig.caBundle'
+  params:
+    # root sync 가 이 시간 안에 끝나지 않으면(하위 앱이 Healthy 가 되지 않음) 실패로 끝내고 SyncFail 알림을 보낸다.
+    # 자동 롤백은 없고 하위 앱은 계속 재시도한다. 첫 sync(재생성)는 전체 설치를 포함하므로 넉넉히 잡는다
+    controller.sync.timeout.seconds: {{ argocd_prod_sync_timeout_seconds | string | to_json }}
+
+dex:
+  enabled: false
+
+notifications:
+  enabled: false
+
+# root 는 app-of-apps 라 ApplicationSet 을 쓰지 않음 (차트에 enabled 플래그가 없어 replicas 0)
+applicationSet:
+  replicas: 0
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+server:
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi

@@ -72,7 +72,7 @@ resource "aws_autoscaling_group" "worker" {
   max_size            = var.worker_max_size
 
   # 80-main-edge 가 Target Group 을 연결하면 Traefik /ping 헬스체크도 반영한다 (연결 전에는 EC2 상태만).
-  # 기동 후 부트스트랩 · Traefik 설치(클러스터 최초 생성 시 배포 agent, 약 5분) 동안은 판단하지 않는다
+  # 기동 후 부트스트랩 · Traefik 설치(클러스터 최초 생성 시 ArgoCD, 약 5분) 동안은 판단하지 않는다
   health_check_type         = "ELB"
   health_check_grace_period = 600
 
