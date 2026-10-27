@@ -7,15 +7,15 @@
 #   gitops-pr      : 바뀐 컴포넌트만 M 으로 갱신한 prod gitops PR (release-pr.sh). 운영 반영은 사람이 그 PR 을 merge 할 때
 #
 # 이미지는 GitLab develop 파이프라인이 온프레미스(amd64)에서 빌드 · smoke test 후 GHCR 에 올린 것이다 (.gitlab-ci.yml push:ghcr).
-# 운영에서 다시 빌드하지 않으므로 Tailscale · AWS Runner 가 필요 없다.
+# 운영에서 다시 빌드하지 않으므로 Tailscale · AWS Runner 가 필요 없다. 운영 노드 · 결제 서버도 x86_64(t3a) 다.
 #
-# dry-run (기본): 레포 변수 RELEASE_DRY_RUN 이 'false' 가 아니면 같은 Role · 같은 복사를 시험 대상에만 한다
+# dry-run: 레포 변수 RELEASE_DRY_RUN 이 'true' 이거나 수동 실행의 dry_run 을 켜면 같은 Role · 같은 복사를 시험 대상에만 한다
 #   ECR team04-hotel/release-dryrun:<서비스>-<M> · S3 dryrun/<M>/ (둘 다 1일 뒤 삭제), gitops PR 은 만들지 않고 본문 · 변경만 출력.
-#   GitLab release:* job 이 아직 실제 릴리스를 한다 — 활성화는 GitLab release 제거 · 운영 amd64(t3a) 전환과 같은 시점
+#   변수가 없으면 실제 릴리스다 (LDP-173 에서 GitLab release:* 제거 · 운영 amd64 전환과 함께 활성화)
 #
 # 필요한 설정:
 #   Secret  : AWS_RELEASE_ROLE_ARN — Terraform 10-global monorepo_release_role_name 의 ARN (계정 ID 가 있어 변수 대신 Secret)
-#   Variable: RELEASE_DRY_RUN — 'false' 일 때만 실제 릴리스
+#   Variable: RELEASE_DRY_RUN — (선택) 'true' 면 main push 도 dry-run (릴리스를 잠시 막을 때)
 #   GHCR 패키지 team04-hotel/<서비스> 의 Manage Actions access 에 이 레포 (ghcr-retention.yml 과 같은 설정, 읽기)
 #
 # Role 신뢰 정책은 이 레포의 refs/heads/main 실행만 받는다 — PR · 다른 브랜치 실행은 assume 이 거부된다.
@@ -29,9 +29,9 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "시험 대상에만 복사 · 업로드하고 gitops PR 은 만들지 않음 (RELEASE_DRY_RUN 이 'false' 가 아니면 항상 dry-run)"
+        description: "시험 대상에만 복사 · 업로드하고 gitops PR 은 만들지 않음 (RELEASE_DRY_RUN 이 'true' 면 항상 dry-run)"
         type: boolean
-        default: true
+        default: false
 
 permissions: {}
 
@@ -79,8 +79,8 @@ jobs:
           VAR_DRY_RUN: ${{ vars.RELEASE_DRY_RUN }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          # 변수가 'false' 일 때만 실제 릴리스. 수동 실행의 dry_run=true 는 그때도 dry-run
-          if [ "$VAR_DRY_RUN" = "false" ] && [ "$INPUT_DRY_RUN" != "true" ]; then dry=false; else dry=true; fi
+          # 기본은 실제 릴리스. 변수 'true' 또는 수동 실행의 dry_run=true 면 dry-run (push 때 inputs 는 빈 값)
+          if [ "$VAR_DRY_RUN" = "true" ] || [ "$INPUT_DRY_RUN" = "true" ]; then dry=true; else dry=false; fi
           echo "dry_run=$dry" >> "$GITHUB_OUTPUT"
           echo "dry-run: $dry"
 
@@ -256,8 +256,19 @@ jobs:
         run: |
           set -euo pipefail
           ver="$(yq '.n8n.image.tag' backend-deploy/charts/backend/values.yaml)"
-          if crane digest "$ECR_REGISTRY/team04-hotel/n8n:$ver" > /dev/null 2>&1; then
-            echo "이미 있음: n8n:$ver"; exit 0
+          existing="$ECR_REGISTRY/team04-hotel/n8n:$ver"
+          if manifest="$(crane manifest "$existing" 2>/dev/null)"; then
+            # 운영 노드는 amd64. GitLab release:mirror-n8n(arm64 전용)이 올린 태그는 IMMUTABLE 이라 덮어쓸 수 없다
+            if [ "$(printf '%s' "$manifest" | jq -r '.manifests // empty | length')" != "" ]; then
+              archs="$(printf '%s' "$manifest" | jq -r '[.manifests[].platform.architecture] | join(" ")')"
+            else
+              archs="$(crane config "$existing" | jq -r '.architecture')"
+            fi
+            case " $archs " in
+              *" amd64 "*) echo "이미 있음: n8n:$ver ($archs)"; exit 0 ;;
+            esac
+            echo "::error::ECR n8n:$ver 이 amd64 가 아님 ($archs) — apply 주체로 aws ecr batch-delete-image --repository-name team04-hotel/n8n --image-ids imageTag=$ver 후 재실행 (infra/gitops/prod/README.md 릴리스)"
+            exit 1
           fi
           if [ "$DRY_RUN" = "true" ]; then dst="$ECR_REGISTRY/team04-hotel/release-dryrun:n8n-$ver"; else dst="$ECR_REGISTRY/team04-hotel/n8n:$ver"; fi
           crane copy "docker.io/n8nio/n8n:$ver" "$dst" --platform linux/amd64

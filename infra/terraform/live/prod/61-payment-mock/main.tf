@@ -14,7 +14,7 @@
 # 결제 서버 release 파라미터의 image_tag 를 읽어 pg-mock-service 를 교체한다 (릴리스는 모든 서비스를 같은 SHA 로 빌드).
 
 data "aws_ssm_parameter" "al2023_ami" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 data "aws_ami" "al2023" {

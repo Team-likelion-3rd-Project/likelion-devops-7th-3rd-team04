@@ -7,7 +7,7 @@
 - **이 폴더가 원본입니다.** 값을 바꿀 때는 여기를 먼저 고치고, gitops 레포 `envs/prod/` 에 같은 내용을 반영합니다.
 - 반영 방법
   - v1.0.0(2026-10-27) 전(구축 기간): 이 폴더 변경과 같은 내용으로 gitops 레포에 PR 을 직접 작성합니다.
-  - 이후: 모노레포 릴리스 PR(release/<버전> → main) merge 때 GitLab main 파이프라인이 gitops 레포에 PR 을 엽니다(values 복사 + 이미지 태그 + chart revision). 사람이 gitops 레포에 직접 PR 을 여는 것은 비상 경로뿐입니다.
+  - 이후: 모노레포 릴리스 PR(release/<버전> → main) merge 때 GitHub Actions `release.yml` 이 gitops 레포에 PR 을 엽니다(values 복사 + 바뀐 컴포넌트의 이미지 태그 · chart revision · 프론트 version). 사람이 gitops 레포에 직접 PR 을 여는 것은 비상 경로뿐입니다.
 - gitops 레포에만 있는 값을 만들지 않습니다. 두 곳이 다르면 이 폴더 기준으로 맞춥니다.
 - public 레포로 그대로 복사되므로 **비밀값을 넣지 않습니다** (AWS Secrets Manager → External Secrets).
 - 아직 옮기지 않은 `payment`(결제 서버 이미지 태그, 앱 정의 아님)는 gitops 레포 쪽이 기준입니다 (결제 단계에서 이관).
@@ -132,71 +132,96 @@ k -n argocd patch application prod-apps --type merge -p '{"spec":{"source":{"tar
 ## 릴리스
 
 ```
-develop ─▶ release/<버전> ──릴리스 PR (merge commit, release-source check · 승인)──▶ main
-   │        (범위 고정, merge 후 삭제)                                            │ GitHub → GitLab 미러
-   │                                                                               ▼
-   │                         GitLab main 파이프라인 (AWS Runner, 보호 브랜치 · tags aws — release job 만)
-   │                           [release-prepare]  [release-build]                      [release-gitops]
-   │                           release:prepare → release:build ×12 (ECR 캐시) ─┐
-   │                                           → release:mirror-n8n ───────────┤
-   │                                           → release:frontend-build → release:frontend ┴→ release:gitops-pr
-   │                           ECR team04-hotel/<서비스>:<main SHA> (arm64)          gitops 레포 PR release/<main SHA>
-   │                           S3 team04-hotel-frontend/releases/<main SHA>/              │ validate · 승인 (사람)
-   ▼                                                                                        ▼ merge
-(다음 개발)        메인 클러스터 ArgoCD (3분)      ·  결제 서버: GitHub Actions → Parameter Store → pull agent
-                   프론트: GitHub Actions → CloudFront KeyValueStore version → CloudFront Function (수 초)
+develop ──GitLab develop 파이프라인 (온프레미스, amd64)── test · 이미지 빌드 · smoke test ──▶ GHCR team04-hotel/<서비스>:<커밋 SHA>
+   │                                                                                      (프론트만 바뀐 커밋은 직전 이미지에 태그만 추가)
+   ▼
+release/<버전> ──릴리스 PR (merge commit, release-source check · 승인)──▶ main
+(develop 커밋에서 분기, 범위 고정, merge 후 삭제)                          │ push
+                                                                            ▼
+                     GitHub Actions release.yml (재빌드 없음)
+                       plan ─┬─ frontend-build (AWS 자격 없음) ─┐
+                             └──────────────────────────────────┴─ promote ─ gitops-pr
+                       바뀐 컴포넌트 판단       GHCR <서비스>:<I> → ECR <서비스>:<main SHA> (digest 동일, amd64)
+                       (이전 릴리스 대비)       프론트 빌드 → S3 team04-hotel-frontend/releases/<main SHA>/
+                                                gitops 레포 PR release/<main SHA>  ──validate · 승인 (사람)──▶ merge
+                                                                                                          ▼
+                     메인 클러스터 ArgoCD (3분)  ·  결제 서버: GitHub Actions → Parameter Store → pull agent
+                     프론트: GitHub Actions → CloudFront KeyValueStore version → CloudFront Function (수 초)
 ```
 
-> **GitHub Actions 로 이전 중 (LDP-172).** `.github/workflows/release.yml` 이 같은 main push 에서 develop 의 GHCR 이미지를 재빌드 없이 ECR 로 복사하고, 이전 릴리스 이후 바뀐 컴포넌트(backend · payment / frontend / 클러스터 설정)만 갱신한 gitops PR 을 만듭니다. 지금은 **dry-run** 이라 시험 대상(ECR `team04-hotel/release-dryrun`, S3 `dryrun/`)에만 쓰고 PR 본문 · 변경을 로그로만 출력합니다 — 실제 릴리스는 아래 GitLab 경로가 합니다. 활성화(레포 변수 `RELEASE_DRY_RUN=false`)는 GitLab release job 제거 · 운영 amd64(t3a) 전환과 같은 시점입니다.
+- **검증한 이미지 = 운영 이미지**: 운영에서 다시 빌드하지 않습니다. develop 파이프라인이 smoke test 를 통과시켜 GHCR 에 올린 이미지를 그대로 ECR 로 복사하므로 운영 노드 · 결제 서버도 같은 x86_64(t3a)입니다. Tailscale · AWS Runner 를 쓰지 않습니다.
+- **복사할 이미지 커밋 `I`**: GitLab develop 파이프라인은 백엔드 · 프론트 경로가 바뀐 커밋에서만 돌기 때문에, 릴리스 커밋 X(= `release/*` head)에서 first-parent 로 거슬러 올라가 그 경로를 마지막으로 바꾼 커밋이 `I` 입니다 (`infra/gitops/scripts/image-sha.sh`). promote 는 GHCR 이미지의 label revision 이 X 와 백엔드 소스가 같은지도 확인합니다.
+- **컴포넌트별 릴리스**: `release-plan.sh` 가 이전 릴리스(gitops `main` 의 backend `revision` · frontend `version`)와 X 를 비교해 바뀐 것만 갱신합니다.
+
+  | 컴포넌트 | 판단 경로 | 바뀌었을 때 |
+  |---|---|---|
+  | backend · payment | `backend` `backend-deploy` `langchain_rag` `.gitlab-ci.yml` | ECR 복사 12개 · n8n 미러, backend `imageTag` · `revision`, payment `imageTag` 를 main SHA 로 |
+  | frontend | `frontend` `infra/gitops/prod/frontend` `infra/gitops/scripts/frontend-build.sh` | 운영 빌드 → S3 `releases/<SHA>/`, frontend `version` 을 main SHA 로 |
+  | 클러스터 설정 | 이 폴더의 나머지 | 복사 후 gitops 와 다르면 PR 에 포함 (이미지 없음) |
+
+  안 바뀐 컴포넌트는 이전 값 그대로 둡니다. 셋 다 같으면 PR 을 만들지 않습니다.
 
 | 단계 | 누가 · 무엇으로 | 할 수 있는 것 |
 |---|---|---|
 | 릴리스 PR merge | 사람 (모노레포 main ruleset: 승인 · `release-source` · GitHub CI check) | main 갱신 |
-| 이미지 빌드 · ECR push | GitLab main 파이프라인 — AWS Runner Role | `team04-hotel/*` push 만 (ECR 저장소 정책이 다른 주체의 push 거부) |
-| 프론트 빌드 · S3 업로드 | `release:frontend-build` · `release:frontend` — AWS Runner Role | 사이트 버킷 `releases/*` PutObject 만 (운영 버전 전환 불가, 버킷 정책이 다른 주체의 쓰기 거부) |
-| gitops 릴리스 PR 생성 | `release:gitops-pr` — GitHub App(`team04-hotel-release-bot`, gitops 레포에만 설치) | 브랜치 push · PR 생성까지. main merge 는 ruleset 이 막음 |
+| ECR 복사 · 프론트 업로드 | `release.yml` — 릴리스 Role(Terraform 10-global, 이 레포 `refs/heads/main` 실행만 assume) | `team04-hotel/*` push(ECR 저장소 정책이 다른 주체의 push 거부), 사이트 버킷 `releases/*` PutObject (운영 버전 전환 불가) |
+| 프론트 빌드 | `release.yml` frontend-build — AWS 자격 · OIDC 토큰 없음 | 빌드 산출물만 다음 job 에 넘김 (npm 의존성이 Role 을 받지 못함) |
+| gitops 릴리스 PR 생성 | `release.yml` gitops-pr — GitHub App(`team04-hotel-release-bot`, gitops 레포에만 설치, 자격은 12-secrets 를 릴리스 Role 로 읽음) | 브랜치 push · PR 생성까지. main merge 는 ruleset 이 막음 |
 | 운영 반영 | 사람이 gitops PR 승인 · merge | 메인: ArgoCD / 결제: Parameter Store 동기화(GitHub OIDC Role, 파라미터 하나) / 프론트: KeyValueStore `version` 갱신(같은 Role, 키 하나 — S3 쓰기 불가) |
 
 - 이미지 태그 = **main 커밋 SHA 40자**, backend `chart.yaml` 의 `revision` 과 같은 값입니다. ECR 은 IMMUTABLE 이라 같은 태그로 다시 push 할 수 없습니다.
-- Runner 에는 Parameter Store · KeyValueStore 쓰기 권한이 없습니다. 결제 서버 태그 · 프론트 버전은 gitops PR 이 승인 · merge 된 뒤에만 바뀝니다.
-- 프론트 빌드 설정(`VITE_*`)은 이 폴더의 `frontend/values.yaml` `build` 입니다. 토스 클라이언트 키(`VITE_TOSS_CLIENT_KEY`)만 레포에 두지 않고 Terraform `12-secrets` 의 Parameter Store 에서 `release:prepare` 가 읽어 넘깁니다. 빌드 결과에 들어가므로 gitops 레포에서 바꿔도 반영되지 않고, 여기서 고친 뒤 새 릴리스로 냅니다. 의존성 설치는 `npm ci --ignore-scripts` 입니다 (job 도 Runner Role 을 받음).
+- 릴리스 Role 에는 Parameter Store · KeyValueStore 쓰기 권한이 없습니다. 결제 서버 태그 · 프론트 버전은 gitops PR 이 승인 · merge 된 뒤에만 바뀝니다.
+- 프론트 빌드 설정(`VITE_*`)은 이 폴더의 `frontend/values.yaml` `build` 입니다. 토스 클라이언트 키(`VITE_TOSS_CLIENT_KEY`)만 레포에 두지 않고 Terraform `12-secrets` 의 Parameter Store 에서 plan job 이 읽어 넘깁니다. 빌드 결과에 들어가므로 gitops 레포에서 바꿔도 반영되지 않고, 여기서 고친 뒤 새 릴리스로 냅니다.
 - 프론트는 버전마다 경로(`releases/<SHA>/`)가 달라 전환 · 롤백에 재업로드 · CloudFront 무효화가 없습니다. `assets/` 는 1년 immutable, 그 외(`index.html` · `favicon.svg` 등)는 no-cache 로 올립니다.
-- GitLab 미러의 main 은 보호 브랜치여야 AWS Runner(protected)가 job 을 받습니다.
-- main 파이프라인은 lint · test · compile · dev 이미지 빌드를 다시 돌리지 않습니다. 그 검증은 같은 커밋의 **develop 파이프라인**이 맡으므로 아래 절차 1 에서 확인합니다.
-- 빌드 레이어 캐시는 ECR `team04-hotel/cache`(11-registry, 상시 유지, 14일 뒤 삭제)에 둡니다. 소스만 바뀐 릴리스는 `npm ci` 레이어를 캐시에서 가져옵니다 (job 로그 끝의 `[캐시] 적중 N`).
+- n8n 은 빌드하지 않고 Docker Hub `n8nio/n8n:<차트 n8n.image.tag>` 를 amd64 로 ECR 에 복사합니다 (태그가 이미 있으면 건너뜀, amd64 가 아니면 실패).
+- **dry-run**: 레포 변수 `RELEASE_DRY_RUN=true` 또는 수동 실행(Run workflow)의 `dry_run` 을 켜면 같은 복사를 시험 대상(ECR `team04-hotel/release-dryrun`, S3 `dryrun/`, 1일 뒤 삭제)에만 하고 gitops PR 은 만들지 않습니다. 릴리스를 잠시 막을 때도 변수를 씁니다.
+- **롤백 하한**: 운영은 v1.0.0 후 리허설 릴리스(LDP-173, 2026-10-28)부터 amd64 입니다. 그 전 릴리스의 ECR 이미지는 arm64 라 지금 노드에서 뜨지 않으므로 **리허설 릴리스 `<리허설 후 기록>` 보다 이전으로 되돌리지 않습니다** (gitops revert 도 마찬가지).
 
 ### 절차 (runbook)
 
 1. **준비**: develop 이 dev 에 배포 · 검증된 상태인지 확인합니다. 결제 쪽 계약(payment.proto · SQS 메시지 · 결제 마이그레이션)이 바뀌었으면 결제 서버를 먼저 반영할 계획을 세웁니다.
-   - **develop 파이프라인 성공 확인 (필수)**: 릴리스 브랜치로 고정할 develop 커밋에 대한 GitLab `team04/hotel` develop 파이프라인이 **passed** 인지 확인합니다 (Pipelines → 브랜치 develop → 커밋 SHA 비교). 실행 중이면 끝날 때까지 기다리고, 실패했으면 develop 에서 고친 뒤 다시 확인합니다. main 파이프라인은 test · 이미지 smoke test 를 다시 돌리지 않습니다.
+   - **develop 파이프라인 성공 확인 (필수)**: 릴리스 브랜치로 고정할 develop 커밋에 대한 GitLab `team04/hotel` develop 파이프라인이 **passed** 인지 확인합니다 (Pipelines → 브랜치 develop → 커밋 SHA 비교). 백엔드는 `push:ghcr`(프론트만 바뀐 커밋은 `push:ghcr-reuse`)까지, 프론트는 test · build job 까지 봅니다. GitLab 결과가 GitHub commit status 로 오지 않으므로 지금은 이 확인이 사람 몫입니다. 실행 중이면 끝날 때까지 기다리고, 실패했으면 develop 에서 고친 뒤 다시 확인합니다.
+   - 그 커밋에서 파이프라인이 돌지 않았으면(백엔드 · 프론트 경로 변경 없음) 이전 커밋의 이미지를 씁니다 — `sh infra/gitops/scripts/image-sha.sh <커밋>` 이 출력하는 커밋의 파이프라인을 확인합니다.
 2. **릴리스 PR**: 1 에서 확인한 develop 커밋으로 `release/<버전>` 브랜치를 만들고 (`git push origin <SHA>:refs/heads/release/v1.0.0`), GitHub 에서 `release/<버전> → main` PR 을 엽니다 (제목 예: `release: v1.0.0`). 이후 develop 에 merge 되는 변경은 이번 릴리스에 들어가지 않습니다. `release-source` · GitHub CI(`Backend Build & Test` 등) check 와 승인 후 **merge commit** 으로 합치고 브랜치를 삭제합니다.
-   - 릴리스 브랜치에는 직접 커밋하지 않습니다 (GitLab 검증을 거치지 않은 커밋이 main 으로 감). 수정이 필요하면 develop 에 먼저 merge → develop 파이프라인 passed 확인 → 브랜치를 그 커밋으로 옮깁니다 (`git push origin <새 SHA>:refs/heads/release/<버전> --force-with-lease`).
-   - `develop → main` PR 은 `release-source` check 가 거부합니다.
-3. **파이프라인**: GitLab `team04/hotel` → Pipelines 의 main 파이프라인이 `release-prepare` → `release-build` → `release-gitops` stage 의 `release:gitops-pr` 까지 끝나는지 확인합니다.
-   - 소요 시간 (merge → gitops PR 생성): rc.1(2026-10-21, t4g.medium · 캐시 없음 · main 에 dev job 포함) 약 28분 — 온프레미스 Runner 대기 + compile · helm-lint 17분, `release:build` 9분. 개선 후 실측은 rc.2 때 여기에 적습니다.
-   - `release:build` 로그 끝의 `[메모리]` 줄(호스트 남은 메모리 최소 · job 최대 사용량)로 Runner 사양을 판단합니다.
-4. **gitops PR**: gitops 레포에 `chore(prod): backend · payment · frontend → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
+   - 릴리스 브랜치에는 직접 커밋하지 않습니다 (develop 파이프라인을 거치지 않은 커밋은 GHCR 이미지가 없음). 수정이 필요하면 develop 에 먼저 merge → develop 파이프라인 passed 확인 → 브랜치를 그 커밋으로 옮깁니다 (`git push origin <새 SHA>:refs/heads/release/<버전> --force-with-lease`).
+   - `release/*` 가 아닌 브랜치(`develop` · `hotfix/*` 등) → main PR 은 `release-source` check 가 거부합니다.
+3. **release.yml**: 모노레포 Actions 의 `Release` 실행이 Plan → (Frontend build) → Promote → gitops release PR 까지 끝나는지 확인합니다. Plan 요약에 바뀐 컴포넌트 · `I` 가 나옵니다.
+4. **gitops PR**: gitops 레포에 `chore(prod): <바뀐 컴포넌트> → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
 5. **반영 확인**
    - 메인: Slack `#deploy` 에 성공 알림(릴리스 SHA)이 오는지. 오지 않으면 CP 에서 `k -n argocd get applications` 와 `k -n backend get pods` (위 "확인 · 운영")
-   - 결제: gitops 레포 Actions 의 Parameter Store 동기화 workflow 성공 → 결제 서버 pull agent 반영 (결제 단계에서 구성)
+   - 결제: gitops 레포 Actions 의 Parameter Store 동기화 workflow 성공 → 결제 서버 pull agent 반영
    - 프론트: gitops 레포 Actions `sync-frontend-version` 성공(로그의 `갱신: <이전> → <SHA>`) → 브라우저 새로고침 후 개발자 도구 Network 에서 `index-*.js` 이름이 바뀌었는지
 6. **태그**: 모노레포 main 의 merge 커밋에 버전 태그를 붙입니다 (`git tag v1.0.0 <SHA> && git push origin v1.0.0`, 리허설은 `v1.0.0-rc.1`).
 
 ### 긴급 수정 (hotfix)
 
-`main` 에서 `hotfix/<이름>` 브랜치를 만들어 수정 → `hotfix/<이름> → main` PR(merge commit) → 위 3 – 6 과 같습니다. 같은 브랜치로 `→ develop` PR(squash)도 열어 develop 에 반영합니다.
+`hotfix/*` → main 직접 PR 은 없습니다 (그 커밋은 develop 파이프라인을 거치지 않아 GHCR 이미지가 없음). 수정 PR 을 **develop 에 먼저 merge** → develop 파이프라인 passed 확인 → 그 커밋으로 `release/<버전>` 을 만들어 위 2 – 6 과 같이 냅니다. 그 사이 develop 에 들어간 다른 변경도 함께 나가므로, 섞이면 안 되는 변경이 있으면 merge 순서를 조정합니다.
+
+### 리허설 당일 순서 (LDP-173, amd64 전환 첫 릴리스)
+
+amd64 Terraform 과 amd64 이미지는 함께 바뀌어야 합니다 (arm64 노드 + amd64 이미지, 또는 그 반대는 기동 실패). 그래서 그날 재생성은 gitops PR merge 뒤에 합니다.
+
+1. 온프레미스 GitLab `release:*` · `aws-runner:*` 제거 PR 과 이 변경이 develop 에 merge 되어 있는지 확인 (두 경로가 같이 돌면 ECR IMMUTABLE 태그 충돌)
+2. ECR 의 arm64 n8n 태그를 apply 주체로 한 번 삭제 — release.yml 이 같은 태그로 amd64 를 올리도록
+   `aws ecr batch-delete-image --repository-name team04-hotel/n8n --image-ids imageTag=<차트 n8n.image.tag>`
+3. 위 절차 1 – 2 로 릴리스 PR merge → release.yml 성공 (GitLab main 파이프라인에 release job 이 없는지도 확인)
+4. gitops PR merge
+5. `terragrunt run --all apply` (amd64) → 노드 · 결제 서버 `uname -m` 이 `x86_64`, ArgoCD 10개 앱 Synced/Healthy
+6. 브라우저 E2E → 위 "롤백 하한" 에 리허설 릴리스 SHA 기록
 
 ### 실패했을 때
 
 | 상황 | 하는 일 |
 |---|---|
-| `release:build` 일부 실패 | 해당 job 을 재시도합니다. 이미 push 된 이미지는 `release:prepare` 가 건너뛰게 표시합니다 (IMMUTABLE 충돌 없음) |
-| `release:gitops-pr` 실패 · 재시도 | 같은 SHA 의 PR 이 열려 있으면 만들지 않고 끝납니다 |
-| 운영에서 문제 발견 | gitops 레포에서 그 릴리스 PR 을 revert 하는 PR → 승인 · merge (이전 이미지 · revision · 프론트 version 으로 돌아감) |
+| Promote `GHCR …:<I> 없음` | `I` 커밋의 develop 파이프라인이 `push:ghcr`(· `push:ghcr-reuse`)까지 통과했는지 확인 → 실패한 job 재시도. 파이프라인이 없거나 다시 돌릴 수 없으면 GitLab Run pipeline(develop)으로 develop 최신 커밋을 빌드하고, 릴리스 브랜치를 그 커밋으로 옮겨 새 릴리스로 냅니다 (수동 실행은 develop 최신 커밋만 빌드) |
+| Promote `백엔드 소스가 다름` | GHCR 태그가 다른 커밋 빌드를 가리킴. develop 파이프라인 이력 확인 후 위와 같이 다시 빌드 |
+| Promote `n8n:<ver> 이 amd64 가 아님` | 오류에 나온 `batch-delete-image` 를 apply 주체로 실행 → 재실행 |
+| 일부 job 실패 · 재시도 | Actions 에서 Re-run failed jobs, 또는 Run workflow(main, `dry_run` 끔). 이미 ECR 에 같은 digest 가 있으면 건너뛰고, 같은 SHA 의 gitops PR 이 열려 있으면 만들지 않고 끝납니다 |
+| Frontend build 실패 | 로그 확인 (토스 클라이언트 키 Parameter 미등록이면 `12-secrets` 에 `TOSS_CLIENT_KEY` 등록) → 재실행. gitops PR 은 프론트 업로드가 끝나야 만들어집니다 |
+| 운영에서 문제 발견 | gitops 레포에서 그 릴리스 PR 을 revert 하는 PR → 승인 · merge (이전 이미지 · revision · 프론트 version 으로 돌아감). 롤백 하한보다 이전으로는 가지 않습니다 |
 | 프론트만 문제 | gitops `envs/prod/frontend/values.yaml` 의 `version` 을 이전 릴리스 SHA 로 바꾸는 PR (backend · payment 는 그대로). S3 수명 주기(180일) 안의 SHA 만 가능 |
-| 백엔드만 문제 | gitops `envs/prod/backend` 의 `imageTag` · `revision` 을 이전 릴리스 SHA 로 바꾸는 PR (프론트는 그대로) |
-| `release:frontend-build` 실패 | 로그 확인 (토스 클라이언트 키 Parameter 미등록이면 `12-secrets` 에 `TOSS_CLIENT_KEY` 등록 후 파이프라인 재실행 — `release:prepare` 부터) → 고친 뒤 재시도. gitops PR 은 프론트 업로드가 끝나야 만들어집니다 |
-| `sync-frontend-version` 실패 | gitops 레포 Actions 에서 재실행 (`workflow_dispatch`). `releases/<SHA>/index.html 이 없습니다` 면 그 SHA 의 `release:frontend` 를 확인 |
+| 백엔드만 문제 | gitops `envs/prod/backend` 의 `imageTag` · `revision` 을 이전 릴리스 SHA 로 바꾸는 PR (프론트는 그대로, 롤백 하한 이후 SHA 만) |
+| `sync-frontend-version` 실패 | gitops 레포 Actions 에서 재실행 (`workflow_dispatch`). `releases/<SHA>/index.html 이 없습니다` 면 그 SHA 의 release.yml Promote 프론트 업로드를 확인 |
 | main 에 잘못 merge 됨 | gitops PR 을 merge 하지 않으면 운영은 바뀌지 않습니다. 모노레포는 revert PR(develop) → 다음 릴리스 |
 
 ## 운영 시드
@@ -205,7 +230,7 @@ develop ─▶ release/<버전> ──릴리스 PR (merge commit, release-source
 
 | 항목 | 내용 |
 |---|---|
-| 실행 | `backend/scripts/seed.ts` (이미지 ECR `team04-hotel/seed:<main SHA>`, `backend/scripts/Dockerfile.seed`, `release:build` 가 빌드). Job 이름 `seed-<태그 앞 8자>-<spec 해시 6자>` — Job spec 은 바꿀 수 없어 seed 설정 · 차트가 바뀌면 새 이름으로 다시 만든다 (같은 이름으로 spec 이 바뀌면 helm 이 실패해 backend 전체가 롤백됨) |
+| 실행 | `backend/scripts/seed.ts` (이미지 ECR `team04-hotel/seed:<main SHA>`, `backend/scripts/Dockerfile.seed`, develop 파이프라인이 빌드 → release.yml 이 ECR 로 복사). Job 이름 `seed-<태그 앞 8자>-<spec 해시 6자>` — Job spec 은 바꿀 수 없어 seed 설정 · 차트가 바뀌면 새 이름으로 다시 만든다 (같은 이름으로 spec 이 바뀌면 helm 이 실패해 backend 전체가 롤백됨) |
 | 순서 | Flyway hook(`main-db-migration`) 다음, 앱 Deployment 와 같이 생성. hook 이 아니라 helm `--wait` 가 기다리지 않음 → **시드가 실패해도 서비스 배포는 롤백되지 않음** |
 | 데이터 | 관리자 계정 · 호텔 3 · 객실 종류 12 · 호실 60 · 편의시설 · 예약 가능일 365일 · 객실 사진 24장. 이미 있으면 건너뜀(멱등) |
 | 관리자 계정 | Secret `seed-admin` ← Secrets Manager `team04-hotel/prod/seed-admin` (Terraform 12-secrets 🔒, 값은 그 디렉터리 `.env` 의 `SEED_ADMIN_*`) |
