@@ -867,7 +867,7 @@ develop 파이프라인의 `push:ghcr` 가 승격한 이미지 12개를 `ghcr.io
 develop 에 merge → 미러 → 파이프라인 자동 실행(test → build → image-test → push · push:ghcr). 배포는 **배포 일정에 맞춰** 아래처럼 합니다.
 
 - 바뀐 경로에 따라 job 이 달라집니다. 백엔드 경로가 바뀌면 위 백엔드 job 들, 프론트 경로(`frontend/` · `infra/gitops/prod/frontend/`)가 바뀌면 `frontend:build` 가 돕니다. 프론트만 바뀐 커밋에는 `deploy-dev` 가 없습니다 (dev 에는 프론트를 배포하지 않음 — 각자 로컬 Vite). Run pipeline 으로 실행하면 경로와 상관없이 전부 돕니다.
-- `frontend:build` 는 운영 빌드 값(`infra/gitops/prod/frontend/values.yaml` 의 `build`)으로 빌드하되 `VITE_PAYMENT_MODE` 만 MOCK 입니다 (토스 키 없이). 스크립트는 운영 `release:frontend-build` 와 같은 `infra/gitops/scripts/frontend-build.sh` 이고, TOSS 모드 검증은 운영 릴리스 쪽입니다.
+- `frontend:build` 는 운영 빌드 값(`infra/gitops/prod/frontend/values.yaml` 의 `build`)으로 빌드하되 `VITE_PAYMENT_MODE` 만 MOCK 입니다 (토스 키 없이). 스크립트는 운영 `release.yml` frontend-build 와 같은 `infra/gitops/scripts/frontend-build.sh` 이고, TOSS 모드 검증은 운영 릴리스 쪽입니다.
 
 | 배포 내용 | 방법 |
 |---|---|
@@ -1050,6 +1050,8 @@ CP-a 는 init 후 10-global OIDC 버킷의 `keys.json` 도 덮어씁니다 (CP R
 
 ### AWS GitLab Runner (`aws-runner.yml`)
 
+> **LDP-173 부터 쓰지 않습니다.** 운영 릴리스가 GitHub Actions `release.yml`(GHCR → ECR 복사)로 옮겨 `.gitlab-ci.yml` 의 `release:*` · `aws-runner:*` job 을 지웠습니다. `40-cicd` · 이 playbook 제거는 후속 작업입니다.
+
 Terraform `40-cicd` 의 Runner(Deployment VPC, ASG 1대, Graviton) 가 user-data 로 `aws-runner.yml` 을 자기 자신에게 실행합니다. 운영 이미지 빌드 · ECR push 용이며, **보호 브랜치의 `aws` 태그 job 만** 받습니다.
 
 ```
@@ -1081,7 +1083,6 @@ job(kaniko) ─▶ IMDS(hop limit 2) ─▶ Runner Role ─▶ ECR push (team04-
 - GitLab Admin → CI/CD → Runners 에 `aws-ci-runner` 가 online (매일 새 인스턴스가 같은 runner 에 붙음)
 - Tailscale Machines 에 `ci-runner-<인스턴스 ID>` (`tag:ci-runner`, Ephemeral). 인스턴스가 사라지면 자동 삭제
 - 부트스트랩 로그: Runner 에 SSM 접속 후 `sudo tail -n 50 /var/log/cloud-init-output.log` ("[bootstrap] 완료")
-- job 검증: develop(보호 브랜치) 에서 GitLab **Run pipeline** → 변수 `AWS_RUNNER_CHECK=true` → `aws-runner:check`(Runner Role · 밖 저장소 · 다른 Secret 거부) 통과 후 `aws-runner:push` ▶ (kaniko → ECR `main-migrations:<sha>`)
 - **보안**: hop limit 2 라 job 이 Runner Role 을 그대로 씁니다 (ECR push 를 위해 의도한 것). 같은 이유로 job 은 Runner Secret 도 읽을 수 있으므로, 이 Runner 는 리뷰를 거친 보호 브랜치 job 만 받습니다. Tailscale 권한은 GitLab 443 만이라 Secret 이 새도 다른 노드에 접근할 수 없습니다.
 
 ---

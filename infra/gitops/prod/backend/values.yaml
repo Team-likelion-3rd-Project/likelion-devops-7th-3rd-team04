@@ -13,7 +13,7 @@ global:
   imageRegistry: "{{ .Values.global.awsAccountId }}.dkr.ecr.us-east-1.amazonaws.com"
   imageRepositoryPrefix: team04-hotel/
   # 커밋 SHA (latest 금지 — 차트가 렌더링을 거부, ECR 도 IMMUTABLE)
-  imageTag: "00000000"   # 자리표시 — 릴리스 때 GitLab release:gitops-pr 가 main 커밋 SHA(40자)로 바꿔 PR 을 만든다
+  imageTag: "00000000"   # 자리표시 — 릴리스 때 GitHub Actions release.yml 이 main 커밋 SHA(40자)로 바꿔 PR 을 만든다
   # 워커 kubelet 이 노드 Role 로 ECR pull (ecr-credential-provider, Ansible aws_ecr_credential_provider) → imagePullSecret 불필요
   imagePullSecrets: []
   secretName: backend-secrets
@@ -112,7 +112,7 @@ migrations:
   payment:
     enabled: false
 
-# 챗봇 오케스트레이션 워크플로. 이미지는 Docker Hub n8nio/n8n 을 GitLab release:mirror-n8n 이 ECR 로 옮긴 것 (태그 = 차트 n8n.image.tag)
+# 챗봇 오케스트레이션 워크플로. 이미지는 Docker Hub n8nio/n8n 을 release.yml 이 ECR 로 옮긴 것 (amd64, 태그 = 차트 n8n.image.tag)
 # owner 비밀번호(워크플로 활성화용 내부 계정)는 backend-secrets 의 N8N_INIT_OWNER_PASSWORD (41-main-data, 매일 새 값)
 n8n:
   enabled: true

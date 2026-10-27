@@ -1,6 +1,5 @@
 #!/bin/sh
 # prod gitops 레포에 릴리스 PR 을 만든다 — GitHub Actions release.yml gitops-pr job (main, 릴리스 Role).
-# GitLab release:gitops-pr job (main, AWS Runner) 도 이전이 끝날 때까지 같은 스크립트를 쓴다 (RELEASE_* 가 없으면 전체 갱신).
 #
 #   1) GitHub App 자격 증명(Secrets Manager) → JWT → 설치 토큰 (1시간, gitops 레포 contents · pull_requests 쓰기만)
 #   2) 같은 SHA 의 PR 이 이미 열려 있으면 종료 (job 재시도 대비)
@@ -14,21 +13,22 @@
 #      DRY_RUN=true 면 push · PR 없이 제목 · 본문 · 변경을 출력한다
 #
 # 키 · 토큰은 출력하지 않고, git 에는 URL 대신 HTTP 헤더로 넘긴다 (오류 메시지 · 원격 URL 에 남지 않게).
-# 필요: sh, aws, jq, yq(v4), git, curl, openssl — GitHub ubuntu-24.04 러너 / GitLab job 이미지 $DEPLOY_IMAGE(alpine/k8s) + apk openssl
-# 환경변수: GITHUB_SHA · GITHUB_WORKSPACE (GitLab: CI_COMMIT_SHA · CI_PROJECT_DIR), GITOPS_GITHUB_REPO(owner/name),
-#           MONOREPO_GITHUB_URL, GITHUB_APP_SECRET
-#   선택  : RELEASE_BACKEND · RELEASE_FRONTEND (기본 true), IMAGE_SHA(GHCR 원본 커밋), RELEASE_IMAGES_FILE(<서비스> <digest> 줄),
-#           DRY_RUN (기본 false)
+# 필요: sh, aws, jq, yq(v4), git, curl, openssl — GitHub ubuntu-24.04 러너
+# 환경변수: GITHUB_SHA · GITHUB_WORKSPACE · GITHUB_RUN_ID, GITOPS_GITHUB_REPO(owner/name), MONOREPO_GITHUB_URL, GITHUB_APP_SECRET,
+#           RELEASE_BACKEND · RELEASE_FRONTEND (true/false, release-plan.sh), IMAGE_SHA(GHCR 원본 커밋, RELEASE_BACKEND=true 일 때)
+#   선택  : RELEASE_IMAGES_FILE(<서비스> <digest> 줄), DRY_RUN (기본 false)
 set -eu
 # 파이프 중간(curl 등)의 실패를 놓치지 않게 (busybox ash · bash 모두 지원)
 set -o pipefail
 
-SHA="${GITHUB_SHA:-${CI_COMMIT_SHA:-}}"
-PROJECT_DIR="${GITHUB_WORKSPACE:-${CI_PROJECT_DIR:-}}"
+SHA="${GITHUB_SHA:-}"
+PROJECT_DIR="${GITHUB_WORKSPACE:-}"
 : "${SHA:?}" "${PROJECT_DIR:?}" "${GITOPS_GITHUB_REPO:?}" "${MONOREPO_GITHUB_URL:?}" "${GITHUB_APP_SECRET:?}"
-RELEASE_BACKEND="${RELEASE_BACKEND:-true}"
-RELEASE_FRONTEND="${RELEASE_FRONTEND:-true}"
+: "${RELEASE_BACKEND:?}" "${RELEASE_FRONTEND:?}"
 IMAGE_SHA="${IMAGE_SHA:-}"
+if [ "$RELEASE_BACKEND" = "true" ] && [ -z "$IMAGE_SHA" ]; then
+  echo "[release-pr] RELEASE_BACKEND=true 인데 IMAGE_SHA 가 없습니다" >&2; exit 1
+fi
 RELEASE_IMAGES_FILE="${RELEASE_IMAGES_FILE:-}"
 DRY_RUN="${DRY_RUN:-false}"
 
@@ -40,13 +40,8 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export SHA
 
-if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-  SOURCE="GitHub Actions release.yml"
-  SOURCE_URL="$MONOREPO_GITHUB_URL/actions/runs/${GITHUB_RUN_ID:-}"
-else
-  SOURCE="GitLab release:gitops-pr"
-  SOURCE_URL=""
-fi
+SOURCE="GitHub Actions release.yml"
+SOURCE_URL="$MONOREPO_GITHUB_URL/actions/runs/${GITHUB_RUN_ID:-}"
 
 log() { echo "[release-pr] $*"; }
 
@@ -159,11 +154,7 @@ TITLE="chore(prod): $COMPONENTS → $SHORT"
 check() { if [ "$1" = "true" ]; then echo x; else echo " "; fi; }
 
 if [ "$RELEASE_BACKEND" = "true" ]; then
-  if [ -n "$IMAGE_SHA" ]; then
-    BACKEND_LINE="ECR \`team04-hotel/<서비스>:$SHA\` ← GHCR \`:$IMAGE_SHA\` (develop 파이프라인 빌드 · smoke test 통과 이미지, 재빌드 없이 복사 · digest 동일, amd64)"
-  else
-    BACKEND_LINE="ECR \`team04-hotel/<서비스>:$SHA\` (GitLab · AWS Runner · arm64 kaniko 빌드)"
-  fi
+  BACKEND_LINE="ECR \`team04-hotel/<서비스>:$SHA\` ← GHCR \`:$IMAGE_SHA\` (develop 파이프라인 빌드 · smoke test 통과 이미지, 재빌드 없이 복사 · digest 동일, amd64)"
   BACKEND_ITEM="backend 이미지 태그 · chart revision → \`$SHA\`, 결제 서버 이미지 태그 → \`$SHA\`"
 else
   BACKEND_LINE="변경 없음 — 이전 릴리스 \`$PREV_REVISION\` 유지"
