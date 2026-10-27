@@ -201,7 +201,7 @@ release/<버전> ──릴리스 PR (merge commit, release-source check · 승�
 
 amd64 Terraform 과 amd64 이미지는 함께 바뀌어야 합니다 (arm64 노드 + amd64 이미지, 또는 그 반대는 기동 실패). 그래서 그날 재생성은 gitops PR merge 뒤에 합니다.
 
-1. 온프레미스 GitLab `release:*` · `aws-runner:*` 제거 PR 과 이 변경이 develop 에 merge 되어 있는지 확인 (두 경로가 같이 돌면 ECR IMMUTABLE 태그 충돌)
+1. LDP-173 변경(release.yml 활성화 · `.gitlab-ci.yml` `release:*` 제거 · amd64 Terraform)이 develop 에 merge 되어 있고, 리허설 릴리스 브랜치가 그 뒤 커밋인지 확인 (GitLab release 가 남아 있으면 같은 ECR 태그에 arm64 · amd64 가 동시에 push 되어 IMMUTABLE 충돌)
 2. ECR 의 arm64 n8n 태그를 apply 주체로 한 번 삭제 — release.yml 이 같은 태그로 amd64 를 올리도록
    `aws ecr batch-delete-image --repository-name team04-hotel/n8n --image-ids imageTag=<차트 n8n.image.tag>`
 3. 위 절차 1 – 2 로 릴리스 PR merge → release.yml 성공 (GitLab main 파이프라인에 release job 이 없는지도 확인)

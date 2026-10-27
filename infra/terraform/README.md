@@ -674,7 +674,7 @@ gcloud iam service-accounts keys list --managed-by=user \
 | `llm-service` | 인덱스 `QueryVectors` · `GetVectors` | `llm-service-prod` impersonate |
 | `llm-ingest` | 인덱스 `PutVectors` | `llm-service-prod` impersonate |
 
-- 이미지: `llm-service` 는 `release:build`(태그 = main SHA), `n8n` 은 `release:mirror-n8n` 이 Docker Hub 에서 ECR 로 옮김 (태그 = `N8N_VERSION`, 이미 있으면 건너뜀).
+- 이미지: `llm-service` 는 develop 파이프라인 GHCR 이미지를 `release.yml` 이 ECR 로 복사(태그 = main SHA), `n8n` 은 `release.yml` 이 Docker Hub 에서 ECR 로 amd64 복사 (태그 = 차트 `n8n.image.tag`, 이미 있으면 건너뜀).
 - RAG 적재는 backend 차트 `llmIngest` Job 이 릴리스마다 실행합니다. 문서 id 가 key 라 다시 넣어도 중복되지 않습니다. corpus 에서 **지운 문서는 인덱스에 남으므로**, 문서를 지우거나 임베딩 모델 · 차원을 바꿀 때는 `vector_index_name` 을 새 이름으로 바꿔 인덱스를 새로 만들고 gitops `VECTOR_INDEX_NAME` 도 함께 바꿉니다.
 - n8n owner 비밀번호(워크플로 활성화용 내부 계정)는 `41` 의 `backend-app` Secret `n8n_owner_password` 입니다 (매일 새 값).
 - pod-identity-webhook 은 **파드를 만들 때만** 자격 증명을 주입합니다. 떠 있는 클러스터에 매핑만 추가하면 기존 파드는 그대로이므로 `kubectl -n backend rollout restart deploy/<서비스>` 로 다시 만듭니다 (매일 재생성 · 이미지 태그가 바뀌는 릴리스에서는 해당 없음).
