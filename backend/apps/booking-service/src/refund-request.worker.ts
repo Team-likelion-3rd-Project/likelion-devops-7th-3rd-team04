@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { BookingServiceService } from './booking-service.service';
+import { errorTrace } from '@app/common';
 
 const DEFAULT_INTERVAL_SECONDS = 10;
 // 한 번에 확인할 최대 건수 (남으면 다음 실행에서)
@@ -71,7 +72,7 @@ export class RefundRequestWorker
     } catch (error) {
       this.logger.error(
         '환불 요청 워커 실패 — 다음 실행에서 다시 시도',
-        error instanceof Error ? error.stack : String(error),
+        errorTrace(error),
       );
     } finally {
       this.running = false;

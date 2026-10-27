@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect } from 'react'
-import { Route, Routes } from 'react-router-dom'
+import { Route, Routes, useLocation } from 'react-router-dom'
 import ScrollToTop from './components/ScrollToTop'
+import ErrorBoundary from './components/ErrorBoundary'
 import RootLayout from './layouts/RootLayout'
 import HotelLayout from './layouts/HotelLayout'
 import AccountLayout from './layouts/AccountLayout'
@@ -28,6 +29,8 @@ import PaymentsPendingPage from './pages/PaymentsPendingPage'
 import PaymentDetailPage from './pages/PaymentDetailPage'
 import LoginPage from './pages/LoginPage'
 import SignupPage from './pages/SignupPage'
+import NotFoundPage from './pages/NotFoundPage'
+import ErrorPage from './pages/ErrorPage'
 import { refreshAccessToken } from './api/gateway'
 import { loadHotels } from './data/hotelStore'
 
@@ -35,6 +38,8 @@ import { loadHotels } from './data/hotelStore'
 const AdminApp = lazy(() => import('./admin/AdminApp'))
 
 function App() {
+  const location = useLocation()
+
   useEffect(() => {
     // 액세스 토큰은 메모리에만 두므로 새로고침하면 사라진다. httpOnly 리프레시 토큰 쿠키가
     // 남아있다면 앱 부팅 시 조용히 재발급받아 로그인 상태를 복구한다 (없거나 만료됐으면 그냥 비로그인 상태).
@@ -79,6 +84,8 @@ function App() {
           </Route>
           <Route path="login" element={<LoginPage />} />
           <Route path="signup" element={<SignupPage />} />
+          {/* 위에 없는 주소는 모두 404 안내 (LDP-158) */}
+          <Route path="*" element={<NotFoundPage />} />
         </Route>
 
         {/* RootLayout 바깥의 형제 라우트: 고객용 Header/Footer/MobileDock을 렌더링하지 않는
@@ -86,9 +93,12 @@ function App() {
         <Route
           path="/admin/*"
           element={
-            <Suspense fallback={null}>
-              <AdminApp />
-            </Suspense>
+            // 새 버전 배포 직후 예전 관리자 화면 파일을 못 불러오면 하얀 화면 대신 안내한다 (LDP-158)
+            <ErrorBoundary resetKey={location.pathname} fallback={<ErrorPage />}>
+              <Suspense fallback={null}>
+                <AdminApp />
+              </Suspense>
+            </ErrorBoundary>
           }
         />
       </Routes>

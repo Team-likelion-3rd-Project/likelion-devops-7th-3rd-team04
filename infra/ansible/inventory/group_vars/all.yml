@@ -94,5 +94,9 @@ backend_external_secret_data:
     N8N_INIT_OWNER_PASSWORD: init_owner_password
   gcp-sa:
     GCP_SA_KEY_JSON: key_json_b64
+  # 차트 seed Job 의 관리자 계정 (backend/scripts/seed.ts, gitops envs/dev 의 seed.secretEnv)
+  seed-admin:
+    SEED_ADMIN_EMAIL: email
+    SEED_ADMIN_PASSWORD: password
 # OpenBao 에 base64 로 둔 속성 (ESO 가 풀어서 Secret 에 넣음). JSON 문자열은 Ansible 이 dict 로 바꿔 버리므로 base64 로 저장
 backend_external_secret_base64_keys: [GCP_SA_KEY_JSON]

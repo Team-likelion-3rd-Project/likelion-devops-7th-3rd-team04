@@ -756,3 +756,40 @@
   padding: 0 4px;
   color: var(--admin-text-muted, #6b7280);
 }
+
+/* 404·화면 오류 안내 카드 (LDP-158) */
+.admin-status {
+  max-width: 480px;
+  margin: 48px auto 0;
+  padding: 36px 28px;
+  text-align: center;
+}
+
+.admin-status h1 {
+  margin: 12px 0 6px;
+  font-size: 20px;
+}
+
+.admin-status p {
+  margin: 0;
+  color: var(--admin-text-muted, #6b7280);
+  font-size: 14px;
+}
+
+.admin-status-code {
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--admin-primary, #3b5bfd);
+}
+
+.admin-status-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.admin-status-actions .admin-btn {
+  text-decoration: none;
+}

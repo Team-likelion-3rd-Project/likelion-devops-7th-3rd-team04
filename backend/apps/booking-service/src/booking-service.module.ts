@@ -8,6 +8,7 @@ import {
   createSqsClient,
   SQS_CLIENT,
   mariaDbSslOptions,
+  typeOrmLoggingOptions,
 } from '@app/common';
 import { BookingServiceController } from './booking-service.controller';
 import { BookingServiceService } from './booking-service.service';
@@ -56,7 +57,8 @@ import { RefundRequestWorker } from './refund-request.worker';
         // 테이블 구조는 Flyway(backend/migrations)만 바꿉니다. true로 두면 TypeORM이
         // 재기동 때마다 엔티티에 맞춰 테이블을 고치면서 Flyway가 만든 FK를 지워버립니다.
         synchronize: false,
-        logging: true, // SQL 실행 쿼리 로깅
+        // 쿼리 로그는 값(PARAMETERS) 없이 — 실행 쿼리는 DB_LOGGING=true일 때만, 실패·느린 쿼리는 항상 (LDP-163)
+        ...typeOrmLoggingOptions(),
       }),
     }),
 

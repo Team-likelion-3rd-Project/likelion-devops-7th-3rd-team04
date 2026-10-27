@@ -21,3 +21,8 @@ payment-service는 `synchronize: false`라서 테이블을 직접 만들거나 �
 - 로컬: `docker compose --profile local-infra up` 하면 `payment-db-migration` 서비스가 자동 실행됩니다.
 - 클러스터: 이 폴더의 `Dockerfile`로 만든 `payment-migrations` 이미지를 Helm hook Job(`backend-deploy/charts/backend/templates/migration-job.yaml`)이 앱 배포 전에 실행합니다. GitLab CI의 이미지 smoke test도 파이프라인 전용 DB에 같은 이미지를 먼저 적용합니다.
 - 적용 현황 확인: 결제 DB의 `flyway_schema_history` 테이블을 조회합니다.
+
+## 롤백 때 DB (dev 전용)
+
+메인 DB와 같은 `migrate.sh`를 씁니다 — 동작은 [backend/migrations/README.md](../../../migrations/README.md) "롤백 때 DB". 이 폴더의 `migrate.sh`는 그 파일의 사본이므로 원본만 고치고 복사합니다.
+dev 결제 노드(`flyway.env`의 `MIGRATE_RESET_ON_DOWNGRADE=true`)에서 이전 태그로 배포하면 결제 DB를 비우고 그 버전까지 다시 적용합니다. 결제 DB에는 시딩 데이터가 없어 빈 테이블로 시작합니다. 운영은 켜지 않습니다.
