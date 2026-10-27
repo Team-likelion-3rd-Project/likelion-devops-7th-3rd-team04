@@ -1,0 +1,65 @@
+---
+# metrics-server — HPA(backend 차트 hpa.yaml) · kubectl top 이 쓰는 Resource Metrics API (README 17절).
+# 다른 방법(수동 매니페스트 등)으로 이미 설치돼 있으면 건드리지 않고 알리기만 합니다.
+- name: values 파일
+  ansible.builtin.template:
+    src: metrics-server-values.yaml.j2
+    dest: "{{ monitoring_manifest_dir }}/metrics-server-values.yaml"
+    mode: "0644"
+
+- name: 설치된 metrics-server release 조회
+  ansible.builtin.command: >-
+    helm list -n {{ metrics_server_namespace }} --filter '^metrics-server$' -o json
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: metrics_server_release
+  changed_when: false
+
+- name: Metrics API 등록 여부 조회
+  ansible.builtin.command: kubectl get apiservice v1beta1.metrics.k8s.io --ignore-not-found -o name
+  environment: *kubeconfig
+  register: metrics_server_apiservice
+  changed_when: false
+
+- name: 이 role 이 관리하지 않는 metrics-server 안내
+  ansible.builtin.debug:
+    msg: >-
+      v1beta1.metrics.k8s.io 가 이미 등록돼 있지만 helm release metrics-server 가 없습니다.
+      직접 설치한 metrics-server 로 보고 건너뜁니다. 이 role 로 관리하려면 기존 것을 지운 뒤 다시 실행하세요 (README 17-6).
+  when:
+    - metrics_server_release.stdout | from_json | length == 0
+    - metrics_server_apiservice.stdout | length > 0
+
+- name: metrics-server 설치 / 업그레이드
+  when: (metrics_server_release.stdout | from_json | length > 0) or (metrics_server_apiservice.stdout | length == 0)
+  block:
+    # helm upgrade 는 값이 같아도 revision 을 새로 만들기 때문에 (traefik role 과 같은 방식)
+    # 설치된 chart 버전과 values 가 원하는 상태와 같으면 건너뜁니다.
+    - name: 적용된 values 조회
+      ansible.builtin.command: helm get values metrics-server -n {{ metrics_server_namespace }} -o json
+      environment: *kubeconfig
+      register: metrics_server_values_applied
+      changed_when: false
+      when: metrics_server_release.stdout | from_json | length > 0
+
+    - name: metrics-server 설치 / 업그레이드
+      ansible.builtin.command: >-
+        helm upgrade --install metrics-server metrics-server
+        --repo {{ metrics_server_chart_repo }}
+        --version {{ metrics_server_chart_version }}
+        -n {{ metrics_server_namespace }}
+        -f {{ monitoring_manifest_dir }}/metrics-server-values.yaml
+        --wait --timeout 5m
+      environment: *kubeconfig
+      when: >-
+        (metrics_server_release.stdout | from_json | length == 0)
+        or ((metrics_server_release.stdout | from_json | first).status != 'deployed')
+        or ((metrics_server_release.stdout | from_json | first).chart != 'metrics-server-' ~ metrics_server_chart_version)
+        or ((metrics_server_values_applied.stdout | from_json) != (lookup('ansible.builtin.template', 'metrics-server-values.yaml.j2') | from_yaml))
+      changed_when: true
+
+    - name: Metrics API Available 대기
+      ansible.builtin.command: >-
+        kubectl wait --for=condition=Available apiservice/v1beta1.metrics.k8s.io --timeout=180s
+      environment: *kubeconfig
+      changed_when: false

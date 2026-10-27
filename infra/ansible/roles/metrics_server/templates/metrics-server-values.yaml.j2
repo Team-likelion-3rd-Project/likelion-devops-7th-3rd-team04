@@ -1,0 +1,23 @@
+# metrics-server chart {{ metrics_server_chart_version }} values — Ansible(roles/metrics_server) 이 관리. 직접 수정 금지
+#
+# HPA · kubectl top 이 쓰는 Resource Metrics API. Prometheus 와는 별개 (README 17절)
+
+# kubeadm kubelet 의 serving 인증서는 자체 서명이라 검증을 건너뜀 (serverTLSBootstrap 을 켜지 않음)
+args:
+  - --kubelet-insecure-tls
+
+# 노드 InternalIP = Tailscale IP. 워커 hostname 은 클러스터 DNS 로 풀리지 않음
+defaultArgs:
+  - --cert-dir=/tmp
+  - --kubelet-preferred-address-types=InternalIP
+  - --kubelet-use-node-status-port
+  - --metric-resolution=15s
+
+# 워커는 팀원 PC 의 VM 이라 꺼질 수 있으므로 control plane 에 고정 (Traefik · ArgoCD 와 같은 이유)
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule

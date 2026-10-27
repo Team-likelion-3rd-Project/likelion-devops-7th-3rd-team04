@@ -1,0 +1,49 @@
+---
+# 클러스터 모니터링: metrics-server → kube-prometheus-stack(Prometheus · Grafana) + 대시보드 (README 17절)
+#   Grafana admin 비밀번호 · ESO 는 OpenBao 필요 (db.yml 로 eso-dev 정책 갱신 → k8s-cicd.yml 로 ESO 구성이 먼저)
+#   metrics-server 만 다시: --tags metrics_server / Prometheus · Grafana 만 다시: --tags monitoring
+- name: 클러스터 모니터링 구성 (metrics-server + kube-prometheus-stack)
+  hosts: control_plane
+  become: true
+  pre_tasks:
+    - name: OpenBao 설정 확인
+      ansible.builtin.assert:
+        that:
+          - openbao_addr | length > 0
+          - openbao_token | length > 0
+        fail_msg: >-
+          OPENBAO_ADDR / OPENBAO_TOKEN 이 비어 있습니다. Grafana admin 계정을 OpenBao → ESO 로 만듭니다.
+          set -a; source .env; source .secrets/openbao.env; set +a 후 다시 실행하세요 (README 17-2).
+        quiet: true
+      run_once: true
+      tags: [always]
+
+    - name: control plane 구성 여부 확인
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+      tags: [always]
+
+    - name: admin.conf 확인
+      ansible.builtin.assert:
+        that: admin_conf.stat.exists
+        fail_msg: "/etc/kubernetes/admin.conf 가 없습니다. control-plane.yml 을 먼저 실행하세요. (README 3절)"
+        quiet: true
+      tags: [always]
+
+    - name: 작업 디렉토리
+      ansible.builtin.file:
+        path: "{{ monitoring_manifest_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      tags: [always]
+
+  roles:
+    - role: helm
+      tags: [always]
+    - role: metrics_server
+      tags: [metrics_server]
+    - role: monitoring
+      tags: [monitoring]

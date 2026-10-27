@@ -12,6 +12,7 @@
 | `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) — [11절](#11-ingress-controller-traefik) |
 | `k8s-cicd.yml` | `[control_plane]` (1대) | External Secrets Operator(OpenBao 연결) → `backend` 네임스페이스 · 레지스트리 pull Secret · `backend-secrets`(ExternalSecret) → ArgoCD (backend 배포) — [12절](#12-cicd-registry--파이프라인--argocd), [16절](#16-openbao--external-secrets-operator-dev-비밀값) |
+| `monitoring.yml` | `[control_plane]` (1대) | metrics-server → kube-prometheus-stack(Prometheus · Grafana · node-exporter) → 대시보드 → `tailscale serve` HTTPS(Grafana) — [17절](#17-모니터링-prometheus--grafana) |
 | `registry-trust.yml` | `[control_plane]`, `[workers]` | containerd `certs.d` 설정 (사설 CA 를 쓸 때 레지스트리 CA 신뢰) — [12-7](#12-7-사설-ca-를-쓸-때-선택) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) → api-gateway Ingress(`/api`) — [11절](#11-ingress-controller-traefik) |
 | `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행. CP-a 는 마지막에 ArgoCD · root 앱 설치 (Traefik · backend 등은 ArgoCD 가 설치) — [13절](#13-aws-main-클러스터-user-data-전용) |
@@ -35,6 +36,7 @@ infra/ansible/
 ├── payment.yml                # 결제 서버 노드 (14절)
 ├── ingress.yml
 ├── k8s-cicd.yml
+├── monitoring.yml             # metrics-server · Prometheus · Grafana (17절)
 ├── registry-trust.yml
 ├── aws-control-plane.yml      # AWS CP user-data 전용 (13절)
 ├── aws-worker.yml             # AWS 워커 user-data 전용 (13절)
@@ -43,11 +45,11 @@ infra/ansible/
 │   ├── aws.ini                # AWS 노드가 자기 자신에게 실행할 때 쓰는 inventory (13절)
 │   └── group_vars/
 │       ├── all.yml            # 버전·CIDR 고정값, 환경변수 매핑, OpenBao 주소 · backend-secrets key(ExternalSecret)
-│       ├── control_plane.yml  # Ingress: helm/Traefik 버전, NodePort / CI/CD: ESO · ArgoCD 버전
+│       ├── control_plane.yml  # Ingress: helm/Traefik 버전, NodePort / CI/CD: ESO · ArgoCD 버전 / 모니터링 버전 · 저장소 · 포트
 │       ├── db.yml             # DB 노드: 이미지 버전(OpenBao 포함), 튜닝값, OpenBao 경로 매핑, MinIO 버킷
 │       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
 │       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
-│       ├── payment.yml        # 결제 노드: 이미지 버전, 결제 DB / ElasticMQ 큐, 클러스터 NodePort
+│       ├── payment.yml        # 결제 노드: 이미지 버전, 결제 DB / ElasticMQ 큐, 클러스터 NodePort, 수집기(Alloy)
 │       ├── aws.yml                # AWS 노드 공통: Tailscale 끔, kubelet cloud-provider, CA cert hash 대기
 │       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신 · CP reconcile 주기, CCM · NTH 버전, ArgoCD root 앱(대상 브랜치 · 클러스터 값 · 알림)
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
@@ -57,7 +59,8 @@ infra/ansible/
 │                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
 │                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle
 │                              # gitlab_bootstrap, backend_namespace, argocd, payment_stack,
-│                              # openbao, openbao_kv(OpenBao 읽기/쓰기 공용), external_secrets
+│                              # openbao, openbao_kv(OpenBao 읽기/쓰기 공용), external_secrets,
+│                              # metrics_server, monitoring
 └── .secrets/                  # (자동 생성, gitignore) openbao.env, openbao/(static key · init.json),
                                # join.env, admin.conf, gitlab-runner.env, gitlab-k8s.env, github-mirror.env,
                                # payment-node.env, argocd.env — 16-7 참고
@@ -101,8 +104,8 @@ infra/ansible/
     { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:22", "tcp:6443"] },
     // (k6) 팀원 PC 에서 k8s 의 Ingress / NodePort 로 부하를 줄 때
     { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:80", "tcp:443", "tcp:30000-32767"] },
-    // 팀원 PC → control plane : ArgoCD UI/API (tailscale serve HTTPS 8443, 12-9)
-    { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:8443"] },
+    // 팀원 PC → control plane : ArgoCD UI/API (tailscale serve HTTPS 8443, 12-9), Grafana (tailscale serve HTTPS 9443, 17절)
+    { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:8443", "tcp:9443"] },
 
     // ── DB ───────────────────────────────────────────────
     // k8s Pod → DB · MinIO(S3 API 9000) · DynamoDB Local(8000, chat-bot-service). Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
@@ -133,8 +136,8 @@ infra/ansible/
     // ── 결제 노드 (14절) ─────────────────────────────────
     // k8s Pod → 결제 노드 : api-gateway·booking-service → payment-service(gRPC 3004), booking-service → ElasticMQ(SQS 9324)
     { "src": ["tag:k8s-node"], "dst": ["tag:payment"], "ip": ["tcp:3004", "tcp:9324"] },
-    // 결제 노드 → k8s : payment-service → booking-service(gRPC) / pg-mock-service(HTTP) NodePort
-    { "src": ["tag:payment"], "dst": ["tag:k8s-node"], "ip": ["tcp:30303", "tcp:30307"] },
+    // 결제 노드 → k8s : payment-service → booking-service(gRPC) / pg-mock-service(HTTP) NodePort, Alloy → Prometheus remote_write(30909, 17절)
+    { "src": ["tag:payment"], "dst": ["tag:k8s-node"], "ip": ["tcp:30303", "tcp:30307", "tcp:30909"] },
     // 결제 노드 → GitLab : gitops 태그 조회(443), 이미지 pull(5050)
     { "src": ["tag:payment"], "dst": ["tag:gitlab"], "ip": ["tcp:443", "tcp:5050"] },
     // 팀원 PC → 결제 노드 : SSH(VM 관리). 결제 DB 는 열지 않음 — SSH 터널로 접속
@@ -1374,9 +1377,10 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `main-db-root` · `minio-root` · `ci-smoke-db` | password (· user) | db.yml, gitlab.yml — **ESO 는 못 읽음** |
 | `ghcr-push` | username, token (GHCR 봇 classic PAT — 12-4) | gitlab.yml(bootstrap → CI 변수 `GHCR_USER` · `GHCR_TOKEN`) — **ESO 는 못 읽음** |
 | `payment-db` · `payment-db-root` · `toss-payments` | (운영과 같은 이름) | payment.yml |
+| `grafana` | admin_user, admin_password (없으면 monitoring.yml 이 생성, 17절) | ESO(`monitoring/grafana-admin`) |
 | `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `aws-ci-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
 
-- `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책도 이 목록에서 만듭니다.
+- `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책은 이 목록과 `eso_extra_read_paths`(backend 밖에서 ESO 가 읽는 경로, 예: `grafana`)로 만듭니다.
   - 경로를 추가하면 OpenBao 관리자가 `db.yml --tags openbao` 로 `eso-dev` 정책을 갱신해야 ESO 가 읽을 수 있습니다. 그다음 `db.yml --tags openbao_import`(값 이관), `k8s-cicd.yml --tags backend_secrets` 순서로 실행합니다.
 - 모든 playbook 은 `OPENBAO_ADDR` 이 비어 있으면 OpenBao 를 건너뛰고 예전처럼 `.env` · `backend/.env` · `.secrets/*.env` 를 읽습니다 (`k8s-cicd.yml` 은 ESO 때문에 OpenBao 필수).
 - OpenBao 호출은 Ansible 을 실행하는 PC 가 아니라 **play 대상 노드**에서 합니다 (PC 는 Tailnet 에 없을 수 있음). 그래서 1-1 의 `→ tag:db tcp:8200` grant 가 필요합니다.
@@ -1470,3 +1474,121 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 
 - OpenBao 에 넣을 수 없는 값(`openbao/*`, `openbao.env`)과 OpenBao 보다 먼저 필요한 `.env` 값(Tailscale OAuth secret, `GITLAB_ROOT_PASSWORD`)은 팀 비밀번호 관리자에 보관합니다.
 - 파일도 계속 만들어지므로 OpenBao 를 쓰지 않거나 장애가 났을 때도 예전 방식(`source .secrets/*.env`)으로 실행할 수 있습니다.
+
+---
+
+## 17. 모니터링 (Prometheus · Grafana)
+
+클러스터의 Pod · 노드 리소스와 결제 노드(k8s 밖)를 **Grafana 하나**에서 봅니다. 수집 방식 · 라벨은 운영과 같습니다 (노션 "관측성 도입 계획" · "라벨 세부 정의 v0.2").
+
+```
+[dev 클러스터 — control plane 고정]                           [결제 노드 — Docker Compose]
+ kubelet(cAdvisor) ─┐                                          node-exporter ─┐ 127.0.0.1
+ kube-state-metrics ─┼─▶ Prometheus ◀── remote_write(30909) ──── Grafana Alloy ┤
+ node-exporter(DS) ──┘    │  로컬 PV                                cAdvisor ──┘ 127.0.0.1
+                          ▼
+                       Grafana ◀── tailscale serve HTTPS 9443 ── 팀원 PC
+ metrics-server ─▶ HPA · kubectl top (Prometheus 와 별개)
+```
+
+| 구성 | 값 |
+|---|---|
+| playbook | `monitoring.yml` (`[control_plane]`) — roles `metrics_server`, `monitoring` / 결제 노드는 `payment.yml`(roles `payment_stack`) |
+| chart | metrics-server `3.14.0`, kube-prometheus-stack `92.3.0` (`group_vars/control_plane.yml`) |
+| values | `roles/monitoring/files/kube-prometheus-stack-values-common.yaml` (**운영과 공유하는 정적 파일**) + `templates/kube-prometheus-stack-values-dev.yaml.j2` (dev 값) |
+| 배치 | node-exporter(DaemonSet) 외 전부 control plane 고정 — 워커는 팀원 PC 라 꺼질 수 있음 |
+| 저장소 | control plane 로컬 PV `prometheus-local` (`/var/lib/monitoring/prometheus`, 20Gi, StorageClass `monitoring-local`), 보존 7일 · 15GB |
+| Grafana | `https://<control plane>.<tailnet>.ts.net:9443` — admin 계정 OpenBao `grafana` → ESO → Secret `monitoring/grafana-admin` |
+| Prometheus | `http://<control plane Tailscale IP>:30909` (UI · `/targets`, 결제 노드 remote_write `/api/v1/write`) |
+| 결제 노드 수집기 | node-exporter · cAdvisor · Grafana Alloy (`group_vars/payment.yml`), 모두 127.0.0.1 바인딩 |
+| 알림 | Alertmanager 꺼짐 (수신처 미정) — Grafana **Alerting → Alert rules** 또는 Prometheus `/alerts` 에서 확인 |
+
+**라벨**
+
+| 라벨 | 클러스터 | 결제 노드 |
+|---|---|---|
+| `cluster` | `main` (Prometheus scrape class) | `payment` (Alloy external_labels) |
+| `env` | `dev` (`monitoring_env`) | `dev` |
+| `namespace` | Pod 네임스페이스 | `payment` |
+| `container` | 컨테이너 이름 = 서비스 이름 | Docker 컨테이너 이름 (cAdvisor `name` → `container`) |
+| `instance` | 대상 주소 | 결제 노드 `node_name` |
+
+- `externalLabels` 는 저장된 시계열에 붙지 않아 `sum by (cluster)` 에 쓸 수 없습니다. 그래서 클러스터 쪽은 scrape class(`team04-default`) 의 relabel 로 붙입니다.
+- 앱 `/metrics`(backend MetricsModule)는 아직 수집하지 않습니다. 개발 완료 보고 후 backend 차트 ServiceMonitor(`honorLabels: true`) · `payment_metrics_enabled: true` 로 켭니다 (17-5).
+
+### 17-1. Tailscale ACL
+
+1-1 의 정책에 아래 grant 가 들어 있어야 합니다 (1-1 예시에 반영됨).
+- `tag:payment` → `tag:k8s-node` `tcp:30909` (Alloy → Prometheus remote_write)
+- `autogroup:member` → `tag:k8s-node` `tcp:9443` (Grafana HTTPS)
+
+### 17-2. 실행
+
+```bash
+cd infra/ansible
+set -a; source .env; source .secrets/openbao.env; set +a
+
+# 1) OpenBao 관리자: eso-dev 정책에 grafana 경로 추가 (eso_extra_read_paths)
+ansible-playbook db.yml -K --tags openbao
+
+# 2) CP 담당자: metrics-server → kube-prometheus-stack → 대시보드 → tailscale serve
+#    (ESO · ClusterSecretStore openbao 가 있어야 함 — k8s-cicd.yml 먼저)
+ansible-playbook monitoring.yml -K
+#    일부만: --tags metrics_server / --tags monitoring
+
+# 3) 결제 노드 담당자: 수집기 추가 (CLUSTER_ENTRY_IP = control plane Tailscale IP, 14-2)
+ansible-playbook payment.yml -K --tags deploy
+```
+
+- Grafana admin 비밀번호: `bao kv get secret/team04-hotel/dev/grafana` (OpenBao UI 도 가능). 처음 실행 때 랜덤으로 만들고 이후에는 바꾸지 않습니다.
+- 두 번째 실행은 changed 가 없어야 합니다 (chart · values 가 같으면 helm 을 건너뜀).
+
+### 17-3. 대시보드 · 알람
+
+| 대시보드 | 내용 |
+|---|---|
+| Kubernetes / Compute Resources / Namespace (Pods) · / Pod | 차트 기본 제공. backend Pod CPU · 메모리 · requests/limits 대비 |
+| Node Exporter / Nodes | 차트 기본 제공. 클러스터 노드 |
+| team04 / 서비스 개요 | 클러스터 + 결제 노드 서비스별 CPU · 메모리, 메모리/limit, 스로틀링, 재시작 (요청 · 지연 · 에러는 17-5 이후) |
+| team04 / 결제 노드 | 수집 상태(up), 호스트 CPU · 메모리 · 디스크, 컨테이너별 CPU · 메모리 |
+
+- 대시보드 JSON 은 `roles/monitoring/files/dashboards/` — ConfigMap(label `grafana_dashboard=1`)으로 올라가며 UI 에서 고친 내용은 저장되지 않습니다. JSON 을 고치고 `--tags monitoring` 으로 반영합니다.
+- 알람 규칙은 common values 의 `additionalPrometheusRulesMap`: `PodRestartingFrequently`(15분 3회), `ContainerOOMKilled`, `ContainerMemoryNearLimit`(limit 90%, 5분), `PaymentMetricsAbsent`(결제 노드 메트릭 5분 없음). CPU 스로틀링은 기본 규칙 `CPUThrottlingHigh`(25%, 15분).
+- **워커 PC 가 꺼져 있으면** `KubeNodeNotReady` · `TargetDown`(그 노드의 kubelet · node-exporter) 등이 firing 입니다. dev 에서는 정상 상황입니다.
+
+### 17-4. 검증
+
+```bash
+kubectl top nodes
+kubectl top pods -n backend
+kubectl -n monitoring get pods,pvc
+```
+
+1. Prometheus `/targets` — kubelet · cAdvisor · node-exporter · kube-state-metrics · apiserver · coredns 가 UP (꺼진 워커는 DOWN)
+2. Grafana "Kubernetes / Compute Resources / Namespace (Pods)" 에서 namespace `backend` 의 Pod CPU · 메모리
+3. Grafana Explore: `up{cluster="payment"}`, `container_memory_working_set_bytes{cluster="payment"}` → "team04 / 결제 노드" 대시보드
+4. 데이터 유지: `kubectl -n monitoring delete pod prometheus-kube-prometheus-stack-prometheus-0` 뒤에도 이전 그래프가 남아 있음
+5. 결제 알람: 결제 노드에서 `docker stop alloy` → 약 6분 뒤 `PaymentMetricsAbsent` firing → `docker start alloy` (WAL 에 쌓인 값이 다시 들어옴)
+
+### 17-5. backend /metrics 수집 (개발 완료 보고 후)
+
+백엔드 MetricsModule(`METRICS_PORT=9464`, `/metrics`, 노션 "라벨 세부 정의 v0.2")이 배포된 뒤 진행합니다.
+
+1. backend 차트: `metrics.enabled` 토글, `METRICS_PORT` env · containerPort `metrics`, `ServiceMonitor`(`honorLabels: true`) — Prometheus 는 이미 모든 네임스페이스의 ServiceMonitor 를 읽음
+2. gitops `envs/dev/values.yaml` 에서 켬
+3. 결제 노드: `payment_metrics_enabled: true` + payment.env 에 `METRICS_PORT` → `payment.yml --tags deploy`
+4. "team04 / 서비스 개요" 에 요청 · 지연 · 에러 패널, 에러율 알람 (합의된 에러 정의 기준)
+5. 시계열 수 점검: `count by (service) ({service!=""})`
+
+### 17-6. 트러블슈팅
+
+| 증상 | 확인 |
+|---|---|
+| `디스크 여유 확인` 실패 | CP `/var/lib` 여유 < PV + 5GiB. 디스크를 늘리거나 `prometheus_storage_gb` · `prometheus_retention_size` 를 줄임 |
+| ExternalSecret `grafana-admin` 이 Ready 아님 (`permission denied`) | `eso-dev` 정책에 `grafana` 없음 → `db.yml --tags openbao` |
+| Prometheus Pod 가 Pending | `kubectl get pv prometheus-local` — `Released` 면 PVC 를 지웠던 것. 데이터를 유지하려면 `kubectl patch pv prometheus-local -p '{"spec":{"claimRef":null}}'` 로 다시 Available 로 |
+| Prometheus Pod 가 `permission denied` 로 재시작 | 데이터 디렉토리 소유자 1000:2000 — `--tags monitoring` 재실행 |
+| `kubectl top` 이 `Metrics API not available` | `kubectl get apiservice v1beta1.metrics.k8s.io`, metrics-server 로그(kubelet 10250 접속). 직접 설치한 metrics-server 가 있으면 role 이 건너뜀 — 지우고 다시 실행 |
+| 결제 노드 메트릭이 없음 | 결제 노드에서 `docker logs alloy` (remote_write 오류), `curl -s 127.0.0.1:12345/-/ready`, ACL `tag:payment → tag:k8s-node tcp:30909`, `CLUSTER_ENTRY_IP` |
+| Grafana 9443 접속 불가 | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status` |
+| chart 메이저 버전 업그레이드 | kube-prometheus-stack 은 helm 이 CRD 를 갱신하지 않음 — chart UPGRADE 문서대로 CRD 를 먼저 `kubectl apply --server-side` |

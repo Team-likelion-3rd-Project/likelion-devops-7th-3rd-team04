@@ -1,0 +1,125 @@
+{
+  "uid": "team04-service-overview",
+  "title": "team04 / 서비스 개요",
+  "description": "클러스터(backend 네임스페이스)와 결제 노드의 서비스별 CPU · 메모리를 함께 봅니다. 요청 · 지연 · 에러 패널은 backend /metrics 수집 뒤 추가 (infra/ansible README 17절)",
+  "tags": ["team04"],
+  "timezone": "",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "데이터소스",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      },
+      {
+        "name": "cluster",
+        "label": "cluster",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": { "query": "label_values(container_cpu_usage_seconds_total{namespace=~\"backend|payment\"}, cluster)", "refId": "cluster" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {}
+      },
+      {
+        "name": "container",
+        "label": "서비스",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": { "query": "label_values(container_cpu_usage_seconds_total{cluster=~\"$cluster\", namespace=~\"backend|payment\", container!=\"\", container!=\"POD\"}, container)", "refId": "container" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CPU (cores)",
+      "description": "클러스터는 Pod 합계, 결제 노드는 컨테이너. container 라벨 = 서비스 이름 (결제 노드는 Alloy 가 Docker 컨테이너 이름을 container 로 맞춤)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (cluster, container) (rate(container_cpu_usage_seconds_total{cluster=~\"$cluster\", namespace=~\"backend|payment\", container=~\"$container\", container!=\"\", container!=\"POD\"}[$__rate_interval]))",
+          "legendFormat": "{{container}} [{{cluster}}]"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "메모리 (working set)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (cluster, container) (container_memory_working_set_bytes{cluster=~\"$cluster\", namespace=~\"backend|payment\", container=~\"$container\", container!=\"\", container!=\"POD\"})",
+          "legendFormat": "{{container}} [{{cluster}}]"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0 }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "메모리 / limit (클러스터)",
+      "description": "Pod 별 working set ÷ memory limit. 90% 를 5분 넘으면 ContainerMemoryNearLimit 알람",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (pod, container) (container_memory_working_set_bytes{cluster=\"main\", namespace=\"backend\", container=~\"$container\", container!=\"\", container!=\"POD\"}) / on (pod, container) max by (pod, container) (kube_pod_container_resource_limits{cluster=\"main\", namespace=\"backend\", resource=\"memory\", container=~\"$container\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "CPU 스로틀링 비율 (클러스터)",
+      "description": "CPU limit 때문에 멈춘 주기 비율. 25% 를 15분 넘으면 CPUThrottlingHigh 알람",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pod, container) (rate(container_cpu_cfs_throttled_periods_total{cluster=\"main\", namespace=\"backend\", container=~\"$container\", container!=\"\"}[$__rate_interval])) / sum by (pod, container) (rate(container_cpu_cfs_periods_total{cluster=\"main\", namespace=\"backend\", container=~\"$container\", container!=\"\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "재시작 횟수 (1시간, 클러스터)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (container) (increase(kube_pod_container_status_restarts_total{cluster=\"main\", namespace=\"backend\", container=~\"$container\"}[1h]))",
+          "legendFormat": "{{container}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "decimals": 0 }, "overrides": [] }
+    }
+  ]
+}

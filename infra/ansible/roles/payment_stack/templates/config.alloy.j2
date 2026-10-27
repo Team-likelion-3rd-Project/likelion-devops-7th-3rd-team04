@@ -1,0 +1,55 @@
+// Ansible(payment_stack role)이 생성 — 직접 수정하지 마세요.
+// 결제 노드 수집기: node-exporter · cAdvisor{{ ' · payment-service' if payment_metrics_enabled else '' }} → 클러스터 Prometheus(remote_write) (README 17절)
+// 라벨은 클러스터와 맞춤: cluster · env · namespace 는 external_labels, 컨테이너 이름은 container (k8s cAdvisor 와 같은 이름)
+
+prometheus.scrape "node" {
+  job_name        = "node-exporter"
+  targets         = [{"__address__" = "127.0.0.1:{{ node_exporter_port }}", "instance" = "{{ node_name }}"}]
+  scrape_interval = "{{ payment_scrape_interval }}"
+  forward_to      = [prometheus.remote_write.main.receiver]
+}
+
+prometheus.scrape "cadvisor" {
+  job_name        = "cadvisor"
+  targets         = [{"__address__" = "127.0.0.1:{{ cadvisor_port }}", "instance" = "{{ node_name }}"}]
+  scrape_interval = "{{ payment_scrape_interval }}"
+  forward_to      = [prometheus.relabel.cadvisor.receiver]
+}
+
+// Docker 컨테이너 이름(name) → container. id(cgroup 경로)는 컨테이너를 다시 만들 때마다 바뀌어 지움
+prometheus.relabel "cadvisor" {
+  forward_to = [prometheus.remote_write.main.receiver]
+
+  rule {
+    source_labels = ["name"]
+    target_label  = "container"
+  }
+
+  rule {
+    action = "labeldrop"
+    regex  = "name|id"
+  }
+}
+{% if payment_metrics_enabled %}
+
+// 앱이 service 라벨을 직접 붙임 (노션 "라벨 세부 정의 v0.2") — 앱 값을 그대로 씀
+prometheus.scrape "payment_service" {
+  job_name        = "payment-service"
+  targets         = [{"__address__" = "127.0.0.1:{{ payment_metrics_port }}", "instance" = "{{ node_name }}"}]
+  scrape_interval = "{{ payment_scrape_interval }}"
+  honor_labels    = true
+  forward_to      = [prometheus.remote_write.main.receiver]
+}
+{% endif %}
+
+prometheus.remote_write "main" {
+  endpoint {
+    url = "{{ payment_remote_write_url }}"
+  }
+
+  external_labels = {
+    cluster   = "payment",
+    env       = "{{ monitoring_env }}",
+    namespace = "payment",
+  }
+}

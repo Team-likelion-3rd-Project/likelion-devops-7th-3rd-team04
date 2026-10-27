@@ -1,0 +1,287 @@
+---
+# kube-prometheus-stack(Prometheus · Grafana · kube-state-metrics · node-exporter) + 대시보드 (README 17절).
+#   저장소 : control plane 로컬 PV (StorageClass monitoring-local, 정적 PV 1개)
+#   Grafana: admin 계정 OpenBao grafana → ESO → Secret grafana-admin, UI 는 tailscale serve HTTPS
+#   values : files/…-common.yaml(운영과 공유) + templates/…-dev.yaml.j2
+- name: Tailscale 정보 조회 (Grafana 주소)
+  ansible.builtin.command: tailscale status --self --peers=false --json
+  register: monitoring_ts_self
+  changed_when: false
+
+- name: monitoring_fqdn fact 등록
+  ansible.builtin.set_fact:
+    monitoring_ts_ip: "{{ (monitoring_ts_self.stdout | from_json).Self.TailscaleIPs | select('match', '^[0-9.]+$') | first }}"
+    monitoring_fqdn: "{{ (monitoring_ts_self.stdout | from_json).Self.DNSName | regex_replace('\\.$', '') }}"
+
+# ── 저장소: control plane 로컬 PV ─────────────────────────
+- name: /var/lib 여유 공간 조회
+  ansible.builtin.command: df -B1 --output=avail /var/lib
+  register: monitoring_disk_avail
+  changed_when: false
+
+- name: Prometheus 데이터 디렉토리 조회
+  ansible.builtin.stat:
+    path: "{{ prometheus_data_dir }}"
+  register: prometheus_data_dir_stat
+
+# 이미 만든 디렉토리(데이터가 들어 있음)는 확인하지 않음 — 처음 만들 때만
+- name: 디스크 여유 확인
+  ansible.builtin.assert:
+    that: (monitoring_disk_avail.stdout_lines | last | int) >= (prometheus_storage_gb + prometheus_disk_headroom_gb) * 1024 * 1024 * 1024
+    fail_msg: >-
+      /var/lib 여유 공간이 {{ ((monitoring_disk_avail.stdout_lines | last | int) / 1024 / 1024 / 1024) | round(1) }}GiB 입니다.
+      Prometheus PV {{ prometheus_storage_gb }}GiB + 여유 {{ prometheus_disk_headroom_gb }}GiB 가 필요합니다.
+      디스크를 늘리거나 group_vars/control_plane.yml 의 prometheus_storage_gb · prometheus_retention_size 를 줄이세요 (README 17-6).
+    quiet: true
+  when: not prometheus_data_dir_stat.stat.exists
+
+# Prometheus 컨테이너는 uid 1000 / gid 2000 (차트 prometheusSpec.securityContext 기본값)
+- name: Prometheus 데이터 디렉토리
+  ansible.builtin.file:
+    path: "{{ prometheus_data_dir }}"
+    state: directory
+    owner: "1000"
+    group: "2000"
+    mode: "0775"
+
+- name: 네임스페이스 · StorageClass · PV ({{ monitoring_namespace }}, monitoring-local)
+  vars:
+    manifest:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ monitoring_namespace }}"
+            labels:
+              app.kubernetes.io/managed-by: ansible
+        # 프로비저너 없음 — Prometheus 가 PVC 를 만들 때 아래 PV 에 붙음 (스케줄 시점에 바인딩)
+        - apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: monitoring-local
+            labels:
+              app.kubernetes.io/managed-by: ansible
+          provisioner: kubernetes.io/no-provisioner
+          volumeBindingMode: WaitForFirstConsumer
+          reclaimPolicy: Retain
+        # Retain — PVC 를 지워도 데이터는 남음 (다시 붙이는 방법 README 17-6)
+        - apiVersion: v1
+          kind: PersistentVolume
+          metadata:
+            name: prometheus-local
+            labels:
+              app.kubernetes.io/managed-by: ansible
+          spec:
+            capacity:
+              storage: "{{ prometheus_storage_gb }}Gi"
+            accessModes: [ReadWriteOnce]
+            persistentVolumeReclaimPolicy: Retain
+            storageClassName: monitoring-local
+            local:
+              path: "{{ prometheus_data_dir }}"
+            nodeAffinity:
+              required:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values: ["{{ node_name }}"]
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: "{{ manifest | to_json }}"
+  environment: &kubeconfig
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: monitoring_base_apply
+  changed_when: "'configured' in monitoring_base_apply.stdout or 'created' in monitoring_base_apply.stdout"
+
+# ── Grafana admin 계정: OpenBao → ESO ─────────────────────
+# 처음 한 번만 만들고, 이미 있으면 그대로 둠 (openbao_write_create_only)
+- name: OpenBao 저장 (grafana, 없을 때만)
+  ansible.builtin.include_role:
+    name: openbao_kv
+    tasks_from: write
+  vars:
+    openbao_write_path: grafana
+    openbao_write_create_only: true
+    openbao_write_data:
+      admin_user: admin
+      admin_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+
+- name: Grafana admin ExternalSecret ({{ monitoring_namespace }}/{{ grafana_admin_secret_name }})
+  vars:
+    manifest:
+      apiVersion: external-secrets.io/v1
+      kind: ExternalSecret
+      metadata:
+        name: "{{ grafana_admin_secret_name }}"
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: ansible
+      spec:
+        refreshInterval: "{{ backend_secret_refresh_interval }}"
+        secretStoreRef:
+          kind: ClusterSecretStore
+          name: "{{ cluster_secret_store_name }}"
+        target:
+          name: "{{ grafana_admin_secret_name }}"
+          creationPolicy: Owner
+        data:
+          - secretKey: admin-user
+            remoteRef:
+              key: "{{ openbao_kv_prefix }}/grafana"
+              property: admin_user
+          - secretKey: admin-password
+            remoteRef:
+              key: "{{ openbao_kv_prefix }}/grafana"
+              property: admin_password
+  ansible.builtin.command:
+    cmd: kubectl apply -f -
+    stdin: "{{ manifest | to_json }}"
+  environment: *kubeconfig
+  register: grafana_external_secret_apply
+  changed_when: "'configured' in grafana_external_secret_apply.stdout or 'created' in grafana_external_secret_apply.stdout"
+
+- name: Grafana admin Secret 동기화 대기
+  ansible.builtin.command: >-
+    kubectl -n {{ monitoring_namespace }} wait --for=condition=Ready
+    externalsecret/{{ grafana_admin_secret_name }} --timeout=120s
+  environment: *kubeconfig
+  register: grafana_external_secret_ready
+  changed_when: false
+  failed_when: false
+
+- name: 동기화 실패 원인
+  ansible.builtin.command: >-
+    kubectl -n {{ monitoring_namespace }} get externalsecret {{ grafana_admin_secret_name }}
+    -o 'jsonpath={.status.conditions[?(@.type=="Ready")].message}'
+  environment: *kubeconfig
+  register: grafana_external_secret_message
+  changed_when: false
+  when: grafana_external_secret_ready.rc != 0
+
+- name: 동기화 실패 안내
+  ansible.builtin.fail:
+    msg: >-
+      ExternalSecret {{ monitoring_namespace }}/{{ grafana_admin_secret_name }} 가 Ready 가 아닙니다:
+      {{ grafana_external_secret_message.stdout | default('') }}.
+      permission denied 이면 eso-dev 정책에 grafana 경로가 없는 것 — OpenBao 관리자가 db.yml --tags openbao 를 실행하세요 (README 17-2).
+  when: grafana_external_secret_ready.rc != 0
+
+# ── kube-prometheus-stack ─────────────────────────────────
+# helm upgrade 는 값이 같아도 revision 을 새로 만들기 때문에 (traefik role 과 같은 방식)
+# 설치된 chart 버전과 values(common + dev 를 합친 값)가 원하는 상태와 같으면 건너뜁니다.
+- name: values 파일 (common)
+  ansible.builtin.copy:
+    src: kube-prometheus-stack-values-common.yaml
+    dest: "{{ monitoring_manifest_dir }}/kube-prometheus-stack-values-common.yaml"
+    mode: "0644"
+
+- name: values 파일 (dev)
+  ansible.builtin.template:
+    src: kube-prometheus-stack-values-dev.yaml.j2
+    dest: "{{ monitoring_manifest_dir }}/kube-prometheus-stack-values-dev.yaml"
+    mode: "0644"
+
+- name: 설치된 kube-prometheus-stack release 조회
+  ansible.builtin.command: >-
+    helm list -n {{ monitoring_namespace }} --filter '^kube-prometheus-stack$' -o json
+  environment: *kubeconfig
+  register: kps_release
+  changed_when: false
+
+- name: 적용된 values 조회
+  ansible.builtin.command: helm get values kube-prometheus-stack -n {{ monitoring_namespace }} -o json
+  environment: *kubeconfig
+  register: kps_values_applied
+  changed_when: false
+  when: kps_release.stdout | from_json | length > 0
+
+- name: kube-prometheus-stack 설치 / 업그레이드
+  ansible.builtin.command: >-
+    helm upgrade --install kube-prometheus-stack kube-prometheus-stack
+    --repo {{ kube_prometheus_stack_chart_repo }}
+    --version {{ kube_prometheus_stack_chart_version }}
+    -n {{ monitoring_namespace }}
+    -f {{ monitoring_manifest_dir }}/kube-prometheus-stack-values-common.yaml
+    -f {{ monitoring_manifest_dir }}/kube-prometheus-stack-values-dev.yaml
+    --wait --timeout 10m
+  environment: *kubeconfig
+  vars:
+    kps_values_wanted: >-
+      {{ lookup('ansible.builtin.file', 'kube-prometheus-stack-values-common.yaml') | from_yaml
+         | combine(lookup('ansible.builtin.template', 'kube-prometheus-stack-values-dev.yaml.j2') | from_yaml, recursive=True) }}
+  # 지난 설치가 --wait 시간 초과 등으로 failed 로 남았으면 values 가 같아도 다시 설치
+  when: >-
+    (kps_release.stdout | from_json | length == 0)
+    or ((kps_release.stdout | from_json | first).status != 'deployed')
+    or ((kps_release.stdout | from_json | first).chart != 'kube-prometheus-stack-' ~ kube_prometheus_stack_chart_version)
+    or ((kps_values_applied.stdout | from_json) != kps_values_wanted)
+  changed_when: true
+
+# Prometheus StatefulSet 은 helm 이 아니라 operator 가 만들어 --wait 로 기다리지 않음
+- name: Prometheus Available 대기
+  ansible.builtin.command: >-
+    kubectl -n {{ monitoring_namespace }} wait --for=condition=Available
+    prometheus/kube-prometheus-stack-prometheus --timeout=300s
+  environment: *kubeconfig
+  changed_when: false
+
+# ── 대시보드 (files/dashboards/*.json → ConfigMap, Grafana sidecar 가 읽음) ──
+# JSON 의 legendFormat({{instance}} 등)이 Jinja 로 해석되지 않도록 copy 로 옮긴 파일을 kubectl 이 직접 읽음
+- name: 대시보드 디렉토리
+  ansible.builtin.copy:
+    src: dashboards/
+    dest: "{{ monitoring_manifest_dir }}/dashboards/"
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: 대시보드 ConfigMap
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      kubectl -n {{ monitoring_namespace }} create configmap dashboard-{{ item | basename | regex_replace('\.json$', '') }}
+      --from-file={{ monitoring_manifest_dir }}/dashboards/{{ item | basename }} --dry-run=client -o yaml
+      | kubectl label --local -f - grafana_dashboard=1 app.kubernetes.io/managed-by=ansible -o yaml
+      | kubectl apply -f -
+    executable: /bin/bash
+  environment: *kubeconfig
+  loop: "{{ query('ansible.builtin.fileglob', role_path ~ '/files/dashboards/*.json') | sort }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  register: monitoring_dashboard_apply
+  changed_when: "'configured' in monitoring_dashboard_apply.stdout or 'created' in monitoring_dashboard_apply.stdout"
+
+# ── Grafana UI: tailscale serve HTTPS → Grafana NodePort ──
+# 127.0.0.1 대신 노드 Tailscale IP — NodePort 의 loopback 동작은 kube-proxy 설정에 좌우됨 (README 11-4)
+- name: 현재 serve 설정 조회
+  ansible.builtin.command: tailscale serve status --json
+  register: grafana_serve_status
+  changed_when: false
+
+- name: HTTPS {{ grafana_serve_https_port }} → Grafana
+  # HTTPS Certificates 가 꺼져 있으면 활성화 URL 을 띄우고 대기하므로 timeout 으로 끊음
+  ansible.builtin.command: >-
+    timeout 120 tailscale serve --bg --https={{ grafana_serve_https_port }}
+    http://{{ monitoring_ts_ip }}:{{ grafana_nodeport }}
+  when: >-
+    grafana_serve_status.stdout is not search('"Proxy":\s*"http://' ~ (monitoring_ts_ip | regex_escape)
+    ~ ':' ~ grafana_nodeport ~ '"')
+  changed_when: true
+
+- name: HTTPS 응답 확인 (첫 인증서 발급 대기 포함)
+  ansible.builtin.uri:
+    url: "https://{{ monitoring_fqdn }}:{{ grafana_serve_https_port }}/api/health"
+    status_code: 200
+  register: grafana_https
+  until: grafana_https.status == 200
+  retries: 12
+  delay: 10
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "Grafana   : https://{{ monitoring_fqdn }}:{{ grafana_serve_https_port }} (admin 비밀번호: OpenBao {{ openbao_kv_prefix }}/grafana)"
+      - "Prometheus: http://{{ monitoring_ts_ip }}:{{ prometheus_nodeport }} (UI · /targets, 결제 노드 remote_write /api/v1/write)"
+      - "kubectl top nodes / kubectl top pods -n {{ backend_namespace }} 로 metrics-server 확인"
