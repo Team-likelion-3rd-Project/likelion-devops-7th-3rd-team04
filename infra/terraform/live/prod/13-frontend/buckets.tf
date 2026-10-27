@@ -69,6 +69,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "site" {
     }
   }
 
+  # release.yml dry-run 업로드(dryrun/<SHA>/). CloudFront 는 releases/ 만 읽으므로 사용자에게 보이지 않는다
+  rule {
+    id     = "expire-dryrun"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.dryrun_prefix}/"
+    }
+
+    expiration {
+      days = 1
+    }
+  }
+
   rule {
     id     = "abort-incomplete-upload"
     status = "Enabled"
@@ -118,7 +132,10 @@ locals {
   bucket_access = {
     site = {
       read_prefix = local.release_prefix
-      writer_arns = ["${local.role_arn_prefix}/${var.ci_runner_role_name}"]
+      writer_arns = [
+        "${local.role_arn_prefix}/${var.ci_runner_role_name}",
+        "${local.role_arn_prefix}/${var.release_role_name}",
+      ]
     }
     image = {
       read_prefix = local.image_prefix

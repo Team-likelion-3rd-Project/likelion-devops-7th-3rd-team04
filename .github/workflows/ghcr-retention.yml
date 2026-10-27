@@ -2,7 +2,8 @@ name: GHCR retention
 
 # GHCR team04-hotel/<서비스> 패키지의 오래된 버전 정리 (GitLab push:ghcr 가 develop 통과마다 올림).
 #   패키지마다 최근 KEEP 개 버전은 유지하고, 그보다 오래된 버전은 삭제합니다.
-#   열려 있는 release/* 브랜치가 가리키는 커밋 SHA 태그는 오래돼도 삭제하지 않습니다 (릴리스 대기 중인 이미지).
+#   열려 있는 release/* 브랜치가 릴리스할 이미지 태그는 오래돼도 삭제하지 않습니다 (릴리스 대기 중인 이미지).
+#   태그는 release.yml 과 같은 계산 — infra/gitops/scripts/image-sha.sh <release/* head> (파이프라인 경로를 마지막으로 바꾼 커밋)
 #   운영은 ECR 에서만 pull 하므로 여기서 지워도 운영 · 롤백에는 영향이 없습니다.
 #
 # 필요한 설정 (infra/ansible/README.md 12-4):
@@ -40,10 +41,17 @@ jobs:
       # .gitlab-ci.yml 의 IMAGES 와 같은 목록
       IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations seed"
     steps:
+      - uses: actions/checkout@v4
+        with:
+          # release/* head 에서 first-parent 로 거슬러 올라감 (image-sha.sh)
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: 오래된 버전 삭제
         run: |
           set -euo pipefail
-          keep_shas="$(gh api --paginate "/repos/$GITHUB_REPOSITORY/git/matching-refs/heads/release/" --jq '.[].object.sha' | sort -u)"
+          keep_shas="$(gh api --paginate "/repos/$GITHUB_REPOSITORY/git/matching-refs/heads/release/" --jq '.[].object.sha' |
+            sort -u | while read -r head; do sh infra/gitops/scripts/image-sha.sh "$head"; done | sort -u)"
           echo "유지(열린 release/*): ${keep_shas:-없음}" | tr '\n' ' '; echo
           echo "dry run: $DRY_RUN · 패키지별 최근 $KEEP 개 유지"
 

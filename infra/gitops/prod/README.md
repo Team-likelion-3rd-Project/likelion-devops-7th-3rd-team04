@@ -147,6 +147,8 @@ develop ─▶ release/<버전> ──릴리스 PR (merge commit, release-source
                    프론트: GitHub Actions → CloudFront KeyValueStore version → CloudFront Function (수 초)
 ```
 
+> **GitHub Actions 로 이전 중 (LDP-172).** `.github/workflows/release.yml` 이 같은 main push 에서 develop 의 GHCR 이미지를 재빌드 없이 ECR 로 복사하고, 이전 릴리스 이후 바뀐 컴포넌트(backend · payment / frontend / 클러스터 설정)만 갱신한 gitops PR 을 만듭니다. 지금은 **dry-run** 이라 시험 대상(ECR `team04-hotel/release-dryrun`, S3 `dryrun/`)에만 쓰고 PR 본문 · 변경을 로그로만 출력합니다 — 실제 릴리스는 아래 GitLab 경로가 합니다. 활성화(레포 변수 `RELEASE_DRY_RUN=false`)는 GitLab release job 제거 · 운영 amd64(t3a) 전환과 같은 시점입니다.
+
 | 단계 | 누가 · 무엇으로 | 할 수 있는 것 |
 |---|---|---|
 | 릴리스 PR merge | 사람 (모노레포 main ruleset: 승인 · `release-source` · GitHub CI check) | main 갱신 |

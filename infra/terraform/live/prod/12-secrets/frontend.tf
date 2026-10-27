@@ -6,7 +6,7 @@
 #
 # 다른 Secret 과 같이 ephemeral 변수 → write-only(value_wo) 로 넣는다. 값을 바꿀 때는 toss_credentials_version 을 올린다.
 # 새 값은 다음 릴리스 빌드부터 반영된다 (변경 이력: aws ssm get-parameter-history).
-# 읽는 쪽은 40-cicd Runner Role (같은 이름 규칙으로 ARN 을 만든다)
+# 읽는 쪽은 40-cicd Runner Role · 10-global 릴리스 Role (각 Role 의 IAM 정책이 같은 이름 규칙으로 ARN 을 만든다)
 
 resource "aws_ssm_parameter" "toss_client_key" {
   name        = "/${var.project}/${var.environment}/frontend/toss-client-key"

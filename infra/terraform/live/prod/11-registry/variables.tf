@@ -57,3 +57,9 @@ variable "ci_runner_role_name" {
   type        = string
   default     = "team04-hotel-ci-runner"
 }
+
+variable "release_role_name" {
+  description = "GHCR 이미지를 ECR 로 복사하는 모노레포 release.yml Role 이름 (10-global monorepo_release_role_name). 저장소 정책이 push 를 허용한다"
+  type        = string
+  default     = "team04-hotel-release"
+}

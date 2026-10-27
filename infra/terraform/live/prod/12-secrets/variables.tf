@@ -22,6 +22,12 @@ variable "ci_runner_role_name" {
   default     = "team04-hotel-ci-runner"
 }
 
+variable "release_role_name" {
+  description = "GitHub App Secret 을 읽는 모노레포 release.yml Role 이름 (Role 은 10-global monorepo_release_role_name 에서 생성)"
+  type        = string
+  default     = "team04-hotel-release"
+}
+
 variable "payment_app_role_name" {
   description = "토스 시크릿 키 Secret 을 읽는 60-payment-app 결제 서버 Role 이름 (Role 은 60 에서 생성)"
   type        = string

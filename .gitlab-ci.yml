@@ -36,6 +36,8 @@ workflow:
     # main 은 릴리스(ECR push · gitops PR) 경로라 변경 경로와 상관없이 항상 돈다 (infra/gitops/prod 만 바뀐 릴리스 포함)
     - if: $CI_COMMIT_BRANCH == "main"
     # 아래 .paths 의 backend + frontend (workflow 는 anchor 보다 앞이라 직접 나열)
+    #   ⚠️ infra/gitops/scripts/image-sha.sh 의 WORKFLOW_PATHS 와 같아야 함 — 운영 릴리스(release.yml)가 이 경로를 마지막으로 바꾼
+    #      커밋(= 파이프라인이 돌아 GHCR 이미지가 있는 커밋)의 이미지를 ECR 로 복사하고, ghcr-retention.yml 이 그 태그를 보존
     - changes:
         - backend/**/*
         - backend-deploy/**/*
@@ -112,7 +114,8 @@ default:
 
 # ── 공통 rules ─────────────────────────────────────────────
 # job 을 나누는 변경 경로. rules:changes 는 push 가 아닌 파이프라인(Run pipeline · 롤백)에서는 항상 참
-#   backend : 백엔드 이미지에 들어가는 경로 — ghcr:reuse-resolve 의 git diff 경로와 같게 유지
+#   backend : 백엔드 이미지에 들어가는 경로 — ghcr:reuse-resolve 의 git diff 경로, release-plan.sh BACKEND_PATHS ·
+#             release.yml BACKEND_PATHS(운영 릴리스의 백엔드 변경 판단)와 같게 유지
 #   frontend: 프론트 소스 + 운영 빌드 값(infra/gitops/prod/frontend/values.yaml)
 .paths:
   backend: &backend-paths
