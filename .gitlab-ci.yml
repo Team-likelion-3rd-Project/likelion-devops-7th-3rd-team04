@@ -2,11 +2,16 @@
 # GitLab 쪽에서 직접 고치면 다음 미러링 때 덮어써집니다.
 #
 #   test        : lint · jest (현재 기존 실패가 있어 non-blocking) · nest build · helm lint
+#                 frontend:build: 프론트 변경 시 운영 값(VITE_PAYMENT_MODE 만 MOCK)으로 lint · 빌드 검증 (배포 없음)
 #   build       : kaniko 로 이미지 10개 빌드 → 후보 태그 ci-<sha> 로 push (develop 만, 그 외는 빌드만)
 #   image-test  : 파이프라인 전용 DB(ci_<id>, ci_main_<id>) 준비 → 후보 이미지를 띄워 /health smoke test
 #   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
 #                 push:ghcr: 승격한 이미지를 GHCR 에 커밋 SHA 40자 태그로 복사 — 운영 릴리스가 ECR 로 옮겨 갈 원본
+#                 ghcr:reuse-resolve · push:ghcr-reuse: 프론트만 바뀐 커밋은 백엔드가 같은 직전 커밋의 GHCR 이미지에 이 SHA 태그를 붙임
 #                 (보존: .github/workflows/ghcr-retention.yml, infra/ansible README 12-4)
+#
+# 백엔드 경로(.paths backend)가 바뀐 커밋은 백엔드 job 이, 프론트 경로(.paths frontend)가 바뀐 커밋은 frontend:build 가 돈다.
+# 프론트만 바뀐 커밋에는 백엔드 빌드 · smoke test · deploy-dev 가 없다 (Run pipeline 으로 실행하면 전체가 돈다).
 #   deploy      : (수동) deploy-dev: develop → GitLab gitops 에 커밋 1개 (envs/dev 이미지 태그 + apps/dev 차트 revision)
 #                 + 배포 태그 dev/p<pipeline id>-<sha> → 온프레미스 ArgoCD 가 sync (클러스터에 직접 배포하지 않음)
 #                 롤백: Run pipeline 에 ROLLBACK_TO=<gitops 태그 | previous> → rollback-dev:resolve · check → rollback-dev ▶
@@ -30,10 +35,13 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "web"
     # main 은 릴리스(ECR push · gitops PR) 경로라 변경 경로와 상관없이 항상 돈다 (infra/gitops/prod 만 바뀐 릴리스 포함)
     - if: $CI_COMMIT_BRANCH == "main"
+    # 아래 .paths 의 backend + frontend (workflow 는 anchor 보다 앞이라 직접 나열)
     - changes:
         - backend/**/*
         - backend-deploy/**/*
         - langchain_rag/**/*
+        - frontend/**/*
+        - infra/gitops/prod/frontend/**/*
         - .gitlab-ci.yml
   auto_cancel:
     on_new_commit: interruptible
@@ -103,12 +111,27 @@ default:
   interruptible: true
 
 # ── 공통 rules ─────────────────────────────────────────────
+# job 을 나누는 변경 경로. rules:changes 는 push 가 아닌 파이프라인(Run pipeline · 롤백)에서는 항상 참
+#   backend : 백엔드 이미지에 들어가는 경로 — ghcr:reuse-resolve 의 git diff 경로와 같게 유지
+#   frontend: 프론트 소스 + 운영 빌드 값(infra/gitops/prod/frontend/values.yaml)
+.paths:
+  backend: &backend-paths
+    - backend/**/*
+    - backend-deploy/**/*
+    - langchain_rag/**/*
+    - .gitlab-ci.yml
+  frontend: &frontend-paths
+    - frontend/**/*
+    - infra/gitops/prod/frontend/**/*
+    - .gitlab-ci.yml
+
 # 롤백 파이프라인(Run pipeline + ROLLBACK_TO)에는 rollback-dev:* 만 생긴다 — 아래 rules 와 smoke:db-drop · deploy-dev 에서 제외
 .rules-develop:
   rules:
     - if: $ROLLBACK_TO
       when: never
     - if: $CI_COMMIT_BRANCH == "develop"
+      changes: *backend-paths
 
 # main 은 release job 만 돈다 (위 머리말)
 .rules-not-main:
@@ -117,7 +140,7 @@ default:
       when: never
     - if: $CI_COMMIT_BRANCH == "main"
       when: never
-    - when: on_success
+    - changes: *backend-paths
 
 .backend-npm:
   image: $NODE_IMAGE
@@ -205,6 +228,31 @@ helm-lint:
       if ! cmp -s /tmp/src /tmp/dst; then
         echo "backend/apps/payment-service/migrations/migrate.sh 가 backend/migrations/migrate.sh 와 다릅니다 — 원본을 복사해 커밋하세요"; exit 1
       fi
+
+# 프론트 빌드 검증 — 운영 빌드 값(infra/gitops/prod/frontend/values.yaml)으로 빌드하되 결제만 MOCK
+#   TOSS 모드(토스 클라이언트 키)는 키가 있는 운영 릴리스 쪽에서 검증. 빌드 결과는 배포하지 않음 (각자 로컬 Vite)
+#   실패하면 파이프라인이 실패 → 릴리스 전 "develop 파이프라인 passed" 확인에 프론트도 포함
+frontend:build:
+  stage: test
+  image: $NODE_IMAGE
+  needs: []
+  rules:
+    - if: $ROLLBACK_TO
+      when: never
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: never
+    - changes: *frontend-paths
+  variables:
+    npm_config_cache: $CI_PROJECT_DIR/.npm
+    FRONTEND_PAYMENT_MODE: MOCK
+    FRONTEND_LINT: "true"
+  cache:
+    key:
+      files: [frontend/package-lock.json]
+    paths: [.npm/]
+  script:
+    - apk add --no-cache yq-go > /dev/null
+    - sh infra/gitops/scripts/frontend-build.sh
 
 # ── build: kaniko (Docker 데몬 / DinD 불필요) ────────────────────
 build:
@@ -484,24 +532,10 @@ release:frontend-build:
   stage: release-build
   image: $NODE_IMAGE
   needs: [release:prepare]
-  variables:
-    FRONTEND_VALUES: infra/gitops/prod/frontend/values.yaml
   script:
     - apk add --no-cache yq-go > /dev/null
-    - |
-      bad="$(yq '.build | keys | .[] | select(test("^VITE_[A-Z0-9_]+$") | not)' "$FRONTEND_VALUES")"
-      if [ -n "$bad" ]; then echo "$FRONTEND_VALUES build 에는 VITE_* 키만 둡니다: $bad"; exit 1; fi
-      if [ -n "$(yq '.build.VITE_TOSS_CLIENT_KEY // ""' "$FRONTEND_VALUES")" ]; then
-        echo "VITE_TOSS_CLIENT_KEY 는 레포에 두지 않습니다 — 12-secrets Parameter Store 에서 읽습니다 ($FRONTEND_VALUES)"; exit 1
-      fi
-      set -a; eval "$(yq -o=shell '.build' "$FRONTEND_VALUES")"; set +a
-      if [ "${VITE_PAYMENT_MODE:-}" = "TOSS" ] && ! printf '%s' "${VITE_TOSS_CLIENT_KEY:-}" | grep -Eq '^(test|live)_gck_'; then
-        echo "VITE_PAYMENT_MODE=TOSS 는 토스 클라이언트 키가 필요합니다 — 12-secrets TOSS_CLIENT_KEY 등록 · release:prepare 로그 확인"; exit 1
-      fi
-      echo "VITE_API_URL=$VITE_API_URL VITE_PAYMENT_MODE=$VITE_PAYMENT_MODE"
-    - cd frontend
-    - npm ci --ignore-scripts --no-audit --no-fund
-    - npm run build
+    # 검사 · 빌드는 develop frontend:build 와 같은 스크립트 (여기서는 운영 값 그대로, TOSS 키는 release:prepare dotenv)
+    - sh infra/gitops/scripts/frontend-build.sh
   artifacts:
     paths: [frontend/dist/]
     expire_in: 1 day
@@ -714,6 +748,7 @@ smoke:db-drop:
     - if: $ROLLBACK_TO
       when: never
     - if: $CI_COMMIT_BRANCH == "develop"
+      changes: *backend-paths
       when: always
   variables:
     GIT_STRATEGY: none
@@ -784,6 +819,76 @@ push:ghcr:
         fi
         [ "$src_digest" = "$dst_digest" ] || { echo "$svc digest 불일치 — GitLab $src_digest / GHCR $dst_digest"; exit 1; }
         echo "$dst  ($dst_digest)"
+      done
+
+# ── 프론트만 바뀐 develop 커밋: 직전 이미지 재태깅 ─────────────────
+# 이 커밋에는 백엔드 빌드가 없지만 릴리스 커밋으로 고를 수 있어야 함 (운영 릴리스는 GHCR <svc>:<release SHA> 를 찾음).
+# 백엔드 경로가 이 커밋과 같은 직전 develop 커밋(first-parent)의 GHCR 이미지에 이 커밋 SHA 태그를 추가 — 같은 digest, 업로드 없음.
+# smoke test 는 그 커밋 파이프라인에서 통과한 이미지라 다시 돌리지 않음
+.rules-frontend-only:
+  rules:
+    - if: $ROLLBACK_TO
+      when: never
+    - if: $CI_COMMIT_BRANCH == "develop"
+      changes: *backend-paths
+      when: never
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+# 후보: first-parent 로 거슬러 올라가며 백엔드 경로(.paths backend)가 이 커밋과 같은 커밋들 (처음 달라지는 곳에서 멈춤)
+ghcr:reuse-resolve:
+  extends: .rules-frontend-only
+  stage: push
+  image: $DEPLOY_IMAGE
+  needs: [frontend:build]
+  interruptible: false
+  variables:
+    GIT_DEPTH: "50"
+  script:
+    - |
+      set -eu
+      candidates=""
+      for c in $(git rev-list --first-parent --max-count=30 HEAD^); do
+        git diff --quiet "$c" HEAD -- backend backend-deploy langchain_rag .gitlab-ci.yml || break
+        candidates="$candidates $c"
+      done
+      [ -n "$candidates" ] || { echo "백엔드가 이 커밋과 같은 직전 develop 커밋이 없습니다 (최근 30개 · clone 깊이 50) — develop 에서 Run pipeline 으로 전체 파이프라인을 실행하세요"; exit 1; }
+      echo "REUSE_CANDIDATES=$(echo $candidates)" > reuse.env
+      echo "후보(최신순):$candidates"
+  artifacts:
+    reports:
+      dotenv: reuse.env
+    expire_in: 1 day
+
+# 후보 중 GHCR 에 12개 이미지가 모두 있는 첫 커밋(= 그 파이프라인 통과)을 base 로 → 이 커밋 SHA 태그 추가
+push:ghcr-reuse:
+  extends: .rules-frontend-only
+  stage: push
+  image:
+    name: $CRANE_IMAGE
+    entrypoint: [""]
+  needs: [ghcr:reuse-resolve]
+  interruptible: false
+  retry: 1
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - 'test -n "${GHCR_TOKEN:-}" || { echo "CI 변수 GHCR_USER · GHCR_TOKEN 이 없습니다 — infra/ansible README 12-4 (OpenBao ghcr-push → gitlab.yml --tags bootstrap)"; exit 1; }'
+    - printf '%s' "$GHCR_TOKEN" | crane auth login ghcr.io -u "$GHCR_USER" --password-stdin
+    - |
+      base=""
+      for c in $REUSE_CANDIDATES; do
+        missing=""
+        for svc in $IMAGES; do
+          crane digest "$GHCR_IMAGE_PREFIX/$svc:$c" > /dev/null 2>&1 || { missing="$svc"; break; }
+        done
+        if [ -z "$missing" ]; then base="$c"; break; fi
+        echo "$c: GHCR 에 $missing 없음 — 이전 후보 확인"
+      done
+      [ -n "$base" ] || { echo "후보 커밋 모두 GHCR 이미지가 없습니다 (그 파이프라인이 통과하지 않음) — develop 에서 Run pipeline 으로 전체 파이프라인을 실행하세요"; exit 1; }
+      echo "base: $base → $CI_COMMIT_SHA"
+      for svc in $IMAGES; do
+        crane tag "$GHCR_IMAGE_PREFIX/$svc:$base" "$CI_COMMIT_SHA"
+        echo "$GHCR_IMAGE_PREFIX/$svc:$CI_COMMIT_SHA  ($(crane digest "$GHCR_IMAGE_PREFIX/$svc:$CI_COMMIT_SHA"))"
       done
 
 # ── deploy (수동) ─────────────────────────────────────────────
@@ -862,6 +967,7 @@ deploy-dev:
     - if: $ROLLBACK_TO
       when: never
     - if: $CI_COMMIT_BRANCH == "develop"
+      changes: *backend-paths
       when: manual
 
 # ── rollback (Run pipeline + 변수 ROLLBACK_TO) ─────────────────────

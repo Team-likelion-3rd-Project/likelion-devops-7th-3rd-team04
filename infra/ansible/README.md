@@ -752,10 +752,12 @@ GitHub push(develop|main)
   └ .github/workflows/mirror-gitlab.yml ──(Tailscale tag:ci)──▶ GitLab team04/hotel (같은 브랜치 force push)
 GitLab 파이프라인 (.gitlab-ci.yml)
   test       : lint · jest (non-blocking) · nest build · helm lint
+               frontend:build — 프론트 변경 시 운영 빌드 값(결제만 MOCK)으로 lint · vite build (배포 없음)
   build      : kaniko → <registry>/team04/hotel/<svc>:ci-<sha>             (develop 만 push)
   image-test : ci_<id>(결제) · ci_main_<id>(메인) DB 생성 → flyway(main, payment) → 후보 이미지 기동 → GET /health
   push       : crane tag ci-<sha> → <sha>                                  (레이어 재업로드 없음)
                push:ghcr → ghcr.io/team-likelion-3rd-project/team04-hotel/<svc>:<full sha>  (운영 릴리스 원본, 12-4)
+               (프론트만 바뀐 커밋: ghcr:reuse-resolve · push:ghcr-reuse — 직전 이미지에 이 SHA 태그 추가)
   deploy-dev : (수동 ▶) team04/infra/backend-gitops 에 커밋 1개
                  envs/dev/values.yaml   global.imageTag             = <short sha>
                  apps/dev/backend.yaml  sources[0].targetRevision   = <full sha>   (차트도 같은 커밋)
@@ -851,13 +853,18 @@ develop 파이프라인의 `push:ghcr` 가 승격한 이미지 12개를 `ghcr.io
 3. `.env` 의 `GHCR_PUSH_USER`(봇 계정 이름) · `GHCR_PUSH_TOKEN` 을 채우고 `db.yml --tags openbao_import` 로 OpenBao `ghcr-push` 에 옮긴 뒤(16-3), 12-1 bootstrap 을 실행하면 CI 변수 `GHCR_USER` · `GHCR_TOKEN`(masked) 이 등록됩니다.
 4. 첫 `push:ghcr` 뒤 org Packages 에 `team04-hotel/<svc>` 12개가 생깁니다. 이미지 label `org.opencontainers.image.source` 로 모노레포에 자동 연결됩니다. 각 패키지 Settings → **Manage Actions access** 에 모노레포가 **Admin** 인지 확인합니다 (보존 workflow 의 버전 삭제에 필요). visibility 는 private 그대로 둡니다.
 
-- **보존**: `.github/workflows/ghcr-retention.yml` 이 매일 패키지마다 최근 20개 버전만 남깁니다. 열려 있는 `release/*` 가 가리키는 SHA 는 오래돼도 남깁니다. 수동 실행(Run workflow)은 기본 dry run 입니다 — 처음에는 dry run 으로 목록을 확인합니다. 운영은 ECR 에서만 pull 하므로 GHCR 정리는 운영 · 롤백에 영향이 없습니다.
+- **프론트만 바뀐 커밋**: 백엔드 job 이 돌지 않아 새 이미지가 없습니다. 대신 `ghcr:reuse-resolve` 가 first-parent 로 거슬러 올라가 백엔드 경로(`backend` · `backend-deploy` · `langchain_rag` · `.gitlab-ci.yml`)가 같은 직전 커밋을 찾고, `push:ghcr-reuse` 가 그 커밋의 GHCR 이미지(12개가 모두 있는 = 파이프라인 통과)에 이 커밋 SHA 태그를 붙입니다. 그래서 프론트만 바뀐 커밋도 릴리스 커밋으로 고를 수 있습니다. 찾지 못하면 job 이 실패하고, develop 에서 Run pipeline 을 실행하면 전체 파이프라인이 돕니다.
+- terraform · 문서만 바뀐 커밋은 파이프라인이 없어 GHCR 태그도 없습니다. 릴리스 커밋으로 고르지 않습니다.
+- **보존**: `.github/workflows/ghcr-retention.yml` 이 매일 패키지마다 최근 20개 버전(updated_at 기준)만 남깁니다. 열려 있는 `release/*` 가 가리키는 SHA 는 오래돼도 남깁니다. 수동 실행(Run workflow)은 기본 dry run 입니다 — 처음에는 dry run 으로 목록을 확인합니다. 운영은 ECR 에서만 pull 하므로 GHCR 정리는 운영 · 롤백에 영향이 없습니다.
 - **비용**: GitHub 문서상 Container registry 저장 · 전송은 현재 무료입니다 (변경 시 1개월 전 공지). 무료 org 한도(500MB)가 컨테이너에도 걸리는지는 문서에 명시돼 있지 않아, 첫 push 다음 날 org Settings → Billing and licensing → Usage(Packages)에서 과금 0 인지 확인합니다.
 - **토큰 교체**: 새 PAT 를 OpenBao `ghcr-push` 에 쓰고(16-4) 12-1 bootstrap 을 다시 실행합니다.
 
 ### 12-5. 파이프라인 사용 · dev 배포 절차
 
 develop 에 merge → 미러 → 파이프라인 자동 실행(test → build → image-test → push · push:ghcr). 배포는 **배포 일정에 맞춰** 아래처럼 합니다.
+
+- 바뀐 경로에 따라 job 이 달라집니다. 백엔드 경로가 바뀌면 위 백엔드 job 들, 프론트 경로(`frontend/` · `infra/gitops/prod/frontend/`)가 바뀌면 `frontend:build` 가 돕니다. 프론트만 바뀐 커밋에는 `deploy-dev` 가 없습니다 (dev 에는 프론트를 배포하지 않음 — 각자 로컬 Vite). Run pipeline 으로 실행하면 경로와 상관없이 전부 돕니다.
+- `frontend:build` 는 운영 빌드 값(`infra/gitops/prod/frontend/values.yaml` 의 `build`)으로 빌드하되 `VITE_PAYMENT_MODE` 만 MOCK 입니다 (토스 키 없이). 스크립트는 운영 `release:frontend-build` 와 같은 `infra/gitops/scripts/frontend-build.sh` 이고, TOSS 모드 검증은 운영 릴리스 쪽입니다.
 
 | 배포 내용 | 방법 |
 |---|---|

@@ -50,13 +50,14 @@ jobs:
           for svc in $IMAGES; do
             pkg="team04-hotel%2F$svc"
             if ! versions="$(gh api --paginate "/orgs/$ORG/packages/container/$pkg/versions?per_page=100" \
-                  --jq '.[] | [.id, .created_at, (.metadata.container.tags | join(","))] | @tsv' 2> err.txt)"; then
+                  --jq '.[] | [.id, .updated_at, (.metadata.container.tags | join(","))] | @tsv' 2> err.txt)"; then
               if grep -q "HTTP 404" err.txt; then echo "$svc: 패키지 없음 — 건너뜀"; continue; fi
               cat err.txt; echo "::error::$svc 버전 조회 실패 (패키지 Actions access 에 이 레포가 있는지 확인)"; exit 1
             fi
 
             deleted=0
-            # created_at 내림차순으로 KEEP 개 다음부터가 삭제 후보
+            # updated_at 내림차순으로 KEEP 개 다음부터가 삭제 후보
+            #   (프론트만 바뀐 커밋은 이전 버전에 태그만 추가 — push:ghcr-reuse. 그때 갱신되는 updated_at 기준)
             while IFS=$'\t' read -r id created tags; do
               [ -n "$id" ] || continue
               keep=""
