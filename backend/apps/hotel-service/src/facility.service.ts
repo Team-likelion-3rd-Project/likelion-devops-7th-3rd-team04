@@ -1,9 +1,10 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RpcException } from '@nestjs/microservices';
 import { Repository } from 'typeorm';
 import { Facility } from './entities/facility.entity';
 import { Hotel } from './entities/hotel.entity';
+import { rpcError } from '@app/common';
 
 @Injectable()
 export class FacilityService {
@@ -24,7 +25,7 @@ export class FacilityService {
       where: { hotelId: data.hotelId },
     });
     if (!hotel) {
-      throw new RpcException('존재하지 않는 호텔입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
 
     const facility = this.facilityRepository.create({
@@ -39,7 +40,7 @@ export class FacilityService {
   async getFacilitiesByHotel(hotelId: number): Promise<Facility[]> {
     const hotel = await this.hotelRepository.findOne({ where: { hotelId } });
     if (!hotel) {
-      throw new RpcException('존재하지 않는 호텔입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
     return this.facilityRepository.find({ where: { hotelId } });
   }
@@ -53,7 +54,7 @@ export class FacilityService {
       where: { hotelId, facilityId },
     });
     if (!facility) {
-      throw new RpcException('존재하지 않는 편의시설입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 편의시설입니다.');
     }
     return facility;
   }

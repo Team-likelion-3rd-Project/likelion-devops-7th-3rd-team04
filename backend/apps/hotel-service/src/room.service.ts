@@ -1,6 +1,6 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RpcException } from '@nestjs/microservices';
 import {
   Between,
   DataSource,
@@ -15,6 +15,7 @@ import { Hotel } from './entities/hotel.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
 import { RoomImageStorage } from './room-image.storage';
+import { rpcError } from '@app/common';
 
 // 'YYYY-MM-DD' 문자열에 일 단위 offset을 더한 'YYYY-MM-DD' 문자열을 반환한다 (UTC 기준 계산,
 // date 컬럼은 시간대 정보가 없으므로 로컬 타임존에 영향받지 않도록 UTC로 계산한다).
@@ -125,7 +126,7 @@ export class RoomService {
       where: { hotelId: data.hotelId },
     });
     if (!hotel) {
-      throw new RpcException('존재하지 않는 호텔입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
     const room = this.roomRepository.create({
       hotelId: data.hotelId,
@@ -146,7 +147,7 @@ export class RoomService {
       where: { hotelId },
     });
     if (!hotel) {
-      throw new RpcException('존재하지 않는 호텔입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
 
     const rooms = await this.roomRepository.find({ where: { hotelId } });
@@ -181,7 +182,7 @@ export class RoomService {
       where: { hotelId, roomId },
     });
     if (!room) {
-      throw new RpcException('존재하지 않는 객실입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 객실입니다.');
     }
     const images = await this.roomImageRepository.find({
       where: { roomId },
@@ -203,7 +204,7 @@ export class RoomService {
   ): Promise<RoomSearchResultGrpcResponse[]> {
     const hotel = await this.hotelRepository.findOne({ where: { hotelId } });
     if (!hotel) {
-      throw new RpcException('존재하지 않는 호텔입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
 
     const candidates = await this.roomRepository.find({
@@ -289,7 +290,7 @@ export class RoomService {
       where: { hotelId, roomId },
     });
     if (!room) {
-      throw new RpcException('존재하지 않는 객실입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 객실입니다.');
     }
     const verifiedImages = await this.verifyUploadedImages(roomId, data.images);
 
@@ -316,13 +317,14 @@ export class RoomService {
       where: { hotelId, roomId },
     });
     if (!room) {
-      throw new RpcException('존재하지 않는 객실입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 객실입니다.');
     }
     const unitCount = await this.roomUnitRepository.count({
       where: { roomId },
     });
     if (unitCount > 0) {
-      throw new RpcException(
+      throw rpcError(
+        GrpcStatus.FAILED_PRECONDITION,
         `호실이 ${unitCount}개 남아 있는 객실 종류는 삭제할 수 없습니다.`,
       );
     }
@@ -353,7 +355,7 @@ export class RoomService {
       where: { hotelId, roomId },
     });
     if (!room) {
-      throw new RpcException('존재하지 않는 객실입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 객실입니다.');
     }
     return this.roomImageStorage.createUploadUrl(roomId, mimeType, size);
   }
@@ -426,7 +428,7 @@ export class RoomService {
       where: { hotelId, roomId },
     });
     if (!room) {
-      throw new RpcException('존재하지 않는 객실입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 객실입니다.');
     }
 
     const rows = await this.roomAvailabilityRepository.find({
@@ -491,7 +493,7 @@ export class RoomService {
         lock: { mode: 'pessimistic_read' },
       });
       if (!room) {
-        throw new RpcException('존재하지 않는 객실입니다.');
+        throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 객실입니다.');
       }
 
       const rows = await manager.find(RoomAvailability, {
@@ -504,7 +506,10 @@ export class RoomService {
         rows.length !== countDays(startDate, endDate) ||
         rows.some((row) => !isBookable(row, room.totalCount))
       ) {
-        throw new RpcException('예약 불가능한 날짜가 포함되어 있습니다.');
+        throw rpcError(
+          GrpcStatus.FAILED_PRECONDITION,
+          '예약 불가능한 날짜가 포함되어 있습니다.',
+        );
       }
 
       await manager.increment(

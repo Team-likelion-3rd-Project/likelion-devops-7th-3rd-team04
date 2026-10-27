@@ -1,3 +1,4 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { RpcException } from '@nestjs/microservices';
@@ -9,6 +10,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { rpcError } from '@app/common';
 
 // 객실 사진으로 받는 파일 형식 → 저장소 파일 확장자
 const ALLOWED_IMAGE_TYPES: Record<string, string> = {
@@ -96,10 +98,16 @@ export class RoomImageStorage {
   ): Promise<RoomImageUploadUrl> {
     const extension = ALLOWED_IMAGE_TYPES[mimeType];
     if (!extension) {
-      throw new RpcException('JPG·PNG·WEBP 이미지만 올릴 수 있습니다.');
+      throw rpcError(
+        GrpcStatus.INVALID_ARGUMENT,
+        'JPG·PNG·WEBP 이미지만 올릴 수 있습니다.',
+      );
     }
     if (!Number.isInteger(size) || size <= 0 || size > MAX_IMAGE_BYTES) {
-      throw new RpcException('이미지는 5MB 이하만 올릴 수 있습니다.');
+      throw rpcError(
+        GrpcStatus.INVALID_ARGUMENT,
+        '이미지는 5MB 이하만 올릴 수 있습니다.',
+      );
     }
 
     const objectKey = `${objectKeyPrefix(roomId)}${randomUUID()}.${extension}`;
@@ -138,7 +146,10 @@ export class RoomImageStorage {
     objectKey: string,
   ): Promise<string> {
     if (!objectKey.startsWith(objectKeyPrefix(roomId))) {
-      throw new RpcException('이 객실의 사진 경로가 아닙니다.');
+      throw rpcError(
+        GrpcStatus.INVALID_ARGUMENT,
+        '이 객실의 사진 경로가 아닙니다.',
+      );
     }
     try {
       const head = await this.client.send(
@@ -146,12 +157,16 @@ export class RoomImageStorage {
       );
       const mimeType = head.ContentType ?? '';
       if (!ALLOWED_IMAGE_TYPES[mimeType]) {
-        throw new RpcException('JPG·PNG·WEBP 이미지만 등록할 수 있습니다.');
+        throw rpcError(
+          GrpcStatus.INVALID_ARGUMENT,
+          'JPG·PNG·WEBP 이미지만 등록할 수 있습니다.',
+        );
       }
       return mimeType;
     } catch (err) {
       if (err instanceof RpcException) throw err;
-      throw new RpcException(
+      throw rpcError(
+        GrpcStatus.INVALID_ARGUMENT,
         '업로드되지 않은 이미지입니다. 사진을 다시 올려 주세요.',
       );
     }
