@@ -180,7 +180,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `42-payment-data` | 결제 RDS db.t4g.micro Single-AZ, Secret | 6분 37초 – 6분 39초 | 2분 13초 |
 | `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 38초 | 2분 10초 |
 | `44-payment-endpoints` | 인터페이스 엔드포인트 9종(AZ 2개, `autoscaling` 포함 — 시간은 8종 때 실측, 1종 추가 apply 55초), S3 게이트웨이 엔드포인트 정책 | 57초 – 1분 04초 | 2분 24초 |
-| `60-payment-app` | 결제 서버 2대(t4g.small) · 내부 NLB · Endpoint Service (시간은 1대 때 실측). 부팅 후 첫 배포(docker 설치 · pull · Flyway · 기동)까지 약 2분, 2대 동시 교체 후 둘 다 healthy 까지 4분 34초. 갱신 배포는 서버당 약 2분 40초, 2대 순차 약 6분 (AZ 시차 180초) | 2분 57초 – 3분 04초 | 1분 30초 |
+| `60-payment-app` | 결제 서버 2대(t4g.small 실측, LDP-173 부터 t3a.small) · 내부 NLB · Endpoint Service (시간은 1대 때 실측). 부팅 후 첫 배포(docker 설치 · pull · Flyway · 기동)까지 약 2분, 2대 동시 교체 후 둘 다 healthy 까지 4분 34초. 갱신 배포는 서버당 약 2분 40초, 2대 순차 약 6분 (AZ 시차 180초) | 2분 57초 – 3분 04초 | 1분 30초 |
 | `61-payment-mock` | pg-mock 인스턴스 1대. SSM 등록은 부팅 후 약 3분 (cloud-init 이 끝난 뒤 에이전트 기동) | 34초 – 42초 | 약 1분 |
 | `71-payment-link` | Interface Endpoint(AZ 2개) · private zone · 레코드 | 1분 44초 – 2분 07초 | 약 2분 |
 | `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
@@ -462,7 +462,7 @@ AWS_PROFILE=team04 aws logs filter-log-events \
 - **고정 이름**: 엔드포인트 DNS 이름은 재생성마다 바뀌므로, 메인 VPC 에만 연결한 private zone `team04-hotel.internal` 의 `payment` 레코드(alias)로 부릅니다. gitops backend values `PAYMENT_SERVICE_HOST` 는 `payment.team04-hotel.internal:3004` 로 고정입니다 (`terragrunt output payment_service_host`).
 - **NLB SG**: PrivateLink 트래픽에는 SG 인바운드 규칙을 적용하지 않고(`enforce_security_group_inbound_rules_on_private_link_traffic = off`), `payment_nlb` 에 인바운드 규칙을 두지 않습니다. 결제 VPC 안에서는 NLB 에 붙을 수 없고 PrivateLink 만 통과합니다.
 - **Endpoint Service 허용 주체**: 공유 계정이라 계정 전체가 아니라 `60` 을 apply 한 주체만 허용하고 자동 수락합니다. `71` 도 같은 주체로 apply 합니다.
-- **결제 서버**: Amazon Linux 2023(arm64) `t4g.small`, 기본 2대(AZ a · b, `desired_capacity = 2`, `min_size = 1`). IMDSv2 hop limit 1 이라 컨테이너는 host 네트워크로 띄워 인스턴스 Role 을 씁니다. Role 이름 `team04-hotel-payment-app` 은 42 · 12 Secret 정책과 43 큐 정책이 참조하므로 바꾸지 않습니다.
+- **결제 서버**: Amazon Linux 2023(x86_64) `t3a.small`, 기본 2대(AZ a · b, `desired_capacity = 2`, `min_size = 1`). IMDSv2 hop limit 1 이라 컨테이너는 host 네트워크로 띄워 인스턴스 Role 을 씁니다. Role 이름 `team04-hotel-payment-app` 은 42 · 12 Secret 정책과 43 큐 정책이 참조하므로 바꾸지 않습니다.
 - **배포**: 결제 서버 안의 pull agent 가 합니다 (아래 [결제 서버 배포](#결제-서버-배포-pull-agent)). docker compose 는 AL2023 저장소에 없고 결제 VPC 는 GitHub 로 나갈 수 없어 쓰지 않습니다.
 - **pg-mock**: 결제 서버와 분리한 인스턴스 1대입니다 (ASG 없음). 주소는 `20-network` 가 자동 할당에서 뺀 대역(`10.20.8.16/28`, subnet CIDR reservation) 안의 고정 IP 라 다른 ENI 와 겹치지 않습니다 (`terragrunt output pg_mock_url`). 결제 서버와 같은 release 태그로 스스로 갱신합니다. 필요 없으면 `enable_pg_mock = false`.
 - **`70` 과의 관계**: `71` 은 `70` 과 같은 단계라 서로 참조하지 않습니다. `run --all apply` 에서 `70` 은 `60` · `71` 을 기다리지 않습니다.

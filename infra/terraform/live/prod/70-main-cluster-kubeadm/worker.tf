@@ -12,6 +12,10 @@ resource "aws_launch_template" "worker" {
   instance_type          = var.worker_instance_type
   vpc_security_group_ids = [local.sg_ids.main_worker]
 
+  credit_specification {
+    cpu_credits = local.cpu_credits
+  }
+
   iam_instance_profile {
     name = aws_iam_instance_profile.node["worker"].name
   }
