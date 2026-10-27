@@ -199,7 +199,7 @@ TF_VAR_enable_payment_network_firewall=true terragrunt run --all apply \
   --filter './71-payment-link...' --filter './61-payment-mock...' --filter './70-main-cluster-kubeadm...'
 ```
 
-`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, 배포 agent 의 Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
+`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측, 이전 배포 agent 기준 — ArgoCD 전환 후 다시 잼)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
 
 `70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분 – 8분** 입니다. `run --all apply` 는 `80` 을 공백 없이 바로 시작하므로 **명령이 끝난 뒤 1분 – 2분 더 지나야 부트스트랩이 끝납니다** (배포 agent 전환 후 실측: 명령 9분 42초, 전체 시작부터 ALB `/whoami` 200 까지 11분 37초 — 전환 전 약 11분 30초와 같음). 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 3분 20초 – 4분.
 
@@ -361,7 +361,7 @@ sudo crictl exec "$(sudo crictl ps --name '^etcd$' -q)" \
 ## 7. `80-main-edge` 동작 확인
 
 `인터넷 → ALB → 워커 NodePort 30080 → Traefik → 파드` 경로입니다. 워커 ASG 를 Target Group 에 연결하므로 ASG 가 새로 띄운 워커도 자동 등록됩니다.
-Target Group 헬스체크는 Traefik `/ping` 입니다. **Traefik 은 CP-a 부트스트랩 마지막에 배포 agent 가 설치하므로 `70` apply 직후 `80` 을 apply 하면 부트스트랩이 끝날 때까지 타깃이 unhealthy 로 보입니다.**
+Target Group 헬스체크는 Traefik `/ping` 입니다. **Traefik 은 CP-a 부트스트랩 마지막에 ArgoCD 가 설치하므로 `70` apply 직후 `80` 을 apply 하면 부트스트랩이 끝날 때까지 타깃이 unhealthy 로 보입니다.**
 
 도메인 · 인증서 유무(`10-global` output)에 따라 리스너가 달라집니다.
 
@@ -533,7 +533,7 @@ gitops envs/prod/payment/values.yaml merge (사람 승인)
 
 | | 전달 | 반영 시점 |
 |---|---|---|
-| 메인 파드 | 릴리스 PR 이 gitops `envs/prod/backend-secrets` 로 복사 → 배포 agent → ConfigMap 마운트 | gitops merge 후 1분 |
+| 메인 파드 | 릴리스 PR 이 gitops `envs/prod/backend-secrets` 로 복사 → ArgoCD → ConfigMap 마운트 | gitops merge 후 3분 안팎 |
 | 결제 서버 | `60` apply 때 Terraform 이 파일을 읽어 user-data 에 넣음 (결제 VPC 는 GitHub 로 나갈 수 없음) → `/etc/payment-deploy/rds-ca-bundle.pem` | 새로 뜨는 인스턴스부터 (매일 재생성 · instance refresh) |
 
 - `60` 은 develop 또는 main 을 checkout 한 상태에서 apply 합니다. 작업 트리의 파일이 그대로 결제 서버에 들어갑니다.
@@ -726,7 +726,7 @@ kubectl -n fluent-bit logs ds/fluent-bit --tail=50 | grep -iE 'error|warn'
 ```
 CloudWatch 알람 ALARM (90) ─────────────────────┬→ SNS team04-hotel-alerts ─┐
 EventBridge 규칙 ALARM → OK 전환만 (10-global) ──┘                           │
-메인 배포 agent (gitops-sync, IRSA) ────────────┐                            ├→ AWS Chatbot (us-east-2) → Slack #alerts · #deploy
+메인 ArgoCD 알림 hook (deploy-notify, IRSA) ────┐                            ├→ AWS Chatbot (us-east-2) → Slack #alerts · #deploy
 결제 pull agent (60 Role, 44 sns 엔드포인트) ────┼→ SNS team04-hotel-deploy ──┘
 gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 · Chatbot 은 10-global 🔒, KMS 암호화)
 ```
@@ -734,7 +734,7 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 - SNS 토픽 · KMS 키 · Chatbot 채널 설정은 `10-global` 🔒 이라 매일 재생성과 상관없이 유지됩니다. Chatbot 이 구독을 직접 관리하므로 구독 확인 · Slack 재연결이 없습니다.
 - 해소(OK) 알림은 알람의 `ok_actions` 가 아니라 `10-global` EventBridge 규칙 `team04-hotel-alarm-recovered` 가 보냅니다. `ok_actions` 는 알람을 새로 만들 때의 "데이터 부족 → OK" 에도 실행되어 매일 재생성마다 OK 가 오기 때문에, 이름이 `team04-hotel-` 로 시작하는 알람의 **ALARM → OK 전환만** 보냅니다. 새 알람도 이 접두사를 쓰고 `ok_actions` 는 넣지 않습니다.
 - Chatbot 은 EventBridge 의 알람 상태 변경 이벤트 원본을 지원하지 않아(`/aws/chatbot/team04-hotel-alerts` 로그: `Event received is not supported`), 규칙 대상의 입력 변환으로 사용자 정의 알림 형식(`✅ CloudWatch Alarm 해소 | <알람>`)으로 바꿔 보냅니다. Slack 에 메시지가 안 오면 이 로그 그룹(us-east-1)을 먼저 봅니다.
-- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람과 위 EventBridge 규칙만, 배포 토픽은 Role 3개(`team04-hotel-gitops-sync` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
+- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람과 위 EventBridge 규칙만, 배포 토픽은 Role 3개(`team04-hotel-deploy-notify` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
 - Chatbot 채널 Role 에는 정책이 없고 guardrail 이 `AWSDenyAll` 이라 Slack 에서 AWS 명령을 실행할 수 없습니다.
 - 결제 VPC 는 Slack 으로 나가지 않습니다 (SNS 인터페이스 엔드포인트, NFW 허용 목록은 토스 API 만).
 - Slack 워크스페이스 · 채널 ID 는 `10-global/terraform.tfvars`(gitignore)에 둡니다 (`terraform.tfvars.example`). 기본값이 없어 파일이 없으면 `10-global` plan 이 멈춥니다. 비공개 채널이면 채널에서 `/invite @Amazon Q` 를 먼저 합니다.
@@ -759,11 +759,11 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 
 | 출처 | 보내는 때 | 내용 |
 |---|---|---|
-| 메인 클러스터 배포 agent | 떠 있는 클러스터에 새 gitops SHA 적용 성공 · 실패 (`--atomic` 롤백). 클러스터 생성 직후 첫 적용은 실패만 | 릴리스 SHA(backend `revision`), gitops SHA · 이전 SHA, 소요 시간, 적용한 앱, 실패한 앱 · 메시지 |
+| 메인 클러스터 ArgoCD (root 앱 hook Job) | 새 gitops 커밋의 root sync 성공(모든 앱 Healthy) · 실패(15분 시간 제한 포함, 자동 롤백 없음). 클러스터 생성 직후 첫 sync 는 실패만 | 릴리스 SHA(backend `revision`), gitops SHA · 이전 SHA, 소요 시간, 앱, 실패한 앱 · 메시지 |
 | 결제 서버 pull agent (인스턴스별) | 떠 있는 서버의 release 갱신 결과: `deploy_success` · `deploy_failed`(없는 태그 · Flyway · 헬스) · `invalid_release` · `rollback_*`. 부팅 배포(매일 재생성 · ASG 교체)는 보내지 않음 — 실패는 `#alerts` deploy-failed 알람 | 릴리스 SHA, 인스턴스 · AZ · 실행 방식, PG(`TOSS` · `MOCK`), 사유 |
 | gitops `sync-frontend-version` | KeyValueStore 버전을 바꿨을 때 · 갱신 실패 | 릴리스 SHA, 이전 버전, Actions 실행 링크 |
 
-`#deploy` 는 릴리스(gitops merge)에만 옵니다. 매일 재생성은 메인 첫 적용이 실패했을 때만 "클러스터 생성 후 첫 적용" 실패로 옵니다.
+`#deploy` 는 릴리스(gitops merge)에만 옵니다. 매일 재생성은 메인 첫 sync 가 실패했을 때만 "클러스터 생성 후 첫 sync" 실패로 옵니다.
 
 ```bash
 # 알람 상태

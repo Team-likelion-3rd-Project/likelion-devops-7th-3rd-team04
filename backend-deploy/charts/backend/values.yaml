@@ -13,7 +13,7 @@ global:
   #   dev : <gitlab fqdn>:5050 / team04/hotel/          (GitLab Container Registry)
   #   prod: <account>.dkr.ecr.us-east-1.amazonaws.com / team04-hotel/   (Terraform 11-registry)
   # imageRegistry 와 services.*.env 값은 tpl 로 렌더링한다 — prod 는 public gitops 레포에 계정 ID 를 두지 않고
-  # 배포 agent 가 넘기는 {{ .Values.global.awsAccountId }} 로 쓴다 (infra/gitops/prod/README.md "클러스터 값")
+  # ArgoCD root 앱이 넘기는 {{ .Values.global.awsAccountId }} 로 쓴다 (infra/gitops/prod/README.md "클러스터 값")
   imageRegistry: ""
   imageRepositoryPrefix: ""
   # 한 커밋에서 빌드한 이미지 9개는 같은 태그(커밋 SHA)를 씀 → CI deploy job 이 이 값만 갱신.

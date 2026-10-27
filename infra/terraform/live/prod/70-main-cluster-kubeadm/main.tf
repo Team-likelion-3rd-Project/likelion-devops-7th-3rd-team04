@@ -6,7 +6,7 @@
 #
 # Terraform 범위는 EC2 · 네트워크까지다. kubeadm · containerd · Calico 설치와 워커 join 은
 # user-data 가 Ansible 을 실행해 처리한다 (bootstrap.tf). Traefik 등 클러스터 서비스는 Ansible 이 설치한
-# GitOps pull 배포 agent 가 gitops 레포에서 설치한다 (infra/gitops/prod).
+# ArgoCD 가 gitops 레포에서 설치한다 (infra/gitops/prod).
 # 노드 접속은 SSM Session Manager 로 한다 (22 포트, 키 페어 없음).
 
 # Ansible preflight 가 Ubuntu 22.04 만 허용한다. 노드는 Graviton(arm64)

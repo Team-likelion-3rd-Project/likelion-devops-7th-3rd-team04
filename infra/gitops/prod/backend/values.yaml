@@ -3,7 +3,7 @@
 #
 # ⚠️ public 레포로 복사됩니다. 비밀번호 · 키 · 토큰 · 계정 ID 는 넣지 않습니다.
 #    Secret(global.secretName) 은 backend-secrets 앱이 AWS Secrets Manager → External Secrets 로 만듭니다.
-#    계정 ID 는 배포 agent 가 넘기는 {{ .Values.global.awsAccountId }} 로 씁니다 (imageRegistry · services.*.env 는 차트가 tpl 로 렌더링).
+#    계정 ID 는 ArgoCD root 앱이 넘기는 {{ .Values.global.awsAccountId }} 로 씁니다 (imageRegistry · services.*.env 는 차트가 tpl 로 렌더링).
 #
 # global.imageTag 는 릴리스 때 GitLab main 파이프라인이 ECR push 후 여는 PR 로 갱신됩니다 — 사람이 리뷰 · 승인 후 merge.
 # 태그는 main 커밋 SHA 전체(40자)이고 chart.yaml 의 revision 과 같은 값입니다.

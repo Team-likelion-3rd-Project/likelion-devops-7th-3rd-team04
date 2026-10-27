@@ -1,0 +1,69 @@
+# AWS Main 클러스터 root 앱 — Ansible(roles/argocd aws.yml) 이 관리. 직접 수정 금지
+#
+# root(prod-apps) 는 gitops 레포 envs/prod 의 root 차트를 렌더링해 하위 Application · AppProject prod · 알림 hook Job 을 만든다.
+# 클러스터 값(계정 ID)은 여기서 valuesObject 로 넘겨 Git 에 두지 않는다. root 의 AppProject 는 argocd 네임스페이스의
+# 아래 리소스만 만들 수 있다 (하위 앱 권한은 root 차트의 AppProject prod).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: bootstrap
+  namespace: {{ argocd_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+spec:
+  description: root 앱(prod-apps) 전용 — gitops 레포 envs/prod root 차트
+  sourceRepos:
+    - {{ argocd_prod_repo_url | to_json }}
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: {{ argocd_namespace }}
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      kind: Application
+    - group: argoproj.io
+      kind: AppProject
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: ConfigMap
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+    - group: batch
+      kind: Job
+    # 배포 실패 알림 감시 (root 차트 deploy-notify-watch)
+    - group: batch
+      kind: CronJob
+---
+# 작업 브랜치 검증: kubectl -n {{ argocd_namespace }} patch application prod-apps --type merge
+#   -p '{"spec":{"source":{"targetRevision":"<브랜치>"}}}'  → 끝나면 main 으로 되돌린다 (재생성 때도 이 값으로 다시 만들어짐)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prod-apps
+  namespace: {{ argocd_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+spec:
+  project: bootstrap
+  source:
+    repoURL: {{ argocd_prod_repo_url | to_json }}
+    targetRevision: {{ argocd_prod_branch | to_json }}
+    path: {{ argocd_prod_apps_path | to_json }}
+    helm:
+      parameters:
+        # repo-server 가 이 sync 의 커밋 SHA 로 치환한다 → 하위 앱의 gitops 소스를 그 커밋에 고정
+        - name: gitopsRevision
+          value: $ARGOCD_APP_REVISION
+          forceString: true
+      # JSON 으로 쓴다 — 숫자 문자열(계정 ID)이 숫자로 읽히지 않게
+      valuesObject: {{ {'clusterValues': argocd_prod_cluster_values, 'deployNotify': {'region': aws_region, 'topicName': argocd_prod_deploy_topic_name, 'roleName': argocd_prod_deploy_role_name}} | to_json }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ argocd_namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

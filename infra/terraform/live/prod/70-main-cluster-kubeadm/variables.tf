@@ -65,7 +65,7 @@ variable "image_bucket_name" {
 }
 
 variable "deploy_topic_name" {
-  description = "10-global 의 deploy_topic_name. 배포 agent(gitops-sync) Role 이 발행한다"
+  description = "10-global 의 deploy_topic_name. ArgoCD 배포 결과 알림(deploy-notify) Role 이 발행한다"
   type        = string
 }
 

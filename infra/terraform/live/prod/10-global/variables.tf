@@ -82,8 +82,8 @@ variable "deploy_publisher_role_names" {
   description = "배포 토픽에 발행하는 Role 이름 (매일 재생성 스택이 고정 이름으로 만든다). gitops_ssm_sync Role 은 자동 포함"
   type        = list(string)
   default = [
-    "team04-hotel-gitops-sync", # 70 irsa.tf — 메인 클러스터 배포 agent
-    "team04-hotel-payment-app", # 60 iam.tf — 결제 서버 pull agent
+    "team04-hotel-deploy-notify", # 70 irsa.tf — 메인 클러스터 ArgoCD 배포 결과 알림
+    "team04-hotel-payment-app",   # 60 iam.tf — 결제 서버 pull agent
   ]
 }
 

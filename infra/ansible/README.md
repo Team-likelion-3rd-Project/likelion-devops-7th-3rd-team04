@@ -14,10 +14,10 @@
 | `k8s-cicd.yml` | `[control_plane]` (1대) | External Secrets Operator(OpenBao 연결) → `backend` 네임스페이스 · 레지스트리 pull Secret · `backend-secrets`(ExternalSecret) → ArgoCD (backend 배포) — [12절](#12-cicd-registry--파이프라인--argocd), [16절](#16-openbao--external-secrets-operator-dev-비밀값) |
 | `registry-trust.yml` | `[control_plane]`, `[workers]` | containerd `certs.d` 설정 (사설 CA 를 쓸 때 레지스트리 CA 신뢰) — [12-7](#12-7-사설-ca-를-쓸-때-선택) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) → api-gateway Ingress(`/api`) — [11절](#11-ingress-controller-traefik) |
-| `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행. CP-a 는 마지막에 GitOps pull 배포 agent 설치 (Traefik · whoami 는 agent 가 설치) — [13절](#13-aws-main-클러스터-user-data-전용) |
+| `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행. CP-a 는 마지막에 ArgoCD · root 앱 설치 (Traefik · backend 등은 ArgoCD 가 설치) — [13절](#13-aws-main-클러스터-user-data-전용) |
 | `aws-worker.yml` | AWS 워커 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** 워커 Launch Template user-data 가 실행 → `kubeadm join` — [13절](#13-aws-main-클러스터-user-data-전용) |
 
-- OS: Ubuntu 22.04 / Kubernetes v1.33 / containerd / Calico v3.30 (tigera-operator)
+- OS: Ubuntu 22.04 / Kubernetes v1.33 / containerd / Calico v3.30 (tigera-operator) — AWS Main 클러스터는 Kubernetes v1.35 / Calico v3.31 (`group_vars/aws.yml`, 13절)
 - Pod CIDR `10.0.0.0/16`, Service CIDR `10.96.0.0/12`
 - 모든 노드는 **Tailscale IP(100.x)** 를 node IP로 사용하며, Tailscale 태그는 `tag:k8s-node` 하나로 통일합니다.
 
@@ -49,13 +49,13 @@ infra/ansible/
 │       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
 │       ├── payment.yml        # 결제 노드: 이미지 버전, 결제 DB / ElasticMQ 큐, 클러스터 NodePort
 │       ├── aws.yml                # AWS 노드 공통: Tailscale 끔, kubelet cloud-provider, CA cert hash 대기
-│       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신 · CP reconcile 주기, CCM · NTH 버전, gitops agent 대상 브랜치
+│       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신 · CP reconcile 주기, CCM · NTH 버전, ArgoCD root 앱(대상 브랜치 · 클러스터 값 · 알림)
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,
 │                              # docker, firewall, db_stack, db_seed,
 │                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
-│                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle, gitops_sync
+│                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle
 │                              # gitlab_bootstrap, backend_namespace, argocd, payment_stack,
 │                              # openbao, openbao_kv(OpenBao 읽기/쓰기 공용), external_secrets
 └── .secrets/                  # (자동 생성, gitignore) openbao.env, openbao/(static key · init.json),
@@ -975,14 +975,15 @@ kubectl -n argocd get application backend -o jsonpath='{range .status.resources[
 
 `aws-control-plane.yml`, `aws-worker.yml`, `aws-runner.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대와 워커 ASG 인스턴스의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
 
-- **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/gitops_sync` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다.
-- **Ansible 은 노드 작업 · Calico · CCM · NTH · 배포 agent 설치까지만 합니다.** 클러스터 서비스(Traefik · whoami, 이후 backend 등)는 CP-a 가 설치하는 GitOps pull 배포 agent 가 gitops 레포 `envs/prod`(원본: 모노레포 [`infra/gitops/prod`](../gitops/prod/README.md))에서 설치합니다. user-data 는 첫 부팅 때만 돌아서, Ansible 이 설치하면 변경이 다음 재생성까지 반영되지 않기 때문입니다. NTH 는 CCM 과 같은 role · post-renderer 를 써서 ArgoCD 전환 때 함께 옮깁니다.
+- **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/argocd` 의 `tasks/aws.yml` · `*-aws.yaml.j2` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다.
+- **Ansible 은 노드 작업 · Calico · CCM · NTH · ArgoCD 설치까지만 합니다.** 클러스터 서비스(Traefik · whoami · backend 등)는 CP-a 가 설치하는 ArgoCD root 앱(`prod-apps`)이 gitops 레포 `envs/prod`(원본: 모노레포 [`infra/gitops/prod`](../gitops/prod/README.md))에서 설치합니다. user-data 는 첫 부팅 때만 돌아서, Ansible 이 설치하면 변경이 다음 재생성까지 반영되지 않기 때문입니다. NTH 는 CCM 과 같은 role · post-renderer 를 써서 ArgoCD 전환 때 함께 옮깁니다.
 - `inventory/aws.ini` 는 CP · 워커 group_vars 가 섞이지 않게 `localhost` 대신 별칭(`aws-cp`, `aws-worker`)을 쓰고, `aws-cp` 를 `control_plane` 그룹에도 넣어 helm 버전을 온프레미스와 같이 씁니다. AWS Runner(`aws-runner`)는 쿠버네티스 노드가 아니라 `[aws]` 대신 `gitlab_runner` 의 자식 그룹으로 둡니다 (아래 "AWS GitLab Runner").
 - S3 에는 커밋 대상 파일만 올라갑니다. `.env`, `.secrets/`, `inventory/hosts.ini` 는 올라가지 않습니다.
 
 | 항목 | 온프레미스 (`control-plane.yml`) | AWS (`aws-control-plane.yml`) |
 |---|---|---|
 | `use_tailscale` | `true` (기본값) | `false` — tailscale role, `TS_OAUTH_CLIENT_SECRET` 확인 생략 |
+| Kubernetes · Calico · pause 버전 | `all.yml` (v1.33 · v3.30.7 · 3.10) | `aws.yml` 에서 덮어씀 (v1.35 · v3.31.7 · 3.10.1). CCM · ECR credential provider 도 1.35 빌드 |
 | 노드 IP (`node_ip`) | Tailscale IP (100.x) | VPC private IP |
 | 노드 이름 | `hosts.ini` 의 `node_name` | EC2 private DNS (`ip-10-10-4-10.ec2.internal`) |
 | `controlPlaneEndpoint` | 노드 IP | 내부 NLB DNS (`certSANs` 에 포함) |
@@ -995,7 +996,7 @@ kubectl -n argocd get application backend -o jsonpath='{range .status.resources[
 | Calico 노드 IP 감지 / MTU | `tailscale0` / 1230 | `NodeInternalIP` / 8951 (VPC 점보 프레임 9001 − VXLAN 50) |
 | Felix mark 대역 변경 | 함 (Tailscale fwmark 충돌) | 안 함 |
 | kube-apiserver `--service-account-issuer` (`k8s_service_account_issuer`) | 미설정 (kubeadm 기본값) | 10-global OIDC 버킷 URL (IRSA). CP-a 가 init 직후 SA 서명 공개키를 `keys.json` 으로 업로드 |
-| 클러스터 서비스 설치 | Ansible(`ingress.yml`, Traefik) · ArgoCD(backend, 12절) | GitOps pull 배포 agent (`gitops_sync` role 이 CP-a 부트스트랩 마지막에 설치, 워커 Ready 대기 후 첫 실행) |
+| 클러스터 서비스 설치 | Ansible(`ingress.yml`, Traefik) · ArgoCD(backend, 12절) | ArgoCD root 앱 `prod-apps` (`argocd` role `tasks/aws.yml` 이 CP-a 부트스트랩 마지막에 설치, 워커 Ready 대기 후 root 생성). UI 비노출(ClusterIP), 레포 자격 증명 없음 |
 | Traefik | `ingress.yml` 수동 실행 (`roles/traefik`), control plane 1대 고정, `externalTrafficPolicy: Local` | gitops `envs/prod/traefik` — 워커에 2개, `externalTrafficPolicy: Cluster`, trustedIPs = Main VPC CIDR + Pod CIDR, `/ping` 을 `web` 에 노출(`80-main-edge` 헬스체크) |
 | Ingress 대상 | api-gateway (`/api`, `/api-docs`) | api-gateway (`/api`, gitops `envs/prod/backend`) + 테스트 백엔드 whoami (`/whoami`). 그 외 경로는 Traefik 404 |
 
@@ -1013,8 +1014,8 @@ CP-a 는 init 후 10-global OIDC 버킷의 `keys.json` 도 덮어씁니다 (CP R
 - **CP 교체:** CP 는 AZ 별 ASG(1대 고정) 라 사라지면 새로 뜨고 join 합니다. CP 3대의 systemd timer `team04-cp-reconcile.timer`(1분) 가 사라진 CP 의 etcd 멤버를 지우고, init 2시간 후 삭제되는 `kubeadm-certs` Secret 을 같은 certificate-key 로 다시 올립니다. 동작 · 확인 방법 · 범위 밖(2대 이상 동시 장애, etcd 백업)은 [Terraform README](../terraform/README.md) 6절.
 - **join token 갱신:** CP 마다 systemd timer `team04-renew-join-token.timer` 가 `kubeadm token create` → `join-token` 파라미터 덮어쓰기. 즉시 갱신하려면 CP 에서 `sudo systemctl start team04-renew-join-token.service`. Terraform 은 이 파라미터 값 변경을 무시합니다.
 - **워커 교체 · 스케일 인:** 종료 전 drain 은 aws-node-termination-handler(NTH), 종료된 워커의 Node 삭제는 aws-cloud-controller-manager(CCM) 가 합니다. 둘 다 CP-a 부트스트랩의 `aws_node_lifecycle` role 이 CP 에 hostNetwork 로 설치합니다 (차트에 hostNetwork 값이 없어 Helm post-renderer 로 추가). 동작 · 확인 방법은 [Terraform README](../terraform/README.md) 6절.
-- **배포 agent:** CronJob `gitops-sync`(1분, CP 노드)가 gitops 레포 대상 브랜치(`gitops_sync_branch`, 기본 `main`)의 SHA 가 바뀌면 `envs/prod/*/chart.yaml` 을 order 순으로 `helm upgrade --install --atomic` 합니다. 부트스트랩 Job 이 실패해도 CP 부트스트랩은 실패시키지 않습니다(CP 교체 방지). 결과는 `cloud-init-output.log` 의 "부트스트랩 결과" 와 ConfigMap `gitops-sync-state`. 첫 실행(Traefik · whoami 설치)은 NTH 설치 직후부터 적용 완료까지 약 45초 (2026-10-19 실측), 이후 변경은 push 후 1분 안팎에 반영. 동작 · 운영 · 작업 브랜치 검증은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md).
-- **클러스터 값:** public gitops 레포에 둘 수 없는 값(계정 ID)은 CP-a 가 STS 로 조회해 ConfigMap `gitops-sync/gitops-sync-cluster-values` 로 만듭니다 (`gitops_sync_cluster_values`). agent 는 `chart.yaml` 에 `clusterValues: true` 인 앱(pod-identity-webhook 의 IRSA Role ARN)에만 넘깁니다.
+- **배포 (ArgoCD):** CP-a 가 ArgoCD(차트 버전은 온프레미스와 같음, 전 컴포넌트 CP 고정)를 설치하고 AppProject `bootstrap` · root 앱 `prod-apps` 를 만듭니다. root 는 gitops 레포 대상 브랜치(`argocd_prod_branch`, 기본 `main`)의 `envs/prod` root 차트를 렌더링해 앱마다 Application 을 만들고, `order` 순(sync-wave)으로 Healthy 를 기다립니다. root 첫 sync 를 최대 15분(`argocd_prod_bootstrap_wait_retries`) 기다리되 실패해도 CP 부트스트랩은 실패시키지 않습니다(CP 교체 방지). 결과는 `cloud-init-output.log` 의 "첫 sync 결과". 동작 · 운영 · 작업 브랜치 검증은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md).
+- **클러스터 값:** public gitops 레포에 둘 수 없는 값(계정 ID)은 CP-a 가 STS 로 조회해 root 앱의 `valuesObject.clusterValues` 로 넘깁니다 (`argocd_prod_cluster_values`). root 차트는 `chart.yaml` 에 `clusterValues: true` 인 앱(pod-identity-webhook 의 IRSA Role ARN, backend 의 ECR 주소 · 큐 URL)에만 넘깁니다.
 - **IRSA:** kube-apiserver 발급자를 10-global OIDC 버킷 URL 로 두고(join CP 는 `kubeadm-config` 에서 같은 값을 받음), CP-a 가 init 직후 발급자 문서의 issuer 를 확인한 뒤 `/openid/v1/jwks` 를 `keys.json` 으로 올립니다. 업로드는 `ca-cert-hash` 기록 전이라, 실패하면 교체된 CP-a 가 다시 init 합니다. webhook · ESO 는 gitops 앱, Role 은 Terraform 70 `irsa.tf` ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "IRSA · 비밀값").
 - 클러스터 확인 (SSM 접속 후): `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide`
 - Ingress 확인 (워커에 SSM 접속 후): `curl -i http://$(hostname -I | awk '{print $1}'):30080/whoami` → whoami 200 (`/` 는 Traefik 404 가 정상). 워커 30080 인바운드는 ALB SG 에서만 열려 있어(M2) **다른 노드에서는 연결되지 않습니다.** 노드 자신의 IP 로 확인합니다 (Traefik 파드가 다른 워커에 있어도 kube-proxy 가 넘겨 줍니다).

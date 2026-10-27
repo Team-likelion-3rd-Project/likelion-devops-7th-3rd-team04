@@ -19,10 +19,10 @@
     - role: aws_node_lifecycle
       when: kubeadm_mode == 'init'
 
-# 클러스터 서비스(Traefik · whoami ...)는 GitOps pull 배포 agent 가 gitops 레포에서 설치한다 (infra/gitops/prod/README.md).
-# Traefik 은 워커에만 뜨므로 워커가 join 한 뒤 첫 실행한다 (워커 없이 실행하면 --atomic 롤백 후 그 SHA 가 실패로 기록됨).
+# 클러스터 서비스(Traefik · whoami ...)는 ArgoCD root 앱이 gitops 레포에서 설치한다 (infra/gitops/prod/README.md).
+# Traefik 은 워커에만 뜨므로 워커가 join 한 뒤 root 앱을 만든다 (워커 없이 만들면 첫 sync 가 시간 제한까지 기다림).
 # 클러스터당 한 번이면 되어 init 한 CP-a 만 실행
-- name: AWS Main 클러스터 GitOps pull 배포 agent
+- name: AWS Main 클러스터 ArgoCD
   hosts: aws_control_plane
   become: true
   pre_tasks:
@@ -42,7 +42,7 @@
       delay: 10
       changed_when: false
 
-    # gitops_sync_cluster_values (group_vars/aws_control_plane.yml). CP Role 자격 증명으로 조회해 Terraform · Git 에 두지 않는다
+    # argocd_prod_cluster_values (group_vars/aws_control_plane.yml). CP Role 자격 증명으로 조회해 Terraform · Git 에 두지 않는다
     - name: 계정 ID 조회
       ansible.builtin.command: aws sts get-caller-identity --region {{ aws_region }} --query Account --output text
       register: caller_account
@@ -52,5 +52,9 @@
       ansible.builtin.set_fact:
         aws_account_id: "{{ caller_account.stdout | trim }}"
 
-  roles:
-    - gitops_sync
+  tasks:
+    # 온프레미스 설치(main.yml: GitLab 자격 증명 · tailscale serve)가 아니라 운영 설치만
+    - name: ArgoCD 설치 · root 앱
+      ansible.builtin.include_role:
+        name: argocd
+        tasks_from: aws

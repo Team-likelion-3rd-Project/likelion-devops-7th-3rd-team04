@@ -1,6 +1,6 @@
 # infra/gitops/prod — 운영(AWS) 클러스터 배포 상태 원본
 
-이 폴더는 gitops 레포 [`likelion-devops-7th-3rd-team04-gitops`](https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops) 의 `envs/prod/` 와 **1:1 로 같은 구조**입니다. 운영 Main 클러스터는 gitops 레포 `main` 을 읽어 배포합니다 (아래 "배포 agent").
+이 폴더는 gitops 레포 [`likelion-devops-7th-3rd-team04-gitops`](https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops) 의 `envs/prod/` 와 **1:1 로 같은 구조**입니다. 운영 Main 클러스터는 ArgoCD 가 gitops 레포 `main` 을 읽어 배포합니다 (아래 "배포 (ArgoCD)").
 
 ## 원본 규칙
 
@@ -11,10 +11,11 @@
 - gitops 레포에만 있는 값을 만들지 않습니다. 두 곳이 다르면 이 폴더 기준으로 맞춥니다.
 - public 레포로 그대로 복사되므로 **비밀값을 넣지 않습니다** (AWS Secrets Manager → External Secrets).
 - 아직 옮기지 않은 `payment`(결제 서버 이미지 태그, 앱 정의 아님)는 gitops 레포 쪽이 기준입니다 (결제 단계에서 이관).
-- `frontend`(프론트 버전 · 빌드 설정)도 앱 정의가 아닙니다. agent 는 읽지 않고, merge 후 gitops `sync-frontend-version` workflow 가 CloudFront KeyValueStore 에 씁니다 (아래 "릴리스").
+- `frontend`(프론트 버전 · 빌드 설정)도 앱 정의가 아닙니다. ArgoCD 는 읽지 않고, merge 후 gitops `sync-frontend-version` workflow 가 CloudFront KeyValueStore 에 씁니다 (아래 "릴리스").
 
 ```
 infra/gitops/prod/          (= gitops 레포 envs/prod/)
+├── Chart.yaml · values.yaml · templates/ · files/   root 앱 차트 (앱 정의 → Application, 배포 결과 알림)
 ├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080)
 ├── cert-manager/          chart.yaml · values.yaml          15  webhook TLS 인증서 발급 · caBundle 주입
 ├── pod-identity-webhook/  chart.yaml · values.yaml          20  IRSA 주입 (ns/SA → Role 매핑)
@@ -43,11 +44,11 @@ pod-identity-webhook ns/SA → Role 매핑(values.yaml) 의 파드에 AWS_ROLE_A
 - **backend Secret**: `backend-secrets` 앱이 Secret `backend-secrets` 를 만듭니다 (`chart/values.yaml` 의 `data` = Secret key ← Secrets Manager 이름 · 속성). backend 차트의 Flyway hook Job 은 차트의 일반 리소스보다 먼저 돌기 때문에 Secret 을 backend 릴리스 밖에 둡니다. 서비스가 새 `secretEnv` 를 쓰면 여기와 Terraform 41-main-data Secret 에 같이 추가합니다.
 - **backend IRSA**: backend 차트가 서비스마다 같은 이름의 ServiceAccount 를 만듭니다 (`serviceAccounts.create: true`). 매핑은 `backend/<서비스 이름>` 으로 추가합니다.
 - **시드 관리자 계정**: `backend-secrets` 앱이 별도 ExternalSecret 으로 Secret `seed-admin` 을 만듭니다 (`chart/values.yaml` 의 `seedAdmin`, 원본 Terraform 12-secrets `team04-hotel/prod/seed-admin`). `backend-secrets` 에 합치지 않아 이 값이 없어도 서비스 Secret 동기화는 영향을 받지 않습니다 (아래 "운영 시드").
-- webhook 은 `failurePolicy: Fail` 입니다. webhook 이 준비되기 전에 만든 파드가 자격 증명 없이 남지 않고, 생성이 거부된 뒤 다시 만들어집니다. 노드 · 네트워크 · 인증서 · 배포 agent 네임스페이스는 호출하지 않습니다 (`values.yaml` namespaceSelector).
+- webhook 은 `failurePolicy: Fail` 입니다. webhook 이 준비되기 전에 만든 파드가 자격 증명 없이 남지 않고, 생성이 거부된 뒤 다시 만들어집니다. 노드 · 네트워크 · 인증서 · ArgoCD 네임스페이스는 호출하지 않습니다 (`values.yaml` namespaceSelector).
 
 ## 클러스터 값 (`clusterValues`)
 
-public 레포에 둘 수 없는 클러스터 값(계정 ID 등)은 Ansible 이 CP-a 부트스트랩 때 ConfigMap `gitops-sync/gitops-sync-cluster-values` 로 만듭니다 (`group_vars/aws_control_plane.yml` 의 `gitops_sync_cluster_values`). `chart.yaml` 에 `clusterValues: true` 인 앱에만 agent 가 앱 `values.yaml` 다음에 `-f` 로 넘깁니다 (모르는 키를 거부하는 차트 schema 가 있어 모든 앱에 넘기지 않음).
+public 레포에 둘 수 없는 클러스터 값(계정 ID 등)은 root 앱을 만드는 쪽이 root 의 `valuesObject.clusterValues` 로 넘깁니다 — 70(kubeadm)은 Ansible 이 CP-a 부트스트랩 때 STS 로 조회(`group_vars/aws_control_plane.yml` 의 `argocd_prod_cluster_values`). root 차트는 `chart.yaml` 에 `clusterValues: true` 인 앱에만 그 값을 Application 의 `helm.valuesObject` 로 넘깁니다 (앱 `values.yaml` 보다 우선, 모르는 키를 거부하는 차트 schema 가 있어 모든 앱에 넘기지 않음).
 
 | 키 | 값 |
 |---|---|
@@ -68,54 +69,64 @@ values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.a
 | `path` | git · local | 차트 경로. git 은 레포 루트 기준, local 은 앱 폴더 기준(기본 `chart`) |
 | `revision` | git | 커밋 SHA 40자 (브랜치 이름 금지) |
 | `namespace` · `release` | ✅ | 설치할 네임스페이스(없으면 만듦) · 릴리스 이름 |
-| `order` | | 적용 순서, 작은 값부터 (기본 50). 같으면 폴더 이름 순 |
-| `enabled` | | `false` 면 배포 · 렌더링 검증에서 뺌 (기본 `true`) |
-| `clusterValues` | | `true` 면 클러스터 값(아래)을 `-f` 로 더 넘김 (기본 `false`) |
+| `order` | | 적용 순서 = Application sync-wave, 작은 값부터 (기본 50). 같은 값은 함께 sync |
+| `enabled` | | `false` 면 Application 을 만들지 않고 렌더링 검증에서 뺌 (기본 `true`). 이미 있던 Application 은 지워지고 리소스는 남음 |
+| `clusterValues` | | `true` 면 클러스터 값(위)을 더 넘김 (기본 `false`) |
 
-## 배포 agent (ArgoCD 도입 전)
+## 배포 (ArgoCD)
 
-ArgoCD 는 온프레미스 도입 전까지 운영에 먼저 적용하지 않기로 해서, 같은 pull 모델을 CronJob 으로 구현했습니다. 설치는 Ansible `roles/gitops_sync` (CP-a 부트스트랩, [Ansible README](../../ansible/README.md) 13절), 스크립트는 [`gitops-sync.sh`](../../ansible/roles/gitops_sync/files/gitops-sync.sh) 입니다.
+설치는 Ansible `roles/argocd` 의 `tasks/aws.yml` (CP-a 부트스트랩, [Ansible README](../../ansible/README.md) 13절)이 합니다. ArgoCD 와 AppProject `bootstrap`, root 앱 `prod-apps` 를 만들고, 나머지는 모두 이 레포에서 옵니다.
 
 ```
-CronJob gitops-sync (1분, CP 노드, cluster-admin)
-  1) gitops 레포 BRANCH 의 SHA 조회 ── applied_sha 또는 failed_sha 와 같으면 종료
-  2) 가져오기: 그 SHA + 앱별 차트(helm pull · git fetch) ── 실패: 기록 없이 종료 → 다음 실행이 재시도
-  3) 적용: order 순 helm upgrade --install --atomic ── 실패: failed_sha 기록 → 브랜치가 바뀔 때까지 재시도 안 함
-     전부 성공: applied_sha 기록
+root 앱 prod-apps (Ansible 이 생성, project bootstrap)
+  source: gitops 레포 main 의 envs/prod (이 폴더의 Chart.yaml · templates/) ── helm parameter gitopsRevision = $ARGOCD_APP_REVISION
+  ├─ wave -1  AppProject prod (하위 앱 전용) · 알림 SA · Role · 스크립트 · CronJob deploy-notify-watch
+  ├─ wave 10  Application traefik          ┐ 앱 폴더(chart.yaml) 하나 = Application 하나
+  ├─ wave 15  Application cert-manager     │ 차트 = chart.yaml(helm · git · local), values = 이 레포 <앱>/values.yaml
+  ├─ ...                                   │ 이 레포 소스는 모두 root 와 같은 커밋(gitopsRevision)에 고정
+  ├─ wave 50  Application backend          ┘ 앞 wave 가 Healthy(Synced + 그 커밋) 가 되어야 다음 wave
+  └─ PostSync Job deploy-notify-success  → #deploy 성공
+CronJob deploy-notify-watch (1분)        → root sync 가 Failed · Error 로 끝나면 #deploy 실패 (15분 시간 제한 초과 포함, sync 당 1회)
 ```
 
-- **적용 결과는 Slack `#deploy` 로 갑니다.** 성공 · 실패(실패한 앱, `--atomic` 롤백)를 릴리스 SHA · 소요 시간 · 적용한 앱과 함께 10-global 배포 토픽에 발행합니다 ([Terraform README](../../terraform/README.md) 14절). gitops-sync 는 pod-identity-webhook 대상이 아니라 CronJob 이 IRSA 토큰을 직접 마운트합니다 (Role `team04-hotel-gitops-sync`, 배포 토픽 발행만).
-- **가져오기와 적용 실패를 나눕니다.** 네트워크 장애(GitHub · 차트 저장소)로 SHA 가 실패로 기록되면 새 커밋 전까지 배포가 멈추므로, 네트워크를 쓰는 단계는 재시도하고 값 문제(렌더링 오류, readiness 실패)만 기록합니다. 존재하지 않는 차트 버전도 가져오기 실패라 매 분 재시도합니다 (클러스터는 바뀌지 않음).
-- **적용은 앱 단위입니다.** 앞 앱이 적용된 뒤 뒤 앱이 실패하면 앞 앱은 새 버전으로 남고, 실패한 앱만 `--atomic` 으로 이전 릴리스로 돌아갑니다.
-- **값이 같으면 파드는 바뀌지 않습니다.** SHA 가 바뀌면 모든 앱에 `helm upgrade` 를 하지만, 렌더 결과가 같은 앱은 revision 만 늘어납니다 (`--history-max 5`).
-- **ArgoCD 와 다른 점:** 클러스터를 직접 고친 변경(drift)은 되돌리지 않고(같은 SHA 면 건너뜀), 앱 폴더를 지워도 릴리스를 삭제하지 않습니다(`helm uninstall` 은 사람이 함).
-- 부트스트랩: CronJob 을 멈춘 채로 만들고 첫 실행 Job 을 바로 띄운 뒤, 끝나면 CronJob 을 재개합니다 (helm 이 동시에 돌지 않게). 부트스트랩이 실패해도 CP 부트스트랩은 실패시키지 않습니다 (실패 시 CP 가 교체되는데, 원인이 gitops 값이면 교체해도 같음).
-- 보안: CRD · ClusterRole 을 설치하므로 cluster-admin 입니다. 읽는 곳은 ruleset 으로 보호된 gitops 레포 하나(ArgoCD 와 같은 신뢰 모델)이고, 파드는 앱이 뜨지 않는 CP 에서 non-root · 읽기 전용 루트 파일시스템으로 돕니다. 이미지(`alpine/k8s`)는 digest 로 고정합니다.
+- **gitops 커밋 하나 = root sync 하나 = 릴리스 하나.** root 가 하위 앱의 이 레포 소스를 자기 커밋에 고정하므로, values 만 바뀐 커밋도 모든 하위 Application spec 이 바뀌어 root 가 sync 합니다. ArgoCD 는 3분마다(기본 reconciliation) 브랜치를 확인합니다.
+- **하위 앱 동기화**: 자동 sync · prune · selfHeal, `ServerSideApply`, `CreateNamespace`. Helm hook 은 ArgoCD hook 으로 바뀝니다 (backend Flyway `pre-install,pre-upgrade` → PreSync, backend 를 sync 할 때마다 실행). 클러스터를 직접 고치면(drift) 되돌립니다. 실패하면 제한 없이 다시 시도합니다(10초부터 2배, 최대 3분) — CRD · webhook · Secret 이 늦게 준비되는 경우를 기다리기 위해서입니다.
+- **자동 롤백은 없습니다.** selfHeal 이 Git 을 따라가므로 클러스터만 이전으로 돌리면 바로 다시 덮어씁니다. 새 이미지가 Ready 가 되지 않으면 Deployment(`maxUnavailable: 0`)가 이전 파드를 유지하고, root sync 가 15분(`argocd_prod_sync_timeout_seconds`, 첫 sync 실측 약 5분의 3배) 안에 끝나지 않으면 실패 알림이 갑니다. 복구는 수정 커밋 또는 gitops 레포에서 릴리스 PR revert 입니다 (아래 "실패했을 때"). Flyway 마이그레이션은 이전에도 되돌려지지 않았습니다.
+- **Ingress 는 status 가 채워져야 Healthy 입니다.** NodePort Traefik 은 채울 주소가 없어 `traefik/values.yaml` 에서 `ingressendpoint.hostname`(API 도메인)을 쓰게 했습니다 (`publishedService` 끔). 다른 Ingress Controller 를 쓰면 같은 설정이 필요합니다.
+- **앱 폴더를 지우면** root 가 Application 을 지우지만 finalizer 가 없어 리소스는 남습니다 (지우는 것은 사람이 함).
+- **결과는 Slack `#deploy` 로 갑니다.** 릴리스 SHA(backend `revision`) · gitops 커밋 · 이전 커밋 · 소요 시간 · 앱(실패면 Synced · Healthy 가 아닌 앱과 사유)을 10-global 배포 토픽에 발행합니다 ([Terraform README](../../terraform/README.md) 14절). 성공은 root 의 PostSync hook Job, 실패는 1분 간격 CronJob `deploy-notify-watch` 가 보냅니다 — SyncFail hook 은 시간 제한 · 사람의 종료로 끝난 sync 에서 실행되지 않아 쓰지 않습니다 (2026-10-27 검증). 같은 sync 의 실패는 ConfigMap `deploy-notify-state` 에 기록해 한 번만 보냅니다. 클러스터 생성 후 첫 sync(매일 재생성)의 성공과 같은 커밋 재sync 의 성공은 보내지 않고, 실패는 첫 sync 여도 보냅니다. Job 은 argocd 네임스페이스라 pod-identity-webhook 대상이 아니어서 IRSA 토큰을 직접 마운트합니다 (Role `team04-hotel-deploy-notify`, 배포 토픽 발행만).
+- **실패 알림은 root 시간 제한(15분) 뒤에 옵니다.** 하위 앱의 실패(apply 오류 · hook 실패 · 이미지 pull 실패)는 하위 앱이 계속 재시도하고 root 는 Healthy 를 기다리므로, root 가 시간 제한으로 끝나야 실패로 판단합니다. 시간 제한은 첫 sync 실측(약 5분, 2026-10-27)의 3배이고 다음 실측으로 다시 정합니다.
+- **알림이 가지 않는 경우**: root sync 가 시작되지 않으면 실패도 없습니다 — root 차트 렌더링 실패(gitops `validate` 의 root 렌더링 단계가 merge 전에 막음), ArgoCD 설치 실패(CP `cloud-init-output.log`), GitHub 접근 실패(`k -n argocd get applications` 의 conditions). 이때 Traefik 이 뜨지 않으면 90 의 ALB Target Group unhealthy 알람이 `#alerts` 로 갑니다.
+- **보안**: application-controller 는 cluster-admin 이고 하위 앱 AppProject `prod` 도 클러스터 범위 리소스를 허용합니다 (CRD · ClusterRole 설치). 읽는 레포는 이 레포(ruleset 보호)와 `chart.yaml` 의 `repo` 로 좁힙니다. root 의 AppProject `bootstrap` 은 argocd 네임스페이스의 Application · AppProject · 알림 리소스만 만들 수 있습니다. ArgoCD 는 앱 파드가 뜨지 않는 CP 에 고정하고 UI · API 는 노출하지 않습니다 (ClusterIP).
 
 ### 확인 · 운영 (CP 에 SSM 접속 후)
 
 ```bash
 alias k='sudo kubectl --kubeconfig /etc/kubernetes/admin.conf'
-k -n gitops-sync get configmap gitops-sync-state -o yaml   # applied_sha · failed_sha · failed_app · message
-k -n gitops-sync get jobs                                  # 최근 실행 (성공 1개 · 실패 3개 보관)
-k -n gitops-sync logs job/<job 이름>
-k -n gitops-sync create job manual-$(date +%s) --from=cronjob/gitops-sync   # 1분 기다리지 않고 바로 실행
+k -n argocd get applications                                   # 앱별 SYNC · HEALTH (root prod-apps 포함)
+k -n argocd get application prod-apps -o jsonpath='{.status.operationState.phase} {.status.operationState.message}{"\n"}'
+k -n argocd get application backend -o jsonpath='{.status.conditions}{"\n"}'   # 앱 오류 사유
+k -n argocd logs job/deploy-notify-success                     # 성공 알림 Job 로그
+k -n argocd get jobs | grep deploy-notify-watch                # 실패 감시 Job (최근 1개, 로그는 logs job/<이름>)
+k -n argocd get configmap deploy-notify-state -o yaml           # 마지막으로 보낸 실패 (시작 시각/커밋)
+# UI: 로컬에서 SSM 포트 포워딩 후 k -n argocd port-forward svc/argocd-server 8080:80, admin 비밀번호는
+k -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
 ```
 
 | 상황 | 하는 일 |
 |---|---|
-| 값이 잘못되어 `failed_sha` 가 기록됨 | 수정 커밋을 gitops 레포에 반영 (같은 SHA 는 다시 시도하지 않음) |
-| 가져오기 실패가 계속됨 | Job 로그의 URL · 차트 버전 확인. 네트워크면 NAT · CP SG egress |
-| 같은 SHA 를 다시 적용하고 싶음 | `k -n gitops-sync patch configmap gitops-sync-state --type merge -p '{"data":{"applied_sha":"","failed_sha":""}}'` |
-| `another operation (install/upgrade/rollback) is in progress` | agent 파드가 helm 도중 종료된 경우. `helm -n <ns> history <release>` 로 확인 후 `helm -n <ns> rollback <release>` |
+| 값이 잘못되어 앱이 계속 실패 | 수정 커밋 또는 릴리스 PR revert 를 gitops 레포에 반영 (하위 앱은 계속 재시도하므로 반영되면 바로 맞춰짐) |
+| root 가 `Failed` 로 끝난 뒤 하위 앱이 나중에 Healthy 가 됨 | 서비스는 정상. root 는 다음 커밋에 다시 sync 합니다 (같은 커밋을 다시 보내려면 아래) |
+| 같은 커밋을 다시 sync 하고 싶음 | `k -n argocd patch application prod-apps --type merge -p '{"operation":{"initiatedBy":{"username":"admin"},"sync":{}}}'` (성공이어도 같은 커밋이라 알림은 가지 않음) |
+| 차트 · 레포를 가져오지 못함 | `k -n argocd get application <앱> -o yaml` 의 conditions. 네트워크면 NAT · CP SG egress |
 
 ### 작업 브랜치로 검증
 
-gitops 레포 작업 브랜치에 push 한 뒤, 대상 브랜치를 바꿉니다. **검증이 끝나면 `main` 으로 되돌립니다** (매일 재생성 때도 Ansible `gitops_sync_branch: main` 으로 다시 만들어짐).
+gitops 레포 작업 브랜치에 push 한 뒤, root 의 대상 브랜치를 바꿉니다. **검증이 끝나면 `main` 으로 되돌립니다** (매일 재생성 때도 Ansible `argocd_prod_branch: main` 으로 다시 만들어짐). 하위 앱은 root 가 넘기는 커밋을 따라가므로 root 만 바꾸면 됩니다.
 
 ```bash
-k -n gitops-sync patch configmap gitops-sync-config --type merge -p '{"data":{"BRANCH":"<작업 브랜치>"}}'
-k -n gitops-sync patch configmap gitops-sync-config --type merge -p '{"data":{"BRANCH":"main"}}'   # 복구
+k -n argocd patch application prod-apps --type merge -p '{"spec":{"source":{"targetRevision":"<작업 브랜치>"}}}'
+k -n argocd patch application prod-apps --type merge -p '{"spec":{"source":{"targetRevision":"main"}}}'   # 복구
 ```
 
 ## 릴리스
@@ -132,7 +143,7 @@ develop ─▶ release/<버전> ──릴리스 PR (merge commit, release-source
    │                           ECR team04-hotel/<서비스>:<main SHA> (arm64)          gitops 레포 PR release/<main SHA>
    │                           S3 team04-hotel-frontend/releases/<main SHA>/              │ validate · 승인 (사람)
    ▼                                                                                        ▼ merge
-(다음 개발)        메인 클러스터 배포 agent (1분)  ·  결제 서버: GitHub Actions → Parameter Store → pull agent
+(다음 개발)        메인 클러스터 ArgoCD (3분)      ·  결제 서버: GitHub Actions → Parameter Store → pull agent
                    프론트: GitHub Actions → CloudFront KeyValueStore version → CloudFront Function (수 초)
 ```
 
@@ -142,7 +153,7 @@ develop ─▶ release/<버전> ──릴리스 PR (merge commit, release-source
 | 이미지 빌드 · ECR push | GitLab main 파이프라인 — AWS Runner Role | `team04-hotel/*` push 만 (ECR 저장소 정책이 다른 주체의 push 거부) |
 | 프론트 빌드 · S3 업로드 | `release:frontend-build` · `release:frontend` — AWS Runner Role | 사이트 버킷 `releases/*` PutObject 만 (운영 버전 전환 불가, 버킷 정책이 다른 주체의 쓰기 거부) |
 | gitops 릴리스 PR 생성 | `release:gitops-pr` — GitHub App(`team04-hotel-release-bot`, gitops 레포에만 설치) | 브랜치 push · PR 생성까지. main merge 는 ruleset 이 막음 |
-| 운영 반영 | 사람이 gitops PR 승인 · merge | 메인: 배포 agent / 결제: Parameter Store 동기화(GitHub OIDC Role, 파라미터 하나) / 프론트: KeyValueStore `version` 갱신(같은 Role, 키 하나 — S3 쓰기 불가) |
+| 운영 반영 | 사람이 gitops PR 승인 · merge | 메인: ArgoCD / 결제: Parameter Store 동기화(GitHub OIDC Role, 파라미터 하나) / 프론트: KeyValueStore `version` 갱신(같은 Role, 키 하나 — S3 쓰기 불가) |
 
 - 이미지 태그 = **main 커밋 SHA 40자**, backend `chart.yaml` 의 `revision` 과 같은 값입니다. ECR 은 IMMUTABLE 이라 같은 태그로 다시 push 할 수 없습니다.
 - Runner 에는 Parameter Store · KeyValueStore 쓰기 권한이 없습니다. 결제 서버 태그 · 프론트 버전은 gitops PR 이 승인 · merge 된 뒤에만 바뀝니다.
@@ -164,7 +175,7 @@ develop ─▶ release/<버전> ──릴리스 PR (merge commit, release-source
    - `release:build` 로그 끝의 `[메모리]` 줄(호스트 남은 메모리 최소 · job 최대 사용량)로 Runner 사양을 판단합니다.
 4. **gitops PR**: gitops 레포에 `chore(prod): backend · payment · frontend → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
 5. **반영 확인**
-   - 메인: CP 에서 `k -n gitops-sync get configmap gitops-sync-state -o yaml` 의 `applied_sha` 가 gitops merge 커밋인지, `k -n backend get pods` 가 새 이미지로 Running 인지 (위 "확인 · 운영")
+   - 메인: Slack `#deploy` 에 성공 알림(릴리스 SHA)이 오는지. 오지 않으면 CP 에서 `k -n argocd get applications` 와 `k -n backend get pods` (위 "확인 · 운영")
    - 결제: gitops 레포 Actions 의 Parameter Store 동기화 workflow 성공 → 결제 서버 pull agent 반영 (결제 단계에서 구성)
    - 프론트: gitops 레포 Actions `sync-frontend-version` 성공(로그의 `갱신: <이전> → <SHA>`) → 브라우저 새로고침 후 개발자 도구 Network 에서 `index-*.js` 이름이 바뀌었는지
 6. **태그**: 모노레포 main 의 merge 커밋에 버전 태그를 붙입니다 (`git tag v1.0.0 <SHA> && git push origin v1.0.0`, 리허설은 `v1.0.0-rc.1`).
@@ -209,11 +220,5 @@ k -n backend get externalsecret seed-admin                # SecretSynced
 ```
 
 - 끝난 Job 은 하루 뒤 정리됩니다 (`ttlSecondsAfterFinished`). 실패하면 2번 다시 시도하고(`backoffLimit`) 파드 로그를 남깁니다.
-- 다시 돌리려면 `k -n backend delete job -l app.kubernetes.io/name=seed` 후 위 "확인 · 운영" 표의 "같은 SHA 를 다시 적용하고 싶음" 으로 backend 를 다시 적용합니다 (helm 이 없어진 Job 을 다시 만듦). 멱등이라 데이터가 늘지 않습니다.
+- 다시 돌리려면 `k -n backend delete job -l app.kubernetes.io/name=seed` 합니다. ArgoCD selfHeal 이 없어진 Job 을 다시 만듭니다. 멱등이라 데이터가 늘지 않습니다.
 - 관리자 비밀번호를 바꾸면(12-secrets version 증가) 다음 DB 재생성부터 반영됩니다.
-
-## ArgoCD 전환
-
-- 클러스터 값(`clusterValues`)은 ApplicationSet cluster generator 의 클러스터 Secret 값을 helm parameters 로 넘깁니다.
-- 앱 폴더 하나 = Application 하나입니다. `type: helm` → `chart` · `repoURL` · `targetRevision: version`, `type: git` → `repoURL` · `path` · `targetRevision: revision` + values 는 gitops 레포 `$values`, `type: local` → gitops 레포 `path`. `order` 는 sync-wave 로 옮깁니다.
-- 전환일은 재생성으로 처리합니다. Ansible 에서 `gitops_sync` 대신 ArgoCD 를 설치하면 CronJob 은 생기지 않습니다.
