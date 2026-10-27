@@ -76,6 +76,26 @@ variable "gitops_oidc_subject_prefix" {
   default     = "repo:Team-likelion-3rd-Project@336729042/likelion-devops-7th-3rd-team04-gitops@1421753380"
 }
 
+# ── GitHub OIDC (모노레포 운영 릴리스 → ECR · S3 · gitops PR, github-oidc.tf) ──
+
+variable "monorepo_oidc_subject_prefix" {
+  description = "모노레포 GitHub OIDC 토큰 sub 의 앞부분 (immutable subject 형식). 이 레포의 main 실행만 릴리스 Role 을 받는다. 확인: gh api repos/<owner>/<repo>/actions/oidc/customization/sub 의 sub_claim_prefix"
+  type        = string
+  default     = "repo:Team-likelion-3rd-Project@336729042/likelion-devops-7th-3rd-team04@1400844992"
+}
+
+variable "monorepo_release_role_name" {
+  description = "모노레포 release.yml 이 assume 하는 Role 이름. 11-registry · 12-secrets · 13-frontend 의 리소스 정책이 같은 이름을 허용한다"
+  type        = string
+  default     = "team04-hotel-release"
+}
+
+variable "frontend_bucket_name" {
+  description = "프론트 빌드 버킷 이름 (13-frontend site_bucket_name 과 같게). 릴리스 Role 이 releases/* · dryrun/* 에 올린다"
+  type        = string
+  default     = "team04-hotel-frontend"
+}
+
 # ── 알림 (notifications.tf) ──
 
 variable "deploy_publisher_role_names" {

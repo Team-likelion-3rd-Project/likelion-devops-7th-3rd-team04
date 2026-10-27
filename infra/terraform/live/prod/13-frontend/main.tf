@@ -42,4 +42,6 @@ locals {
   # 릴리스 경로 · 객실 사진 경로 (hotel-service room-image.storage.ts 의 objectKeyPrefix)
   release_prefix = "releases"
   image_prefix   = "room-types"
+  # 모노레포 release.yml dry-run 업로드 경로 (10-global 릴리스 Role 의 PutObject 범위와 같게)
+  dryrun_prefix = "dryrun"
 }

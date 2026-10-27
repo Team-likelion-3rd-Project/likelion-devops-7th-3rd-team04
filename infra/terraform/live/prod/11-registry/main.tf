@@ -126,7 +126,38 @@ resource "aws_ssm_parameter" "image_tag" {
   }
 }
 
-# 이미지 push 는 Runner Role 과 관리자(이 스택을 apply 하는 주체)만 허용한다.
+# release.yml dry-run 의 복사 대상 (태그 <서비스>-<main SHA>). 실제 릴리스와 같은 Role · 같은 복사로 권한과 digest 를 미리 확인한다.
+# 배포되지 않고 다시 실행하면 같은 태그를 덮어쓰므로 MUTABLE, 스캔 없음, 1일 뒤 모두 삭제
+resource "aws_ecr_repository" "release_dryrun" {
+  name                 = "${var.project}/release-dryrun"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = false
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "release_dryrun" {
+  repository = aws_ecr_repository.release_dryrun.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "dry-run 이미지는 1일 뒤 삭제"
+        selection = {
+          tagStatus   = "any"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 1
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
+
+# 이미지 push 는 Runner Role · 릴리스 Role(10-global, release.yml) 과 관리자(이 스택을 apply 하는 주체)만 허용한다.
 # 공유 계정이라 넓은 ECR 권한을 가진 다른 주체가 같은 태그를 먼저 올리면(IMMUTABLE 이라 먼저 올린 쪽이 남음)
 # 검증되지 않은 이미지가 배포될 수 있다. IAM 정책으로 권한을 받은 주체도 저장소 정책의 Deny 가 우선한다.
 # pull 은 제한하지 않는다 (노드 · 결제 서버 Role 의 IAM 정책이 저장소 범위를 정함)
@@ -159,6 +190,7 @@ data "aws_iam_policy_document" "push_only_ci" {
       variable = "aws:PrincipalArn"
       values = [
         "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.ci_runner_role_name}",
+        "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.release_role_name}",
         data.aws_iam_session_context.current.issuer_arn,
       ]
     }
@@ -175,5 +207,10 @@ resource "aws_ecr_repository_policy" "service" {
 # 캐시도 빌드 결과에 들어가므로 같은 주체만 push 한다 (다른 주체가 캐시를 바꿔 이미지에 섞는 것 방지)
 resource "aws_ecr_repository_policy" "build_cache" {
   repository = aws_ecr_repository.build_cache.name
+  policy     = data.aws_iam_policy_document.push_only_ci.json
+}
+
+resource "aws_ecr_repository_policy" "release_dryrun" {
+  repository = aws_ecr_repository.release_dryrun.name
   policy     = data.aws_iam_policy_document.push_only_ci.json
 }

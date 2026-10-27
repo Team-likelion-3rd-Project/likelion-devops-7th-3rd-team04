@@ -48,6 +48,11 @@ output "gitops_ssm_sync_role_name" {
   value       = aws_iam_role.gitops_ssm_sync.name
 }
 
+output "monorepo_release_role_name" {
+  description = "모노레포 release.yml 이 assume 하는 Role 이름 (레포 secret AWS_RELEASE_ROLE_ARN 에는 계정 ID 를 붙인 ARN 을 넣는다)"
+  value       = aws_iam_role.monorepo_release.name
+}
+
 # 계정 ID 가 로그에 찍히지 않도록 토픽 · 키 ARN 은 output 하지 않는다. 사용하는 쪽이 만든다:
 #   arn:aws:sns:<리전>:<계정>:<토픽 이름>     arn:aws:kms:<리전>:<계정>:key/<키 ID>
 output "alerts_topic_name" {

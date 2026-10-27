@@ -1,22 +1,37 @@
 #!/bin/sh
-# GitLab release:gitops-pr job (main, AWS Runner) — prod gitops 레포에 릴리스 PR 을 만든다.
+# prod gitops 레포에 릴리스 PR 을 만든다 — GitHub Actions release.yml gitops-pr job (main, 릴리스 Role).
+# GitLab release:gitops-pr job (main, AWS Runner) 도 이전이 끝날 때까지 같은 스크립트를 쓴다 (RELEASE_* 가 없으면 전체 갱신).
 #
 #   1) GitHub App 자격 증명(Secrets Manager) → JWT → 설치 토큰 (1시간, gitops 레포 contents · pull_requests 쓰기만)
 #   2) 같은 SHA 의 PR 이 이미 열려 있으면 종료 (job 재시도 대비)
-#   3) gitops 클론 → infra/gitops/prod/<앱> · root 앱 차트 · frontend 를 envs/prod/ 로 복사 (gitops 에만 있는 envs/prod/payment 는 유지)
-#   4) backend 이미지 태그 · chart revision · payment 이미지 태그 · frontend version = 이 main 커밋 SHA
+#   3) gitops 클론 → 현재 배포 값(이미지 태그 · revision · 프론트 version) 보존
+#      → infra/gitops/prod/<앱> · root 앱 차트 · frontend 를 envs/prod/ 로 복사 (gitops 에만 있는 envs/prod/payment 는 유지)
+#      → 보존한 값 복원 (모노레포의 자리표시 0000… 이 gitops 로 들어가지 않게). 이 상태의 차이 = 클러스터 설정 변경
+#   4) 바뀐 컴포넌트만 이 main 커밋 SHA 로 갱신
+#        RELEASE_BACKEND=true  : backend 이미지 태그 · chart revision · payment 이미지 태그
+#        RELEASE_FRONTEND=true : frontend version
 #   5) release/<SHA> 브랜치 push → PR 생성. merge 는 사람 (gitops main ruleset — App 은 우회 불가)
+#      DRY_RUN=true 면 push · PR 없이 제목 · 본문 · 변경을 출력한다
 #
 # 키 · 토큰은 출력하지 않고, git 에는 URL 대신 HTTP 헤더로 넘긴다 (오류 메시지 · 원격 URL 에 남지 않게).
-# 필요: sh, aws, jq, yq(v4), git, curl, openssl — GitLab job 이미지 $DEPLOY_IMAGE(alpine/k8s) + apk openssl
-# 환경변수: CI_COMMIT_SHA, CI_PROJECT_DIR, GITOPS_GITHUB_REPO(owner/name), MONOREPO_GITHUB_URL, GITHUB_APP_SECRET
+# 필요: sh, aws, jq, yq(v4), git, curl, openssl — GitHub ubuntu-24.04 러너 / GitLab job 이미지 $DEPLOY_IMAGE(alpine/k8s) + apk openssl
+# 환경변수: GITHUB_SHA · GITHUB_WORKSPACE (GitLab: CI_COMMIT_SHA · CI_PROJECT_DIR), GITOPS_GITHUB_REPO(owner/name),
+#           MONOREPO_GITHUB_URL, GITHUB_APP_SECRET
+#   선택  : RELEASE_BACKEND · RELEASE_FRONTEND (기본 true), IMAGE_SHA(GHCR 원본 커밋), RELEASE_IMAGES_FILE(<서비스> <digest> 줄),
+#           DRY_RUN (기본 false)
 set -eu
 # 파이프 중간(curl 등)의 실패를 놓치지 않게 (busybox ash · bash 모두 지원)
 set -o pipefail
 
-: "${CI_COMMIT_SHA:?}" "${CI_PROJECT_DIR:?}" "${GITOPS_GITHUB_REPO:?}" "${MONOREPO_GITHUB_URL:?}" "${GITHUB_APP_SECRET:?}"
+SHA="${GITHUB_SHA:-${CI_COMMIT_SHA:-}}"
+PROJECT_DIR="${GITHUB_WORKSPACE:-${CI_PROJECT_DIR:-}}"
+: "${SHA:?}" "${PROJECT_DIR:?}" "${GITOPS_GITHUB_REPO:?}" "${MONOREPO_GITHUB_URL:?}" "${GITHUB_APP_SECRET:?}"
+RELEASE_BACKEND="${RELEASE_BACKEND:-true}"
+RELEASE_FRONTEND="${RELEASE_FRONTEND:-true}"
+IMAGE_SHA="${IMAGE_SHA:-}"
+RELEASE_IMAGES_FILE="${RELEASE_IMAGES_FILE:-}"
+DRY_RUN="${DRY_RUN:-false}"
 
-SHA="$CI_COMMIT_SHA"
 SHORT="$(printf '%s' "$SHA" | cut -c1-8)"
 BRANCH="release/$SHA"
 OWNER="${GITOPS_GITHUB_REPO%%/*}"
@@ -24,6 +39,14 @@ API=https://api.github.com
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export SHA
+
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  SOURCE="GitHub Actions release.yml"
+  SOURCE_URL="$MONOREPO_GITHUB_URL/actions/runs/${GITHUB_RUN_ID:-}"
+else
+  SOURCE="GitLab release:gitops-pr"
+  SOURCE_URL=""
+fi
 
 log() { echo "[release-pr] $*"; }
 
@@ -66,15 +89,22 @@ if [ -n "$EXISTING" ]; then
   exit 0
 fi
 
-# ── 3) gitops 클론 · 값 복사 ─────────────────────────────────
+# ── 3) gitops 클론 · 현재 값 보존 · 복사 · 복원 ──────────────────
 git_auth clone -q --depth 1 "https://github.com/$GITOPS_GITHUB_REPO.git" "$WORK/gitops"
 cd "$WORK/gitops"
 git checkout -q -b "$BRANCH"
 
+# 값과 줄 주석을 함께 보존한다 (복사본의 주석은 모노레포 자리표시 설명)
+PREV_BACKEND_TAG="$(yq '.global.imageTag' envs/prod/backend/values.yaml)"
+PREV_BACKEND_TAG_COMMENT="$(yq '.global.imageTag | line_comment' envs/prod/backend/values.yaml)"
 PREV_REVISION="$(yq '.revision' envs/prod/backend/chart.yaml)"
+PREV_REVISION_COMMENT="$(yq '.revision | line_comment' envs/prod/backend/chart.yaml)"
+PREV_FRONTEND="$(yq '.version' envs/prod/frontend/values.yaml)"
+PREV_FRONTEND_COMMENT="$(yq '.version | line_comment' envs/prod/frontend/values.yaml)"
+export PREV_BACKEND_TAG PREV_BACKEND_TAG_COMMENT PREV_REVISION PREV_REVISION_COMMENT PREV_FRONTEND PREV_FRONTEND_COMMENT
 
 # 앱 정의(chart.yaml)가 있는 폴더만 통째로 바꾼다. 모노레포에서 지운 앱은 지우지 않는다 (앱 삭제는 사람이 gitops 레포에서)
-for dir in "$CI_PROJECT_DIR"/infra/gitops/prod/*/; do
+for dir in "$PROJECT_DIR"/infra/gitops/prod/*/; do
   app="$(basename "$dir")"
   [ -f "$dir/chart.yaml" ] || continue
   rm -rf "envs/prod/$app"
@@ -84,18 +114,38 @@ done
 # root 앱 차트(ArgoCD prod-apps 가 렌더링, 앱 정의가 아니라 위 반복에서 빠짐)
 for item in Chart.yaml values.yaml templates files; do
   rm -rf "envs/prod/$item"
-  cp -R "$CI_PROJECT_DIR/infra/gitops/prod/$item" "envs/prod/$item"
+  cp -R "$PROJECT_DIR/infra/gitops/prod/$item" "envs/prod/$item"
 done
 
 # 프론트는 앱 정의가 아니라(ArgoCD 가 읽지 않음) 위 반복에서 빠진다. merge 후 gitops sync-frontend-version 이 반영한다
 rm -rf envs/prod/frontend
-cp -R "$CI_PROJECT_DIR/infra/gitops/prod/frontend" envs/prod/frontend
+cp -R "$PROJECT_DIR/infra/gitops/prod/frontend" envs/prod/frontend
 
-# ── 4) 이미지 태그 · chart revision · 프론트 버전 = main 커밋 SHA ──
-yq -i '.global.imageTag = strenv(SHA) | .global.imageTag line_comment = "릴리스 main 커밋 SHA (GitLab release:gitops-pr)"' envs/prod/backend/values.yaml
-yq -i '.revision = strenv(SHA) | .revision line_comment = "릴리스 main 커밋 SHA (GitLab release:gitops-pr)"' envs/prod/backend/chart.yaml
-yq -i '.image.imageTag = strenv(SHA) | .image.imageTag line_comment = "릴리스 main 커밋 SHA (GitLab release:gitops-pr)"' envs/prod/payment/values.yaml
-yq -i '.version = strenv(SHA) | .version line_comment = "릴리스 main 커밋 SHA (GitLab release:gitops-pr)"' envs/prod/frontend/values.yaml
+# 모노레포의 자리표시 대신 gitops 의 현재 값으로 되돌린다 (바뀐 컴포넌트는 4 에서 다시 덮어씀)
+yq -i '.global.imageTag = strenv(PREV_BACKEND_TAG) | .global.imageTag line_comment = strenv(PREV_BACKEND_TAG_COMMENT)' envs/prod/backend/values.yaml
+yq -i '.revision = strenv(PREV_REVISION) | .revision line_comment = strenv(PREV_REVISION_COMMENT)' envs/prod/backend/chart.yaml
+yq -i '.version = strenv(PREV_FRONTEND) | .version line_comment = strenv(PREV_FRONTEND_COMMENT)' envs/prod/frontend/values.yaml
+
+git add -A envs/prod
+if git diff --cached --quiet; then CONFIG=false; else CONFIG=true; fi
+
+# ── 4) 바뀐 컴포넌트만 이 main 커밋 SHA 로 ─────────────────────
+COMMENT="릴리스 main 커밋 SHA ($SOURCE)"
+export COMMENT
+COMPONENTS=""
+add_component() { COMPONENTS="${COMPONENTS:+$COMPONENTS · }$1"; }
+if [ "$RELEASE_BACKEND" = "true" ]; then
+  yq -i '.global.imageTag = strenv(SHA) | .global.imageTag line_comment = strenv(COMMENT)' envs/prod/backend/values.yaml
+  yq -i '.revision = strenv(SHA) | .revision line_comment = strenv(COMMENT)' envs/prod/backend/chart.yaml
+  yq -i '.image.imageTag = strenv(SHA) | .image.imageTag line_comment = strenv(COMMENT)' envs/prod/payment/values.yaml
+  add_component "backend · payment"
+fi
+if [ "$RELEASE_FRONTEND" = "true" ]; then
+  yq -i '.version = strenv(SHA) | .version line_comment = strenv(COMMENT)' envs/prod/frontend/values.yaml
+  add_component frontend
+fi
+[ "$CONFIG" = "false" ] || add_component "클러스터 설정"
+log "바뀐 컴포넌트: ${COMPONENTS:-없음} (backend=$RELEASE_BACKEND frontend=$RELEASE_FRONTEND 설정=$CONFIG)"
 
 git add -A envs/prod
 if git diff --cached --quiet; then
@@ -103,29 +153,53 @@ if git diff --cached --quiet; then
   exit 0
 fi
 CHANGED="$(git diff --cached --stat | tail -n 30)"
-git -c user.name="team04-hotel-release-bot" -c user.email="release-bot@users.noreply.github.com" \
-  commit -q -m "chore(prod): backend · payment · frontend → $SHORT"
+TITLE="chore(prod): $COMPONENTS → $SHORT"
 
-# ── 5) push · PR 생성 ───────────────────────────────────────
-# 열린 PR 이 없는데 브랜치만 남아 있으면(이전 시도) 덮어쓴다
-git_auth push -q --force origin "$BRANCH"
+# ── 5) PR 본문 ──────────────────────────────────────────────
+check() { if [ "$1" = "true" ]; then echo x; else echo " "; fi; }
+
+if [ "$RELEASE_BACKEND" = "true" ]; then
+  if [ -n "$IMAGE_SHA" ]; then
+    BACKEND_LINE="ECR \`team04-hotel/<서비스>:$SHA\` ← GHCR \`:$IMAGE_SHA\` (develop 파이프라인 빌드 · smoke test 통과 이미지, 재빌드 없이 복사 · digest 동일, amd64)"
+  else
+    BACKEND_LINE="ECR \`team04-hotel/<서비스>:$SHA\` (GitLab · AWS Runner · arm64 kaniko 빌드)"
+  fi
+  BACKEND_ITEM="backend 이미지 태그 · chart revision → \`$SHA\`, 결제 서버 이미지 태그 → \`$SHA\`"
+else
+  BACKEND_LINE="변경 없음 — 이전 릴리스 \`$PREV_REVISION\` 유지"
+  BACKEND_ITEM="backend · payment — 변경 없음 (\`$PREV_REVISION\` 유지)"
+fi
+if [ "$RELEASE_FRONTEND" = "true" ]; then
+  FRONTEND_LINE="S3 \`team04-hotel-frontend/releases/$SHA/\` ($SOURCE 빌드)"
+  FRONTEND_ITEM="프론트 version → \`$SHA\` (빌드는 S3 \`releases/$SHA/\` 에 업로드 완료)"
+else
+  FRONTEND_LINE="변경 없음 — 이전 버전 \`$PREV_FRONTEND\` 유지"
+  FRONTEND_ITEM="프론트 — 변경 없음 (\`$PREV_FRONTEND\` 유지)"
+fi
+DIGESTS=""
+if [ "$RELEASE_BACKEND" = "true" ] && [ -n "$RELEASE_IMAGES_FILE" ] && [ -s "$RELEASE_IMAGES_FILE" ]; then
+  DIGESTS="$(printf '\n<details><summary>이미지 digest (GHCR = ECR)</summary>\n\n```\n%s\n```\n\n</details>\n' "$(cat "$RELEASE_IMAGES_FILE")")"
+fi
 
 BODY="$(cat <<EOF
-GitLab main 파이프라인이 자동으로 만든 릴리스 PR 입니다. **리뷰 · 승인 후 merge 하면 운영에 반영됩니다** (메인 클러스터는 ArgoCD, 결제 서버는 Parameter Store 동기화 후 pull agent, 프론트는 CloudFront KeyValueStore 전환).
+${SOURCE} 이 자동으로 만든 릴리스 PR 입니다. **리뷰 · 승인 후 merge 하면 운영에 반영됩니다** (메인 클러스터는 ArgoCD, 결제 서버는 Parameter Store 동기화 후 pull agent, 프론트는 CloudFront KeyValueStore 전환).
+
+이전 릴리스 이후 바뀐 컴포넌트만 갱신했고, 나머지는 gitops 의 현재 값을 유지합니다.
 
 ## 변경 대상
 
-- [x] backend 이미지 태그 · chart revision → \`$SHA\`
-- [x] 결제 서버 이미지 태그 → \`$SHA\`
-- [x] 프론트 version → \`$SHA\` (빌드는 S3 \`releases/$SHA/\` 에 업로드 완료)
-- [x] 클러스터 서비스 · backend 설정 (모노레포 \`infra/gitops/prod\` 복사)
+- [$(check "$RELEASE_BACKEND")] $BACKEND_ITEM
+- [$(check "$RELEASE_FRONTEND")] $FRONTEND_ITEM
+- [$(check "$CONFIG")] 클러스터 서비스 · backend 설정 (모노레포 \`infra/gitops/prod\` 복사)
 
 ## 무엇을 · 왜
 
 - 모노레포 main 커밋: $MONOREPO_GITHUB_URL/commit/$SHA
-- 이전 릴리스 대비 변경: $MONOREPO_GITHUB_URL/compare/$PREV_REVISION...$SHA
-- 이미지: ECR \`team04-hotel/<서비스>:$SHA\` (arm64, AWS Runner kaniko 빌드)
-- 프론트: S3 \`team04-hotel-frontend/releases/$SHA/\` (GitLab release:frontend 빌드)
+- 이전 백엔드 릴리스 대비 변경: $MONOREPO_GITHUB_URL/compare/$PREV_REVISION...$SHA
+- 이미지: $BACKEND_LINE
+- 프론트: $FRONTEND_LINE
+${SOURCE_URL:+- 실행: $SOURCE_URL}
+$DIGESTS
 
 \`\`\`
 $CHANGED
@@ -150,7 +224,20 @@ $CHANGED
 EOF
 )"
 
-PR_URL="$(jq -n --arg title "chore(prod): backend · payment · frontend → $SHORT" --arg head "$BRANCH" --arg body "$BODY" \
+if [ "$DRY_RUN" = "true" ]; then
+  log "dry-run — push · PR 생략. 제목: $TITLE"
+  printf '%s\n' "----- PR 본문 -----" "$BODY" "----- 변경 (envs/prod) -----"
+  git --no-pager diff --cached
+  exit 0
+fi
+
+# ── 6) push · PR 생성 ───────────────────────────────────────
+git -c user.name="team04-hotel-release-bot" -c user.email="release-bot@users.noreply.github.com" \
+  commit -q -m "$TITLE"
+# 열린 PR 이 없는데 브랜치만 남아 있으면(이전 시도) 덮어쓴다
+git_auth push -q --force origin "$BRANCH"
+
+PR_URL="$(jq -n --arg title "$TITLE" --arg head "$BRANCH" --arg body "$BODY" \
   '{title: $title, head: $head, base: "main", body: $body}' |
   gh_api -X POST "$API/repos/$GITOPS_GITHUB_REPO/pulls" -d @- | jq -r .html_url)"
 [ -n "$PR_URL" ] && [ "$PR_URL" != null ] || { log "PR 생성 응답에 URL 이 없습니다"; exit 1; }
