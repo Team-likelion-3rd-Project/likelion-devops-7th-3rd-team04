@@ -1,0 +1,110 @@
+# kube-prometheus-stack 공통 values — dev(roles/monitoring) · 운영(infra/gitops/prod) 이 같이 쓰는 값 (README 17절)
+#
+# 환경 값(배치 · 저장소 · 노출 · env 라벨)은 넣지 않습니다. dev 는 templates/kube-prometheus-stack-values-dev.yaml.j2,
+# 운영은 이 파일을 그대로 두고 그 위에 운영 values 를 겹칩니다 (helm -f common -f <env>).
+# Jinja 를 쓰지 않는 정적 파일 — 운영 gitops 로 그대로 복사할 수 있게 유지합니다.
+
+# ── 수집 대상 ─────────────────────────────────────────────
+# 컨트롤 플레인 컴포넌트는 수집하지 않음.
+# kubeadm 은 127.0.0.1 에만 바인딩해 수집이 실패하고, EKS 는 접근할 수 없음 → 처음부터 꺼서 환경이 바뀌어도 같은 값
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    windows: false
+
+windowsMonitoring:
+  enabled: false
+
+# 알림 수신처(Slack 등)가 정해지기 전까지 끔 — 알람은 Prometheus · Grafana 의 Alerting 목록에서 확인
+alertmanager:
+  enabled: false
+
+# ── Prometheus ───────────────────────────────────────────
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    # 결제 노드(k8s 밖)의 Grafana Alloy 가 /api/v1/write 로 push
+    enableRemoteWriteReceiver: true
+    # 차트 release 라벨이 없는 ServiceMonitor · PodMonitor · PrometheusRule 도 읽음 (backend 차트의 ServiceMonitor)
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+
+# ── Grafana ──────────────────────────────────────────────
+grafana:
+  # admin 계정은 차트 밖 Secret (dev: OpenBao → ESO, 운영: Secrets Manager → ESO)
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  # 대시보드 · 데이터소스는 코드(ConfigMap)로 관리하므로 저장소를 두지 않음
+  persistence:
+    enabled: false
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+  defaultDashboardsTimezone: Asia/Seoul
+
+# ── 알람 규칙 (인프라 지표, 노션 "관측성 도입 계획" 9절 5단계) ─────────
+# CPU 스로틀링은 기본 규칙 CPUThrottlingHigh(25%, 15분)를 그대로 씀. 앱 에러율 규칙은 backend /metrics 수집 뒤 추가
+# 대상 Pod 는 알람 라벨(namespace · pod · container)로 보임. 이 파일은 Ansible 이 비교용으로 읽으므로 annotation 에 Go 템플릿 중괄호를 쓰지 않음
+additionalPrometheusRulesMap:
+  team04-resources:
+    groups:
+      - name: team04.resources
+        rules:
+          - alert: PodRestartingFrequently
+            expr: increase(kube_pod_container_status_restarts_total[15m]) >= 3
+            labels:
+              severity: warning
+            annotations:
+              summary: 컨테이너가 15분 동안 3번 이상 재시작
+          - alert: ContainerOOMKilled
+            expr: |
+              kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+              and on (namespace, pod, container)
+              increase(kube_pod_container_status_restarts_total[10m]) > 0
+            labels:
+              severity: warning
+            annotations:
+              summary: 컨테이너가 메모리 limit 을 넘어 OOMKilled 로 재시작
+          - alert: ContainerMemoryNearLimit
+            expr: |
+              max by (namespace, pod, container) (container_memory_working_set_bytes{container!="", container!="POD"})
+              / on (namespace, pod, container)
+              max by (namespace, pod, container) (kube_pod_container_resource_limits{resource="memory"})
+              > 0.9
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: 컨테이너 메모리(working set)가 limit 의 90% 를 5분 넘게 초과
+      - name: team04.payment-node
+        rules:
+          # push 방식이라 결제 노드가 꺼지면 데이터가 "안 들어올 뿐" → 없는 것 자체를 알람으로
+          - alert: PaymentMetricsAbsent
+            expr: absent_over_time(up{cluster="payment", job="node-exporter"}[5m])
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: 결제 노드 메트릭이 5분 넘게 들어오지 않음 (노드 · Alloy · remote_write 경로 확인)

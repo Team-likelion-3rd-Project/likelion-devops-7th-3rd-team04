@@ -1,0 +1,130 @@
+{
+  "uid": "team04-payment-node",
+  "title": "team04 / 결제 노드",
+  "description": "결제 노드(k8s 밖, Docker) 호스트와 컨테이너 리소스. Grafana Alloy 가 remote_write 로 보낸 cluster=\"payment\" 시계열 (infra/ansible README 17절)",
+  "tags": ["team04", "payment"],
+  "timezone": "",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "데이터소스",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      },
+      {
+        "name": "instance",
+        "label": "노드",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": { "query": "label_values(node_uname_info{cluster=\"payment\"}, instance)", "refId": "instance" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "수집 상태 (1 = 정상)",
+      "description": "Alloy 가 수집한 대상의 up. 값이 없으면 결제 노드 · Alloy · remote_write 경로를 확인 (알람 PaymentMetricsAbsent)",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "up{cluster=\"payment\", instance=~\"$instance\"}", "legendFormat": "{{instance}} / {{job}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "호스트 CPU 사용률",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{cluster=\"payment\", instance=~\"$instance\", mode=\"idle\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "호스트 메모리 사용률",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes{cluster=\"payment\", instance=~\"$instance\"} / node_memory_MemTotal_bytes{cluster=\"payment\", instance=~\"$instance\"})",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "디스크 사용률 (/)",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - node_filesystem_avail_bytes{cluster=\"payment\", instance=~\"$instance\", mountpoint=\"/\"} / node_filesystem_size_bytes{cluster=\"payment\", instance=~\"$instance\", mountpoint=\"/\"})",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "컨테이너 CPU (cores)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, container) (rate(container_cpu_usage_seconds_total{cluster=\"payment\", instance=~\"$instance\", container!=\"\"}[$__rate_interval]))",
+          "legendFormat": "{{container}} ({{instance}})"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "컨테이너 메모리 (working set)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, container) (container_memory_working_set_bytes{cluster=\"payment\", instance=~\"$instance\", container!=\"\"})",
+          "legendFormat": "{{container}} ({{instance}})"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0 }, "overrides": [] }
+    }
+  ]
+}

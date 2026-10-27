@@ -100,3 +100,11 @@ backend_external_secret_data:
     SEED_ADMIN_PASSWORD: password
 # OpenBao 에 base64 로 둔 속성 (ESO 가 풀어서 Secret 에 넣음). JSON 문자열은 Ansible 이 dict 로 바꿔 버리므로 base64 로 저장
 backend_external_secret_base64_keys: [GCP_SA_KEY_JSON]
+# backend-secrets 밖에서 ESO 가 읽는 경로 (eso-dev 정책에 함께 들어감). grafana: monitoring/grafana-admin (17절)
+eso_extra_read_paths: [grafana]
+
+# ── 모니터링 (monitoring.yml · payment.yml, README 17절) ──────
+# 메트릭 라벨 env 값 (운영은 prod). 클러스터 Prometheus scrape class · 결제 노드 Alloy 가 함께 씀
+monitoring_env: dev
+# Prometheus NodePort — 결제 노드 Alloy 가 control plane Tailscale IP 로 remote_write (ACL tag:payment → tag:k8s-node tcp:30909)
+prometheus_nodeport: 30909
