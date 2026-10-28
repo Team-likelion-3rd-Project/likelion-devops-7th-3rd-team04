@@ -31,8 +31,9 @@ locals {
       # M2 api-gateway NodePort, Target Group 헬스체크
       m2_worker_nodeport = { sg = "main_worker", source = "main_alb", port = 30080, description = "M2 api-gateway NodePort from ALB" }
 
-      # M8 metrics-server · Prometheus → kubelet
-      m8_worker_kubelet_from_worker = { sg = "main_worker", source = "main_worker", port = 10250, description = "M8 kubelet from workers" }
+      # M8 metrics-server · Prometheus(워커 파드) → kubelet, node-exporter(hostNetwork). 파드 출처는 Calico natOutgoing 으로 워커 노드 IP
+      m8_worker_kubelet_from_worker       = { sg = "main_worker", source = "main_worker", port = 10250, description = "M8 kubelet from workers" }
+      m8_worker_node_exporter_from_worker = { sg = "main_worker", source = "main_worker", port = 9100, description = "M8 node-exporter from workers" }
 
       # M9 · M10 Calico VXLAN, Typha (워커 ↔ 워커)
       m9_worker_vxlan_from_worker  = { sg = "main_worker", source = "main_worker", protocol = "udp", port = 4789, description = "M9 Calico VXLAN from workers" }
@@ -64,6 +65,10 @@ locals {
       m7_worker_kubelet_from_cp = { sg = "main_worker", source = "main_cp", port = 10250, description = "M7 kubelet from control plane" }
       # CP 파드 대상. 요청이 NLB 를 거쳐 다른 CP 의 apiserver 로 가면 CP → CP 로 붙는다
       m7_cp_kubelet_from_cp = { sg = "main_cp", source = "main_cp", port = 10250, description = "M7 kubelet from control plane" }
+
+      # M8 metrics-server · Prometheus(워커 파드) → CP kubelet, CP node-exporter
+      m8_cp_kubelet_from_worker       = { sg = "main_cp", source = "main_worker", port = 10250, description = "M8 kubelet from workers" }
+      m8_cp_node_exporter_from_worker = { sg = "main_cp", source = "main_worker", port = 9100, description = "M8 node-exporter from workers" }
 
       # M9 · M10 Calico VXLAN, Typha (워커 ↔ CP, CP ↔ CP)
       m9_worker_vxlan_from_cp  = { sg = "main_worker", source = "main_cp", protocol = "udp", port = 4789, description = "M9 Calico VXLAN from control plane" }

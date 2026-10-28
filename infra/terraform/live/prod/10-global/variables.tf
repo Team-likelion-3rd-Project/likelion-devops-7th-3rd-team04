@@ -107,6 +107,14 @@ variable "deploy_publisher_role_names" {
   ]
 }
 
+variable "alert_publisher_role_names" {
+  description = "알림 토픽에 발행하는 Role 이름 (CloudWatch 알람 · EventBridge 외, 매일 재생성 스택이 고정 이름으로 만든다)"
+  type        = list(string)
+  default = [
+    "team04-hotel-alertmanager", # 70 irsa.tf — 메인 클러스터 Prometheus 알림 (LDP-179)
+  ]
+}
+
 variable "chatbot_region" {
   description = "AWS Chatbot 설정을 만들 리전. Chatbot API 는 us-east-1 엔드포인트가 없다"
   type        = string

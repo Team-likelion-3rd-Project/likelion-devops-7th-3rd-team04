@@ -4,6 +4,7 @@
 #   1  IP reputation        AWS 위협 인텔리전스의 악성 IP (봇, 스캐너)
 #   2  Common rule set      OWASP Top 10 계열 (XSS, LFI, 본문 8KB 초과 등)
 #   3  Known bad inputs     Log4Shell 등 알려진 악성 입력
+#   4  Grafana IP 허용 목록  grafana.* 호스트는 grafana_allowed_cidrs 출발지만 (LDP-179)
 #
 # 객실 이미지는 Presigned PUT 으로 S3 에 직접 올리므로(LDP-88) API 본문은 8KB 를 넘지 않는다.
 # 그래서 본문 크기 제한(SizeRestrictions_BODY)도 예외 없이 그대로 차단한다.
@@ -16,6 +17,19 @@ locals {
     "AWSManagedRulesAmazonIpReputationList" = { priority = 1, count_rules = [] }
     "AWSManagedRulesCommonRuleSet"          = { priority = 2, count_rules = [] }
     "AWSManagedRulesKnownBadInputsRuleSet"  = { priority = 3, count_rules = [] }
+  }
+}
+
+# Grafana(gitops kube-prometheus-stack, Traefik Ingress grafana.<도메인>) 접속 허용 출발지.
+# ALB 는 호스트와 관계없이 모두 Traefik 으로 보내므로 Grafana 를 가리는 곳은 여기 하나다
+resource "aws_wafv2_ip_set" "grafana_allowed" {
+  name               = "${local.name}-grafana-allowed"
+  scope              = "REGIONAL"
+  ip_address_version = "IPV4"
+  addresses          = var.grafana_allowed_cidrs
+
+  tags = {
+    Name = "${local.name}-grafana-allowed"
   }
 }
 
@@ -46,6 +60,55 @@ resource "aws_wafv2_web_acl" "main" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "rate-limit-per-ip"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Host 가 grafana. 로 시작하고 출발지가 허용 목록에 없으면 차단. 도메인 값과 상관없이(ALB DNS 이름으로 Host 를 바꿔 와도) 막히고,
+  # STARTS_WITH 라 Host 끝의 :443 · 점으로 우회할 수 없다
+  rule {
+    name     = "grafana-ip-allowlist"
+    priority = 4
+
+    action {
+      block {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          byte_match_statement {
+            search_string         = "${var.grafana_subdomain}."
+            positional_constraint = "STARTS_WITH"
+
+            field_to_match {
+              single_header {
+                name = "host"
+              }
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+
+        statement {
+          not_statement {
+            statement {
+              ip_set_reference_statement {
+                arn = aws_wafv2_ip_set.grafana_allowed.arn
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "grafana-ip-allowlist"
       sampled_requests_enabled   = true
     }
   }

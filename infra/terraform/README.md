@@ -240,6 +240,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 | `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `40-cicd` Runner Role (`release:gitops-pr` job) · `10-global` 릴리스 Role `team04-hotel-release` (`release.yml` gitops-pr job) |
 | SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 Runner 가 시크릿 키까지 읽게 되므로 분리 | `40-cicd` Runner Role (`release:prepare` → `release:frontend-build` 의 `VITE_TOSS_CLIENT_KEY`) · `10-global` 릴리스 Role (`release.yml` plan job) |
 | `team04-hotel/prod/seed-admin` | `{email, password, name}` | 운영 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*`, 비밀번호 12자 이상). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | `70` ESO Role (`team04-hotel-external-secrets`) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
+| `team04-hotel/prod/grafana-admin` | `{admin_user, admin_password}` | 운영 Grafana admin 계정. 이름은 `admin` 고정, 비밀번호만 사람이 정함(`.env` 의 `GRAFANA_ADMIN_PASSWORD`, 16자 이상). **등록 전에는 운영 Grafana 가 뜨지 않습니다**(서비스 배포에는 영향 없음, [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측") | `70` ESO Role → Secret `grafana-admin` (gitops `monitoring` 앱) |
 
 처음 등록 · 값 교체 (온프레미스 GitLab 재생성으로 토큰이 바뀐 경우 등):
 
@@ -383,6 +384,7 @@ AWS_PROFILE=team04 aws elbv2 describe-target-health \
 ```
 
 - WAF 차단 응답은 403 입니다. IP 당 rate limit 은 기본 60초에 300회(`waf_rate_limit`, `waf_rate_limit_window_sec`)이고, 넘은 뒤 차단까지 수십 초 걸립니다.
+- **Grafana (`grafana.<도메인>`)** 는 WAF 규칙 `grafana-ip-allowlist` 가 `grafana_allowed_cidrs` 출발지 외에서 403 으로 막습니다. ALB 는 호스트와 관계없이 Traefik 으로 보내므로 Grafana 를 가리는 곳은 이 규칙 하나입니다 (Host 가 `grafana.` 로 시작하면 도메인 · ALB DNS 와 관계없이 적용). 허용 IP 는 레포에 두지 않고 `80-main-edge/terraform.tfvars`(gitignore)에 `grafana_allowed_cidrs = ["203.0.113.10/32"]` 처럼 둡니다. 비어 있으면 아무도 접속할 수 없습니다. IP 가 바뀌면 tfvars 를 고쳐 `80` 만 apply 합니다 (IP set 만 바뀜, 수십 초).
 - 본문 8KB 초과 요청은 경로와 관계없이 403 입니다 (관리형 규칙 `SizeRestrictions_BODY`). 객실 이미지는 Presigned PUT 으로 S3 에 직접 올리므로 API 본문이 크지 않습니다. 큰 파일은 API 대신 Presigned URL 로 받습니다.
 - 액세스 로그는 `10-global` 로그 버킷 `alb/` 에 5분 단위로 쌓입니다. Object Lock 버킷이라 잠금 기간(7일) 동안 지워지지 않습니다.
 - unhealthy 타깃이 있으면 그 워커가 클러스터에 join 했는지(`kubectl get nodes`) 먼저 봅니다 (6절). join 하지 못한 워커는 kube-proxy 가 없어 NodePort 가 응답하지 않습니다.
@@ -726,7 +728,8 @@ kubectl -n fluent-bit logs ds/fluent-bit --tail=50 | grep -iE 'error|warn'
 
 ```
 CloudWatch 알람 ALARM (90) ─────────────────────┬→ SNS team04-hotel-alerts ─┐
-EventBridge 규칙 ALARM → OK 전환만 (10-global) ──┘                           │
+EventBridge 규칙 ALARM → OK 전환만 (10-global) ──┤                           │
+메인 Alertmanager (alertmanager, IRSA) ─────────┘                           │
 메인 ArgoCD 알림 hook (deploy-notify, IRSA) ────┐                            ├→ AWS Chatbot (us-east-2) → Slack #alerts · #deploy
 결제 pull agent (60 Role, 44 sns 엔드포인트) ────┼→ SNS team04-hotel-deploy ──┘
 gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 · Chatbot 은 10-global 🔒, KMS 암호화)
@@ -735,7 +738,7 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 - SNS 토픽 · KMS 키 · Chatbot 채널 설정은 `10-global` 🔒 이라 매일 재생성과 상관없이 유지됩니다. Chatbot 이 구독을 직접 관리하므로 구독 확인 · Slack 재연결이 없습니다.
 - 해소(OK) 알림은 알람의 `ok_actions` 가 아니라 `10-global` EventBridge 규칙 `team04-hotel-alarm-recovered` 가 보냅니다. `ok_actions` 는 알람을 새로 만들 때의 "데이터 부족 → OK" 에도 실행되어 매일 재생성마다 OK 가 오기 때문에, 이름이 `team04-hotel-` 로 시작하는 알람의 **ALARM → OK 전환만** 보냅니다. 새 알람도 이 접두사를 쓰고 `ok_actions` 는 넣지 않습니다.
 - Chatbot 은 EventBridge 의 알람 상태 변경 이벤트 원본을 지원하지 않아(`/aws/chatbot/team04-hotel-alerts` 로그: `Event received is not supported`), 규칙 대상의 입력 변환으로 사용자 정의 알림 형식(`✅ CloudWatch Alarm 해소 | <알람>`)으로 바꿔 보냅니다. Slack 에 메시지가 안 오면 이 로그 그룹(us-east-1)을 먼저 봅니다.
-- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람과 위 EventBridge 규칙만, 배포 토픽은 Role 3개(`team04-hotel-deploy-notify` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
+- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람 · 위 EventBridge 규칙 · Role `team04-hotel-alertmanager`(`alert_publisher_role_names`)만, 배포 토픽은 Role 3개(`team04-hotel-deploy-notify` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
 - Chatbot 채널 Role 에는 정책이 없고 guardrail 이 `AWSDenyAll` 이라 Slack 에서 AWS 명령을 실행할 수 없습니다.
 - 결제 VPC 는 Slack 으로 나가지 않습니다 (SNS 인터페이스 엔드포인트, NFW 허용 목록은 토스 API 만).
 - Slack 워크스페이스 · 채널 ID 는 `10-global/terraform.tfvars`(gitignore)에 둡니다 (`terraform.tfvars.example`). 기본값이 없어 파일이 없으면 `10-global` plan 이 멈춥니다. 비공개 채널이면 채널에서 `/invite @Amazon Q` 를 먼저 합니다.
@@ -753,6 +756,7 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 | `team04-hotel-payment-deploy-failed` | 결제 agent `deploy_failed` · `invalid_release` · `rollback_failed` | `#deploy` 의 인스턴스별 결과 → 9절 배포 이벤트 조회. 없는 태그면 gitops payment values 수정 PR |
 | `team04-hotel-payment-mock-deployed` | 결제 agent `deploy_success` 이면서 `provider = MOCK` | 부하 테스트가 아니면 gitops payment values `PAYMENT_PROVIDER` 를 `TOSS` 로 되돌리는 PR |
 
+- **Prometheus 알림**(메인 클러스터 Alertmanager, LDP-179)도 같은 `#alerts` 로 옵니다. 제목은 `🚨 Prometheus 알림 | <규칙>` · `✅ Prometheus 해소 | <규칙>` 이고, 규칙 · 대응은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측" 에 있습니다. `severity` 가 `warning` · `critical` 인 것만 보냅니다.
 - 결제 배포 · MOCK 알람은 이벤트가 생긴 1분만 ALARM 이고 다음 1분에 OK 로 돌아옵니다 ("발생 알림"). 이벤트가 있을 때만 생기는 지표라 `FILL(m, 0)` 수식으로 빈 분을 0 으로 채웁니다 — 채우지 않으면 평가 범위에 남은 마지막 1 때문에 ALARM 이 약 8분 이어집니다 (2026-10-24 실측). ALARM 중에 같은 이벤트가 또 생기면 새 메시지는 없습니다.
 - 매일 재생성 직후 결제 서버 · 워커가 부팅 중이면 unhealthy 알람이 한 번 올 수 있습니다 (5분 넘게 이어질 때만).
 

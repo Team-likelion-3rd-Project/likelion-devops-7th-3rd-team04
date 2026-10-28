@@ -199,3 +199,21 @@ variable "seed_admin_name" {
     error_message = "TF_VAR_seed_admin_name 이 비었습니다."
   }
 }
+
+variable "grafana_admin_credentials_version" {
+  description = "Grafana admin Secret 값을 다시 넣을 때 올리는 번호 (비밀번호 변경). 다음 클러스터 재생성(또는 ESO refresh 1시간)부터 반영"
+  type        = number
+  default     = 1
+}
+
+variable "grafana_admin_password" {
+  description = "운영 Grafana admin 비밀번호 (16자 이상, 로그인 이름은 admin). 12-secrets/.env 의 GRAFANA_ADMIN_PASSWORD"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = length(var.grafana_admin_password) >= 16
+    error_message = "TF_VAR_grafana_admin_password 가 비었거나 16자보다 짧습니다."
+  }
+}

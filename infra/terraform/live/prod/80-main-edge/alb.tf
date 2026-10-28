@@ -109,3 +109,18 @@ resource "aws_route53_record" "api" {
     evaluate_target_health = true
   }
 }
+
+# Grafana (gitops kube-prometheus-stack Ingress). 접속 제한은 WAF grafana-ip-allowlist
+resource "aws_route53_record" "grafana" {
+  count = local.zone_enabled ? 1 : 0
+
+  zone_id = local.zone_id
+  name    = "${var.grafana_subdomain}.${local.domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.main.dns_name
+    zone_id                = aws_lb.main.zone_id
+    evaluate_target_health = true
+  }
+}

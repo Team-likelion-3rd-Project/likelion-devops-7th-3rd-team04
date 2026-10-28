@@ -31,6 +31,12 @@ ingress:
   paths:
     - /api
 
+# Prometheus 메트릭 (LDP-179) — 서비스마다 METRICS_PORT(9464) + PodMonitor 1개. 수집은 kube-prometheus-stack 앱.
+# 9464 는 containerPort 만이라 Service · Ingress 로 노출되지 않는다. llm-service 는 차트 기본값(metrics: false)으로 빠짐.
+# PodMonitor CRD 는 prometheus-operator-crds 앱(order 12)이 먼저 설치한다
+metrics:
+  enabled: true
+
 services:
   api-gateway:
     replicas: 2
