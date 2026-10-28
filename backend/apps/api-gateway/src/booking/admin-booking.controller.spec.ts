@@ -10,6 +10,7 @@ describe('AdminBookingController', () => {
     createAdminBooking: jest.fn(),
     adminCancelBooking: jest.fn(),
     createExtensionBooking: jest.fn(),
+    getBookingById: jest.fn(),
   };
   const user = {
     getUserById: jest.fn(),
@@ -17,7 +18,11 @@ describe('AdminBookingController', () => {
     getUsersByIds: jest.fn(),
   };
   const adminLookup = { getAdminById: jest.fn() };
-  const hotel = { getHotels: jest.fn(), listRoomUnits: jest.fn() };
+  const hotel = {
+    getHotels: jest.fn(),
+    listRoomUnits: jest.fn(),
+    getRoom: jest.fn(),
+  };
   const admin = {
     userId: 3,
     email: 'staff@hotel.com',
@@ -98,7 +103,7 @@ describe('AdminBookingController', () => {
     });
 
     it('조건이 없으면 페이지를 나누지 않고 전체를 요청한다 (예전과 같은 목록) — 응답에 total', async () => {
-      const result = await controller.getBookings({});
+      const result = await controller.getBookings(admin, {});
 
       expect(booking.getBookings).toHaveBeenCalledWith({
         page: 0,
@@ -136,7 +141,7 @@ describe('AdminBookingController', () => {
         of({ users: [{ id: 7, name: '홍길동', email: 'hong@t.com' }] }),
       );
 
-      const { bookings } = await controller.getBookings({});
+      const { bookings } = await controller.getBookings(admin, {});
 
       expect(user.getUsersByIds).toHaveBeenCalledTimes(1);
       expect(user.getUsersByIds).toHaveBeenCalledWith({ ids: [7, 9] });
@@ -152,7 +157,7 @@ describe('AdminBookingController', () => {
         throwError(() => ({ code: 14, details: 'No connection established' })),
       );
 
-      const result = await controller.getBookings({});
+      const result = await controller.getBookings(admin, {});
 
       expect(result.total).toBe(37);
       expect(result.bookings[0]).toMatchObject({
@@ -165,13 +170,13 @@ describe('AdminBookingController', () => {
     it('예약이 없으면 회원을 조회하지 않는다', async () => {
       booking.getBookings.mockReturnValue(of({ bookings: [], total: 0 }));
 
-      await controller.getBookings({});
+      await controller.getBookings(admin, {});
 
       expect(user.getUsersByIds).not.toHaveBeenCalled();
     });
 
     it('page·지점·상태·연장 묶음 조건을 그대로 넘긴다', async () => {
-      await controller.getBookings({
+      await controller.getBookings(admin, {
         page: 2,
         size: 50,
         hotelId: 1,
@@ -191,7 +196,7 @@ describe('AdminBookingController', () => {
     });
 
     it('검색어는 회원 이름·이메일·연락처로 찾은 회원의 예약 — 회원은 user-service에서 찾는다', async () => {
-      await controller.getBookings({ keyword: ' 홍길동 ' });
+      await controller.getBookings(admin, { keyword: ' 홍길동 ' });
 
       expect(user.getUsers).toHaveBeenCalledWith({
         page: 1,
@@ -208,7 +213,7 @@ describe('AdminBookingController', () => {
     });
 
     it('숫자 검색어는 예약번호로도 찾는다', async () => {
-      await controller.getBookings({ keyword: '12' });
+      await controller.getBookings(admin, { keyword: '12' });
 
       expect(booking.getBookings).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -220,21 +225,21 @@ describe('AdminBookingController', () => {
     });
 
     it('방 번호로도 찾는다 — 지점 조건이 없으면 모든 지점의 호실에서 (대소문자 무시)', async () => {
-      await controller.getBookings({ keyword: '201' });
+      await controller.getBookings(admin, { keyword: '201' });
 
       expect(hotel.listRoomUnits).toHaveBeenCalledTimes(2);
       expect(booking.getBookings).toHaveBeenCalledWith(
         expect.objectContaining({ keywordRoomUnitIds: [3, 4] }),
       );
 
-      await controller.getBookings({ keyword: 'b1' });
+      await controller.getBookings(admin, { keyword: 'b1' });
       expect(booking.getBookings).toHaveBeenLastCalledWith(
         expect.objectContaining({ keywordRoomUnitIds: [8] }),
       );
     });
 
     it('지점 조건이 있으면 그 지점 호실만 본다', async () => {
-      await controller.getBookings({ keyword: '201', hotelId: 1 });
+      await controller.getBookings(admin, { keyword: '201', hotelId: 1 });
 
       expect(hotel.getHotels).not.toHaveBeenCalled();
       expect(hotel.listRoomUnits).toHaveBeenCalledWith({
@@ -250,7 +255,7 @@ describe('AdminBookingController', () => {
       );
 
       const { status, body } = await httpError(
-        controller.getBookings({ keyword: '201' }),
+        controller.getBookings(admin, { keyword: '201' }),
       );
 
       expect(status).toBe(503);
@@ -263,7 +268,7 @@ describe('AdminBookingController', () => {
       );
 
       const { status, body } = await httpError(
-        controller.getBookings({ keyword: '홍' }),
+        controller.getBookings(admin, { keyword: '홍' }),
       );
 
       expect(status).toBe(503);
@@ -359,6 +364,97 @@ describe('AdminBookingController', () => {
       reservationId: 12,
       adminId: 3,
       cancelReason: '노쇼',
+    });
+  });
+
+  // LDP-178: 지점 관리자·직원은 자기 지점 예약만
+  describe('지점 계정', () => {
+    const seoulStaff = {
+      ...admin,
+      hotelId: 1,
+      adminRole: 'STAFF',
+    } as AuthenticatedUser;
+
+    beforeEach(() => {
+      booking.getBookings.mockReturnValue(of({ bookings: [], total: 0 }));
+      user.getUsersByIds.mockReturnValue(of({ users: [] }));
+    });
+
+    it('예약 목록은 지점을 고르지 않아도 자기 지점으로 고정한다', async () => {
+      await controller.getBookings(seoulStaff, {});
+
+      expect(booking.getBookings).toHaveBeenCalledWith(
+        expect.objectContaining({ hotelId: 1 }),
+      );
+    });
+
+    it('다른 지점 예약 목록을 고르면 403', async () => {
+      const { status, body } = await httpError(
+        controller.getBookings(seoulStaff, { hotelId: 2 }),
+      );
+
+      expect(status).toBe(403);
+      expect(body.code).toBe('ADMIN_HOTEL_FORBIDDEN');
+      expect(booking.getBookings).not.toHaveBeenCalled();
+    });
+
+    it('다른 지점 예약은 취소·연장할 수 없다', async () => {
+      booking.getBookingById.mockReturnValue(of({ hotelId: 2 }));
+
+      const cancel = await httpError(
+        controller.adminCancelBooking(seoulStaff, 12, { cancelReason: '노쇼' }),
+      );
+      const extend = await httpError(
+        controller.createExtensionBooking(seoulStaff, 12, {
+          checkOutDate: '2026-11-05',
+        }),
+      );
+
+      expect([cancel.status, extend.status]).toEqual([403, 403]);
+      expect(booking.adminCancelBooking).not.toHaveBeenCalled();
+      expect(booking.createExtensionBooking).not.toHaveBeenCalled();
+    });
+
+    it('자기 지점 예약은 취소할 수 있다', async () => {
+      booking.getBookingById.mockReturnValue(of({ hotelId: 1 }));
+      booking.adminCancelBooking.mockReturnValue(of(grpcBooking));
+
+      await controller.adminCancelBooking(seoulStaff, 12, {
+        cancelReason: '노쇼',
+      });
+
+      expect(booking.adminCancelBooking).toHaveBeenCalled();
+    });
+
+    it('대리 예약: 자기 지점에 없는 객실이면 403 (다른 지점 객실 번호를 넣은 경우)', async () => {
+      hotel.getRoom.mockReturnValue(
+        throwError(() => ({ code: 5, details: '존재하지 않는 객실입니다.' })),
+      );
+
+      const { status } = await httpError(
+        controller.createAdminBooking(seoulStaff, { ...dto, roomId: 5 }),
+      );
+
+      expect(status).toBe(403);
+      expect(hotel.getRoom).toHaveBeenCalledWith({ hotelId: 1, roomId: 5 });
+      expect(booking.createAdminBooking).not.toHaveBeenCalled();
+    });
+
+    it('대리 예약: 다른 지점을 고르면 객실 확인 없이 403', async () => {
+      const { status } = await httpError(
+        controller.createAdminBooking(seoulStaff, { ...dto, hotelId: 2 }),
+      );
+
+      expect(status).toBe(403);
+      expect(hotel.getRoom).not.toHaveBeenCalled();
+    });
+
+    it('본사는 예약 조회 없이 그대로 처리한다', async () => {
+      booking.adminCancelBooking.mockReturnValue(of(grpcBooking));
+
+      await controller.adminCancelBooking(admin, 12, { cancelReason: '노쇼' });
+
+      expect(booking.getBookingById).not.toHaveBeenCalled();
     });
   });
 });

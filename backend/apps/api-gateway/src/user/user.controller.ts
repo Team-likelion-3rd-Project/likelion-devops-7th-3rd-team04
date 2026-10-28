@@ -17,6 +17,7 @@ import { Observable, firstValueFrom } from 'rxjs';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam } from '@nestjs/swagger';
 import { ApiCommonResponses } from '@app/common/decorators/api-response.decorator';
 import {
+  AdminRoles,
   JwtAuthGuard,
   RolesGuard,
   Roles,
@@ -223,6 +224,7 @@ export class UserController implements OnModuleInit {
   @Get(':userId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
+  @AdminRoles('SUPER')
   @ApiBearerAuth()
   @ApiParam({ name: 'userId', description: '조회할 유저의 ID', type: Number })
   @ApiOperation({
