@@ -12,6 +12,10 @@ resource "aws_launch_template" "cp" {
   instance_type          = var.control_plane_instance_type
   vpc_security_group_ids = [local.sg_ids.main_cp]
 
+  credit_specification {
+    cpu_credits = local.cpu_credits
+  }
+
   iam_instance_profile {
     name = aws_iam_instance_profile.node["cp"].name
   }

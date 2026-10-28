@@ -30,8 +30,8 @@ variable "cluster_log_namespaces" {
     "tigera-operator",
     "calico-system",
     "calico-apiserver",
-    # 배포 agent (Ansible gitops_sync)
-    "gitops-sync",
+    # 배포 (ArgoCD, Ansible roles/argocd)
+    "argocd",
     # gitops 앱 (infra/gitops/prod/*/chart.yaml 의 namespace)
     "traefik",
     "cert-manager",

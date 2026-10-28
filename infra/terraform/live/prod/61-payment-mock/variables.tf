@@ -48,9 +48,9 @@ variable "private_ip_hostnum" {
 }
 
 variable "instance_type" {
-  description = "pg-mock 인스턴스 타입 (arm64). 부하 테스트 때 mock 이 먼저 병목이 되지 않을 크기"
+  description = "pg-mock 인스턴스 타입 (x86_64). 부하 테스트 때 mock 이 먼저 병목이 되지 않을 크기"
   type        = string
-  default     = "t4g.small"
+  default     = "t3a.small"
 }
 
 variable "root_volume_size" {

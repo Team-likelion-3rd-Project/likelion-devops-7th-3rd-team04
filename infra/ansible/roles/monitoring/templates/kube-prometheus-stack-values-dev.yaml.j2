@@ -1,0 +1,79 @@
+# kube-prometheus-stack chart {{ kube_prometheus_stack_chart_version }} dev values — Ansible(roles/monitoring) 이 관리. 직접 수정 금지
+#
+# files/kube-prometheus-stack-values-common.yaml 위에 겹침 (helm -f common -f dev). 여기에는 dev 환경 값만 둡니다.
+# 워커는 팀원 PC 의 VM 이라 꺼질 수 있으므로 node-exporter(DaemonSet) 외에는 control plane 에 고정 (Traefik · ArgoCD 와 같은 이유)
+
+prometheusOperator:
+  nodeSelector: &cp_node_selector
+    node-role.kubernetes.io/control-plane: ""
+  tolerations: &cp_tolerations
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  admissionWebhooks:
+    patch:
+      nodeSelector: *cp_node_selector
+      tolerations: *cp_tolerations
+
+kube-state-metrics:
+  nodeSelector: *cp_node_selector
+  tolerations: *cp_tolerations
+
+prometheus:
+  # 결제 노드 Alloy 의 remote_write 수신 (control plane Tailscale IP:{{ prometheus_nodeport }})
+  service:
+    type: NodePort
+    nodePort: {{ prometheus_nodeport }}
+  prometheusSpec:
+    nodeSelector: *cp_node_selector
+    tolerations: *cp_tolerations
+    # 모든 ServiceMonitor · PodMonitor 수집 대상에 cluster · env 라벨을 붙임.
+    # externalLabels 는 저장된 시계열에 붙지 않아(remote_write · 알림에만 붙음) 쿼리 sum by (cluster) 에 쓸 수 없음.
+    # 결제 노드는 Alloy 가 cluster="payment" 로 보냄
+    scrapeClasses:
+      - name: team04-default
+        default: true
+        relabelings:
+          - targetLabel: cluster
+            replacement: main
+            action: replace
+          - targetLabel: env
+            replacement: {{ monitoring_env }}
+            action: replace
+    externalLabels:
+      cluster: main
+      env: {{ monitoring_env }}
+    retention: {{ prometheus_retention }}
+    retentionSize: {{ prometheus_retention_size }}
+    # control plane 로컬 PV (roles/monitoring 이 StorageClass monitoring-local · PV 를 만듦)
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: monitoring-local
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: {{ prometheus_storage_gb }}Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        memory: 2Gi
+
+grafana:
+  nodeSelector: *cp_node_selector
+  tolerations: *cp_tolerations
+  service:
+    type: NodePort
+    nodePort: {{ grafana_nodeport }}
+  grafana.ini:
+    server:
+      # TLS 는 앞단 tailscale serve 가 종료 (*.ts.net Let's Encrypt)
+      root_url: "https://{{ monitoring_fqdn }}:{{ grafana_serve_https_port }}"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi

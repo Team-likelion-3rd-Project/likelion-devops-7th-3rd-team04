@@ -1,9 +1,9 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
-import { RpcException } from '@nestjs/microservices';
 import { AxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
-import { getRequiredEnv } from '@app/common';
+import { getRequiredEnv, rpcError } from '@app/common';
 import { ChatRole } from '../message/message.service';
 
 export interface N8nChatRequest {
@@ -51,7 +51,7 @@ export class N8nClient {
     } catch (error) {
       const err = error as AxiosError | Error;
       this.logger.error(`n8n 호출 실패: ${err.message}`, err.stack);
-      throw new RpcException('AI 응답 생성에 실패했습니다.');
+      throw rpcError(GrpcStatus.UNAVAILABLE, 'AI 응답 생성에 실패했습니다.');
     }
   }
 }

@@ -1,8 +1,10 @@
 # main 으로 가는 PR 의 출발 브랜치 검사 — main ruleset 의 필수 status check("release-source")로 등록합니다.
 #
-# main 은 운영 릴리스 브랜치입니다. merge 되면 GitLab main 파이프라인이 ECR push 와 prod gitops 릴리스 PR 을 만듭니다
-# (infra/gitops/prod/README.md "릴리스"). 그래서 develop 커밋에서 분기해 범위를 고정한 release/* 와 긴급 수정 hotfix/* 만
-# main 으로 들어오게 합니다. develop 직행은 PR 을 연 뒤 develop 에 merge 된 커밋까지 릴리스에 섞여 들어가므로 막습니다.
+# main 은 운영 릴리스 브랜치입니다. merge 되면 release.yml 이 develop 에서 검증한 GHCR 이미지를 ECR 로 옮기고 prod gitops
+# 릴리스 PR 을 만듭니다 (infra/gitops/prod/README.md "릴리스"). 그래서 develop 커밋에서 분기해 범위를 고정한 release/* 만
+# main 으로 들어오게 합니다. 긴급 수정도 develop 에 먼저 merge 한 뒤 그 커밋에서 release/* 를 만듭니다 — hotfix/* 를 main 에
+# 바로 넣으면 그 커밋은 develop 파이프라인을 거치지 않아 GHCR 이미지가 없습니다.
+# develop 직행은 PR 을 연 뒤 develop 에 merge 된 커밋까지 릴리스에 섞여 들어가므로 막습니다.
 # 같은 이름의 브랜치를 포크에서 올리는 경우도 막도록 head 레포가 이 레포인지 함께 봅니다.
 name: release-source
 
@@ -19,7 +21,7 @@ jobs:
     name: release-source
     runs-on: ubuntu-24.04
     steps:
-      - name: 출발 브랜치 확인 (release/* · hotfix/*)
+      - name: 출발 브랜치 확인 (release/*)
         env:
           HEAD_REF: ${{ github.head_ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -30,11 +32,11 @@ jobs:
             exit 1
           fi
           case "$HEAD_REF" in
-            release/*|hotfix/*)
+            release/*)
               echo "OK: $HEAD_REF → main"
               ;;
             *)
-              echo "::error::main 으로는 release/*(릴리스) 또는 hotfix/*(긴급 수정)만 merge 할 수 있습니다 (head: $HEAD_REF)"
+              echo "::error::main 으로는 release/* 만 merge 할 수 있습니다 (head: $HEAD_REF). 긴급 수정은 develop 에 먼저 merge 한 뒤 그 커밋으로 release/* 를 만듭니다"
               exit 1
               ;;
           esac

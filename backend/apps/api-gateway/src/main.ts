@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { httpMetricsMiddleware, startMetrics } from '@app/common';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import { json, urlencoded } from 'express';
@@ -16,6 +17,13 @@ async function bootstrap() {
   // 최소한 진행 중인 연결을 정리할 기회가 생긴다(deployment.yaml의
   // terminationGracePeriodSeconds/preStop과 세트로 동작).
   app.enableShutdownHooks();
+
+  // Prometheus 메트릭 (LDP-168). METRICS_PORT가 있을 때만 /metrics 서버를 띄우고 HTTP 요청을 측정한다.
+  // 본문 파싱·CORS보다 먼저 등록해서 413(본문 초과)·404·가드에서 막힌 401/429까지 센다
+  const metrics = startMetrics('api-gateway');
+  if (metrics) {
+    app.use(httpMetricsMiddleware(metrics.registry));
+  }
 
   // 요청 본문 최대 크기 1MB (LDP-134). 넘으면 413(Payload Too Large).
   // 예전에는 객실 사진을 base64 JSON으로 받느라 20MB까지 열어 두었지만, 지금 사진은 브라우저가 Presigned URL로

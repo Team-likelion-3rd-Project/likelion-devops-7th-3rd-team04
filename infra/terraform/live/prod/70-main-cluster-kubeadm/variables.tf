@@ -65,7 +65,7 @@ variable "image_bucket_name" {
 }
 
 variable "deploy_topic_name" {
-  description = "10-global 의 deploy_topic_name. 배포 agent(gitops-sync) Role 이 발행한다"
+  description = "10-global 의 deploy_topic_name. ArgoCD 배포 결과 알림(deploy-notify) Role 이 발행한다"
   type        = string
 }
 
@@ -100,15 +100,15 @@ variable "sg_ids" {
 }
 
 variable "control_plane_instance_type" {
-  description = "컨트롤 플레인 인스턴스 타입 (arm64). kubeadm 최소 요건 2 vCPU · 2GB"
+  description = "컨트롤 플레인 인스턴스 타입 (x86_64). kubeadm 최소 요건 2 vCPU · 2GB"
   type        = string
-  default     = "t4g.medium"
+  default     = "t3a.medium"
 }
 
 variable "worker_instance_type" {
-  description = "워커 인스턴스 타입 (arm64)"
+  description = "워커 인스턴스 타입 (x86_64)"
   type        = string
-  default     = "t4g.large"
+  default     = "t3a.large"
 }
 
 variable "worker_desired_capacity" {

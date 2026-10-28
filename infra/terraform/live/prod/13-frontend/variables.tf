@@ -50,6 +50,12 @@ variable "ci_runner_role_name" {
   default     = "team04-hotel-ci-runner"
 }
 
+variable "release_role_name" {
+  description = "프론트 빌드를 올리는 모노레포 release.yml Role 이름 (10-global monorepo_release_role_name). Runner Role 과 병행"
+  type        = string
+  default     = "team04-hotel-release"
+}
+
 variable "image_writer_role_name" {
   description = "객실 사진 Presigned PUT 을 서명 · 삭제하는 hotel-service IRSA Role 이름 (70 irsa_roles 의 hotel-service)"
   type        = string

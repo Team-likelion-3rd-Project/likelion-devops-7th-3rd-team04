@@ -6,12 +6,13 @@
 #
 # Terraform 범위는 EC2 · 네트워크까지다. kubeadm · containerd · Calico 설치와 워커 join 은
 # user-data 가 Ansible 을 실행해 처리한다 (bootstrap.tf). Traefik 등 클러스터 서비스는 Ansible 이 설치한
-# GitOps pull 배포 agent 가 gitops 레포에서 설치한다 (infra/gitops/prod).
+# ArgoCD 가 gitops 레포에서 설치한다 (infra/gitops/prod).
 # 노드 접속은 SSM Session Manager 로 한다 (22 포트, 키 페어 없음).
 
-# Ansible preflight 가 Ubuntu 22.04 만 허용한다. 노드는 Graviton(arm64)
+# Ansible preflight 가 Ubuntu 22.04 만 허용한다. 노드는 x86_64 — 운영 이미지는 온프레미스(amd64)에서 빌드한
+# develop 이미지를 그대로 옮긴 것이라 아키텍처가 같아야 한다 (.github/workflows/release.yml)
 data "aws_ssm_parameter" "ubuntu_ami" {
-  name = "/aws/service/canonical/ubuntu/server/22.04/stable/current/arm64/hvm/ebs-gp2/ami-id"
+  name = "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
 }
 
 data "aws_ami" "ubuntu" {
@@ -43,4 +44,7 @@ locals {
     http_tokens                 = "required"
     http_put_response_hop_limit = 1
   }
+
+  # t3a 기본값과 같지만 명시한다. 크레딧이 바닥나도 성능을 깎지 않고 초과분만 과금 (10-22 ~ 24 실측 평균 워커 10% · CP 26%)
+  cpu_credits = "unlimited"
 }

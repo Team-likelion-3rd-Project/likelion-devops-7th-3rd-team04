@@ -95,6 +95,23 @@ payment_sqs_env:
   AWS_SECRET_ACCESS_KEY: elasticmq
 payment_result_queue_url: "http://{{ ts_ip | default('') }}:{{ elasticmq_port }}/{{ elasticmq_account_id }}/{{ payment_result_queue }}"
 
+# ── 모니터링 수집기 (README 17절) ──────────────────────────
+# node-exporter(호스트) · cAdvisor(컨테이너) → Grafana Alloy → 클러스터 Prometheus 로 remote_write (push).
+# 운영 결제 EC2 도 같은 구성(노션 "관측성 도입 계획" 10-2) — 버전을 올릴 때 운영 user-data 와 같이
+node_exporter_image: "quay.io/prometheus/node-exporter:v1.12.1"   # 클러스터 DaemonSet(kube-prometheus-stack)과 같은 버전
+cadvisor_image: "ghcr.io/google/cadvisor:v0.60.6"
+alloy_image: "grafana/alloy:v1.20.1"
+# 셋 다 127.0.0.1 에만 바인딩 (Alloy 가 노드 안에서 수집) → ufw · ACL 에 열지 않음
+node_exporter_port: 9100
+cadvisor_port: 8080
+alloy_port: 12345           # Alloy UI · 자체 상태 (ssh -L 12345:127.0.0.1:12345 로 확인)
+payment_scrape_interval: 30s
+# control plane Tailscale IP 의 Prometheus NodePort (ACL tag:payment → tag:k8s-node tcp:30909)
+payment_remote_write_url: "http://{{ cluster_entry_ip }}:{{ prometheus_nodeport }}/api/v1/write"
+# payment-service /metrics 수집 — backend MetricsModule 이 배포된 뒤 켬 (노션 "라벨 세부 정의 v0.2")
+payment_metrics_enabled: false
+payment_metrics_port: 9464
+
 # ── 방화벽: tailscale0 에서만 허용할 포트 (firewall role) ─────
 # MariaDB(3306)·health(3104)는 열지 않음
 firewall_tailnet_tcp_ports:

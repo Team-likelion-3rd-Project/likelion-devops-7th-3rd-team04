@@ -1,0 +1,340 @@
+# 운영 릴리스 — main(release/* PR 의 merge commit) push 때 develop 에서 검증한 산출물을 운영으로 옮기고 prod gitops PR 을 만든다.
+#
+#   plan           : X = M^2 (release/* head) · 이전 릴리스(gitops main) 이후 바뀐 컴포넌트 · GHCR 이미지 커밋 I (release-plan.sh)
+#   frontend-build : 프론트가 바뀌었으면 M 기준 운영 빌드 — AWS 자격 · OIDC 토큰 없이 (npm 의존성이 Role 을 받지 못하게)
+#   promote        : 백엔드가 바뀌었으면 GHCR <서비스>:I → ECR <서비스>:M 복사 (재빌드 없음, digest 동일) · n8n 미러,
+#                    프론트 빌드 → S3 releases/M/
+#   gitops-pr      : 바뀐 컴포넌트만 M 으로 갱신한 prod gitops PR (release-pr.sh). 운영 반영은 사람이 그 PR 을 merge 할 때
+#
+# 이미지는 GitLab develop 파이프라인이 온프레미스(amd64)에서 빌드 · smoke test 후 GHCR 에 올린 것이다 (.gitlab-ci.yml push:ghcr).
+# 운영에서 다시 빌드하지 않으므로 Tailscale · AWS Runner 가 필요 없다. 운영 노드 · 결제 서버도 x86_64(t3a) 다.
+#
+# dry-run: 레포 변수 RELEASE_DRY_RUN 이 'true' 이거나 수동 실행의 dry_run 을 켜면 같은 Role · 같은 복사를 시험 대상에만 한다
+#   ECR team04-hotel/release-dryrun:<서비스>-<M> · S3 dryrun/<M>/ (둘 다 1일 뒤 삭제), gitops PR 은 만들지 않고 본문 · 변경만 출력.
+#   변수가 없으면 실제 릴리스다 (LDP-173 에서 GitLab release:* 제거 · 운영 amd64 전환과 함께 활성화)
+#
+# 필요한 설정:
+#   Secret  : AWS_RELEASE_ROLE_ARN — Terraform 10-global monorepo_release_role_name 의 ARN (계정 ID 가 있어 변수 대신 Secret)
+#   Variable: RELEASE_DRY_RUN — (선택) 'true' 면 main push 도 dry-run (릴리스를 잠시 막을 때)
+#   GHCR 패키지 team04-hotel/<서비스> 의 Manage Actions access 에 이 레포 (ghcr-retention.yml 과 같은 설정, 읽기)
+#
+# Role 신뢰 정책은 이 레포의 refs/heads/main 실행만 받는다 — PR · 다른 브랜치 실행은 assume 이 거부된다.
+# job 에 environment 를 지정하면 OIDC sub 가 바뀌어 거부되므로 쓰지 않는다.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  # 실패한 릴리스를 같은 main 커밋으로 다시 실행 (Run workflow 에서 main 선택)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "시험 대상에만 복사 · 업로드하고 gitops PR 은 만들지 않음 (RELEASE_DRY_RUN 이 'true' 면 항상 dry-run)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+# 릴리스는 하나씩. 앞의 릴리스를 취소하지 않는다 (복사 · PR 중간 상태 방지)
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  GITOPS_GITHUB_REPO: Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops
+  GHCR_IMAGE_PREFIX: ghcr.io/team-likelion-3rd-project/team04-hotel
+  # .gitlab-ci.yml 의 IMAGES 와 같은 목록 (Terraform 11-registry services 에서 n8n 제외)
+  IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations seed"
+  # release-plan.sh 의 BACKEND_PATHS 와 같게 — GHCR 이미지의 label revision 커밋이 X 와 같은 소스인지 확인
+  BACKEND_PATHS: "backend backend-deploy langchain_rag .gitlab-ci.yml"
+  FRONTEND_BUCKET: team04-hotel-frontend
+
+jobs:
+  plan:
+    name: Plan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      release_sha: ${{ steps.plan.outputs.release_sha }}
+      image_sha: ${{ steps.plan.outputs.image_sha }}
+      backend: ${{ steps.plan.outputs.backend }}
+      frontend: ${{ steps.plan.outputs.frontend }}
+      dry_run: ${{ steps.mode.outputs.dry_run }}
+      toss_client_key: ${{ steps.toss.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 이전 릴리스 커밋 · first-parent 이력까지 비교
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 실행 방식 (dry-run)
+        id: mode
+        env:
+          VAR_DRY_RUN: ${{ vars.RELEASE_DRY_RUN }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          # 기본은 실제 릴리스. 변수 'true' 또는 수동 실행의 dry_run=true 면 dry-run (push 때 inputs 는 빈 값)
+          if [ "$VAR_DRY_RUN" = "true" ] || [ "$INPUT_DRY_RUN" = "true" ]; then dry=true; else dry=false; fi
+          echo "dry_run=$dry" >> "$GITHUB_OUTPUT"
+          echo "dry-run: $dry"
+
+      - name: 이전 릴리스 (gitops main)
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          get() { gh api -H "Accept: application/vnd.github.raw" "/repos/$GITOPS_GITHUB_REPO/contents/$1?ref=main"; }
+          echo "backend=$(get envs/prod/backend/chart.yaml | yq '.revision')" >> "$GITHUB_OUTPUT"
+          echo "frontend=$(get envs/prod/frontend/values.yaml | yq '.version')" >> "$GITHUB_OUTPUT"
+
+      - name: 컴포넌트 판단
+        id: plan
+        env:
+          M: ${{ github.sha }}
+          PREV_BACKEND: ${{ steps.prev.outputs.backend }}
+          PREV_FRONTEND: ${{ steps.prev.outputs.frontend }}
+        run: |
+          set -euo pipefail
+          sh infra/gitops/scripts/release-plan.sh | tee -a "$GITHUB_OUTPUT"
+
+      - name: AWS 자격 (토스 클라이언트 키)
+        if: steps.plan.outputs.frontend == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      # 브라우저에 그대로 노출되는 공개 키라 job output 으로 넘긴다 (레포에는 두지 않음, Terraform 12-secrets frontend.tf)
+      - name: 토스 클라이언트 키
+        id: toss
+        if: steps.plan.outputs.frontend == 'true'
+        run: |
+          key="$(aws ssm get-parameter --name /team04-hotel/prod/frontend/toss-client-key --query Parameter.Value --output text)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: 요약
+        env:
+          PLAN_M: ${{ steps.plan.outputs.release_sha }}
+          PLAN_I: ${{ steps.plan.outputs.image_sha }}
+          PLAN_BACKEND: ${{ steps.plan.outputs.backend }}
+          PLAN_FRONTEND: ${{ steps.plan.outputs.frontend }}
+          PREV_BACKEND: ${{ steps.prev.outputs.backend }}
+          PREV_FRONTEND: ${{ steps.prev.outputs.frontend }}
+          DRY_RUN: ${{ steps.mode.outputs.dry_run }}
+        run: |
+          {
+            echo "### 릴리스 계획 ${PLAN_M::8} (dry-run: $DRY_RUN)"
+            echo "| 컴포넌트 | 갱신 | 이전 |"
+            echo "|---|---|---|"
+            echo "| backend · payment | $PLAN_BACKEND (GHCR \`:${PLAN_I::8}\`) | \`${PREV_BACKEND::8}\` |"
+            echo "| frontend | $PLAN_FRONTEND | \`${PREV_FRONTEND::8}\` |"
+            echo "| 클러스터 설정 | gitops-pr job 에서 비교 | |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  frontend-build:
+    name: Frontend build
+    needs: plan
+    if: needs.plan.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # AWS 자격 · OIDC 토큰 없음 — 의존성 코드가 운영 권한을 받지 못한다
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          # .gitlab-ci.yml NODE_IMAGE(node:20-alpine)와 같은 메이저
+          node-version: "20"
+
+      # 검사 · 빌드는 GitLab frontend:build 와 같은 스크립트 (운영 값 그대로, npm ci --ignore-scripts). yq 는 러너 이미지에 있음
+      - name: 운영 빌드
+        env:
+          VITE_TOSS_CLIENT_KEY: ${{ needs.plan.outputs.toss_client_key }}
+        run: sh infra/gitops/scripts/frontend-build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  promote:
+    name: Promote artifacts
+    needs: [plan, frontend-build]
+    # 프론트가 안 바뀌어 frontend-build 를 건너뛴 경우에도 실행
+    if: >-
+      !cancelled() && needs.plan.result == 'success'
+      && (needs.frontend-build.result == 'success' || needs.frontend-build.result == 'skipped')
+      && (needs.plan.outputs.backend == 'true' || needs.plan.outputs.frontend == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    env:
+      M: ${{ needs.plan.outputs.release_sha }}
+      I: ${{ needs.plan.outputs.image_sha }}
+      DRY_RUN: ${{ needs.plan.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # GHCR 이미지 label revision 커밋과 X 비교
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      # .gitlab-ci.yml CRANE_IMAGE 와 같은 버전. GHCR 로그인(GITHUB_TOKEN, packages: read)도 이 action 이 한다
+      - uses: imjasonh/setup-crane@v0.4
+        with:
+          version: v0.20.3
+
+      - name: ECR 로그인
+        run: |
+          set -euo pipefail
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$account"
+          ecr="$account.dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws ecr get-login-password | crane auth login "$ecr" -u AWS --password-stdin
+          echo "ECR_REGISTRY=$ecr" >> "$GITHUB_ENV"
+
+      # GHCR <서비스>:I 12개 확인 (develop 파이프라인 통과 = 이미지 있음) → ECR 로 복사 → digest 비교.
+      # label revision(빌드 커밋)이 X 와 백엔드 소스가 같은지도 본다 (프론트만 바뀐 커밋은 이전 커밋 이미지에 태그만 붙어 있음)
+      - name: 백엔드 이미지 복사
+        if: needs.plan.outputs.backend == 'true'
+        run: |
+          set -euo pipefail
+          X="$(git rev-parse "$M^2")"
+          : > images.txt
+          for svc in $IMAGES; do
+            src="$GHCR_IMAGE_PREFIX/$svc:$I"
+            digest="$(crane digest "$src")" || { echo "::error::$src 없음 — ${I::8} 의 develop 파이프라인(push:ghcr · push:ghcr-reuse)이 통과했는지 확인"; exit 1; }
+            rev="$(crane config "$src" | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty')"
+            if [ -z "$rev" ] || ! git cat-file -e "$rev^{commit}" 2>/dev/null; then
+              echo "::error::$src label revision '$rev' 을 이 레포에서 찾을 수 없음"; exit 1
+            fi
+            # shellcheck disable=SC2086
+            git diff --quiet "$rev" "$X" -- $BACKEND_PATHS || { echo "::error::$src 는 ${rev::8} 빌드 — 릴리스 커밋 ${X::8} 와 백엔드 소스가 다름"; exit 1; }
+
+            if [ "$DRY_RUN" = "true" ]; then dst="$ECR_REGISTRY/team04-hotel/release-dryrun:$svc-$M"; else dst="$ECR_REGISTRY/team04-hotel/$svc:$M"; fi
+            existing="$(crane digest "$dst" 2>/dev/null || true)"
+            if [ "$existing" = "$digest" ]; then
+              echo "이미 있음: $svc ($digest)"
+            elif [ -n "$existing" ] && [ "$DRY_RUN" != "true" ]; then
+              # ECR 은 IMMUTABLE — 같은 태그에 다른 이미지가 있으면 덮어쓸 수 없다
+              echo "::error::ECR $svc:${M::8} 에 다른 이미지($existing)가 있음"; exit 1
+            else
+              crane copy "$src" "$dst"
+              [ "$(crane digest "$dst")" = "$digest" ] || { echo "::error::$svc digest 불일치"; exit 1; }
+              echo "복사: $svc ← GHCR :${I::8} (빌드 ${rev::8}) $digest"
+            fi
+            echo "$svc $digest" >> images.txt
+          done
+
+      # n8n 은 빌드하지 않고 Docker Hub 이미지를 옮긴다 (태그 = 차트 n8n.image.tag, 이미 있으면 건너뜀).
+      # 차트(backend-deploy)가 바뀌어야 버전이 바뀌므로 백엔드가 바뀐 릴리스에서만 확인한다
+      - name: n8n 미러
+        if: needs.plan.outputs.backend == 'true'
+        run: |
+          set -euo pipefail
+          ver="$(yq '.n8n.image.tag' backend-deploy/charts/backend/values.yaml)"
+          existing="$ECR_REGISTRY/team04-hotel/n8n:$ver"
+          if manifest="$(crane manifest "$existing" 2>/dev/null)"; then
+            # 운영 노드는 amd64. GitLab release:mirror-n8n(arm64 전용)이 올린 태그는 IMMUTABLE 이라 덮어쓸 수 없다
+            if [ "$(printf '%s' "$manifest" | jq -r '.manifests // empty | length')" != "" ]; then
+              archs="$(printf '%s' "$manifest" | jq -r '[.manifests[].platform.architecture] | join(" ")')"
+            else
+              archs="$(crane config "$existing" | jq -r '.architecture')"
+            fi
+            case " $archs " in
+              *" amd64 "*) echo "이미 있음: n8n:$ver ($archs)"; exit 0 ;;
+            esac
+            echo "::error::ECR n8n:$ver 이 amd64 가 아님 ($archs) — apply 주체로 aws ecr batch-delete-image --repository-name team04-hotel/n8n --image-ids imageTag=$ver 후 재실행 (infra/gitops/prod/README.md 릴리스)"
+            exit 1
+          fi
+          if [ "$DRY_RUN" = "true" ]; then dst="$ECR_REGISTRY/team04-hotel/release-dryrun:n8n-$ver"; else dst="$ECR_REGISTRY/team04-hotel/n8n:$ver"; fi
+          crane copy "docker.io/n8nio/n8n:$ver" "$dst" --platform linux/amd64
+          echo "복사: n8n:$ver"
+
+      - uses: actions/upload-artifact@v4
+        if: needs.plan.outputs.backend == 'true'
+        with:
+          name: release-images
+          path: images.txt
+          retention-days: 1
+
+      - uses: actions/download-artifact@v4
+        if: needs.plan.outputs.frontend == 'true'
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      # assets/ 는 파일명에 해시 → 1년 immutable, 나머지(index.html · public/)는 no-cache. 같은 SHA 재실행은 같은 내용을 덮어쓴다
+      - name: 프론트 업로드
+        if: needs.plan.outputs.frontend == 'true'
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then prefix=dryrun; else prefix=releases; fi
+          dest="s3://$FRONTEND_BUCKET/$prefix/$M"
+          aws s3 cp frontend/dist/assets "$dest/assets" --recursive --only-show-errors --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp frontend/dist "$dest" --recursive --only-show-errors --exclude "assets/*" --cache-control "no-cache"
+          echo "업로드 완료 — $prefix/$M"
+
+  gitops-pr:
+    name: gitops release PR
+    needs: [plan, promote]
+    # 클러스터 설정만 바뀐 릴리스는 promote 를 건너뛴다
+    if: >-
+      !cancelled() && needs.plan.result == 'success'
+      && (needs.promote.result == 'success' || needs.promote.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - uses: actions/download-artifact@v4
+        if: needs.plan.outputs.backend == 'true'
+        with:
+          name: release-images
+          path: ${{ runner.temp }}/release-images
+
+      # sh(dash) 는 pipefail 이 없을 수 있어 bash 로 실행. 릴리스 커밋은 GITHUB_SHA(= plan 의 M, 기본 변수라 덮어쓸 수 없음)
+      - name: 릴리스 PR
+        env:
+          MONOREPO_GITHUB_URL: ${{ github.server_url }}/${{ github.repository }}
+          GITHUB_APP_SECRET: team04-hotel/prod/github-app
+          RELEASE_BACKEND: ${{ needs.plan.outputs.backend }}
+          RELEASE_FRONTEND: ${{ needs.plan.outputs.frontend }}
+          IMAGE_SHA: ${{ needs.plan.outputs.image_sha }}
+          RELEASE_IMAGES_FILE: ${{ runner.temp }}/release-images/images.txt
+          DRY_RUN: ${{ needs.plan.outputs.dry_run }}
+        run: bash infra/gitops/scripts/release-pr.sh

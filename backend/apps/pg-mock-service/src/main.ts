@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { httpMetricsMiddleware, startMetrics } from '@app/common';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { PgMockServiceModule } from './pg-mock-service.module';
@@ -8,6 +9,12 @@ import { PgMockServiceModule } from './pg-mock-service.module';
 // 실제 PG를 붙일 때와 동일한 방식(HTTP)으로 이 목업 서버를 호출하게 하기 위함입니다.
 async function bootstrap() {
   const app = await NestFactory.create(PgMockServiceModule);
+
+  // Prometheus 메트릭 — METRICS_PORT가 있을 때만 (LDP-168. 운영 pg-mock은 수집 대상 아님)
+  const metrics = startMetrics('pg-mock-service');
+  if (metrics) {
+    app.use(httpMetricsMiddleware(metrics.registry));
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({

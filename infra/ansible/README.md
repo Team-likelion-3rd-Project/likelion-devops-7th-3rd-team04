@@ -12,12 +12,13 @@
 | `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) — [11절](#11-ingress-controller-traefik) |
 | `k8s-cicd.yml` | `[control_plane]` (1대) | External Secrets Operator(OpenBao 연결) → `backend` 네임스페이스 · 레지스트리 pull Secret · `backend-secrets`(ExternalSecret) → ArgoCD (backend 배포) — [12절](#12-cicd-registry--파이프라인--argocd), [16절](#16-openbao--external-secrets-operator-dev-비밀값) |
+| `monitoring.yml` | `[control_plane]` (1대) | metrics-server → kube-prometheus-stack(Prometheus · Grafana · node-exporter) → 대시보드 → `tailscale serve` HTTPS(Grafana) — [17절](#17-모니터링-prometheus--grafana) |
 | `registry-trust.yml` | `[control_plane]`, `[workers]` | containerd `certs.d` 설정 (사설 CA 를 쓸 때 레지스트리 CA 신뢰) — [12-7](#12-7-사설-ca-를-쓸-때-선택) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) → api-gateway Ingress(`/api`) — [11절](#11-ingress-controller-traefik) |
-| `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행. CP-a 는 마지막에 GitOps pull 배포 agent 설치 (Traefik · whoami 는 agent 가 설치) — [13절](#13-aws-main-클러스터-user-data-전용) |
+| `aws-control-plane.yml` | AWS CP 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** Terraform `70-main-cluster-kubeadm` 의 user-data 가 실행. CP-a 는 마지막에 ArgoCD · root 앱 설치 (Traefik · backend 등은 ArgoCD 가 설치) — [13절](#13-aws-main-클러스터-user-data-전용) |
 | `aws-worker.yml` | AWS 워커 노드 자신 (`inventory/aws.ini`) | **사람이 실행하지 않음.** 워커 Launch Template user-data 가 실행 → `kubeadm join` — [13절](#13-aws-main-클러스터-user-data-전용) |
 
-- OS: Ubuntu 22.04 / Kubernetes v1.33 / containerd / Calico v3.30 (tigera-operator)
+- OS: Ubuntu 22.04 / Kubernetes v1.33 / containerd / Calico v3.30 (tigera-operator) — AWS Main 클러스터는 Kubernetes v1.35 / Calico v3.31 (`group_vars/aws.yml`, 13절)
 - Pod CIDR `10.0.0.0/16`, Service CIDR `10.96.0.0/12`
 - 모든 노드는 **Tailscale IP(100.x)** 를 node IP로 사용하며, Tailscale 태그는 `tag:k8s-node` 하나로 통일합니다.
 
@@ -35,6 +36,7 @@ infra/ansible/
 ├── payment.yml                # 결제 서버 노드 (14절)
 ├── ingress.yml
 ├── k8s-cicd.yml
+├── monitoring.yml             # metrics-server · Prometheus · Grafana (17절)
 ├── registry-trust.yml
 ├── aws-control-plane.yml      # AWS CP user-data 전용 (13절)
 ├── aws-worker.yml             # AWS 워커 user-data 전용 (13절)
@@ -43,21 +45,22 @@ infra/ansible/
 │   ├── aws.ini                # AWS 노드가 자기 자신에게 실행할 때 쓰는 inventory (13절)
 │   └── group_vars/
 │       ├── all.yml            # 버전·CIDR 고정값, 환경변수 매핑, OpenBao 주소 · backend-secrets key(ExternalSecret)
-│       ├── control_plane.yml  # Ingress: helm/Traefik 버전, NodePort / CI/CD: ESO · ArgoCD 버전
+│       ├── control_plane.yml  # Ingress: helm/Traefik 버전, NodePort / CI/CD: ESO · ArgoCD 버전 / 모니터링 버전 · 저장소 · 포트
 │       ├── db.yml             # DB 노드: 이미지 버전(OpenBao 포함), 튜닝값, OpenBao 경로 매핑, MinIO 버킷
 │       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
 │       ├── gitlab_runner.yml  # Runner 노드: 버전, concurrent, GitLab 접속 정보 매핑
-│       ├── payment.yml        # 결제 노드: 이미지 버전, 결제 DB / ElasticMQ 큐, 클러스터 NodePort
+│       ├── payment.yml        # 결제 노드: 이미지 버전, 결제 DB / ElasticMQ 큐, 클러스터 NodePort, 수집기(Alloy)
 │       ├── aws.yml                # AWS 노드 공통: Tailscale 끔, kubelet cloud-provider, CA cert hash 대기
-│       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신 · CP reconcile 주기, CCM · NTH 버전, gitops agent 대상 브랜치
+│       └── aws_control_plane.yml  # AWS CP: Calico MTU / 노드 IP 감지, join token 갱신 · CP reconcile 주기, CCM · NTH 버전, ArgoCD root 앱(대상 브랜치 · 클러스터 값 · 알림)
 ├── filter_plugins/dotenv.py   # backend/.env 파서 (parse_dotenv)
 ├── roles/                     # preflight, common, containerd, tailscale, kubernetes,
 │                              # control_plane, calico, join_info, worker_join,
 │                              # docker, firewall, db_stack, db_seed,
 │                              # gitlab_stack, tailscale_serve, gitlab_runner_token, gitlab_runner,
-│                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle, gitops_sync
+│                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle
 │                              # gitlab_bootstrap, backend_namespace, argocd, payment_stack,
-│                              # openbao, openbao_kv(OpenBao 읽기/쓰기 공용), external_secrets
+│                              # openbao, openbao_kv(OpenBao 읽기/쓰기 공용), external_secrets,
+│                              # metrics_server, monitoring
 └── .secrets/                  # (자동 생성, gitignore) openbao.env, openbao/(static key · init.json),
                                # join.env, admin.conf, gitlab-runner.env, gitlab-k8s.env, github-mirror.env,
                                # payment-node.env, argocd.env — 16-7 참고
@@ -101,8 +104,8 @@ infra/ansible/
     { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:22", "tcp:6443"] },
     // (k6) 팀원 PC 에서 k8s 의 Ingress / NodePort 로 부하를 줄 때
     { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:80", "tcp:443", "tcp:30000-32767"] },
-    // 팀원 PC → control plane : ArgoCD UI/API (tailscale serve HTTPS 8443, 12-9)
-    { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:8443"] },
+    // 팀원 PC → control plane : ArgoCD UI/API (tailscale serve HTTPS 8443, 12-9), Grafana (tailscale serve HTTPS 9443, 17절)
+    { "src": ["autogroup:member"], "dst": ["tag:k8s-node"], "ip": ["tcp:8443", "tcp:9443"] },
 
     // ── DB ───────────────────────────────────────────────
     // k8s Pod → DB · MinIO(S3 API 9000) · DynamoDB Local(8000, chat-bot-service). Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
@@ -133,8 +136,8 @@ infra/ansible/
     // ── 결제 노드 (14절) ─────────────────────────────────
     // k8s Pod → 결제 노드 : api-gateway·booking-service → payment-service(gRPC 3004), booking-service → ElasticMQ(SQS 9324)
     { "src": ["tag:k8s-node"], "dst": ["tag:payment"], "ip": ["tcp:3004", "tcp:9324"] },
-    // 결제 노드 → k8s : payment-service → booking-service(gRPC) / pg-mock-service(HTTP) NodePort
-    { "src": ["tag:payment"], "dst": ["tag:k8s-node"], "ip": ["tcp:30303", "tcp:30307"] },
+    // 결제 노드 → k8s : payment-service → booking-service(gRPC) / pg-mock-service(HTTP) NodePort, Alloy → Prometheus remote_write(30909, 17절)
+    { "src": ["tag:payment"], "dst": ["tag:k8s-node"], "ip": ["tcp:30303", "tcp:30307", "tcp:30909"] },
     // 결제 노드 → GitLab : gitops 태그 조회(443), 이미지 pull(5050)
     { "src": ["tag:payment"], "dst": ["tag:gitlab"], "ip": ["tcp:443", "tcp:5050"] },
     // 팀원 PC → 결제 노드 : SSH(VM 관리). 결제 DB 는 열지 않음 — SSH 터널로 접속
@@ -752,9 +755,12 @@ GitHub push(develop|main)
   └ .github/workflows/mirror-gitlab.yml ──(Tailscale tag:ci)──▶ GitLab team04/hotel (같은 브랜치 force push)
 GitLab 파이프라인 (.gitlab-ci.yml)
   test       : lint · jest (non-blocking) · nest build · helm lint
+               frontend:build — 프론트 변경 시 운영 빌드 값(결제만 MOCK)으로 lint · vite build (배포 없음)
   build      : kaniko → <registry>/team04/hotel/<svc>:ci-<sha>             (develop 만 push)
   image-test : ci_<id>(결제) · ci_main_<id>(메인) DB 생성 → flyway(main, payment) → 후보 이미지 기동 → GET /health
   push       : crane tag ci-<sha> → <sha>                                  (레이어 재업로드 없음)
+               push:ghcr → ghcr.io/team-likelion-3rd-project/team04-hotel/<svc>:<full sha>  (운영 릴리스 원본, 12-4)
+               (프론트만 바뀐 커밋: ghcr:reuse-resolve · push:ghcr-reuse — 직전 이미지에 이 SHA 태그 추가)
   deploy-dev : (수동 ▶) team04/infra/backend-gitops 에 커밋 1개
                  envs/dev/values.yaml   global.imageTag             = <short sha>
                  apps/dev/backend.yaml  sources[0].targetRevision   = <full sha>   (차트도 같은 커밋)
@@ -789,7 +795,7 @@ ArgoCD (온프레미스, argocd ns) ◀── poll 최대 3분
 - 그룹 `team04`, `team04/infra` / 프로젝트 `team04/hotel`(미러), `team04/infra/backend-gitops`
 - gitops 레포(dev 전용) 초기 내용 커밋(레포가 비어 있을 때만: `envs/dev/values.yaml`, `apps/dev/backend.yaml`)과 `apps/dev/README.md`(매번 동기화)
 - 그룹 Deploy Token — `k8s-registry-pull`(`read_registry`, 클러스터 imagePullSecret), `argocd-repo-read`(`read_repository`, ArgoCD), `payment-node`(결제 노드)
-- `team04/hotel` CI 변수: `GITOPS_PUSH_TOKEN`(gitops 레포 Project Access Token), `SMOKE_DB_*`, `SMOKE_REDIS_*` (모두 protected)
+- `team04/hotel` CI 변수: `GITOPS_PUSH_TOKEN`(gitops 레포 Project Access Token), `SMOKE_DB_*`, `SMOKE_REDIS_*`, `GHCR_USER` · `GHCR_TOKEN`(GHCR 봇 계정, 12-4) (모두 protected)
 - 미러용 Project Access Token, `main`/`develop` 보호 브랜치(force push 허용), 레지스트리 cleanup policy(`ci-*` 후보 태그·kaniko 캐시 7일)
 
 ```bash
@@ -839,9 +845,29 @@ GitHub 레포 Settings → Secrets and variables → Actions:
 
 develop/main 에 push 하면 같은 브랜치가 GitLab 으로 force push 됩니다. GitHub 이 원본이므로 **GitLab `team04/hotel` 에는 직접 커밋하지 않습니다** (다음 미러링 때 덮어써짐). 처음 한 번은 Actions → Mirror to GitLab → Run workflow 로 develop 을 수동 미러링합니다.
 
+#### GHCR (develop 통과 이미지 → 운영 릴리스 원본)
+
+develop 파이프라인의 `push:ghcr` 가 승격한 이미지 12개를 `ghcr.io/team-likelion-3rd-project/team04-hotel/<svc>:<커밋 SHA 40자>` 로 복사합니다 (digest 그대로, 재빌드 없음). 운영 릴리스는 이 이미지를 ECR 로 옮깁니다 — GHCR 에는 Tailscale 없이 접근할 수 있어서입니다. GHCR 장애는 `deploy-dev` 를 막지 않습니다 (`deploy-dev` 는 `push` 만 기다림).
+
+설정 (org Owner · 레포 관리자, 1회):
+
+1. GitHub 봇(machine user) 계정을 만들어 org `Team-likelion-3rd-Project` 멤버로 초대합니다. org Settings → Packages 에서 멤버의 private 패키지 생성이 허용돼 있는지 확인합니다.
+2. 봇 계정으로 **classic PAT** 발급 — scope `write:packages` 만, 만료 기한 설정. (GHCR 은 fine-grained PAT 를 공식 지원하지 않음)
+3. `.env` 의 `GHCR_PUSH_USER`(봇 계정 이름) · `GHCR_PUSH_TOKEN` 을 채우고 `db.yml --tags openbao_import` 로 OpenBao `ghcr-push` 에 옮긴 뒤(16-3), 12-1 bootstrap 을 실행하면 CI 변수 `GHCR_USER` · `GHCR_TOKEN`(masked) 이 등록됩니다.
+4. 첫 `push:ghcr` 뒤 org Packages 에 `team04-hotel/<svc>` 12개가 생깁니다. 이미지 label `org.opencontainers.image.source` 로 모노레포에 자동 연결됩니다. 각 패키지 Settings → **Manage Actions access** 에 모노레포가 **Admin** 인지 확인합니다 (보존 workflow 의 버전 삭제에 필요). visibility 는 private 그대로 둡니다.
+
+- **프론트만 바뀐 커밋**: 백엔드 job 이 돌지 않아 새 이미지가 없습니다. 대신 `ghcr:reuse-resolve` 가 first-parent 로 거슬러 올라가 백엔드 경로(`backend` · `backend-deploy` · `langchain_rag` · `.gitlab-ci.yml`)가 같은 직전 커밋을 찾고, `push:ghcr-reuse` 가 그 커밋의 GHCR 이미지(12개가 모두 있는 = 파이프라인 통과)에 이 커밋 SHA 태그를 붙입니다. 그래서 프론트만 바뀐 커밋도 릴리스 커밋으로 고를 수 있습니다. 찾지 못하면 job 이 실패하고, develop 에서 Run pipeline 을 실행하면 전체 파이프라인이 돕니다.
+- terraform · 문서만 바뀐 커밋은 파이프라인이 없어 GHCR 태그도 없습니다. 릴리스 커밋으로 고르지 않습니다.
+- **보존**: `.github/workflows/ghcr-retention.yml` 이 매일 패키지마다 최근 20개 버전(updated_at 기준)만 남깁니다. 열려 있는 `release/*` 가 가리키는 SHA 는 오래돼도 남깁니다. 수동 실행(Run workflow)은 기본 dry run 입니다 — 처음에는 dry run 으로 목록을 확인합니다. 운영은 ECR 에서만 pull 하므로 GHCR 정리는 운영 · 롤백에 영향이 없습니다.
+- **비용**: GitHub 문서상 Container registry 저장 · 전송은 현재 무료입니다 (변경 시 1개월 전 공지). 무료 org 한도(500MB)가 컨테이너에도 걸리는지는 문서에 명시돼 있지 않아, 첫 push 다음 날 org Settings → Billing and licensing → Usage(Packages)에서 과금 0 인지 확인합니다.
+- **토큰 교체**: 새 PAT 를 OpenBao `ghcr-push` 에 쓰고(16-4) 12-1 bootstrap 을 다시 실행합니다.
+
 ### 12-5. 파이프라인 사용 · dev 배포 절차
 
-develop 에 merge → 미러 → 파이프라인 자동 실행(test → build → image-test → push). 배포는 **배포 일정에 맞춰** 아래처럼 합니다.
+develop 에 merge → 미러 → 파이프라인 자동 실행(test → build → image-test → push · push:ghcr). 배포는 **배포 일정에 맞춰** 아래처럼 합니다.
+
+- 바뀐 경로에 따라 job 이 달라집니다. 백엔드 경로가 바뀌면 위 백엔드 job 들, 프론트 경로(`frontend/` · `infra/gitops/prod/frontend/`)가 바뀌면 `frontend:build` 가 돕니다. 프론트만 바뀐 커밋에는 `deploy-dev` 가 없습니다 (dev 에는 프론트를 배포하지 않음 — 각자 로컬 Vite). Run pipeline 으로 실행하면 경로와 상관없이 전부 돕니다.
+- `frontend:build` 는 운영 빌드 값(`infra/gitops/prod/frontend/values.yaml` 의 `build`)으로 빌드하되 `VITE_PAYMENT_MODE` 만 MOCK 입니다 (토스 키 없이). 스크립트는 운영 `release.yml` frontend-build 와 같은 `infra/gitops/scripts/frontend-build.sh` 이고, TOSS 모드 검증은 운영 릴리스 쪽입니다.
 
 | 배포 내용 | 방법 |
 |---|---|
@@ -909,6 +935,8 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
 
 - **`deploy-dev` 가 `sources[0].path 가 … 가 아닙니다`**: gitops `apps/dev/backend.yaml` 의 sources 순서가 바뀐 경우입니다. 차트 source(`path: backend-deploy/charts/backend`)를 첫 번째로 둡니다.
 - **`deploy-dev` 의 git push 실패**: CI 변수 `GITOPS_PUSH_TOKEN` 만료(364일) → 변수를 삭제하고 12-1 bootstrap 재실행.
+- **`push:ghcr` 실패**: `GHCR_USER · GHCR_TOKEN 이 없습니다` 면 12-4 GHCR 설정 3. `crane auth login ghcr.io` 의 401/403 이면 봇 PAT 만료 · scope(`write:packages`) · org 멤버 여부 → 토큰 교체(12-4). `denied: permission_denied` 로 push 가 거부되면 패키지 Settings 에서 봇 계정에 Write 권한이 있는지 확인합니다.
+- **`GHCR retention` workflow 의 버전 조회 · 삭제 실패**: 패키지 Manage Actions access 에 모노레포가 Admin 인지 확인합니다 (12-4).
 - **ImagePullBackOff**: `kubectl -n backend describe pod` → 401 이면 `gitlab-registry` Secret(Deploy Token), `no such host` 면 노드의 MagicDNS, timeout 이면 ACL `tag:k8s-node → tag:gitlab tcp:5050` 입니다.
 - **smoke test 에서 DB 접속 실패**: ACL `tag:gitlab-runner → tag:db tcp:3306,6379`, CI 변수 `SMOKE_DB_HOST`(Tailscale IP), `db.yml` 로 `ci_smoke` 계정을 만들었는지 확인합니다.
 - ArgoCD 쪽(sync 실패 · OutOfSync · 레포 접근)은 12-9 "트러블슈팅".
@@ -975,14 +1003,15 @@ kubectl -n argocd get application backend -o jsonpath='{range .status.resources[
 
 `aws-control-plane.yml`, `aws-worker.yml`, `aws-runner.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대와 워커 ASG 인스턴스의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
 
-- **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/gitops_sync` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다.
-- **Ansible 은 노드 작업 · Calico · CCM · NTH · 배포 agent 설치까지만 합니다.** 클러스터 서비스(Traefik · whoami, 이후 backend 등)는 CP-a 가 설치하는 GitOps pull 배포 agent 가 gitops 레포 `envs/prod`(원본: 모노레포 [`infra/gitops/prod`](../gitops/prod/README.md))에서 설치합니다. user-data 는 첫 부팅 때만 돌아서, Ansible 이 설치하면 변경이 다음 재생성까지 반영되지 않기 때문입니다. NTH 는 CCM 과 같은 role · post-renderer 를 써서 ArgoCD 전환 때 함께 옮깁니다.
+- **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/argocd` 의 `tasks/aws.yml` · `*-aws.yaml.j2` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다.
+- **Ansible 은 노드 작업 · Calico · CCM · NTH · ArgoCD 설치까지만 합니다.** 클러스터 서비스(Traefik · whoami · backend 등)는 CP-a 가 설치하는 ArgoCD root 앱(`prod-apps`)이 gitops 레포 `envs/prod`(원본: 모노레포 [`infra/gitops/prod`](../gitops/prod/README.md))에서 설치합니다. user-data 는 첫 부팅 때만 돌아서, Ansible 이 설치하면 변경이 다음 재생성까지 반영되지 않기 때문입니다. NTH 는 CCM 과 같은 role · post-renderer 를 써서 ArgoCD 전환 때 함께 옮깁니다.
 - `inventory/aws.ini` 는 CP · 워커 group_vars 가 섞이지 않게 `localhost` 대신 별칭(`aws-cp`, `aws-worker`)을 쓰고, `aws-cp` 를 `control_plane` 그룹에도 넣어 helm 버전을 온프레미스와 같이 씁니다. AWS Runner(`aws-runner`)는 쿠버네티스 노드가 아니라 `[aws]` 대신 `gitlab_runner` 의 자식 그룹으로 둡니다 (아래 "AWS GitLab Runner").
 - S3 에는 커밋 대상 파일만 올라갑니다. `.env`, `.secrets/`, `inventory/hosts.ini` 는 올라가지 않습니다.
 
 | 항목 | 온프레미스 (`control-plane.yml`) | AWS (`aws-control-plane.yml`) |
 |---|---|---|
 | `use_tailscale` | `true` (기본값) | `false` — tailscale role, `TS_OAUTH_CLIENT_SECRET` 확인 생략 |
+| Kubernetes · Calico · pause 버전 | `all.yml` (v1.33 · v3.30.7 · 3.10) | `aws.yml` 에서 덮어씀 (v1.35 · v3.31.7 · 3.10.1). CCM · ECR credential provider 도 1.35 빌드 |
 | 노드 IP (`node_ip`) | Tailscale IP (100.x) | VPC private IP |
 | 노드 이름 | `hosts.ini` 의 `node_name` | EC2 private DNS (`ip-10-10-4-10.ec2.internal`) |
 | `controlPlaneEndpoint` | 노드 IP | 내부 NLB DNS (`certSANs` 에 포함) |
@@ -995,7 +1024,7 @@ kubectl -n argocd get application backend -o jsonpath='{range .status.resources[
 | Calico 노드 IP 감지 / MTU | `tailscale0` / 1230 | `NodeInternalIP` / 8951 (VPC 점보 프레임 9001 − VXLAN 50) |
 | Felix mark 대역 변경 | 함 (Tailscale fwmark 충돌) | 안 함 |
 | kube-apiserver `--service-account-issuer` (`k8s_service_account_issuer`) | 미설정 (kubeadm 기본값) | 10-global OIDC 버킷 URL (IRSA). CP-a 가 init 직후 SA 서명 공개키를 `keys.json` 으로 업로드 |
-| 클러스터 서비스 설치 | Ansible(`ingress.yml`, Traefik) · ArgoCD(backend, 12절) | GitOps pull 배포 agent (`gitops_sync` role 이 CP-a 부트스트랩 마지막에 설치, 워커 Ready 대기 후 첫 실행) |
+| 클러스터 서비스 설치 | Ansible(`ingress.yml`, Traefik) · ArgoCD(backend, 12절) | ArgoCD root 앱 `prod-apps` (`argocd` role `tasks/aws.yml` 이 CP-a 부트스트랩 마지막에 설치, 워커 Ready 대기 후 root 생성). UI 비노출(ClusterIP), 레포 자격 증명 없음 |
 | Traefik | `ingress.yml` 수동 실행 (`roles/traefik`), control plane 1대 고정, `externalTrafficPolicy: Local` | gitops `envs/prod/traefik` — 워커에 2개, `externalTrafficPolicy: Cluster`, trustedIPs = Main VPC CIDR + Pod CIDR, `/ping` 을 `web` 에 노출(`80-main-edge` 헬스체크) |
 | Ingress 대상 | api-gateway (`/api`, `/api-docs`) | api-gateway (`/api`, gitops `envs/prod/backend`) + 테스트 백엔드 whoami (`/whoami`). 그 외 경로는 Traefik 404 |
 
@@ -1013,13 +1042,15 @@ CP-a 는 init 후 10-global OIDC 버킷의 `keys.json` 도 덮어씁니다 (CP R
 - **CP 교체:** CP 는 AZ 별 ASG(1대 고정) 라 사라지면 새로 뜨고 join 합니다. CP 3대의 systemd timer `team04-cp-reconcile.timer`(1분) 가 사라진 CP 의 etcd 멤버를 지우고, init 2시간 후 삭제되는 `kubeadm-certs` Secret 을 같은 certificate-key 로 다시 올립니다. 동작 · 확인 방법 · 범위 밖(2대 이상 동시 장애, etcd 백업)은 [Terraform README](../terraform/README.md) 6절.
 - **join token 갱신:** CP 마다 systemd timer `team04-renew-join-token.timer` 가 `kubeadm token create` → `join-token` 파라미터 덮어쓰기. 즉시 갱신하려면 CP 에서 `sudo systemctl start team04-renew-join-token.service`. Terraform 은 이 파라미터 값 변경을 무시합니다.
 - **워커 교체 · 스케일 인:** 종료 전 drain 은 aws-node-termination-handler(NTH), 종료된 워커의 Node 삭제는 aws-cloud-controller-manager(CCM) 가 합니다. 둘 다 CP-a 부트스트랩의 `aws_node_lifecycle` role 이 CP 에 hostNetwork 로 설치합니다 (차트에 hostNetwork 값이 없어 Helm post-renderer 로 추가). 동작 · 확인 방법은 [Terraform README](../terraform/README.md) 6절.
-- **배포 agent:** CronJob `gitops-sync`(1분, CP 노드)가 gitops 레포 대상 브랜치(`gitops_sync_branch`, 기본 `main`)의 SHA 가 바뀌면 `envs/prod/*/chart.yaml` 을 order 순으로 `helm upgrade --install --atomic` 합니다. 부트스트랩 Job 이 실패해도 CP 부트스트랩은 실패시키지 않습니다(CP 교체 방지). 결과는 `cloud-init-output.log` 의 "부트스트랩 결과" 와 ConfigMap `gitops-sync-state`. 첫 실행(Traefik · whoami 설치)은 NTH 설치 직후부터 적용 완료까지 약 45초 (2026-10-19 실측), 이후 변경은 push 후 1분 안팎에 반영. 동작 · 운영 · 작업 브랜치 검증은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md).
-- **클러스터 값:** public gitops 레포에 둘 수 없는 값(계정 ID)은 CP-a 가 STS 로 조회해 ConfigMap `gitops-sync/gitops-sync-cluster-values` 로 만듭니다 (`gitops_sync_cluster_values`). agent 는 `chart.yaml` 에 `clusterValues: true` 인 앱(pod-identity-webhook 의 IRSA Role ARN)에만 넘깁니다.
+- **배포 (ArgoCD):** CP-a 가 ArgoCD(차트 버전은 온프레미스와 같음, 전 컴포넌트 CP 고정)를 설치하고 AppProject `bootstrap` · root 앱 `prod-apps` 를 만듭니다. root 는 gitops 레포 대상 브랜치(`argocd_prod_branch`, 기본 `main`)의 `envs/prod` root 차트를 렌더링해 앱마다 Application 을 만들고, `order` 순(sync-wave)으로 Healthy 를 기다립니다. root 첫 sync 를 최대 15분(`argocd_prod_bootstrap_wait_retries`) 기다리되 실패해도 CP 부트스트랩은 실패시키지 않습니다(CP 교체 방지). 결과는 `cloud-init-output.log` 의 "첫 sync 결과". 동작 · 운영 · 작업 브랜치 검증은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md).
+- **클러스터 값:** public gitops 레포에 둘 수 없는 값(계정 ID)은 CP-a 가 STS 로 조회해 root 앱의 `valuesObject.clusterValues` 로 넘깁니다 (`argocd_prod_cluster_values`). root 차트는 `chart.yaml` 에 `clusterValues: true` 인 앱(pod-identity-webhook 의 IRSA Role ARN, backend 의 ECR 주소 · 큐 URL)에만 넘깁니다.
 - **IRSA:** kube-apiserver 발급자를 10-global OIDC 버킷 URL 로 두고(join CP 는 `kubeadm-config` 에서 같은 값을 받음), CP-a 가 init 직후 발급자 문서의 issuer 를 확인한 뒤 `/openid/v1/jwks` 를 `keys.json` 으로 올립니다. 업로드는 `ca-cert-hash` 기록 전이라, 실패하면 교체된 CP-a 가 다시 init 합니다. webhook · ESO 는 gitops 앱, Role 은 Terraform 70 `irsa.tf` ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "IRSA · 비밀값").
 - 클러스터 확인 (SSM 접속 후): `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide`
 - Ingress 확인 (워커에 SSM 접속 후): `curl -i http://$(hostname -I | awk '{print $1}'):30080/whoami` → whoami 200 (`/` 는 Traefik 404 가 정상). 워커 30080 인바운드는 ALB SG 에서만 열려 있어(M2) **다른 노드에서는 연결되지 않습니다.** 노드 자신의 IP 로 확인합니다 (Traefik 파드가 다른 워커에 있어도 kube-proxy 가 넘겨 줍니다).
 
 ### AWS GitLab Runner (`aws-runner.yml`)
+
+> **LDP-173 부터 쓰지 않습니다.** 운영 릴리스가 GitHub Actions `release.yml`(GHCR → ECR 복사)로 옮겨 `.gitlab-ci.yml` 의 `release:*` · `aws-runner:*` job 을 지웠습니다. `40-cicd` · 이 playbook 제거는 후속 작업입니다.
 
 Terraform `40-cicd` 의 Runner(Deployment VPC, ASG 1대, Graviton) 가 user-data 로 `aws-runner.yml` 을 자기 자신에게 실행합니다. 운영 이미지 빌드 · ECR push 용이며, **보호 브랜치의 `aws` 태그 job 만** 받습니다.
 
@@ -1052,7 +1083,6 @@ job(kaniko) ─▶ IMDS(hop limit 2) ─▶ Runner Role ─▶ ECR push (team04-
 - GitLab Admin → CI/CD → Runners 에 `aws-ci-runner` 가 online (매일 새 인스턴스가 같은 runner 에 붙음)
 - Tailscale Machines 에 `ci-runner-<인스턴스 ID>` (`tag:ci-runner`, Ephemeral). 인스턴스가 사라지면 자동 삭제
 - 부트스트랩 로그: Runner 에 SSM 접속 후 `sudo tail -n 50 /var/log/cloud-init-output.log` ("[bootstrap] 완료")
-- job 검증: develop(보호 브랜치) 에서 GitLab **Run pipeline** → 변수 `AWS_RUNNER_CHECK=true` → `aws-runner:check`(Runner Role · 밖 저장소 · 다른 Secret 거부) 통과 후 `aws-runner:push` ▶ (kaniko → ECR `main-migrations:<sha>`)
 - **보안**: hop limit 2 라 job 이 Runner Role 을 그대로 씁니다 (ECR push 를 위해 의도한 것). 같은 이유로 job 은 Runner Secret 도 읽을 수 있으므로, 이 Runner 는 리뷰를 거친 보호 브랜치 job 만 받습니다. Tailscale 권한은 GitLab 443 만이라 Secret 이 새도 다른 노드에 접근할 수 없습니다.
 
 ---
@@ -1346,10 +1376,12 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `gcp-sa` | key_json_b64 (서비스 계정 키 JSON 의 base64 — ESO 가 풀어서 `GCP_SA_KEY_JSON`) | ESO |
 | `seed-admin` | email, password (`seed` Job 의 `SEED_ADMIN_*`, 7-5) | ESO, db.yml(`-e db_seed_mariadb=true`) |
 | `main-db-root` · `minio-root` · `ci-smoke-db` | password (· user) | db.yml, gitlab.yml — **ESO 는 못 읽음** |
+| `ghcr-push` | username, token (GHCR 봇 classic PAT — 12-4) | gitlab.yml(bootstrap → CI 변수 `GHCR_USER` · `GHCR_TOKEN`) — **ESO 는 못 읽음** |
 | `payment-db` · `payment-db-root` · `toss-payments` | (운영과 같은 이름) | payment.yml |
+| `grafana` | admin_user, admin_password (없으면 monitoring.yml 이 생성, 17절) | ESO(`monitoring/grafana-admin`) |
 | `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `aws-ci-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
 
-- `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책도 이 목록에서 만듭니다.
+- `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책은 이 목록과 `eso_extra_read_paths`(backend 밖에서 ESO 가 읽는 경로, 예: `grafana`)로 만듭니다.
   - 경로를 추가하면 OpenBao 관리자가 `db.yml --tags openbao` 로 `eso-dev` 정책을 갱신해야 ESO 가 읽을 수 있습니다. 그다음 `db.yml --tags openbao_import`(값 이관), `k8s-cicd.yml --tags backend_secrets` 순서로 실행합니다.
 - 모든 playbook 은 `OPENBAO_ADDR` 이 비어 있으면 OpenBao 를 건너뛰고 예전처럼 `.env` · `backend/.env` · `.secrets/*.env` 를 읽습니다 (`k8s-cicd.yml` 은 ESO 때문에 OpenBao 필수).
 - OpenBao 호출은 Ansible 을 실행하는 PC 가 아니라 **play 대상 노드**에서 합니다 (PC 는 Tailnet 에 없을 수 있음). 그래서 1-1 의 `→ tag:db tcp:8200` grant 가 필요합니다.
@@ -1443,3 +1475,121 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 
 - OpenBao 에 넣을 수 없는 값(`openbao/*`, `openbao.env`)과 OpenBao 보다 먼저 필요한 `.env` 값(Tailscale OAuth secret, `GITLAB_ROOT_PASSWORD`)은 팀 비밀번호 관리자에 보관합니다.
 - 파일도 계속 만들어지므로 OpenBao 를 쓰지 않거나 장애가 났을 때도 예전 방식(`source .secrets/*.env`)으로 실행할 수 있습니다.
+
+---
+
+## 17. 모니터링 (Prometheus · Grafana)
+
+클러스터의 Pod · 노드 리소스와 결제 노드(k8s 밖)를 **Grafana 하나**에서 봅니다. 수집 방식 · 라벨은 운영과 같습니다 (노션 "관측성 도입 계획" · "라벨 세부 정의 v0.2").
+
+```
+[dev 클러스터 — control plane 고정]                           [결제 노드 — Docker Compose]
+ kubelet(cAdvisor) ─┐                                          node-exporter ─┐ 127.0.0.1
+ kube-state-metrics ─┼─▶ Prometheus ◀── remote_write(30909) ──── Grafana Alloy ┤
+ node-exporter(DS) ──┘    │  로컬 PV                                cAdvisor ──┘ 127.0.0.1
+                          ▼
+                       Grafana ◀── tailscale serve HTTPS 9443 ── 팀원 PC
+ metrics-server ─▶ HPA · kubectl top (Prometheus 와 별개)
+```
+
+| 구성 | 값 |
+|---|---|
+| playbook | `monitoring.yml` (`[control_plane]`) — roles `metrics_server`, `monitoring` / 결제 노드는 `payment.yml`(roles `payment_stack`) |
+| chart | metrics-server `3.14.0`, kube-prometheus-stack `92.3.0` (`group_vars/control_plane.yml`) |
+| values | `roles/monitoring/files/kube-prometheus-stack-values-common.yaml` (**운영과 공유하는 정적 파일**) + `templates/kube-prometheus-stack-values-dev.yaml.j2` (dev 값) |
+| 배치 | node-exporter(DaemonSet) 외 전부 control plane 고정 — 워커는 팀원 PC 라 꺼질 수 있음 |
+| 저장소 | control plane 로컬 PV `prometheus-local` (`/var/lib/monitoring/prometheus`, 20Gi, StorageClass `monitoring-local`), 보존 7일 · 15GB |
+| Grafana | `https://<control plane>.<tailnet>.ts.net:9443` — admin 계정 OpenBao `grafana` → ESO → Secret `monitoring/grafana-admin` |
+| Prometheus | `http://<control plane Tailscale IP>:30909` (UI · `/targets`, 결제 노드 remote_write `/api/v1/write`) |
+| 결제 노드 수집기 | node-exporter · cAdvisor · Grafana Alloy (`group_vars/payment.yml`), 모두 127.0.0.1 바인딩 |
+| 알림 | Alertmanager 꺼짐 (수신처 미정) — Grafana **Alerting → Alert rules** 또는 Prometheus `/alerts` 에서 확인 |
+
+**라벨**
+
+| 라벨 | 클러스터 | 결제 노드 |
+|---|---|---|
+| `cluster` | `main` (Prometheus scrape class) | `payment` (Alloy external_labels) |
+| `env` | `dev` (`monitoring_env`) | `dev` |
+| `namespace` | Pod 네임스페이스 | `payment` |
+| `container` | 컨테이너 이름 = 서비스 이름 | Docker 컨테이너 이름 (cAdvisor `name` → `container`) |
+| `instance` | 대상 주소 | 결제 노드 `node_name` |
+
+- `externalLabels` 는 저장된 시계열에 붙지 않아 `sum by (cluster)` 에 쓸 수 없습니다. 그래서 클러스터 쪽은 scrape class(`team04-default`) 의 relabel 로 붙입니다.
+- 앱 `/metrics`(backend MetricsModule)는 아직 수집하지 않습니다. 개발 완료 보고 후 backend 차트 ServiceMonitor(`honorLabels: true`) · `payment_metrics_enabled: true` 로 켭니다 (17-5).
+
+### 17-1. Tailscale ACL
+
+1-1 의 정책에 아래 grant 가 들어 있어야 합니다 (1-1 예시에 반영됨).
+- `tag:payment` → `tag:k8s-node` `tcp:30909` (Alloy → Prometheus remote_write)
+- `autogroup:member` → `tag:k8s-node` `tcp:9443` (Grafana HTTPS)
+
+### 17-2. 실행
+
+```bash
+cd infra/ansible
+set -a; source .env; source .secrets/openbao.env; set +a
+
+# 1) OpenBao 관리자: eso-dev 정책에 grafana 경로 추가 (eso_extra_read_paths)
+ansible-playbook db.yml -K --tags openbao
+
+# 2) CP 담당자: metrics-server → kube-prometheus-stack → 대시보드 → tailscale serve
+#    (ESO · ClusterSecretStore openbao 가 있어야 함 — k8s-cicd.yml 먼저)
+ansible-playbook monitoring.yml -K
+#    일부만: --tags metrics_server / --tags monitoring
+
+# 3) 결제 노드 담당자: 수집기 추가 (CLUSTER_ENTRY_IP = control plane Tailscale IP, 14-2)
+ansible-playbook payment.yml -K --tags deploy
+```
+
+- Grafana admin 비밀번호: `bao kv get secret/team04-hotel/dev/grafana` (OpenBao UI 도 가능). 처음 실행 때 랜덤으로 만들고 이후에는 바꾸지 않습니다.
+- 두 번째 실행은 changed 가 없어야 합니다 (chart · values 가 같으면 helm 을 건너뜀).
+
+### 17-3. 대시보드 · 알람
+
+| 대시보드 | 내용 |
+|---|---|
+| Kubernetes / Compute Resources / Namespace (Pods) · / Pod | 차트 기본 제공. backend Pod CPU · 메모리 · requests/limits 대비 |
+| Node Exporter / Nodes | 차트 기본 제공. 클러스터 노드 |
+| team04 / 서비스 개요 | 클러스터 + 결제 노드 서비스별 CPU · 메모리, 메모리/limit, 스로틀링, 재시작 (요청 · 지연 · 에러는 17-5 이후) |
+| team04 / 결제 노드 | 수집 상태(up), 호스트 CPU · 메모리 · 디스크, 컨테이너별 CPU · 메모리 |
+
+- 대시보드 JSON 은 `roles/monitoring/files/dashboards/` — ConfigMap(label `grafana_dashboard=1`)으로 올라가며 UI 에서 고친 내용은 저장되지 않습니다. JSON 을 고치고 `--tags monitoring` 으로 반영합니다.
+- 알람 규칙은 common values 의 `additionalPrometheusRulesMap`: `PodRestartingFrequently`(15분 3회), `ContainerOOMKilled`, `ContainerMemoryNearLimit`(limit 90%, 5분), `PaymentMetricsAbsent`(결제 노드 메트릭 5분 없음). CPU 스로틀링은 기본 규칙 `CPUThrottlingHigh`(25%, 15분).
+- **워커 PC 가 꺼져 있으면** `KubeNodeNotReady` · `TargetDown`(그 노드의 kubelet · node-exporter) 등이 firing 입니다. dev 에서는 정상 상황입니다.
+
+### 17-4. 검증
+
+```bash
+kubectl top nodes
+kubectl top pods -n backend
+kubectl -n monitoring get pods,pvc
+```
+
+1. Prometheus `/targets` — kubelet · cAdvisor · node-exporter · kube-state-metrics · apiserver · coredns 가 UP (꺼진 워커는 DOWN)
+2. Grafana "Kubernetes / Compute Resources / Namespace (Pods)" 에서 namespace `backend` 의 Pod CPU · 메모리
+3. Grafana Explore: `up{cluster="payment"}`, `container_memory_working_set_bytes{cluster="payment"}` → "team04 / 결제 노드" 대시보드
+4. 데이터 유지: `kubectl -n monitoring delete pod prometheus-kube-prometheus-stack-prometheus-0` 뒤에도 이전 그래프가 남아 있음
+5. 결제 알람: 결제 노드에서 `docker stop alloy` → 약 6분 뒤 `PaymentMetricsAbsent` firing → `docker start alloy` (WAL 에 쌓인 값이 다시 들어옴)
+
+### 17-5. backend /metrics 수집 (개발 완료 보고 후)
+
+백엔드 MetricsModule(`METRICS_PORT=9464`, `/metrics`, 노션 "라벨 세부 정의 v0.2")이 배포된 뒤 진행합니다.
+
+1. backend 차트: `metrics.enabled` 토글, `METRICS_PORT` env · containerPort `metrics`, `ServiceMonitor`(`honorLabels: true`) — Prometheus 는 이미 모든 네임스페이스의 ServiceMonitor 를 읽음
+2. gitops `envs/dev/values.yaml` 에서 켬
+3. 결제 노드: `payment_metrics_enabled: true` + payment.env 에 `METRICS_PORT` → `payment.yml --tags deploy`
+4. "team04 / 서비스 개요" 에 요청 · 지연 · 에러 패널, 에러율 알람 (합의된 에러 정의 기준)
+5. 시계열 수 점검: `count by (service) ({service!=""})`
+
+### 17-6. 트러블슈팅
+
+| 증상 | 확인 |
+|---|---|
+| `디스크 여유 확인` 실패 | CP `/var/lib` 여유 < PV + 5GiB. 디스크를 늘리거나 `prometheus_storage_gb` · `prometheus_retention_size` 를 줄임 |
+| ExternalSecret `grafana-admin` 이 Ready 아님 (`permission denied`) | `eso-dev` 정책에 `grafana` 없음 → `db.yml --tags openbao` |
+| Prometheus Pod 가 Pending | `kubectl get pv prometheus-local` — `Released` 면 PVC 를 지웠던 것. 데이터를 유지하려면 `kubectl patch pv prometheus-local -p '{"spec":{"claimRef":null}}'` 로 다시 Available 로 |
+| Prometheus Pod 가 `permission denied` 로 재시작 | 데이터 디렉토리 소유자 1000:2000 — `--tags monitoring` 재실행 |
+| `kubectl top` 이 `Metrics API not available` | `kubectl get apiservice v1beta1.metrics.k8s.io`, metrics-server 로그(kubelet 10250 접속). 직접 설치한 metrics-server 가 있으면 role 이 건너뜀 — 지우고 다시 실행 |
+| 결제 노드 메트릭이 없음 | 결제 노드에서 `docker logs alloy` (remote_write 오류), `curl -s 127.0.0.1:12345/-/ready`, ACL `tag:payment → tag:k8s-node tcp:30909`, `CLUSTER_ENTRY_IP` |
+| Grafana 9443 접속 불가 | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status` |
+| chart 메이저 버전 업그레이드 | kube-prometheus-stack 은 helm 이 CRD 를 갱신하지 않음 — chart UPGRADE 문서대로 CRD 를 먼저 `kubectl apply --server-side` |

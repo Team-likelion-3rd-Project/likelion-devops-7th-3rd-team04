@@ -60,13 +60,13 @@ locals {
       namespace       = "backend"
       service_account = "llm-ingest"
     }
-    # 배포 agent (Ansible gitops_sync) 의 배포 결과 알림. gitops-sync 네임스페이스는 webhook 대상이 아니라
-    # CronJob 이 토큰(aud sts.amazonaws.com)을 직접 마운트하고 AWS_ROLE_ARN 을 넣는다 (gitops-sync.yaml.j2).
-    # 10-global 배포 토픽 정책이 이 Role 이름으로 발행을 허용한다
-    gitops-sync = {
-      description     = "GitOps deploy agent (deploy result notification)"
-      namespace       = "gitops-sync"
-      service_account = "gitops-sync"
+    # ArgoCD root 앱(prod-apps) 의 배포 결과 알림 hook Job. argocd 네임스페이스는 webhook 대상이 아니라
+    # Job 이 토큰(aud sts.amazonaws.com)을 직접 마운트하고 AWS_ROLE_ARN 을 넣는다 (gitops root 차트 templates/deploy-notify.yaml).
+    # 10-global 배포 토픽 정책이 이 Role 이름으로 발행을 허용한다 (deploy_publisher_role_names)
+    deploy-notify = {
+      description     = "ArgoCD deploy result notification hook"
+      namespace       = "argocd"
+      service_account = "deploy-notify"
     }
     # 클러스터 로그 수집 DaemonSet (LDP-144, gitops fluent-bit)
     fluent-bit = {
@@ -258,8 +258,8 @@ resource "aws_iam_role_policy" "fluent_bit" {
   policy = data.aws_iam_policy_document.fluent_bit.json
 }
 
-# gitops-sync: 10-global 배포 토픽 Publish 만 (암호화된 토픽이라 키 권한 포함). 배포 권한(cluster-admin)은 클러스터 RBAC 이고 AWS 권한은 이것뿐
-data "aws_iam_policy_document" "gitops_sync" {
+# deploy-notify: 10-global 배포 토픽 Publish 만 (암호화된 토픽이라 키 권한 포함)
+data "aws_iam_policy_document" "deploy_notify" {
   statement {
     sid       = "PublishDeployResult"
     actions   = ["sns:Publish"]
@@ -273,8 +273,8 @@ data "aws_iam_policy_document" "gitops_sync" {
   }
 }
 
-resource "aws_iam_role_policy" "gitops_sync" {
+resource "aws_iam_role_policy" "deploy_notify" {
   name   = "deploy-notify"
-  role   = aws_iam_role.irsa["gitops-sync"].id
-  policy = data.aws_iam_policy_document.gitops_sync.json
+  role   = aws_iam_role.irsa["deploy-notify"].id
+  policy = data.aws_iam_policy_document.deploy_notify.json
 }

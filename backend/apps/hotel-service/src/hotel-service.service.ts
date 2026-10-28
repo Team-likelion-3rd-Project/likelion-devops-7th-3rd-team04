@@ -1,8 +1,9 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RpcException } from '@nestjs/microservices';
 import { DataSource, Repository } from 'typeorm';
 import { Hotel } from './entities/hotel.entity';
+import { rpcError } from '@app/common';
 
 // proto의 Hotel 메시지와 1:1 대응되는 응답 형태
 export interface HotelGrpcResponse {
@@ -70,7 +71,7 @@ export class HotelServiceService implements OnModuleInit {
       where: { hotelId: id },
     });
     if (!hotel) {
-      throw new RpcException('존재하지 않는 호텔입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
     return this.toGrpcResponse(hotel);
   }
@@ -89,7 +90,7 @@ export class HotelServiceService implements OnModuleInit {
       where: { hotelId: id },
     });
     if (!hotel) {
-      throw new RpcException('존재하지 않는 호텔입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
 
     hotel.name = data.name;

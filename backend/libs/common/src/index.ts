@@ -19,3 +19,4 @@ export * from './sqs/sqs';
 export * from './db/mariadb-ssl';
 export * from './db/typeorm-logger';
 export * from './utils/redact';
+export * from './metrics/metrics';

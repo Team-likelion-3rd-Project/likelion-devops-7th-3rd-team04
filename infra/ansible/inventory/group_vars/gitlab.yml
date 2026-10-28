@@ -96,5 +96,9 @@ smoke_db_user: ci_smoke
 smoke_db_password: "{{ openbao_kv['ci-smoke-db'].password | default(lookup('env', 'CI_SMOKE_DB_PASSWORD'), true) }}"
 smoke_redis_port: "6379"
 smoke_redis_password: "{{ openbao_kv['main-valkey'].password | default(lookup('env', 'VALKEY_PASSWORD'), true) }}"
-# gitlab_bootstrap 이 읽는 OpenBao 경로 — 이미 발급한 토큰(있으면 재발급하지 않음) + smoke test 값
-gitlab_openbao_paths: [gitlab-k8s, payment-node, github-mirror, main-db, main-valkey, ci-smoke-db]
+# GHCR push (CI push:ghcr) 용 봇 계정 → team04/hotel protected CI 변수 GHCR_USER · GHCR_TOKEN
+#   값은 OpenBao ghcr-push (도입 전: infra/ansible/.env 의 GHCR_PUSH_USER · GHCR_PUSH_TOKEN)
+ghcr_push_user: "{{ openbao_kv['ghcr-push'].username | default(lookup('env', 'GHCR_PUSH_USER'), true) }}"
+ghcr_push_token: "{{ openbao_kv['ghcr-push'].token | default(lookup('env', 'GHCR_PUSH_TOKEN'), true) }}"
+# gitlab_bootstrap 이 읽는 OpenBao 경로 — 이미 발급한 토큰(있으면 재발급하지 않음) + smoke test 값 + GHCR 봇
+gitlab_openbao_paths: [gitlab-k8s, payment-node, github-mirror, main-db, main-valkey, ci-smoke-db, ghcr-push]

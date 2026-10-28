@@ -2,22 +2,24 @@
 # GitLab 쪽에서 직접 고치면 다음 미러링 때 덮어써집니다.
 #
 #   test        : lint · jest (현재 기존 실패가 있어 non-blocking) · nest build · helm lint
+#                 frontend:build: 프론트 변경 시 운영 값(VITE_PAYMENT_MODE 만 MOCK)으로 lint · 빌드 검증 (배포 없음)
 #   build       : kaniko 로 이미지 10개 빌드 → 후보 태그 ci-<sha> 로 push (develop 만, 그 외는 빌드만)
 #   image-test  : 파이프라인 전용 DB(ci_<id>, ci_main_<id>) 준비 → 후보 이미지를 띄워 /health smoke test
 #   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
+#                 push:ghcr: 승격한 이미지를 GHCR 에 커밋 SHA 40자 태그로 복사 — 운영 릴리스가 ECR 로 옮겨 갈 원본
+#                 ghcr:reuse-resolve · push:ghcr-reuse: 프론트만 바뀐 커밋은 백엔드가 같은 직전 커밋의 GHCR 이미지에 이 SHA 태그를 붙임
+#                 (보존: .github/workflows/ghcr-retention.yml, infra/ansible README 12-4)
+#
+# 백엔드 경로(.paths backend)가 바뀐 커밋은 백엔드 job 이, 프론트 경로(.paths frontend)가 바뀐 커밋은 frontend:build 가 돈다.
+# 프론트만 바뀐 커밋에는 백엔드 빌드 · smoke test · deploy-dev 가 없다 (Run pipeline 으로 실행하면 전체가 돈다).
 #   deploy      : (수동) deploy-dev: develop → GitLab gitops 에 커밋 1개 (envs/dev 이미지 태그 + apps/dev 차트 revision)
 #                 + 배포 태그 dev/p<pipeline id>-<sha> → 온프레미스 ArgoCD 가 sync (클러스터에 직접 배포하지 않음)
 #                 롤백: Run pipeline 에 ROLLBACK_TO=<gitops 태그 | previous> → rollback-dev:resolve · check → rollback-dev ▶
 #                 (롤백 파이프라인에는 다른 job 이 생기지 않음. infra/ansible README 12-5)
-#   release     : (main 만) AWS Runner 가 이미지 10개를 arm64 로 빌드 → ECR push(태그 = main 커밋 SHA)
-#                 + 프론트 빌드 → S3 releases/<SHA>/
-#                 → prod gitops 레포에 릴리스 PR 자동 생성 (GitHub App). 운영 반영은 사람이 그 PR 을 승인 · merge 할 때
 #
-# main 파이프라인에는 release job 만 있습니다. test · build 는 develop 파이프라인에서 이미 통과한 커밋만 릴리스하므로
-# 다시 돌리지 않고, 온프레미스 Runner 를 기다리지도 않습니다 (릴리스 전 확인: infra/gitops/prod/README.md "릴리스").
-#
-# prod: 배포 상태(values · 이미지 태그)는 GitHub 의 별도 prod gitops 레포가 PR 로 관리합니다.
-#   GitLab 은 ECR push 와 gitops 레포 PR 생성까지만 하고 prod 에 직접 배포하지 않습니다 (infra/gitops/prod/README.md "릴리스").
+# main 파이프라인은 없습니다. 운영 릴리스는 GitHub Actions(.github/workflows/release.yml)가 main push 때 위 push:ghcr 이미지를
+# 재빌드 없이 ECR 로 복사하고 prod gitops 레포에 PR 을 만듭니다 (infra/gitops/prod/README.md "릴리스").
+# 그래서 릴리스할 커밋의 develop 파이프라인이 push:ghcr(· push:ghcr-reuse)까지 통과해야 합니다.
 #
 # 파이프라인은 클러스터에 접근하지 않습니다 (kubeconfig · GitLab Agent 없음). 배포 구성은 infra/ansible/README.md 12절.
 
@@ -25,13 +27,19 @@ workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE != "push" && $CI_PIPELINE_SOURCE != "web"
       when: never
-    - if: $CI_PIPELINE_SOURCE == "web"
-    # main 은 릴리스(ECR push · gitops PR) 경로라 변경 경로와 상관없이 항상 돈다 (infra/gitops/prod 만 바뀐 릴리스 포함)
+    # main 은 GitHub Actions release.yml 이 릴리스한다 (GitLab 에서 할 일 없음)
     - if: $CI_COMMIT_BRANCH == "main"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "web"
+    # 아래 .paths 의 backend + frontend (workflow 는 anchor 보다 앞이라 직접 나열)
+    #   ⚠️ infra/gitops/scripts/image-sha.sh 의 WORKFLOW_PATHS 와 같아야 함 — 운영 릴리스(release.yml)가 이 경로를 마지막으로 바꾼
+    #      커밋(= 파이프라인이 돌아 GHCR 이미지가 있는 커밋)의 이미지를 ECR 로 복사하고, ghcr-retention.yml 이 그 태그를 보존
     - changes:
         - backend/**/*
         - backend-deploy/**/*
         - langchain_rag/**/*
+        - frontend/**/*
+        - infra/gitops/prod/frontend/**/*
         - .gitlab-ci.yml
   auto_cancel:
     on_new_commit: interruptible
@@ -42,11 +50,6 @@ stages:
   - image-test
   - push
   - deploy
-  # main 릴리스 — 준비(ECR 주소 · push 된 이미지) → 산출물(ECR 이미지 · 프론트 빌드 업로드) → gitops 릴리스 PR.
-  # 실행 순서는 job 의 needs 가 정하고 stage 는 화면 구분용 (prepare 가 끝나면 build 가 바로 시작)
-  - release-prepare
-  - release-build
-  - release-gitops
 
 variables:
   # ── 이미지 버전 고정 ──
@@ -61,7 +64,7 @@ variables:
   SMOKE_CLIENT_IMAGE: alpine:3.22
   # llm-service(langchain_rag/llm-service/Dockerfile 의 베이스와 같은 버전)
   PYTHON_IMAGE: python:3.12-slim
-  # n8n 은 빌드하지 않고 Docker Hub 이미지를 레지스트리로 미러링 (온프레미스: push job, 운영 ECR: release:mirror-n8n).
+  # n8n 은 빌드하지 않고 Docker Hub 이미지를 레지스트리로 미러링 (온프레미스: push job, 운영 ECR: release.yml).
   # 차트 n8n.image.tag · langchain_rag/docker-compose.yml 과 같은 값으로 올림
   N8N_VERSION: "2.35.3"
 
@@ -69,11 +72,16 @@ variables:
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
   CANDIDATE_TAG: ci-$CI_COMMIT_SHORT_SHA
   # build 와 push 가 같은 목록을 써야 함 (8 서비스 + llm-service + 메인 / 결제 DB 마이그레이션 + 시딩)
-  #   seed: backend 차트 seed Job (backend/scripts/Dockerfile.seed) — 운영(ECR)과 온프레미스 dev 모두 배포 버전과 같은 태그로 실행
+  #   seed: backend 차트 seed Job (backend/scripts/Dockerfile.seed) — 운영과 온프레미스 dev 모두 배포 버전과 같은 태그로 실행
   #         (dev 는 롤백으로 DB 를 다시 만든 뒤 그 버전의 seed.ts 가 다시 채움)
+  #   ⚠️ .github/workflows/release.yml 의 IMAGES 와 같아야 함 (GHCR → ECR 복사 목록)
   IMAGES: "api-gateway auth-service booking-service chat-bot-service hotel-service payment-service pg-mock-service user-service llm-service main-migrations payment-migrations seed"
-  # 운영(ECR)에만 올리는 이미지 — 온프레미스 GitLab Registry 로는 push · 승격하지 않음 (build 는 빌드 검증만, release:build 가 ECR push)
-  RELEASE_ONLY_IMAGES: ""
+
+  # ── GHCR: develop 을 통과한 이미지의 운영 릴리스용 사본 (push:ghcr) ──
+  # GHCR 은 소문자 이름만 받음. 저장소 이름은 ECR(team04-hotel/<서비스>)과 같은 구조
+  GHCR_IMAGE_PREFIX: ghcr.io/team-likelion-3rd-project/team04-hotel
+  # 이미지 label org.opencontainers.image.source — GHCR 이 이 값으로 패키지를 모노레포에 연결 (Actions GITHUB_TOKEN 접근)
+  GITHUB_REPO_URL: https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04
 
   # ── 차트 (helm-lint) · 배포 ──
   CHART_PATH: backend-deploy/charts/backend
@@ -95,21 +103,37 @@ default:
   interruptible: true
 
 # ── 공통 rules ─────────────────────────────────────────────
+# job 을 나누는 변경 경로. rules:changes 는 push 가 아닌 파이프라인(Run pipeline · 롤백)에서는 항상 참
+#   backend : 백엔드 이미지에 들어가는 경로 — ghcr:reuse-resolve 의 git diff 경로, release-plan.sh BACKEND_PATHS ·
+#             release.yml BACKEND_PATHS(운영 릴리스의 백엔드 변경 판단)와 같게 유지
+#   frontend: 프론트 소스 + 운영 빌드 값(infra/gitops/prod/frontend/values.yaml)
+.paths:
+  backend: &backend-paths
+    - backend/**/*
+    - backend-deploy/**/*
+    - langchain_rag/**/*
+    - .gitlab-ci.yml
+  frontend: &frontend-paths
+    - frontend/**/*
+    - infra/gitops/prod/frontend/**/*
+    - .gitlab-ci.yml
+
 # 롤백 파이프라인(Run pipeline + ROLLBACK_TO)에는 rollback-dev:* 만 생긴다 — 아래 rules 와 smoke:db-drop · deploy-dev 에서 제외
 .rules-develop:
   rules:
     - if: $ROLLBACK_TO
       when: never
     - if: $CI_COMMIT_BRANCH == "develop"
+      changes: *backend-paths
 
-# main 은 release job 만 돈다 (위 머리말)
+# main 파이프라인은 workflow 가 이미 막는다 (main 은 release.yml). job 에서도 한 번 더 제외
 .rules-not-main:
   rules:
     - if: $ROLLBACK_TO
       when: never
     - if: $CI_COMMIT_BRANCH == "main"
       when: never
-    - when: on_success
+    - changes: *backend-paths
 
 .backend-npm:
   image: $NODE_IMAGE
@@ -198,6 +222,31 @@ helm-lint:
         echo "backend/apps/payment-service/migrations/migrate.sh 가 backend/migrations/migrate.sh 와 다릅니다 — 원본을 복사해 커밋하세요"; exit 1
       fi
 
+# 프론트 빌드 검증 — 운영 빌드 값(infra/gitops/prod/frontend/values.yaml)으로 빌드하되 결제만 MOCK
+#   TOSS 모드(토스 클라이언트 키)는 키가 있는 운영 릴리스 쪽에서 검증. 빌드 결과는 배포하지 않음 (각자 로컬 Vite)
+#   실패하면 파이프라인이 실패 → 릴리스 전 "develop 파이프라인 passed" 확인에 프론트도 포함
+frontend:build:
+  stage: test
+  image: $NODE_IMAGE
+  needs: []
+  rules:
+    - if: $ROLLBACK_TO
+      when: never
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: never
+    - changes: *frontend-paths
+  variables:
+    npm_config_cache: $CI_PROJECT_DIR/.npm
+    FRONTEND_PAYMENT_MODE: MOCK
+    FRONTEND_LINT: "true"
+  cache:
+    key:
+      files: [frontend/package-lock.json]
+    paths: [.npm/]
+  script:
+    - apk add --no-cache yq-go > /dev/null
+    - sh infra/gitops/scripts/frontend-build.sh
+
 # ── build: kaniko (Docker 데몬 / DinD 불필요) ────────────────────
 build:
   extends: .rules-not-main
@@ -247,9 +296,9 @@ build:
       printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY"
       "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
       > /kaniko/.docker/config.json
-    # develop 만 후보 태그로 push. 작업 브랜치 · RELEASE_ONLY_IMAGES 는 빌드 검증만 (main 은 release:build 가 ECR 로 빌드)
+    # develop 만 후보 태그로 push. 작업 브랜치는 빌드 검증만
     - |
-      if [ "$CI_COMMIT_BRANCH" = "develop" ] && ! echo " $RELEASE_ONLY_IMAGES " | grep -q " $SERVICE "; then
+      if [ "$CI_COMMIT_BRANCH" = "develop" ]; then
         set -- --destination "$CI_REGISTRY_IMAGE/$SERVICE:$CANDIDATE_TAG"
       else
         set -- --no-push
@@ -259,282 +308,8 @@ build:
         --dockerfile "$DOCKERFILE" \
         --cache=true --cache-repo "$CI_REGISTRY_IMAGE/cache/$SERVICE" --cache-ttl=168h \
         --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
-        --label "org.opencontainers.image.source=$CI_PROJECT_URL" \
+        --label "org.opencontainers.image.source=$GITHUB_REPO_URL" \
         "$@"
-
-# ── AWS Runner 검증 (Terraform 40-cicd, infra/ansible README 13절) ──────────
-# GitLab 에서 Run pipeline 으로 변수 AWS_RUNNER_CHECK=true 를 넣었을 때만 생긴다 (같은 파이프라인의 다른 job 은 평소대로 돈다).
-#   보호 브랜치  : AWS Runner(protected, tags aws · ecr) 가 실행. push 는 check 결과를 보고 ▶ 로 실행
-#   그 외 브랜치 : job 은 생기지만 받을 Runner 가 없어 pending 으로 남아야 정상 (확인 후 취소)
-# 계정 ID · ECR 토큰은 레포 · CI 변수에 두지 않는다. Runner Role(IMDS) 로 조회하고 로그에서는 가린다
-.aws-runner-check:
-  tags: [aws]
-  interruptible: false
-
-aws-runner:check:
-  extends: .aws-runner-check
-  stage: build
-  image:
-    name: amazon/aws-cli:2.31.0
-    entrypoint: [""]
-  needs: []
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" && $AWS_RUNNER_CHECK == "true"
-  script:
-    # 자격 증명 = Runner Role
-    - aws sts get-caller-identity --query Arn --output text | sed -E 's/[0-9]{12}/<account>/' | tee /tmp/arn
-    - grep -q 'assumed-role/team04-hotel-ci-runner/' /tmp/arn
-    # 아래 세 명령은 실패(거부)가 기대값이다. Runner 는 pipefail 로 실행하므로 aws 의 종료 코드는 무시하고 출력만 검사한다
-    # 허용 밖 저장소 push 거부. 프로젝트 저장소의 없는 이름은 RepositoryNotFound — 권한은 있고 저장소만 없다
-    - '{ aws ecr initiate-layer-upload --region us-east-1 --repository-name ldp98-outside/check 2>&1 || true; } | grep -q AccessDenied'
-    - '{ aws ecr initiate-layer-upload --region us-east-1 --repository-name team04-hotel/ldp98-nonexistent 2>&1 || true; } | grep -q RepositoryNotFound'
-    # 다른 Secret 조회 거부 (41-main-data 가 내려가 있어도 IAM 이 먼저 거부)
-    - '{ aws secretsmanager get-secret-value --region us-east-1 --secret-id team04-hotel/prod/main-db 2>&1 || true; } | grep -q AccessDenied'
-    # 다음 job 에 ECR 주소만 넘긴다 (토큰 아님, 로그에 찍지 않음)
-    - echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com" > ecr.env
-    - echo "OK — Runner Role, 밖 저장소 · 다른 Secret 거부 확인"
-  artifacts:
-    reports:
-      dotenv: ecr.env
-    # push 는 수동(▶)이라 늦게 눌러도 주소를 받을 수 있게 하루 둔다
-    expire_in: 1 day
-
-aws-runner:push:
-  extends: .aws-runner-check
-  stage: build
-  image:
-    name: $KANIKO_IMAGE
-    entrypoint: [""]
-  needs: [aws-runner:check]
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" && $AWS_RUNNER_CHECK == "true"
-      when: manual
-  script:
-    - 'test -n "$ECR_REGISTRY" || { echo "ECR_REGISTRY 가 비었습니다 — aws-runner:check 의 dotenv 아티팩트(1일 보관)를 확인하세요"; exit 1; }'
-    # ECR 인증은 kaniko 내장 ecr-login 헬퍼가 Runner Role 로 그때그때 받는다 (토큰을 파일 · 변수에 두지 않음)
-    - mkdir -p /kaniko/.docker
-    - printf '{"credHelpers":{"%s":"ecr-login"}}' "$ECR_REGISTRY" > /kaniko/.docker/config.json
-    # Runner 가 arm64 라 운영 워커(t4g)에서 그대로 쓰는 이미지가 된다. ECR 은 IMMUTABLE — 같은 커밋은 한 번만 push 된다.
-    # kaniko 로그의 ECR 주소(계정 ID)는 가린다. 파이프 대신 파일(/kaniko 아래 — 디버그 이미지에 /tmp 가 없음)로 받아 kaniko 종료 코드를 그대로 남긴다
-    - >-
-      if /kaniko/executor
-      --context "$CI_PROJECT_DIR/backend/migrations"
-      --dockerfile "$CI_PROJECT_DIR/backend/migrations/Dockerfile"
-      --destination "$ECR_REGISTRY/team04-hotel/main-migrations:$CI_COMMIT_SHORT_SHA"
-      --label "org.opencontainers.image.revision=$CI_COMMIT_SHA"
-      > /kaniko/push.log 2>&1; then rc=0; else rc=$?; fi;
-      sed -E 's/[0-9]{12}/<account>/g' /kaniko/push.log;
-      exit $rc
-
-# ── release: main → ECR push → prod gitops 릴리스 PR (AWS Runner, infra/gitops/prod/README.md "릴리스") ──
-# main 은 릴리스 PR(release/* · hotfix/* → main, merge commit) 로만 바뀝니다. 태그 = main 커밋 SHA(40자) — chart revision 과 같은 값.
-# 계정 ID · ECR 토큰 · GitHub 토큰은 레포 · CI 변수에 두지 않습니다 (Runner Role 로 조회, 로그에서 가림).
-.release:
-  tags: [aws]
-  interruptible: false
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
-
-# ECR 주소와 이미 push 된 이미지 목록을 다음 job 에 넘깁니다 (재시도 때 IMMUTABLE 태그 push 실패 방지)
-# 프론트 빌드용 토스 클라이언트 키(공개용, 12-secrets Parameter Store)도 넘깁니다 — 레포에 두지 않으려고 SSM 에 둠
-release:prepare:
-  extends: .release
-  stage: release-prepare
-  image:
-    name: amazon/aws-cli:2.31.0
-    entrypoint: [""]
-  needs: []
-  script:
-    - echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com" > release.env
-    # 없거나 읽지 못하면 비워 둡니다 — 백엔드 빌드는 계속하고, release:frontend-build 가 원인을 출력하며 실패합니다
-    - |
-      key="$(aws ssm get-parameter --region us-east-1 --name /team04-hotel/prod/frontend/toss-client-key \
-        --query Parameter.Value --output text 2>/dev/null)" || { key=""; echo "토스 클라이언트 키 Parameter 를 읽지 못했습니다 (release:frontend-build 가 실패합니다)"; }
-      echo "VITE_TOSS_CLIENT_KEY=$key" >> release.env
-    # 있는지는 BatchGetImage 로 본다 (Runner Role 에 DescribeImages 가 없다. 없는 태그는 오류 대신 images 가 빈 목록)
-    - |
-      image_exists() {
-        [ "$(aws ecr batch-get-image --region us-east-1 --repository-name "team04-hotel/$1" \
-               --image-ids imageTag="$2" --query 'length(images)' --output text 2>/dev/null)" = "1" ]
-      }
-      for svc in $IMAGES $RELEASE_ONLY_IMAGES; do
-        if image_exists "$svc" "$CI_COMMIT_SHA"; then
-          echo "이미 있음: $svc"
-          echo "RELEASE_SKIP_$(echo "$svc" | tr 'a-z-' 'A-Z_')=1" >> release.env
-        fi
-      done
-      if image_exists n8n "$N8N_VERSION"; then
-        echo "이미 있음: n8n:$N8N_VERSION"
-        echo "RELEASE_SKIP_N8N=1" >> release.env
-      fi
-  artifacts:
-    reports:
-      dotenv: release.env
-    expire_in: 1 day
-
-release:build:
-  extends: .release
-  stage: release-build
-  image:
-    name: $KANIKO_IMAGE
-    entrypoint: [""]
-  needs: [release:prepare]
-  parallel:
-    matrix:
-      - SERVICE:
-          - api-gateway
-          - auth-service
-          - booking-service
-          - chat-bot-service
-          - hotel-service
-          - payment-service
-          - pg-mock-service
-          - user-service
-          - llm-service
-          - main-migrations
-          - payment-migrations
-          - seed
-  script:
-    - 'test -n "$ECR_REGISTRY" || { echo "ECR_REGISTRY 가 비었습니다 — release:prepare 의 dotenv 아티팩트를 확인하세요"; exit 1; }'
-    - 'eval "skip=\${RELEASE_SKIP_$(echo "$SERVICE" | tr "a-z-" "A-Z_"):-}"; if [ -n "$skip" ]; then echo "$SERVICE:$CI_COMMIT_SHA 는 이미 ECR 에 있어 건너뜀"; exit 0; fi'
-    - |
-      if [ "$SERVICE" = "llm-service" ]; then
-        CONTEXT="$CI_PROJECT_DIR/langchain_rag/llm-service"; DOCKERFILE="$CONTEXT/Dockerfile"
-      elif [ "$SERVICE" = "main-migrations" ]; then
-        CONTEXT="$CI_PROJECT_DIR/backend/migrations"; DOCKERFILE="$CONTEXT/Dockerfile"
-      elif [ "$SERVICE" = "payment-migrations" ]; then
-        CONTEXT="$CI_PROJECT_DIR/backend/apps/payment-service/migrations"; DOCKERFILE="$CONTEXT/Dockerfile"
-      elif [ "$SERVICE" = "seed" ]; then
-        CONTEXT="$CI_PROJECT_DIR/backend"; DOCKERFILE="$CONTEXT/scripts/Dockerfile.seed"
-      else
-        CONTEXT="$CI_PROJECT_DIR/backend"; DOCKERFILE="$CONTEXT/apps/$SERVICE/Dockerfile"
-      fi
-    # ECR 인증은 kaniko 내장 ecr-login 헬퍼가 Runner Role 로 받습니다. Runner 가 arm64 라 운영 워커(t4g) · 결제 서버용 이미지가 됩니다
-    - mkdir -p /kaniko/.docker
-    - printf '{"credHelpers":{"%s":"ecr-login"}}' "$ECR_REGISTRY" > /kaniko/.docker/config.json
-    # 레이어 캐시: ECR team04-hotel/cache (11-registry, 상시 유지 — 매일 재생성 후에도 남음). 서비스들이 같은 저장소를 써서
-    #   같은 builder 단계(npm ci · build common)는 서비스끼리도 재사용됩니다. --cache-ttl 은 저장소 수명 주기(14일)와 맞춤
-    # kaniko 로그의 ECR 주소(계정 ID)는 가립니다. 디버그 이미지에 /tmp 가 없어 /kaniko 아래 파일로 받고 종료 코드를 유지합니다
-    # 메모리 기록(Runner 사양 판단용): 빌드 중 2초마다 호스트 MemAvailable(KiB) 과 이 job cgroup 의 memory.current(바이트, 페이지 캐시 포함)를 남겨
-    #   끝에 호스트 남은 메모리 최소 · job 사용량 최대를 출력합니다. kaniko 가 빌드 중 루트 파일시스템을 바꾸므로 명령은 /busybox 경로로 부릅니다
-    - |
-      ( while :; do
-          echo "$(/busybox/awk '/^MemAvailable:/ { print $2 }' /proc/meminfo) $(/busybox/cat /sys/fs/cgroup/memory.current 2>/dev/null || echo 0)" >> /kaniko/mem.log
-          /busybox/sleep 2
-        done ) &
-      sampler=$!
-      if /kaniko/executor \
-          --context "$CONTEXT" \
-          --dockerfile "$DOCKERFILE" \
-          --destination "$ECR_REGISTRY/team04-hotel/$SERVICE:$CI_COMMIT_SHA" \
-          --cache=true --cache-repo "$ECR_REGISTRY/team04-hotel/cache" --cache-ttl=336h \
-          --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
-          --label "org.opencontainers.image.source=https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04" \
-          > /kaniko/build.log 2>&1; then rc=0; else rc=$?; fi
-      kill "$sampler" 2>/dev/null || true
-      /busybox/sed -E 's/[0-9]{12}/<account>/g' /kaniko/build.log
-      echo "[캐시] 적중 $(/busybox/grep -c 'Using caching version of cmd' /kaniko/build.log) · 없음 $(/busybox/grep -c 'No cached layer found' /kaniko/build.log)"
-      /busybox/awk -v total="$(/busybox/awk '/^MemTotal:/ { print $2 }' /proc/meminfo)" \
-        'NR == 1 || $1 < min { min = $1 } $2 > max { max = $2 }
-         END { printf "[메모리] 호스트 %d MiB · 빌드 중 남은 메모리 최소 %d MiB · 이 job 사용량 최대 %d MiB (2초 간격 %d회)\n", total / 1024, min / 1024, max / 1048576, NR }' /kaniko/mem.log
-      exit $rc
-
-# n8n: Docker Hub 이미지를 ECR team04-hotel/n8n:<N8N_VERSION> 으로 옮깁니다 (운영 클러스터는 ECR 에서만 pull).
-#   빌드 없이 FROM 한 줄짜리 Dockerfile 을 kaniko 로 push — kaniko 의 ecr-login 헬퍼(Runner Role)를 그대로 써서 ECR 토큰을 다루지 않습니다.
-#   태그가 버전이라 커밋마다 바뀌지 않습니다. ECR 이 IMMUTABLE 이므로 이미 있으면(release:prepare RELEASE_SKIP_N8N) 건너뜁니다
-release:mirror-n8n:
-  extends: .release
-  stage: release-build
-  image:
-    name: $KANIKO_IMAGE
-    entrypoint: [""]
-  needs: [release:prepare]
-  variables:
-    GIT_STRATEGY: none
-  script:
-    - 'test -n "$ECR_REGISTRY" || { echo "ECR_REGISTRY 가 비었습니다 — release:prepare 의 dotenv 아티팩트를 확인하세요"; exit 1; }'
-    - 'if [ -n "${RELEASE_SKIP_N8N:-}" ]; then echo "n8n:$N8N_VERSION 은 이미 ECR 에 있어 건너뜀"; exit 0; fi'
-    - mkdir -p /kaniko/.docker /kaniko/n8n
-    - printf '{"credHelpers":{"%s":"ecr-login"}}' "$ECR_REGISTRY" > /kaniko/.docker/config.json
-    - echo "FROM docker.io/n8nio/n8n:$N8N_VERSION" > /kaniko/n8n/Dockerfile
-    - |
-      if /kaniko/executor \
-          --context /kaniko/n8n \
-          --dockerfile /kaniko/n8n/Dockerfile \
-          --custom-platform linux/arm64 \
-          --destination "$ECR_REGISTRY/team04-hotel/n8n:$N8N_VERSION" \
-          > /kaniko/build.log 2>&1; then rc=0; else rc=$?; fi
-      /busybox/sed -E 's/[0-9]{12}/<account>/g' /kaniko/build.log
-      exit $rc
-
-# 프론트 빌드 (Terraform 13-frontend). 운영 반영은 gitops 릴리스 PR merge 후 GitHub Actions 가 CloudFront KeyValueStore 를 바꿀 때
-#   Vite 환경 변수 = infra/gitops/prod/frontend/values.yaml 의 build (공개 값만, VITE_* 키만 허용)
-#                    + VITE_TOSS_CLIENT_KEY (release:prepare 가 Parameter Store 에서 읽어 dotenv 로 넘김)
-#   npm ci --ignore-scripts: job 컨테이너도 IMDS 로 Runner Role 을 받으므로 의존성 설치 스크립트를 실행하지 않습니다
-release:frontend-build:
-  extends: .release
-  stage: release-build
-  image: $NODE_IMAGE
-  needs: [release:prepare]
-  variables:
-    FRONTEND_VALUES: infra/gitops/prod/frontend/values.yaml
-  script:
-    - apk add --no-cache yq-go > /dev/null
-    - |
-      bad="$(yq '.build | keys | .[] | select(test("^VITE_[A-Z0-9_]+$") | not)' "$FRONTEND_VALUES")"
-      if [ -n "$bad" ]; then echo "$FRONTEND_VALUES build 에는 VITE_* 키만 둡니다: $bad"; exit 1; fi
-      if [ -n "$(yq '.build.VITE_TOSS_CLIENT_KEY // ""' "$FRONTEND_VALUES")" ]; then
-        echo "VITE_TOSS_CLIENT_KEY 는 레포에 두지 않습니다 — 12-secrets Parameter Store 에서 읽습니다 ($FRONTEND_VALUES)"; exit 1
-      fi
-      set -a; eval "$(yq -o=shell '.build' "$FRONTEND_VALUES")"; set +a
-      if [ "${VITE_PAYMENT_MODE:-}" = "TOSS" ] && ! printf '%s' "${VITE_TOSS_CLIENT_KEY:-}" | grep -Eq '^(test|live)_gck_'; then
-        echo "VITE_PAYMENT_MODE=TOSS 는 토스 클라이언트 키가 필요합니다 — 12-secrets TOSS_CLIENT_KEY 등록 · release:prepare 로그 확인"; exit 1
-      fi
-      echo "VITE_API_URL=$VITE_API_URL VITE_PAYMENT_MODE=$VITE_PAYMENT_MODE"
-    - cd frontend
-    - npm ci --ignore-scripts --no-audit --no-fund
-    - npm run build
-  artifacts:
-    paths: [frontend/dist/]
-    expire_in: 1 day
-
-# 사이트 버킷 releases/<SHA>/ 에 업로드 (Runner Role 은 releases/* PutObject 만 — 운영 버전 전환 권한 없음).
-#   assets/  파일명에 해시가 붙어 내용이 바뀌지 않음 → 1년 immutable
-#   그 외    index.html · public/ 파일은 브라우저 주소가 버전과 무관(/favicon.svg) → no-cache (매번 재검증)
-# 같은 SHA 로 재시도하면 같은 내용을 덮어씁니다
-release:frontend:
-  extends: .release
-  stage: release-build
-  image:
-    name: amazon/aws-cli:2.31.0
-    entrypoint: [""]
-  needs: [release:frontend-build]
-  variables:
-    FRONTEND_BUCKET: team04-hotel-frontend
-  script:
-    - DEST="s3://$FRONTEND_BUCKET/releases/$CI_COMMIT_SHA"
-    - aws s3 cp frontend/dist/assets "$DEST/assets" --recursive --only-show-errors --cache-control "public, max-age=31536000, immutable"
-    - aws s3 cp frontend/dist "$DEST" --recursive --only-show-errors --exclude "assets/*" --cache-control "no-cache"
-    - echo "업로드 완료 — releases/$CI_COMMIT_SHA (gitops 릴리스 PR merge 후 운영 반영)"
-
-# GitHub App 으로 prod gitops 레포에 릴리스 PR 을 만듭니다 (merge 는 사람 — gitops main ruleset).
-#   infra/gitops/prod/* 를 envs/prod/ 로 복사 (gitops 레포에만 있는 envs/prod/payment 는 유지)
-#   backend 이미지 태그 · chart revision · payment 이미지 태그 · frontend version = 이 main 커밋 SHA
-#   같은 SHA 의 PR 이 이미 열려 있으면 건너뜁니다 (job 재시도 대비)
-release:gitops-pr:
-  extends: .release
-  stage: release-gitops
-  image:
-    name: $DEPLOY_IMAGE
-    entrypoint: [""]
-  needs: [release:build, release:mirror-n8n, release:frontend]
-  variables:
-    GITOPS_GITHUB_REPO: Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04-gitops
-    MONOREPO_GITHUB_URL: https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04
-    GITHUB_APP_SECRET: team04-hotel/prod/github-app
-  script:
-    - apk add --no-cache openssl > /dev/null
-    - sh infra/gitops/scripts/release-pr.sh
 
 # ── image-test: 후보 이미지 smoke test ─────────────────────────
 smoke:db-create:
@@ -706,6 +481,7 @@ smoke:db-drop:
     - if: $ROLLBACK_TO
       when: never
     - if: $CI_COMMIT_BRANCH == "develop"
+      changes: *backend-paths
       when: always
   variables:
     GIT_STRATEGY: none
@@ -740,6 +516,113 @@ push:
       else
         crane copy "docker.io/n8nio/n8n:$N8N_VERSION" "$CI_REGISTRY_IMAGE/n8n:$N8N_VERSION" --platform linux/amd64
       fi
+
+# 승격한 이미지를 GHCR 로 복사 — 운영 릴리스(GitHub Actions)가 Tailscale 없이 GHCR → ECR 로 옮김. 재빌드 없이 같은 digest
+#   태그 = 커밋 SHA 40자 (release/* 가 가리키는 develop 커밋과 바로 대응). 이미 있으면 건너뜀 (재시도 멱등)
+#   deploy-dev 는 push 만 기다림 — GHCR 장애가 dev 배포를 막지 않음. n8n 은 운영이 Docker Hub 에서 직접 옮김
+#   GHCR_USER · GHCR_TOKEN: 봇 계정 classic PAT(write:packages) — OpenBao ghcr-push → gitlab.yml --tags bootstrap (README 12-4)
+push:ghcr:
+  extends: .rules-develop
+  stage: push
+  image:
+    name: $CRANE_IMAGE
+    entrypoint: [""]
+  needs: [push]
+  interruptible: false
+  retry: 1
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - 'test -n "${GHCR_TOKEN:-}" || { echo "CI 변수 GHCR_USER · GHCR_TOKEN 이 없습니다 — infra/ansible README 12-4 (OpenBao ghcr-push → gitlab.yml --tags bootstrap)"; exit 1; }'
+    - crane auth login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    # 토큰을 명령 인자로 넘기지 않음
+    - printf '%s' "$GHCR_TOKEN" | crane auth login ghcr.io -u "$GHCR_USER" --password-stdin
+    - |
+      for svc in $IMAGES; do
+        dst="$GHCR_IMAGE_PREFIX/$svc:$CI_COMMIT_SHA"
+        src_digest="$(crane digest "$CI_REGISTRY_IMAGE/$svc:$IMAGE_TAG")"
+        dst_digest="$(crane digest "$dst" 2>/dev/null || true)"
+        if [ "$dst_digest" = "$src_digest" ]; then
+          echo "이미 있음: $dst"
+        else
+          # 같은 커밋을 새 파이프라인으로 다시 빌드하면 digest 가 달라짐 — 이번에 승격한 이미지로 맞춤
+          [ -z "$dst_digest" ] || echo "덮어씀: $dst ($dst_digest → $src_digest)"
+          crane copy "$CI_REGISTRY_IMAGE/$svc:$IMAGE_TAG" "$dst"
+          dst_digest="$(crane digest "$dst")"
+        fi
+        [ "$src_digest" = "$dst_digest" ] || { echo "$svc digest 불일치 — GitLab $src_digest / GHCR $dst_digest"; exit 1; }
+        echo "$dst  ($dst_digest)"
+      done
+
+# ── 프론트만 바뀐 develop 커밋: 직전 이미지 재태깅 ─────────────────
+# 이 커밋에는 백엔드 빌드가 없지만 릴리스 커밋으로 고를 수 있어야 함 (운영 릴리스는 GHCR <svc>:<release SHA> 를 찾음).
+# 백엔드 경로가 이 커밋과 같은 직전 develop 커밋(first-parent)의 GHCR 이미지에 이 커밋 SHA 태그를 추가 — 같은 digest, 업로드 없음.
+# smoke test 는 그 커밋 파이프라인에서 통과한 이미지라 다시 돌리지 않음
+.rules-frontend-only:
+  rules:
+    - if: $ROLLBACK_TO
+      when: never
+    - if: $CI_COMMIT_BRANCH == "develop"
+      changes: *backend-paths
+      when: never
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+# 후보: first-parent 로 거슬러 올라가며 백엔드 경로(.paths backend)가 이 커밋과 같은 커밋들 (처음 달라지는 곳에서 멈춤)
+ghcr:reuse-resolve:
+  extends: .rules-frontend-only
+  stage: push
+  image: $DEPLOY_IMAGE
+  needs: [frontend:build]
+  interruptible: false
+  variables:
+    GIT_DEPTH: "50"
+  script:
+    - |
+      set -eu
+      candidates=""
+      for c in $(git rev-list --first-parent --max-count=30 HEAD^); do
+        git diff --quiet "$c" HEAD -- backend backend-deploy langchain_rag .gitlab-ci.yml || break
+        candidates="$candidates $c"
+      done
+      [ -n "$candidates" ] || { echo "백엔드가 이 커밋과 같은 직전 develop 커밋이 없습니다 (최근 30개 · clone 깊이 50) — develop 에서 Run pipeline 으로 전체 파이프라인을 실행하세요"; exit 1; }
+      echo "REUSE_CANDIDATES=$(echo $candidates)" > reuse.env
+      echo "후보(최신순):$candidates"
+  artifacts:
+    reports:
+      dotenv: reuse.env
+    expire_in: 1 day
+
+# 후보 중 GHCR 에 12개 이미지가 모두 있는 첫 커밋(= 그 파이프라인 통과)을 base 로 → 이 커밋 SHA 태그 추가
+push:ghcr-reuse:
+  extends: .rules-frontend-only
+  stage: push
+  image:
+    name: $CRANE_IMAGE
+    entrypoint: [""]
+  needs: [ghcr:reuse-resolve]
+  interruptible: false
+  retry: 1
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - 'test -n "${GHCR_TOKEN:-}" || { echo "CI 변수 GHCR_USER · GHCR_TOKEN 이 없습니다 — infra/ansible README 12-4 (OpenBao ghcr-push → gitlab.yml --tags bootstrap)"; exit 1; }'
+    - printf '%s' "$GHCR_TOKEN" | crane auth login ghcr.io -u "$GHCR_USER" --password-stdin
+    - |
+      base=""
+      for c in $REUSE_CANDIDATES; do
+        missing=""
+        for svc in $IMAGES; do
+          crane digest "$GHCR_IMAGE_PREFIX/$svc:$c" > /dev/null 2>&1 || { missing="$svc"; break; }
+        done
+        if [ -z "$missing" ]; then base="$c"; break; fi
+        echo "$c: GHCR 에 $missing 없음 — 이전 후보 확인"
+      done
+      [ -n "$base" ] || { echo "후보 커밋 모두 GHCR 이미지가 없습니다 (그 파이프라인이 통과하지 않음) — develop 에서 Run pipeline 으로 전체 파이프라인을 실행하세요"; exit 1; }
+      echo "base: $base → $CI_COMMIT_SHA"
+      for svc in $IMAGES; do
+        crane tag "$GHCR_IMAGE_PREFIX/$svc:$base" "$CI_COMMIT_SHA"
+        echo "$GHCR_IMAGE_PREFIX/$svc:$CI_COMMIT_SHA  ($(crane digest "$GHCR_IMAGE_PREFIX/$svc:$CI_COMMIT_SHA"))"
+      done
 
 # ── deploy (수동) ─────────────────────────────────────────────
 # gitops 레포(dev) 에 커밋 1개 + 배포 태그 1개를 만듭니다. 클러스터 반영은 ArgoCD 의 backend Application(자동 sync)이 합니다 (infra/ansible README 12-9)
@@ -817,6 +700,7 @@ deploy-dev:
     - if: $ROLLBACK_TO
       when: never
     - if: $CI_COMMIT_BRANCH == "develop"
+      changes: *backend-paths
       when: manual
 
 # ── rollback (Run pipeline + 변수 ROLLBACK_TO) ─────────────────────

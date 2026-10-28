@@ -1,9 +1,10 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RpcException } from '@nestjs/microservices';
 import { DataSource, In, Like, Repository } from 'typeorm';
 import { User, UserRole, UserStatus } from './entities/user.entity';
 import { DeletedUser } from './entities/deleted-user.entity';
+import { rpcError } from '@app/common';
 
 // proto의 User 메시지와 1:1 대응되는 응답 형태
 export interface UserGrpcResponse {
@@ -52,7 +53,7 @@ export class UserService {
       where: { email: data.email },
     });
     if (existing) {
-      throw new RpcException('이미 가입된 이메일입니다.');
+      throw rpcError(GrpcStatus.ALREADY_EXISTS, '이미 가입된 이메일입니다.');
     }
 
     const user = this.userRepository.create({
@@ -117,7 +118,7 @@ export class UserService {
   async getUserByEmail(email: string): Promise<UserGrpcResponse> {
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
-      throw new RpcException('가입되지 않은 이메일입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '가입되지 않은 이메일입니다.');
     }
     return this.toGrpcResponse(user);
   }
@@ -177,7 +178,7 @@ export class UserService {
   async getUserById(id: number): Promise<UserGrpcResponse> {
     const user = await this.userRepository.findOne({ where: { id } });
     if (!user) {
-      throw new RpcException('존재하지 않는 유저입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 유저입니다.');
     }
     return this.toGrpcResponse(user);
   }
@@ -189,7 +190,7 @@ export class UserService {
   ): Promise<UserGrpcResponse> {
     const user = await this.userRepository.findOne({ where: { id } });
     if (!user) {
-      throw new RpcException('존재하지 않는 유저입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 유저입니다.');
     }
 
     user.name = data.name;
@@ -204,7 +205,7 @@ export class UserService {
   async deleteUser(id: number): Promise<{ success: boolean }> {
     const user = await this.userRepository.findOne({ where: { id } });
     if (!user) {
-      throw new RpcException('존재하지 않는 유저입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 유저입니다.');
     }
 
     const queryRunner = this.dataSource.createQueryRunner();

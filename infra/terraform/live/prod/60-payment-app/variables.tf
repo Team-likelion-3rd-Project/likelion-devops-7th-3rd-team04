@@ -68,9 +68,9 @@ variable "image_repositories" {
 }
 
 variable "instance_type" {
-  description = "결제 서버 인스턴스 타입 (arm64)"
+  description = "결제 서버 인스턴스 타입 (x86_64)"
   type        = string
-  default     = "t4g.small"
+  default     = "t3a.small"
 }
 
 variable "desired_capacity" {

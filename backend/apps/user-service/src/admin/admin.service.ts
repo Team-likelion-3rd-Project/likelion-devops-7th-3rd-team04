@@ -1,8 +1,9 @@
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RpcException } from '@nestjs/microservices';
 import { Repository } from 'typeorm';
 import { Admin } from './entities/admin.entity';
+import { rpcError } from '@app/common';
 
 // proto의 Admin 메시지와 1:1 대응되는 응답 형태
 export interface AdminGrpcResponse {
@@ -31,7 +32,10 @@ export class AdminService {
       where: { email: data.email },
     });
     if (existing) {
-      throw new RpcException('이미 등록된 관리자 이메일입니다.');
+      throw rpcError(
+        GrpcStatus.ALREADY_EXISTS,
+        '이미 등록된 관리자 이메일입니다.',
+      );
     }
 
     const admin = this.adminRepository.create({
@@ -48,7 +52,10 @@ export class AdminService {
   async getAdminByEmail(email: string): Promise<AdminGrpcResponse> {
     const admin = await this.adminRepository.findOne({ where: { email } });
     if (!admin) {
-      throw new RpcException('등록되지 않은 관리자 이메일입니다.');
+      throw rpcError(
+        GrpcStatus.NOT_FOUND,
+        '등록되지 않은 관리자 이메일입니다.',
+      );
     }
     return this.toGrpcResponse(admin);
   }
@@ -63,7 +70,7 @@ export class AdminService {
   async getAdminById(id: number): Promise<AdminGrpcResponse> {
     const admin = await this.adminRepository.findOne({ where: { id } });
     if (!admin) {
-      throw new RpcException('존재하지 않는 관리자입니다.');
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 관리자입니다.');
     }
     return this.toGrpcResponse(admin);
   }
