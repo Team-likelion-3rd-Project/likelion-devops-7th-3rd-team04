@@ -108,8 +108,9 @@ alloy_port: 12345           # Alloy UI · 자체 상태 (ssh -L 12345:127.0.0.1:
 payment_scrape_interval: 30s
 # control plane Tailscale IP 의 Prometheus NodePort (ACL tag:payment → tag:k8s-node tcp:30909)
 payment_remote_write_url: "http://{{ cluster_entry_ip }}:{{ prometheus_nodeport }}/api/v1/write"
-# payment-service /metrics 수집 — backend MetricsModule 이 배포된 뒤 켬 (노션 "라벨 세부 정의 v0.2")
-payment_metrics_enabled: false
+# payment-service /metrics — 앱에 METRICS_PORT 를 넣고 Alloy 가 수집 (backend libs/common metrics, 노션 "라벨 세부 정의 v0.2").
+# 이미지가 메트릭 2차(#357) 이후 커밋이어야 gRPC 측정까지 나옴. 9464 는 host network 라 ufw 로 외부 차단
+payment_metrics_enabled: true
 payment_metrics_port: 9464
 
 # ── 방화벽: tailscale0 에서만 허용할 포트 (firewall role) ─────

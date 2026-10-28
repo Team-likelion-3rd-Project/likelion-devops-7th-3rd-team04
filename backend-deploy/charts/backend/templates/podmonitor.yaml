@@ -1,0 +1,29 @@
+{{- if .Values.metrics.enabled }}
+---
+# backend 서비스의 /metrics 수집 (Prometheus Operator PodMonitor — kube-prometheus-stack 이 CRD 를 설치).
+# containerPort metrics 가 있는 Pod 만 대상이 된다 (deployment.yaml — services.<이름>.metrics: false 면 포트가 없음).
+# ServiceMonitor 대신 PodMonitor: Service · Headless Service 가 같은 Pod 를 가리켜도 대상이 겹치지 않고,
+# 인프라 service 라벨이 생기지 않아 앱이 붙인 service 라벨(서비스 이름)이 그대로 남는다
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: backend
+  labels:
+    app.kubernetes.io/part-of: backend
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: backend
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  # job 라벨 = 서비스 이름 (기본값은 <namespace>/<PodMonitor 이름>)
+  jobLabel: app.kubernetes.io/name
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.interval }}
+      # 앱이 붙인 service 라벨을 그대로 씀 (노션 "라벨 세부 정의 v0.2" 3절)
+      honorLabels: true
+{{- end }}

@@ -3,6 +3,8 @@
 {{- $ctx := dict "root" $ "name" $name }}
 {{- $env := merge (dict) ($svc.env | default dict) $.Values.global.env }}
 {{- $gcpWif := and $svc.gcpWorkloadIdentity $.Values.gcpWorkloadIdentity.enabled }}
+{{- /* services.<이름>.metrics: false 로 뺀 서비스 제외 (default 는 false 를 빈 값으로 보므로 문자열로 비교) */}}
+{{- $metrics := and $.Values.metrics.enabled (ne (toString $svc.metrics) "false") }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -60,10 +62,19 @@ spec:
             - name: health
               containerPort: {{ $svc.healthPort }}
             {{- end }}
+            {{- if $metrics }}
+            # Prometheus 메트릭 (GET /metrics) — templates/podmonitor.yaml 이 이 포트 이름으로 수집
+            - name: metrics
+              containerPort: {{ $.Values.metrics.port }}
+            {{- end }}
           env:
             {{- range $key := keys $env | sortAlpha }}
             - name: {{ $key }}
               value: {{ tpl (get $env $key | toString) $ | quote }}
+            {{- end }}
+            {{- if $metrics }}
+            - name: METRICS_PORT
+              value: {{ $.Values.metrics.port | quote }}
             {{- end }}
             {{- range $key := $svc.secretEnv }}
             - name: {{ $key }}
