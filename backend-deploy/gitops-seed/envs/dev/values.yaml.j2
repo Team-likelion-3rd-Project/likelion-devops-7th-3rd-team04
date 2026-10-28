@@ -18,6 +18,10 @@ ingress:
     - /api
     - /api-docs   # dev 전용 Swagger
 
+# Prometheus 메트릭 — 서비스마다 METRICS_PORT(9464) + PodMonitor. dev Prometheus 는 infra/ansible monitoring.yml (README 17절)
+metrics:
+  enabled: true
+
 # 결제 서비스 · 결제 DB · ElasticMQ(SQS 대체)는 클러스터 밖 결제 노드(infra/ansible payment.yml)에서 운영합니다.
 # 결제 노드 Tailscale IP 는 payment.yml 실행 결과 마지막에 이 파일에 넣을 값과 함께 출력됩니다 — 아래 주석의 <payment ts ip> 를 채우세요.
 services:
