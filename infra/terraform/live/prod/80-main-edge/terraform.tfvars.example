@@ -1,0 +1,8 @@
+# 80-main-edge 로컬 값. 복사해서 같은 디렉터리의 terraform.tfvars 로 저장하고 채운다 (*.tfvars 는 gitignore).
+# terragrunt run --all apply 도 이 파일을 읽는다 (Terraform 이 작업 디렉터리의 terraform.tfvars 를 자동으로 읽음).
+
+# 운영 Grafana(https://grafana.<도메인>)에 접속할 출발지 공인 IPv4 (/32). 비우면 아무도 접속할 수 없다.
+# 내 공인 IP: curl -s https://checkip.amazonaws.com
+grafana_allowed_cidrs = [
+  # "203.0.113.10/32", # 이름
+]

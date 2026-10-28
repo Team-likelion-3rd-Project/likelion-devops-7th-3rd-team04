@@ -2,6 +2,7 @@
 #
 #   team04-hotel-alerts  ← CloudWatch 알람 ALARM (90-observability-alarms alarm_actions)    → #alerts
 #                          EventBridge 규칙: 알람 ALARM → OK 전환만 (아래 alarm_recovered)
+#                          메인 클러스터 Alertmanager (70 IRSA alertmanager, gitops kube-prometheus-stack)
 #   team04-hotel-deploy  ← 메인 클러스터 ArgoCD 알림 hook (70 IRSA deploy-notify)          → #deploy
 #                          결제 서버 pull agent (60 Instance Role, 44 sns 엔드포인트)
 #                          gitops sync-frontend-version workflow (gitops_ssm_sync Role)
@@ -20,6 +21,12 @@ locals {
   # 배포 토픽 발행 주체 (고정 이름, 70 irsa.tf · 60 iam.tf · 이 스택 github-oidc.tf)
   deploy_publisher_role_arns = [
     for name in concat(var.deploy_publisher_role_names, [aws_iam_role.gitops_ssm_sync.name]) :
+    "arn:${data.aws_partition.current.partition}:iam::${local.account_id}:role/${name}"
+  ]
+
+  # 알림 토픽에 발행하는 Role (서비스 주체 CloudWatch · EventBridge 외, 고정 이름 70 irsa.tf)
+  alert_publisher_role_arns = [
+    for name in var.alert_publisher_role_names :
     "arn:${data.aws_partition.current.partition}:iam::${local.account_id}:role/${name}"
   ]
 }
@@ -129,7 +136,10 @@ data "aws_iam_policy_document" "alerts_topic" {
     }
   }
 
-  # 같은 계정 IAM 주체(관리자 포함)의 직접 발행을 막는다. 서비스 주체 요청에는 aws:PrincipalServiceName 이 있다
+  # 같은 계정 IAM 주체(관리자 포함)의 직접 발행을 막는다. 서비스 주체 요청에는 aws:PrincipalServiceName 이 있다.
+  # 두 조건은 AND — 서비스 주체도 아니고 발행 Role(alert_publisher_role_names)도 아니면 거부.
+  # 서비스 주체 요청에는 aws:PrincipalArn 이 없어 두 번째 조건이 참이지만 첫 번째가 거짓이라 통과한다.
+  # Role 의 Publish · KMS 허용은 Role 정책(70 irsa.tf)에 있다 (deploy 토픽과 같은 방식)
   statement {
     sid       = "DenyOtherPublishers"
     effect    = "Deny"
@@ -145,6 +155,12 @@ data "aws_iam_policy_document" "alerts_topic" {
       test     = "StringNotEquals"
       variable = "aws:PrincipalServiceName"
       values   = ["cloudwatch.amazonaws.com", "events.amazonaws.com"]
+    }
+
+    condition {
+      test     = "ArnNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = local.alert_publisher_role_arns
     }
   }
 }

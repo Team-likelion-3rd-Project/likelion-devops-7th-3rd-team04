@@ -98,6 +98,23 @@ jobs:
           helm template backend backend-deploy/charts/backend -n backend \
             --set global.imageTag=lint --set ingress.enabled=true > /dev/null
 
+  # 운영 Grafana 대시보드(infra/gitops/prod/monitoring)는 온프레미스 원본의 사본 — 원본만 고치고 복사를 잊지 않도록 검사.
+  # 원본의 team04-payment-node 는 운영에서 뺀다 (운영 결제 지표는 AMP, 메인 Prometheus 에 없음)
+  monitoring-copies:
+    name: Monitoring Dashboard Copies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare dashboards
+        run: |
+          src=infra/ansible/roles/monitoring/files/dashboards
+          dst=infra/gitops/prod/monitoring/chart/dashboards
+          diff -r -x team04-payment-node.json "$src" "$dst" || {
+            echo "::error::$dst 가 $src 와 다릅니다 — 원본을 복사해 커밋하세요 (team04-payment-node.json 제외)"
+            exit 1
+          }
+
   secret-scan:
     name: Secret Scan
     runs-on: ubuntu-latest

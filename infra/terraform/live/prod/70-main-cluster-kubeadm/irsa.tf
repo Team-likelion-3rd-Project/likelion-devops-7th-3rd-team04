@@ -10,6 +10,8 @@
 #   booking-service   43-messaging booking_role_name (큐 정책)
 #   hotel-service     13-frontend image_writer_role_name (사진 버킷 정책의 쓰기 허용)
 #   seed              13-frontend image_seed_role_name (사진 버킷 정책의 쓰기 허용)
+#   deploy-notify     10-global deploy_publisher_role_names (배포 토픽 정책)
+#   alertmanager      10-global alert_publisher_role_names (알림 토픽 정책)
 # ESO 가 읽는 Secret 리소스 정책도 Role 이름으로 허용한다: 41-main-data · 12-secrets 의 external_secrets_role_name
 
 data "aws_caller_identity" "current" {}
@@ -74,6 +76,13 @@ locals {
       namespace       = "fluent-bit"
       service_account = "fluent-bit"
     }
+    # Prometheus 알림 (LDP-179, gitops kube-prometheus-stack). SA 이름은 그 values 의 alertmanager.serviceAccount.name.
+    # 10-global 알림 토픽 정책이 이 Role 이름으로 발행을 허용한다 (alert_publisher_role_names)
+    alertmanager = {
+      description     = "Alertmanager (alerts topic publish)"
+      namespace       = "monitoring"
+      service_account = "kube-prometheus-stack-alertmanager"
+    }
   }
 
   # 15-chatbot-vectors 인덱스 (s3vectors 리소스 ARN 형식 bucket/<버킷>/index/<인덱스>)
@@ -113,14 +122,14 @@ resource "aws_iam_role" "irsa" {
   assume_role_policy = data.aws_iam_policy_document.irsa_assume[each.key].json
 }
 
-# ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키)과 12-secrets 의 시드 관리자 계정 값 조회만.
+# ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키)과 12-secrets 의 시드 관리자 · Grafana admin 계정 값 조회만.
 # Secret ARN 끝의 무작위 6자는 ?????? 로 맞춘다
 data "aws_iam_policy_document" "external_secrets" {
   statement {
     sid     = "GetAppSecrets"
     actions = ["secretsmanager:GetSecretValue"]
     resources = [
-      for name in concat(values(var.secret_names), [var.seed_admin_secret_name]) :
+      for name in concat(values(var.secret_names), [var.seed_admin_secret_name, var.grafana_admin_secret_name]) :
       "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${name}-??????"
     ]
   }
@@ -277,4 +286,25 @@ resource "aws_iam_role_policy" "deploy_notify" {
   name   = "deploy-notify"
   role   = aws_iam_role.irsa["deploy-notify"].id
   policy = data.aws_iam_policy_document.deploy_notify.json
+}
+
+# alertmanager: 10-global 알림 토픽 Publish 만 (CloudWatch 알람과 같은 토픽 · 키)
+data "aws_iam_policy_document" "alertmanager" {
+  statement {
+    sid       = "PublishAlerts"
+    actions   = ["sns:Publish"]
+    resources = ["arn:${data.aws_partition.current.partition}:sns:${var.region}:${data.aws_caller_identity.current.account_id}:${var.alerts_topic_name}"]
+  }
+
+  statement {
+    sid       = "EncryptAlerts"
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+    resources = ["arn:${data.aws_partition.current.partition}:kms:${var.region}:${data.aws_caller_identity.current.account_id}:key/${var.notifications_kms_key_id}"]
+  }
+}
+
+resource "aws_iam_role_policy" "alertmanager" {
+  name   = "alerts-publish"
+  role   = aws_iam_role.irsa["alertmanager"].id
+  policy = data.aws_iam_policy_document.alertmanager.json
 }

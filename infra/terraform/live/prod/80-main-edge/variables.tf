@@ -88,3 +88,20 @@ variable "waf_rate_limit_window_sec" {
     error_message = "waf_rate_limit_window_sec 는 60, 120, 300, 600 중 하나여야 합니다."
   }
 }
+
+variable "grafana_subdomain" {
+  description = "운영 Grafana 서브도메인 (gitops kube-prometheus-stack values grafana.ingress.hosts 와 같아야 함). Zone 이 있으면 <grafana_subdomain>.<도메인> 레코드를 만든다"
+  type        = string
+  default     = "grafana"
+}
+
+variable "grafana_allowed_cidrs" {
+  description = "Grafana(grafana.<도메인>)에 접속할 수 있는 출발지 IPv4 CIDR (예: 203.0.113.10/32). 비우면 아무도 접속할 수 없다. 레포에 두지 않고 이 디렉터리의 terraform.tfvars(gitignore)에 둔다"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for c in var.grafana_allowed_cidrs : can(cidrhost(c, 0)) && !strcontains(c, ":")])
+    error_message = "grafana_allowed_cidrs 는 IPv4 CIDR 형식이어야 합니다 (예: 203.0.113.10/32)."
+  }
+}

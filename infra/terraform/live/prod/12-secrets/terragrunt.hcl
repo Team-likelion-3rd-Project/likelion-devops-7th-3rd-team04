@@ -49,4 +49,6 @@ inputs = {
   seed_admin_email    = lookup(local.env, "SEED_ADMIN_EMAIL", "")
   seed_admin_password = lookup(local.env, "SEED_ADMIN_PASSWORD", "")
   seed_admin_name     = lookup(local.env, "SEED_ADMIN_NAME", "")
+
+  grafana_admin_password = lookup(local.env, "GRAFANA_ADMIN_PASSWORD", "")
 }

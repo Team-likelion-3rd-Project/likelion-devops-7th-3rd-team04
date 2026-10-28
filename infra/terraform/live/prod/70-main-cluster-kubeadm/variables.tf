@@ -39,6 +39,12 @@ variable "seed_admin_secret_name" {
   default     = "team04-hotel/prod/seed-admin"
 }
 
+variable "grafana_admin_secret_name" {
+  description = "12-secrets 🔒 의 Grafana admin 계정 Secret 이름. ESO Role 이 읽는다 (gitops monitoring 앱 ExternalSecret)"
+  type        = string
+  default     = "team04-hotel/prod/grafana-admin"
+}
+
 variable "queue_names" {
   description = "43-messaging 의 queue_names (payment_result, payment_result_dlq). booking-service Role 이 받는 큐"
   type        = map(string)
@@ -69,8 +75,13 @@ variable "deploy_topic_name" {
   type        = string
 }
 
+variable "alerts_topic_name" {
+  description = "10-global 의 alerts_topic_name. Alertmanager Role 이 발행한다"
+  type        = string
+}
+
 variable "notifications_kms_key_id" {
-  description = "10-global 의 notifications_kms_key_id (배포 토픽 암호화 키)"
+  description = "10-global 의 notifications_kms_key_id (배포 · 알림 토픽 암호화 키)"
   type        = string
 }
 

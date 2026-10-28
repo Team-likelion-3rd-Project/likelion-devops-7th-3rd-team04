@@ -22,3 +22,8 @@ output "target_group_arn_suffix" {
   description = "워커 Target Group arn_suffix (90-observability-alarms CloudWatch 지표 TargetGroup 차원)"
   value       = aws_lb_target_group.worker.arn_suffix
 }
+
+output "grafana_url" {
+  description = "운영 Grafana URL (WAF 허용 IP 에서만 열림). Zone 이 없으면 null"
+  value       = local.zone_enabled ? format("%s://%s", local.https_enabled ? "https" : "http", one(aws_route53_record.grafana[*].fqdn)) : null
+}
