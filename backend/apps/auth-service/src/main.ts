@@ -1,6 +1,6 @@
 import {
   bootstrapGrpcWithHealth,
-  getGrpcOptions,
+  getGrpcServerOptions,
   startMetrics,
 } from '@app/common';
 import { AuthServiceModule } from './auth-service.module';
@@ -13,7 +13,7 @@ async function bootstrap() {
   // SIGTERM 처리(enableShutdownHooks)도 bootstrapGrpcWithHealth 안에서 합니다.
   await bootstrapGrpcWithHealth(
     AuthServiceModule,
-    getGrpcOptions('auth', 'auth.proto', '0.0.0.0:3006'),
+    getGrpcServerOptions('auth', 'auth.proto', '0.0.0.0:3006'),
     3106,
   );
 }

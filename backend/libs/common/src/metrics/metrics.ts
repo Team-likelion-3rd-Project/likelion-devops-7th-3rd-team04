@@ -20,6 +20,14 @@ export interface AppMetrics {
   server: Server;
 }
 
+// startMetrics가 만든 레지스트리. gRPC 인터셉터(grpc-metrics.ts)는 모듈 설정 시점(앱 시작 전)에 만들어지므로
+// 호출될 때 여기서 레지스트리를 찾는다
+let activeRegistry: Registry | null = null;
+
+export function activeMetricsRegistry(): Registry | null {
+  return activeRegistry;
+}
+
 // METRICS_PORT 값. 없거나 숫자가 아니면 null (= 메트릭 끔)
 export function metricsPortFromEnv(): number | null {
   const port = Number(process.env.METRICS_PORT);
@@ -39,6 +47,7 @@ export function startMetrics(
   const registry = new Registry();
   registry.setDefaultLabels({ service });
   collectDefaultMetrics({ register: registry });
+  activeRegistry = registry;
 
   const server = createServer((req, res) => {
     if (req.method !== 'GET' || req.url?.split('?')[0] !== '/metrics') {
