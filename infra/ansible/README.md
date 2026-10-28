@@ -1515,7 +1515,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 | `instance` | 대상 주소 | 결제 노드 `node_name` |
 
 - `externalLabels` 는 저장된 시계열에 붙지 않아 `sum by (cluster)` 에 쓸 수 없습니다. 그래서 클러스터 쪽은 scrape class(`team04-default`) 의 relabel 로 붙입니다.
-- 앱 `/metrics`(backend MetricsModule)는 아직 수집하지 않습니다. 개발 완료 보고 후 backend 차트 ServiceMonitor(`honorLabels: true`) · `payment_metrics_enabled: true` 로 켭니다 (17-5).
+- 앱 `/metrics`(backend `libs/common` metrics)는 backend 차트 `metrics.enabled`(PodMonitor) · 결제 노드 `payment_metrics_enabled` 로 수집합니다 (17-5). 앱이 `service` 라벨을 직접 붙이고 수집 쪽은 `honorLabels: true` 입니다.
 
 ### 17-1. Tailscale ACL
 
@@ -1550,11 +1550,14 @@ ansible-playbook payment.yml -K --tags deploy
 |---|---|
 | Kubernetes / Compute Resources / Namespace (Pods) · / Pod | 차트 기본 제공. backend Pod CPU · 메모리 · requests/limits 대비 |
 | Node Exporter / Nodes | 차트 기본 제공. 클러스터 노드 |
-| team04 / 서비스 개요 | 클러스터 + 결제 노드 서비스별 CPU · 메모리, 메모리/limit, 스로틀링, 재시작 (요청 · 지연 · 에러는 17-5 이후) |
+| **team04 / 서비스 개요** | **시작점.** 서비스별 HTTP · gRPC 요청 수 · p95 · 에러 비율, 클러스터 + 결제 노드 CPU · 메모리, 메모리/limit, 스로틀링, 재시작 |
+| team04 / API · gRPC 상세 | HTTP 라우트별 · gRPC 메서드별 요청 · p95/p99 · 결과 코드, 서비스 간 호출 관계(부른 서비스 → 불린 서비스) |
+| team04 / Node.js 런타임 | 이벤트 루프 지연, heap · RSS, GC, 활성 핸들, 프로세스 재시작 |
 | team04 / 결제 노드 | 수집 상태(up), 호스트 CPU · 메모리 · 디스크, 컨테이너별 CPU · 메모리 |
 
 - 대시보드 JSON 은 `roles/monitoring/files/dashboards/` — ConfigMap(label `grafana_dashboard=1`)으로 올라가며 UI 에서 고친 내용은 저장되지 않습니다. JSON 을 고치고 `--tags monitoring` 으로 반영합니다.
-- 알람 규칙은 common values 의 `additionalPrometheusRulesMap`: `PodRestartingFrequently`(15분 3회), `ContainerOOMKilled`, `ContainerMemoryNearLimit`(limit 90%, 5분), `PaymentMetricsAbsent`(결제 노드 메트릭 5분 없음). CPU 스로틀링은 기본 규칙 `CPUThrottlingHigh`(25%, 15분).
+- 알람 규칙은 common values 의 `additionalPrometheusRulesMap`: `PodRestartingFrequently`(15분 3회), `ContainerOOMKilled`, `ContainerMemoryNearLimit`(limit 90%, 5분), `PaymentMetricsAbsent`(결제 노드 메트릭 5분 없음), `ApiGateway5xxRateHigh`(api-gateway 5xx 5% 초과 5분, 0.1 rps 이상일 때만), `NodeEventLoopLagHigh`(이벤트 루프 p99 0.5초 초과 10분). CPU 스로틀링은 기본 규칙 `CPUThrottlingHigh`(25%, 15분).
+- 에러 기준은 **HTTP 5xx 만** 입니다 (노션 합의). gRPC `grpc_code` 는 대시보드에서 비율 · 분포만 봅니다 — `NOT_FOUND` 등 비즈니스 거절이 섞여 있음.
 - **워커 PC 가 꺼져 있으면** `KubeNodeNotReady` · `TargetDown`(그 노드의 kubelet · node-exporter) 등이 firing 입니다. dev 에서는 정상 상황입니다.
 
 ### 17-4. 검증
@@ -1571,15 +1574,35 @@ kubectl -n monitoring get pods,pvc -o wide     # Prometheus 는 control plane, �
 4. 데이터 유지: `kubectl -n monitoring delete pod prometheus-kube-prometheus-stack-prometheus-0` 뒤에도 이전 그래프가 남아 있음
 5. 결제 알람: 결제 노드에서 `docker stop alloy` → 약 6분 뒤 `PaymentMetricsAbsent` firing → `docker start alloy` (WAL 에 쌓인 값이 다시 들어옴)
 
-### 17-5. backend /metrics 수집 (개발 완료 보고 후)
+### 17-5. backend /metrics 수집
 
-백엔드 MetricsModule(`METRICS_PORT=9464`, `/metrics`, 노션 "라벨 세부 정의 v0.2")이 배포된 뒤 진행합니다.
+백엔드 메트릭(`backend/libs/common/src/metrics` — 기본 메트릭 · HTTP · gRPC 서버/클라이언트, `METRICS_PORT=9464` 의 `/metrics`)을 수집합니다. 앱은 `METRICS_PORT` 가 없으면 메트릭 서버 · 측정을 모두 끕니다.
 
-1. backend 차트: `metrics.enabled` 토글, `METRICS_PORT` env · containerPort `metrics`, `ServiceMonitor`(`honorLabels: true`) — Prometheus 는 이미 모든 네임스페이스의 ServiceMonitor 를 읽음
-2. gitops `envs/dev/values.yaml` 에서 켬
-3. 결제 노드: `payment_metrics_enabled: true` + payment.env 에 `METRICS_PORT` → `payment.yml --tags deploy`
-4. "team04 / 서비스 개요" 에 요청 · 지연 · 에러 패널, 에러율 알람 (합의된 에러 정의 기준)
-5. 시계열 수 점검: `count by (service) ({service!=""})`
+| 위치 | 켜는 값 | 하는 일 |
+|---|---|---|
+| backend 차트 | `metrics.enabled: true` (기본 false, dev 는 gitops `envs/dev/values.yaml`) | 서비스마다 `METRICS_PORT` env · containerPort `metrics`, PodMonitor `backend` 1개 (`honorLabels: true`, job = 서비스 이름). `services.<이름>.metrics: false` 면 제외 (llm-service 기본 제외) |
+| 결제 노드 | `payment_metrics_enabled: true` (`group_vars/payment.yml`) | payment.env 에 `METRICS_PORT`, Alloy 가 `127.0.0.1:9464` 수집 (job `payment-service`) |
+
+- ServiceMonitor 대신 PodMonitor: Service · Headless Service 가 같은 Pod 를 가리켜도 대상이 겹치지 않고, 인프라 `service` 라벨이 생기지 않습니다.
+- 운영(prod)은 차트 기본값(false) 그대로 — 운영 Prometheus 도입 때 켭니다.
+
+**순서**
+
+1. 차트 변경이 develop 에 merge → CI `deploy-dev` 로 차트 커밋 반영
+2. gitops `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` 에 `metrics: {enabled: true}` → ArgoCD sync (Pod 재시작)
+3. `ansible-playbook monitoring.yml -K --tags monitoring` (대시보드 · 알람)
+4. `ansible-playbook payment.yml -K --tags deploy` (결제 노드 — 이미지가 메트릭 2차 이후 커밋이어야 gRPC 측정까지 나옴)
+
+**확인**
+
+```bash
+kubectl -n backend exec deploy/booking-service -- wget -qO- localhost:9464/metrics | head
+```
+
+- Prometheus `/targets` 의 `podMonitor/backend/backend/0` — 켠 서비스 수만큼 UP
+- `count by (service) ({service!=""})` — 서비스당 3,000 이하 (노션 D절 완료 기준). 계속 늘면 금지 라벨이 섞였는지 확인
+- `up{cluster="payment", job="payment-service"}` = 1
+- 프론트에서 예약 · 결제를 한 번 해 본 뒤 "team04 / API · gRPC 상세" 의 호출 관계 표가 채워지는지
 
 ### 17-6. 트러블슈팅
 
