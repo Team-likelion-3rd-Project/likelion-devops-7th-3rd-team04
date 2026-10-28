@@ -203,6 +203,8 @@ helm-lint:
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set services.booking-service.nodePort=30303 > /dev/null
     # dev 의 챗봇 AI 스택(llm-service · n8n) 렌더링
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set services.llm-service.enabled=true --set n8n.enabled=true > /dev/null
+    # dev 의 Prometheus 메트릭(METRICS_PORT · PodMonitor) 렌더링
+    - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set metrics.enabled=true --set services.llm-service.enabled=true > /dev/null
     # dev 의 롤백 대비(마이그레이션 resetOnDowngrade) · 시딩 Job 렌더링
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set migrations.main.resetOnDowngrade=true --set seed.enabled=true > /dev/null
     # 차트의 n8n 워크플로 · 활성화 스크립트(files/n8n)는 langchain_rag/n8n 의 사본 — 원본만 고치고 복사를 잊지 않도록 검사
