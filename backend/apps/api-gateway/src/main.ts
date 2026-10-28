@@ -1,13 +1,19 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { httpMetricsMiddleware, startMetrics } from '@app/common';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import { json, urlencoded } from 'express';
 import { ApiGatewayModule } from './api-gateway.module';
+import { configureTrustProxy } from './trust-proxy';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
-  const app = await NestFactory.create(ApiGatewayModule);
+  const app =
+    await NestFactory.create<NestExpressApplication>(ApiGatewayModule);
+
+  // rate limit(ThrottlerGuard)이 Traefik Pod IP가 아니라 클라이언트 IP로 세도록 (trust-proxy.ts 참고)
+  configureTrustProxy(app);
 
   // K8s가 pod를 종료할 때(스케일다운/재배포) 보내는 SIGTERM을 Nest가 받아서 처리하게
   // 한다. 이게 없으면 Node 프로세스가 SIGTERM에 기본 동작(즉시 종료)으로 반응해서,
