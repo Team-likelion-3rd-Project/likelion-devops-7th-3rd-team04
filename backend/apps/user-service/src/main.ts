@@ -1,6 +1,6 @@
 import {
   bootstrapGrpcWithHealth,
-  getGrpcOptions,
+  getGrpcServerOptions,
   startMetrics,
 } from '@app/common';
 import { UserServiceModule } from './user-service.module';
@@ -13,7 +13,7 @@ async function bootstrap() {
   // SIGTERM 처리(enableShutdownHooks)도 bootstrapGrpcWithHealth 안에서 합니다.
   await bootstrapGrpcWithHealth(
     UserServiceModule,
-    getGrpcOptions('user', 'user.proto', '0.0.0.0:3001'),
+    getGrpcServerOptions('user', 'user.proto', '0.0.0.0:3001'),
     3101,
   );
 }

@@ -1,6 +1,12 @@
 // libs/common/src/grpc/grpc-options.ts
+import type { Interceptor, ServerInterceptor } from '@grpc/grpc-js';
 import { GrpcOptions, Transport } from '@nestjs/microservices';
 import { join } from 'path';
+import {
+  grpcClientMetricsInterceptor,
+  grpcServerMetricsInterceptor,
+} from '../metrics/grpc-metrics';
+import { metricsPortFromEnv } from '../metrics/metrics';
 
 // gRPC 로드 밸런싱 (LDP-159).
 // gRPC는 연결 하나를 오래 재사용하는데, 쿠버네티스 기본 Service(ClusterIP)는 연결을 맺을 때만 Pod를 고른다(L4).
@@ -37,11 +43,47 @@ export function grpcChannelOptions(): Record<string, string | number> {
   };
 }
 
-// 👇 export 키워드가 필수입니다!
+// gRPC 호출 메트릭 (LDP-169): METRICS_PORT가 있을 때만 측정 인터셉터를 넣는다 (없으면 호출 경로에 아무것도 끼지 않음).
+// 서버와 클라이언트는 인터셉터 모양이 달라서, 서버는 getGrpcServerOptions(main.ts), 클라이언트는 getGrpcOptions(ClientsModule)를 쓴다
+function withMetrics(
+  interceptor: Interceptor | ServerInterceptor,
+): Record<string, unknown> {
+  return metricsPortFromEnv() ? { interceptors: [interceptor] } : {};
+}
+
+// 다른 서비스를 부르는 쪽(ClientsModule.register)에서 쓴다
 export function getGrpcOptions(
   packageName: string,
   protoFile: string,
   url: string,
+): GrpcOptions {
+  return baseGrpcOptions(
+    packageName,
+    protoFile,
+    url,
+    withMetrics(grpcClientMetricsInterceptor),
+  );
+}
+
+// gRPC 서비스 자신이 호출을 받을 때(각 앱 main.ts) 쓴다
+export function getGrpcServerOptions(
+  packageName: string,
+  protoFile: string,
+  url: string,
+): GrpcOptions {
+  return baseGrpcOptions(
+    packageName,
+    protoFile,
+    url,
+    withMetrics(grpcServerMetricsInterceptor),
+  );
+}
+
+function baseGrpcOptions(
+  packageName: string,
+  protoFile: string,
+  url: string,
+  extraChannelOptions: Record<string, unknown>,
 ): GrpcOptions {
   return {
     transport: Transport.GRPC,
@@ -54,7 +96,7 @@ export function getGrpcOptions(
         // 디코딩된 객체에서 통째로 생략된다 (예: 객실이 0개인 호텔의 GetRooms 응답에 rooms 키 자체가 없어짐).
         defaults: true,
       },
-      channelOptions: grpcChannelOptions(),
+      channelOptions: { ...grpcChannelOptions(), ...extraChannelOptions },
     },
   };
 }
