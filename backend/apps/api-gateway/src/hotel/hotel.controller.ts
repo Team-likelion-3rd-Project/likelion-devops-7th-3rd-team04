@@ -24,7 +24,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { ApiCommonResponses } from '@app/common/decorators/api-response.decorator';
-import { JwtAuthGuard, RolesGuard, Roles } from '@app/common';
+import { AdminRoles, JwtAuthGuard, RolesGuard, Roles } from '@app/common';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateRoomImageUploadUrlDto } from './dto/create-room-image-upload-url.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
@@ -224,6 +224,7 @@ export class HotelController implements OnModuleInit {
   @Put(':hotelId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiBearerAuth()
   @ApiParam({
     name: 'hotelId',
@@ -413,6 +414,7 @@ export class HotelController implements OnModuleInit {
   @Post(':hotelId/rooms')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiBearerAuth()
   @ApiParam({
     name: 'hotelId',
@@ -449,6 +451,7 @@ export class HotelController implements OnModuleInit {
   @Post(':hotelId/rooms/:roomId/images/upload-url')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiBearerAuth()
   @ApiParam({
     name: 'hotelId',
@@ -501,6 +504,7 @@ export class HotelController implements OnModuleInit {
   @Put(':hotelId/rooms/:roomId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiBearerAuth()
   @ApiParam({
     name: 'hotelId',
@@ -551,6 +555,7 @@ export class HotelController implements OnModuleInit {
   @Delete(':hotelId/rooms/:roomId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiBearerAuth()
   @ApiParam({
     name: 'hotelId',

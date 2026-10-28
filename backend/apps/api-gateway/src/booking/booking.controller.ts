@@ -17,6 +17,7 @@ import {
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import {
   ApiTags,
   ApiOperation,
@@ -31,6 +32,8 @@ import {
   Roles,
   CurrentUser,
   AuthenticatedUser,
+  adminHotelScope,
+  assertAdminHotel,
   parseApiRpcError,
   toHttpException,
 } from '@app/common';
@@ -173,6 +176,24 @@ export function toBooking(booking: BookingDto): BookingDto {
   };
 }
 
+// 관리자 지점 확인용 예약 단건 조회의 실패를 HTTP 에러로 (LDP-178). 없는 예약이면 404, 연결 실패면 503
+export function toBookingLookupError(err: unknown): Error {
+  if ((err as { code?: number })?.code === GrpcStatus.NOT_FOUND) {
+    return toHttpException({
+      status: 404,
+      code: 'RESERVATION_NOT_FOUND',
+      message: '존재하지 않는 예약입니다.',
+      retryable: false,
+    });
+  }
+  return toHttpException({
+    status: 503,
+    code: 'BOOKING_SERVICE_UNAVAILABLE',
+    message: '예약 정보를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+    retryable: true,
+  });
+}
+
 function toBookings({ bookings = [] }: { bookings?: BookingDto[] }): {
   bookings: BookingDto[];
 } {
@@ -286,11 +307,21 @@ export class BookingController implements OnModuleInit {
     description: '관리자 권한이 없음',
   })
   async getBookingsByUserId(
+    @CurrentUser() admin: AuthenticatedUser,
     @Param('userId', ParseIntPipe) userId: number,
   ): Promise<{ bookings: BookingDto[] }> {
-    return toBookings(
+    const result = toBookings(
       await firstValueFrom(this.bookingService.getBookingsByUserId({ userId })),
     );
+    // 지점 관리자·직원에게는 자기 지점 예약만 (LDP-178)
+    const scope = adminHotelScope(admin);
+    return scope === null
+      ? result
+      : {
+          bookings: result.bookings.filter(
+            (booking) => booking.hotelId === scope,
+          ),
+        };
   }
 
   /**
@@ -425,9 +456,19 @@ export class BookingController implements OnModuleInit {
       'INVALID_RESERVATION_STATUS / ROOM_UNIT_NOT_ASSIGNABLE / ROOM_UNIT_ASSIGNMENT_CONFLICT / ROOM_UNIT_BUSY',
   })
   async assignRoomUnit(
+    @CurrentUser() admin: AuthenticatedUser,
     @Param('reservationId', ParseIntPipe) reservationId: number,
     @Body() dto: AssignRoomUnitDto,
   ): Promise<BookingDto> {
+    // 지점 관리자·직원은 자기 지점 예약에만 배정한다 (LDP-178). 호실이 예약과 같은 지점인지는 booking-service가 확인
+    if (adminHotelScope(admin) !== null) {
+      const target = await firstValueFrom(
+        this.bookingService.getBookingById({ reservationId }),
+      ).catch((err) => {
+        throw toBookingLookupError(err);
+      });
+      assertAdminHotel(admin, target.hotelId);
+    }
     const booking = await firstValueFrom(
       this.bookingService.assignRoomUnit({
         reservationId,

@@ -1,7 +1,13 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from './roles.decorator';
-import { AuthenticatedUser } from './jwt-payload.interface';
+import { AdminRole, AuthenticatedUser } from './jwt-payload.interface';
+import {
+  ADMIN_ROLES_KEY,
+  adminRoleForbidden,
+  adminRoleOf,
+  assertAdminHotel,
+} from './admin-scope';
 
 // JwtAuthGuard 뒤에 @UseGuards(JwtAuthGuard, RolesGuard) 순서로 붙여서 사용합니다.
 // @Roles()가 없는 라우트는 그대로 통과시킵니다.
@@ -23,9 +29,10 @@ export class RolesGuard implements CanActivate {
       return true;
     }
 
-    const request = context
-      .switchToHttp()
-      .getRequest<{ user?: AuthenticatedUser }>();
+    const request = context.switchToHttp().getRequest<{
+      user?: AuthenticatedUser;
+      params?: Record<string, string>;
+    }>();
     const user = request.user;
     const hasRole = requiredRoles.includes(user?.role ?? '');
 
@@ -35,6 +42,32 @@ export class RolesGuard implements CanActivate {
     const isAdminTypeConsistent =
       !requiredRoles.includes('ADMIN') || user?.type === 'ADMIN';
 
-    return hasRole && isAdminTypeConsistent;
+    if (!hasRole || !isAdminTypeConsistent) {
+      return false;
+    }
+    if (requiredRoles.includes('ADMIN') && user) {
+      this.checkAdminScope(context, user, request.params);
+    }
+    return true;
+  }
+
+  // 관리자 직급·지점 검사 (LDP-178). 통과 못 하면 code가 담긴 403을 던진다.
+  // 경로에 :hotelId가 있는 관리자 API는 여기서 지점을 비교한다 — 객실·호실은 hotel-service가
+  // hotelId와 함께 찾으므로 경로의 hotelId만 맞으면 다른 지점 객실에 닿지 않는다.
+  private checkAdminScope(
+    context: ExecutionContext,
+    user: AuthenticatedUser,
+    params?: Record<string, string>,
+  ): void {
+    const adminRoles = this.reflector.getAllAndOverride<AdminRole[]>(
+      ADMIN_ROLES_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (adminRoles?.length && !adminRoles.includes(adminRoleOf(user))) {
+      throw adminRoleForbidden();
+    }
+    if (params?.hotelId !== undefined) {
+      assertAdminHotel(user, Number(params.hotelId));
+    }
   }
 }

@@ -24,6 +24,7 @@ import {
 } from '@nestjs/swagger';
 import { ApiCommonResponses } from '@app/common/decorators/api-response.decorator';
 import {
+  AdminRoles,
   AuthenticatedUser,
   CurrentUser,
   JwtAuthGuard,
@@ -162,6 +163,7 @@ export class NoticeController implements OnModuleInit {
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiBearerAuth()
   @ApiOperation({
     summary: '공지 작성 (관리자 전용)',
@@ -197,6 +199,7 @@ export class NoticeController implements OnModuleInit {
   @Put(':noticeId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiBearerAuth()
   @ApiParam({ name: 'noticeId', type: Number, example: 1 })
   @ApiOperation({
@@ -236,6 +239,7 @@ export class NoticeController implements OnModuleInit {
   @HttpCode(204)
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiBearerAuth()
   @ApiParam({ name: 'noticeId', type: Number, example: 1 })
   @ApiOperation({ summary: '공지 삭제 (관리자 전용)' })

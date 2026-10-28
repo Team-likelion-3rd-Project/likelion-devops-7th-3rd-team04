@@ -15,6 +15,15 @@ import { PaymentController } from './payment.controller';
           process.env.PAYMENT_SERVICE_HOST || 'localhost:3004', // payment-service gRPC 주소
         ),
       },
+      // 관리자 결제 조회를 지점별로 거르는 데 예약의 지점을 본다 (LDP-178)
+      {
+        name: 'BOOKING_SERVICE',
+        ...getGrpcOptions(
+          'booking',
+          'booking.proto',
+          process.env.BOOKING_SERVICE_HOST || 'localhost:3003',
+        ),
+      },
     ]),
   ],
   controllers: [PaymentController],

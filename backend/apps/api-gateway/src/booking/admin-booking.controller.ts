@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -26,12 +27,19 @@ import {
   AuthenticatedUser,
   CurrentUser,
   JwtAuthGuard,
+  adminHotelForbidden,
+  adminHotelScope,
+  assertAdminHotel,
   Roles,
   RolesGuard,
   parseApiRpcError,
   toHttpException,
 } from '@app/common';
-import { BookingDto, toBooking } from './booking.controller';
+import {
+  BookingDto,
+  toBooking,
+  toBookingLookupError,
+} from './booking.controller';
 import {
   AdminBookingListQueryDto,
   AdminCancelBookingDto,
@@ -83,6 +91,7 @@ interface AdminBookingGrpcService {
     adminId: number;
     adminName: string;
   }): Observable<BookingDto>;
+  getBookingById(data: { reservationId: number }): Observable<BookingDto>;
 }
 
 // 관리자 예약 목록의 예약 한 건 — 예약자 이름·이메일을 붙여 준다 (LDP-150). 회원이 없으면(탈퇴 등) 빈 문자열
@@ -104,9 +113,10 @@ interface UserLookupGrpcService {
   }): Observable<{ users?: { id: number }[] }>;
 }
 
-// proto(hotel.proto)의 HotelService / GetHotels, ListRoomUnits — 방 번호 검색 (LDP-136)
+// proto(hotel.proto)의 HotelService / GetHotels, ListRoomUnits — 방 번호 검색 (LDP-136), GetRoom — 대리 예약 지점 확인 (LDP-178)
 interface RoomLookupGrpcService {
   getHotels(data: object): Observable<{ hotels?: { hotelId: number }[] }>;
+  getRoom(data: { hotelId: number; roomId: number }): Observable<object>;
   listRoomUnits(data: {
     hotelId: number;
     roomId: number;
@@ -180,8 +190,14 @@ export class AdminBookingController implements OnModuleInit {
       'USER_SERVICE_UNAVAILABLE / HOTEL_SERVICE_UNAVAILABLE / BOOKING_SERVICE_UNAVAILABLE',
   })
   async getBookings(
+    @CurrentUser() admin: AuthenticatedUser,
     @Query() query: AdminBookingListQueryDto,
   ): Promise<{ bookings: AdminBookingListItem[]; total: number }> {
+    // 지점 관리자·직원은 자기 지점 예약만 (LDP-178). 다른 지점을 고르면 403
+    if (query.hotelId) {
+      assertAdminHotel(admin, query.hotelId);
+    }
+    const hotelId = adminHotelScope(admin) ?? query.hotelId;
     const keyword = query.keyword?.trim() ?? '';
     let keywordReservationId = 0;
     let keywordUserIds: number[] = [];
@@ -207,7 +223,7 @@ export class AdminBookingController implements OnModuleInit {
         );
       }
       try {
-        keywordRoomUnitIds = await this.findRoomUnitIds(keyword, query.hotelId);
+        keywordRoomUnitIds = await this.findRoomUnitIds(keyword, hotelId);
       } catch (err) {
         throw toHttpError(
           err,
@@ -223,7 +239,7 @@ export class AdminBookingController implements OnModuleInit {
         this.bookingService.getBookings({
           page: query.page ?? 0,
           size: query.size ?? DEFAULT_PAGE_SIZE,
-          hotelId: query.hotelId ?? 0,
+          hotelId: hotelId ?? 0,
           statuses: query.status ?? [],
           hasKeyword: keyword !== '',
           keywordReservationId,
@@ -272,6 +288,48 @@ export class AdminBookingController implements OnModuleInit {
       guestName: guests.get(booking.userId)?.name ?? '',
       guestEmail: guests.get(booking.userId)?.email ?? '',
     }));
+  }
+
+  // 지점 관리자·직원은 자기 지점 예약만 다룬다 (LDP-178). 본사는 조회 없이 통과
+  private async assertBookingInScope(
+    admin: AuthenticatedUser,
+    reservationId: number,
+  ): Promise<void> {
+    if (adminHotelScope(admin) === null) {
+      return;
+    }
+    const booking = await firstValueFrom(
+      this.bookingService.getBookingById({ reservationId }),
+    ).catch((err) => {
+      throw toBookingLookupError(err);
+    });
+    assertAdminHotel(admin, booking.hotelId);
+  }
+
+  // 대리 예약의 객실이 자기 지점 객실인지 (LDP-178). booking-service는 hotelId를 그대로 저장하므로
+  // 지점 계정이 다른 지점 객실 번호를 넣지 못하게 hotel-service에서 hotelId·roomId 조합을 확인한다.
+  private async assertRoomInScope(
+    admin: AuthenticatedUser,
+    hotelId: number,
+    roomId: number,
+  ): Promise<void> {
+    if (adminHotelScope(admin) === null) {
+      return;
+    }
+    assertAdminHotel(admin, hotelId);
+    await firstValueFrom(this.hotelService.getRoom({ hotelId, roomId })).catch(
+      (err) => {
+        // 없는 조합(다른 지점 객실)이면 403, 연결 실패면 503
+        if ((err as { code?: number })?.code === GrpcStatus.NOT_FOUND) {
+          throw adminHotelForbidden();
+        }
+        throw toHttpError(
+          err,
+          'HOTEL_SERVICE_UNAVAILABLE',
+          '객실 정보를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+        );
+      },
+    );
   }
 
   // 방 번호에 검색어가 들어 있는 호실 ID (LDP-136). 방 번호는 hotel-service에 있어 지점별 호실 목록에서 찾는다 —
@@ -323,6 +381,7 @@ export class AdminBookingController implements OnModuleInit {
     @CurrentUser() admin: AuthenticatedUser,
     @Body() dto: AdminCreateBookingDto,
   ): Promise<BookingDto> {
+    await this.assertRoomInScope(admin, dto.hotelId, dto.roomId);
     await this.assertUserExists(dto.userId);
     const adminName = await this.adminName(admin);
     const booking = await firstValueFrom(
@@ -361,6 +420,7 @@ export class AdminBookingController implements OnModuleInit {
     @Param('reservationId', ParseIntPipe) reservationId: number,
     @Body() dto: AdminCancelBookingDto,
   ): Promise<BookingDto> {
+    await this.assertBookingInScope(admin, reservationId);
     const booking = await firstValueFrom(
       this.bookingService.adminCancelBooking({
         reservationId,
@@ -406,6 +466,7 @@ export class AdminBookingController implements OnModuleInit {
     @Param('reservationId', ParseIntPipe) reservationId: number,
     @Body() dto: CreateExtensionBookingDto,
   ): Promise<BookingDto> {
+    await this.assertBookingInScope(admin, reservationId);
     const adminName = await this.adminName(admin);
     const booking = await firstValueFrom(
       this.bookingService.createExtensionBooking({
