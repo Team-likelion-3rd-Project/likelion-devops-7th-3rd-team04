@@ -21,3 +21,4 @@ export * from './db/typeorm-logger';
 export * from './utils/redact';
 export * from './metrics/metrics';
 export * from './metrics/grpc-metrics';
+export * from './metrics/db-metrics';
