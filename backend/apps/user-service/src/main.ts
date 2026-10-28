@@ -2,7 +2,9 @@ import {
   bootstrapGrpcWithHealth,
   getGrpcServerOptions,
   startMetrics,
+  trackDbPoolMetrics,
 } from '@app/common';
+import { DataSource } from 'typeorm';
 import { UserServiceModule } from './user-service.module';
 
 async function bootstrap() {
@@ -11,10 +13,13 @@ async function bootstrap() {
 
   // gRPC는 3001 포트, 헬스체크(GET /health)용 HTTP는 3101 포트로 띄웁니다.
   // SIGTERM 처리(enableShutdownHooks)도 bootstrapGrpcWithHealth 안에서 합니다.
-  await bootstrapGrpcWithHealth(
+  const app = await bootstrapGrpcWithHealth(
     UserServiceModule,
     getGrpcServerOptions('user', 'user.proto', '0.0.0.0:3001'),
     3101,
   );
+
+  // DB 커넥션 풀 지표 — METRICS_PORT가 있을 때만 (LDP-182)
+  trackDbPoolMetrics(app.get(DataSource));
 }
 bootstrap();
