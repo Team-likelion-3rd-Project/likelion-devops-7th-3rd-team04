@@ -90,6 +90,8 @@ prometheus_retention: 7d
 prometheus_retention_size: 15GB
 # 디스크 확인: PV 크기 + 여유분이 /var/lib 에 남아 있어야 함
 prometheus_disk_headroom_gb: 5
+# Prometheus CPU 상한 — control plane 고정(로컬 PV)이라 control plane(vCPU 2)의 apiserver · etcd 몫을 남김
+prometheus_cpu_limit: 500m
 
 # Grafana UI: NodePort ← CP 의 tailscale serve 가 HTTPS 로 노출
 #   https://<control plane>.<tailnet>.ts.net:9443 (ACL: autogroup:member → tag:k8s-node tcp:9443, README 1-1)

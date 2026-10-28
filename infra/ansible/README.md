@@ -1483,7 +1483,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 클러스터의 Pod · 노드 리소스와 결제 노드(k8s 밖)를 **Grafana 하나**에서 봅니다. 수집 방식 · 라벨은 운영과 같습니다 (노션 "관측성 도입 계획" · "라벨 세부 정의 v0.2").
 
 ```
-[dev 클러스터 — control plane 고정]                           [결제 노드 — Docker Compose]
+[dev 클러스터 — Prometheus 만 CP 고정, 나머지 워커 우선]       [결제 노드 — Docker Compose]
  kubelet(cAdvisor) ─┐                                          node-exporter ─┐ 127.0.0.1
  kube-state-metrics ─┼─▶ Prometheus ◀── remote_write(30909) ──── Grafana Alloy ┤
  node-exporter(DS) ──┘    │  로컬 PV                                cAdvisor ──┘ 127.0.0.1
@@ -1497,7 +1497,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 | playbook | `monitoring.yml` (`[control_plane]`) — roles `metrics_server`, `monitoring` / 결제 노드는 `payment.yml`(roles `payment_stack`) |
 | chart | metrics-server `3.14.0`, kube-prometheus-stack `92.3.0` (`group_vars/control_plane.yml`) |
 | values | `roles/monitoring/files/kube-prometheus-stack-values-common.yaml` (**운영과 공유하는 정적 파일**) + `templates/kube-prometheus-stack-values-dev.yaml.j2` (dev 값) |
-| 배치 | node-exporter(DaemonSet) 외 전부 control plane 고정 — 워커는 팀원 PC 라 꺼질 수 있음 |
+| 배치 | **Prometheus**: control plane 고정 (로컬 PV), CPU limit `prometheus_cpu_limit`(500m) / **operator · kube-state-metrics · Grafana**: 워커 우선(preferred affinity), 워커가 모두 꺼져 있으면 control plane — 클러스터 기동에 필수가 아니라 control plane(vCPU 2)의 부담을 줄이려고. 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸 / node-exporter: DaemonSet |
 | 저장소 | control plane 로컬 PV `prometheus-local` (`/var/lib/monitoring/prometheus`, 20Gi, StorageClass `monitoring-local`), 보존 7일 · 15GB |
 | Grafana | `https://<control plane>.<tailnet>.ts.net:9443` — admin 계정 OpenBao `grafana` → ESO → Secret `monitoring/grafana-admin` |
 | Prometheus | `http://<control plane Tailscale IP>:30909` (UI · `/targets`, 결제 노드 remote_write `/api/v1/write`) |
@@ -1562,7 +1562,7 @@ ansible-playbook payment.yml -K --tags deploy
 ```bash
 kubectl top nodes
 kubectl top pods -n backend
-kubectl -n monitoring get pods,pvc
+kubectl -n monitoring get pods,pvc -o wide     # Prometheus 는 control plane, 나머지는 켜져 있는 워커
 ```
 
 1. Prometheus `/targets` — kubelet · cAdvisor · node-exporter · kube-state-metrics · apiserver · coredns 가 UP (꺼진 워커는 DOWN)
@@ -1591,5 +1591,6 @@ kubectl -n monitoring get pods,pvc
 | Prometheus Pod 가 `permission denied` 로 재시작 | 데이터 디렉토리 소유자 1000:2000 — `--tags monitoring` 재실행 |
 | `kubectl top` 이 `Metrics API not available` | `kubectl get apiservice v1beta1.metrics.k8s.io`, metrics-server 로그(kubelet 10250 접속). 직접 설치한 metrics-server 가 있으면 role 이 건너뜀 — 지우고 다시 실행 |
 | 결제 노드 메트릭이 없음 | 결제 노드에서 `docker logs alloy` (remote_write 오류), `curl -s 127.0.0.1:12345/-/ready`, ACL `tag:payment → tag:k8s-node tcp:30909`, `CLUSTER_ENTRY_IP` |
-| Grafana 9443 접속 불가 | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status` |
+| Grafana 9443 접속 불가 | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status`. Grafana Pod 가 워커에 있으면 CP `:30300` NodePort → 워커 Pod 경로라 `kubectl -n monitoring get pod -o wide` 로 Pod 가 Running 인지도 확인 |
+| control plane 과부하 (load 가 vCPU 수보다 훨씬 높음, controller-manager · scheduler 가 `leaderelection lost` 로 재시작) | `kubectl get pods -A -o wide --field-selector spec.nodeName=<CP>` 로 CP 에 몰린 Pod 확인. 급하면 `kubectl -n monitoring scale deploy --all --replicas=0 && kubectl -n monitoring scale sts --all --replicas=0` (데이터 유지, `monitoring.yml` 재실행으로 복구) |
 | chart 메이저 버전 업그레이드 | kube-prometheus-stack 은 helm 이 CRD 를 갱신하지 않음 — chart UPGRADE 문서대로 CRD 를 먼저 `kubectl apply --server-side` |
