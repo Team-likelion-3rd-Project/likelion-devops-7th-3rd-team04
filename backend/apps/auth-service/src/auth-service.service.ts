@@ -9,6 +9,7 @@ import * as bcrypt from 'bcrypt';
 import Redis from 'ioredis';
 import {
   REDIS_CLIENT,
+  AdminRole,
   JwtPayload,
   PrincipalType,
   apiRpcException,
@@ -70,6 +71,8 @@ interface AdminGrpcResponse {
   id: number;
   email: string;
   name: string;
+  hotelId: number; // 0 = 본사
+  adminRole: string;
 }
 
 interface UserGrpcService {
@@ -106,6 +109,37 @@ interface Principal {
   name: string;
   role: string;
   type: PrincipalType;
+  // 관리자만 (LDP-176) — 토큰에 실어 api-gateway가 지점·직급 권한을 검사한다
+  hotelId?: number | null;
+  adminRole?: AdminRole;
+}
+
+// 토큰 payload — 관리자면 소속 지점·직급도 싣는다 (고객 토큰은 그대로)
+function toJwtPayload(principal: Principal): JwtPayload {
+  const payload: JwtPayload = {
+    sub: principal.id,
+    email: principal.email,
+    role: principal.role,
+    type: principal.type,
+  };
+  if (principal.type === 'ADMIN') {
+    payload.hotelId = principal.hotelId ?? null;
+    payload.adminRole = principal.adminRole;
+  }
+  return payload;
+}
+
+// 관리자 프로필 → 토큰 발급 대상. 소속 지점 0(proto 기본값)은 본사(null)로 바꾼다
+function adminPrincipal(admin: AdminGrpcResponse): Principal {
+  return {
+    id: admin.id,
+    email: admin.email,
+    name: admin.name,
+    role: 'ADMIN',
+    type: 'ADMIN',
+    hotelId: admin.hotelId || null,
+    adminRole: admin.adminRole as AdminRole,
+  };
 }
 
 @Injectable()
@@ -290,13 +324,7 @@ export class AuthServiceService implements OnModuleInit {
       throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_CREDENTIALS_MESSAGE);
     }
 
-    return this.issueTokens({
-      id: admin.id,
-      email: admin.email,
-      name: admin.name,
-      role: 'ADMIN',
-      type: 'ADMIN',
-    });
+    return this.issueTokens(adminPrincipal(admin));
   }
 
   // 토큰 재발급: 리프레시 토큰 서명 검증 → Redis에 저장된 값과 대조 → payload.type에 따라 고객/관리자
@@ -388,7 +416,7 @@ export class AuthServiceService implements OnModuleInit {
           INVALID_REFRESH_TOKEN_MESSAGE,
         );
       });
-      return { id: admin.id, email: admin.email, name: admin.name, role: 'ADMIN', type: 'ADMIN' };
+      return adminPrincipal(admin);
     }
 
     const user = await firstValueFrom(this.userService.getUserByEmail({ email: payload.email })).catch(() => {
@@ -510,12 +538,7 @@ export class AuthServiceService implements OnModuleInit {
   }
 
   private signAccessToken(principal: Principal): string {
-    const payload: JwtPayload = {
-      sub: principal.id,
-      email: principal.email,
-      role: principal.role,
-      type: principal.type,
-    };
+    const payload = toJwtPayload(principal);
     return this.jwtService.sign(payload, {
       secret: getRequiredEnv('JWT_ACCESS_SECRET'),
       expiresIn: getRequiredEnv(
@@ -531,12 +554,7 @@ export class AuthServiceService implements OnModuleInit {
     principal: Principal,
     options?: { previousToken?: string },
   ): Promise<AuthTokens> {
-    const payload: JwtPayload = {
-      sub: principal.id,
-      email: principal.email,
-      role: principal.role,
-      type: principal.type,
-    };
+    const payload = toJwtPayload(principal);
 
     const accessToken = this.signAccessToken(principal);
     const refreshToken = this.jwtService.sign(payload, {

@@ -151,4 +151,8 @@ message Admin {
   string name = 3;
   string department = 4;
   string position = 5;
+  // 소속 지점 (LDP-176) — 0 = 본사(소속 지점 없음)
+  int32 hotelId = 6;
+  // 직급: SUPER(본사) / MANAGER(지점 관리자) / STAFF(직원)
+  string adminRole = 7;
 }
