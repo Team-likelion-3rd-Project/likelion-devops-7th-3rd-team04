@@ -112,7 +112,41 @@ const NOTICE_SEEDS: {
 
 const SEED_ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL;
 const SEED_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD;
-const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME ?? '관리자';
+const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME || '본사 관리자';
+
+// 지점 관리자·직원 계정 (LDP-176). 위 본사 계정(SUPER)과 같은 비밀번호·이메일 도메인을 쓴다
+// (예: admin@example.com → seoul.manager@example.com). 지점은 HOTEL_SEEDS의 호텔 이름으로 찾는다.
+const BRANCH_ADMIN_SEEDS: {
+  localPart: string;
+  name: string;
+  hotelName: string;
+  adminRole: 'MANAGER' | 'STAFF';
+}[] = [
+  {
+    localPart: 'seoul.manager',
+    name: '서울점 관리자',
+    hotelName: '서울점',
+    adminRole: 'MANAGER',
+  },
+  {
+    localPart: 'busan.manager',
+    name: '부산점 관리자',
+    hotelName: '부산점',
+    adminRole: 'MANAGER',
+  },
+  {
+    localPart: 'jeju.manager',
+    name: '제주점 관리자',
+    hotelName: '제주점',
+    adminRole: 'MANAGER',
+  },
+  {
+    localPart: 'seoul.staff',
+    name: '서울점 직원',
+    hotelName: '서울점',
+    adminRole: 'STAFF',
+  },
+];
 
 interface HotelSeed {
   hotel: Pick<Hotel, 'name' | 'address' | 'phoneNumber' | 'description'>;
@@ -502,6 +536,13 @@ async function seedAdmin(dataSource: DataSource): Promise<void> {
     where: { email: SEED_ADMIN_EMAIL },
   });
   if (existing) {
+    // 이름만 SEED_ADMIN_NAME에 맞춘다 (기존 '관리자' → '본사 관리자', LDP-176). 이미 같으면 그대로
+    if (existing.name !== SEED_ADMIN_NAME) {
+      await adminRepository.update(existing.id, { name: SEED_ADMIN_NAME });
+      console.log(
+        `[seed] 관리자 이름 변경: ${existing.name} → ${SEED_ADMIN_NAME}`,
+      );
+    }
     console.log(
       `[seed] 관리자 계정이 이미 존재합니다 (${SEED_ADMIN_EMAIL}) — 건너뜁니다.`,
     );
@@ -509,7 +550,12 @@ async function seedAdmin(dataSource: DataSource): Promise<void> {
   }
 
   const admin = await adminRepository.save(
-    adminRepository.create({ email: SEED_ADMIN_EMAIL, name: SEED_ADMIN_NAME }),
+    adminRepository.create({
+      email: SEED_ADMIN_EMAIL,
+      name: SEED_ADMIN_NAME,
+      hotelId: null,
+      adminRole: 'SUPER',
+    }),
   );
   const passwordHash = await bcrypt.hash(SEED_ADMIN_PASSWORD, SALT_ROUNDS);
   await credentialRepository.save(
@@ -517,6 +563,49 @@ async function seedAdmin(dataSource: DataSource): Promise<void> {
   );
 
   console.log(`[seed] 관리자 계정 생성 완료: ${SEED_ADMIN_EMAIL}`);
+}
+
+// 지점 관리자 3 + 서울점 직원 1 (LDP-176). 호텔이 있어야 지점을 정할 수 있어 seedHotelsAndRooms 뒤에 실행한다.
+// 이미 있는 이메일은 건너뛰어 여러 번 실행해도 안전하다.
+async function seedBranchAdmins(dataSource: DataSource): Promise<void> {
+  if (!SEED_ADMIN_EMAIL || !SEED_ADMIN_PASSWORD) {
+    return;
+  }
+  const domain = SEED_ADMIN_EMAIL.split('@')[1];
+  const hotelRepository = dataSource.getRepository(Hotel);
+  const adminRepository = dataSource.getRepository(Admin);
+  const credentialRepository = dataSource.getRepository(AdminCredential);
+  const passwordHash = await bcrypt.hash(SEED_ADMIN_PASSWORD, SALT_ROUNDS);
+
+  for (const seed of BRANCH_ADMIN_SEEDS) {
+    const email = `${seed.localPart}@${domain}`;
+    if (await adminRepository.exists({ where: { email } })) {
+      continue;
+    }
+    const hotel = await hotelRepository.findOne({
+      where: { name: seed.hotelName },
+    });
+    if (!hotel) {
+      console.warn(
+        `[seed] ${seed.hotelName}이 없어 지점 계정을 건너뜁니다: ${email}`,
+      );
+      continue;
+    }
+    const admin = await adminRepository.save(
+      adminRepository.create({
+        email,
+        name: seed.name,
+        hotelId: hotel.hotelId,
+        adminRole: seed.adminRole,
+      }),
+    );
+    await credentialRepository.save(
+      credentialRepository.create({ adminId: admin.id, passwordHash }),
+    );
+    console.log(
+      `[seed] 지점 계정 생성 완료: ${email} (${seed.hotelName} ${seed.adminRole})`,
+    );
+  }
 }
 
 async function seedHotelsAndRooms(dataSource: DataSource): Promise<void> {
@@ -975,6 +1064,7 @@ async function main(): Promise<void> {
   try {
     await seedAdmin(dataSource);
     await seedHotelsAndRooms(dataSource);
+    await seedBranchAdmins(dataSource);
     await seedRoomUnits(dataSource);
     await seedFacilities(dataSource);
     await seedRoomAvailabilities(dataSource);

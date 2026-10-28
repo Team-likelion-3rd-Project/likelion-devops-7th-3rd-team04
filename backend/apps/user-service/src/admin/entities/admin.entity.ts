@@ -1,3 +1,4 @@
+import type { AdminRole } from '@app/common';
 import {
   Column,
   CreateDateColumn,
@@ -26,6 +27,18 @@ export class Admin {
 
   @Column({ nullable: true })
   position?: string;
+
+  // 소속 지점 (LDP-176, V13). null = 본사 — hotels는 hotel-service 소유라 FK 없음
+  @Column({ type: 'int', nullable: true })
+  hotelId!: number | null;
+
+  // 직급 (LDP-176). 본사(SUPER)만 hotelId가 null
+  @Column({
+    type: 'enum',
+    enum: ['SUPER', 'MANAGER', 'STAFF'],
+    default: 'STAFF',
+  })
+  adminRole!: AdminRole;
 
   @CreateDateColumn()
   createdAt!: Date;
