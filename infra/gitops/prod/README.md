@@ -76,6 +76,7 @@ values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.a
 | `order` | | 적용 순서 = Application sync-wave, 작은 값부터 (기본 50). 같은 값은 함께 sync |
 | `enabled` | | `false` 면 Application 을 만들지 않고 렌더링 검증에서 뺌 (기본 `true`). 이미 있던 Application 은 지워지고 리소스는 남음 |
 | `clusterValues` | | `true` 면 클러스터 값(위)을 더 넘김 (기본 `false`) |
+| `compareOptions` | | Application 비교 옵션(annotation `argocd.argoproj.io/compare-options`). 예: `ServerSideDiff=true` — API 서버가 채우는 기본값까지 반영해 비교. 차트가 만든 필드에 API 서버 기본값이 붙어 영구 OutOfSync 가 될 때만 씀 (기본 없음) |
 
 ## 배포 (ArgoCD)
 
@@ -148,9 +149,10 @@ node-exporter (모든 노드) · kube-state-metrics ┘                         
 | `prometheus-operator-crds` | 12 | backend PodMonitor 는 CRD 만 있으면 됨. CRD 버전은 kube-prometheus-stack 의 Operator 와 같게 |
 | `metrics-server` | 25 | 의존 없음 |
 | `monitoring` · `kube-prometheus-stack` | 55 · 60 | **backend 뒤** — 관측 스택이 Healthy 가 아니어도(Grafana Secret 없음 등) 서비스 배포는 먼저 끝나고, root sync 만 실패로 알림 |
+| `mysql-exporter-setup` · `mysql-exporter` | 62 · 65 | 메인 RDS exporter (**기본 `enabled: false`**, 아래 "DB · 캐시 지표"). 계정 생성 Job 이 실패해도 관측 스택은 먼저 뜸 |
 
 - **온프레미스와 values 를 공유하지 않습니다.** 운영은 Alertmanager · 저장소 · 노출 · 결제 지표가 달라 `kube-prometheus-stack/values.yaml` 하나에 둡니다. 다만 `team04.resources` · `team04.app` 규칙은 온프레미스 `infra/ansible/roles/monitoring/files/kube-prometheus-stack-values-common.yaml` 의 사본이라 규칙을 바꿀 때 양쪽을 같이 고칩니다 (`team04.payment-node` · `team04.db` 는 운영에 없음).
-- **대시보드**는 온프레미스 `files/dashboards/*.json` 의 사본(`monitoring/chart/dashboards/`, `team04-payment-node` · `team04-db` 제외)입니다. 원본만 고치고 복사합니다 — GitHub CI `Monitoring Dashboard Copies` 가 다르면 실패합니다.
+- **대시보드**는 온프레미스 `files/dashboards/*.json` 의 사본(`monitoring/chart/dashboards/`, `team04-payment-node` · `team04-db` 제외)입니다. 원본만 고치고 복사합니다 — GitHub CI `Monitoring Dashboard Copies` 가 다르면 실패합니다. 운영 전용 대시보드는 `monitoring/chart/dashboards-prod/` 에 둡니다 (사본 검사 대상 아님).
 - **수집 대상 · 라벨**: 모든 대상에 `cluster="main"` · `env="prod"` 를 붙입니다(온프레미스 대시보드 · 규칙 쿼리와 호환). kubeadm 제어부(etcd · scheduler · controller-manager · kube-proxy)는 127.0.0.1 바인딩이라 수집하지 않습니다. backend 는 `backend/values.yaml` `metrics.enabled`(llm-service 제외), 9464 는 Service · Ingress 에 없습니다. Prometheus(워커 파드) → 노드 kubelet 10250 · node-exporter 9100 은 Terraform `30-security` M8 입니다.
 - **Grafana**: `https://grafana.<도메인>` (ALB → Traefik Ingress). WAF 가 `grafana_allowed_cidrs`(Terraform `80-main-edge/terraform.tfvars`) 외 출발지를 403 으로 막습니다 ([Terraform README](../../terraform/README.md) 7절). 로그인은 `admin` / Secrets Manager `team04-hotel/prod/grafana-admin`(Terraform `12-secrets`, 등록 전에는 Grafana 파드가 Secret 을 기다림). 대시보드 · 데이터소스는 코드로만 관리하고 저장소가 없어, UI 에서 고친 것은 재생성 때 사라집니다.
 - **알림**: Alertmanager 가 `severity` `warning` · `critical` 을 10-global 알림 토픽으로 보냅니다(IRSA `team04-hotel-alertmanager`, 토픽 Publish 만). `info` · `Watchdog` 은 보내지 않습니다. 알람 이름 · 네임스페이스로 묶고 해소도 보내며, 같은 알림은 12시간마다 다시 옵니다. 메시지는 Chatbot 사용자 정의 형식이라 `values.yaml` `alertmanager.templateFiles` 를 고칠 때는 결과가 JSON 인지 `amtool template render` 로 확인합니다 (JSON 이 아니면 Chatbot 이 버림 — 로그 `/aws/chatbot/team04-hotel-alerts`).
@@ -162,6 +164,30 @@ k top nodes; k top pods -n backend                                     # metrics
 k -n monitoring get pods
 k -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090  # 다른 터미널에서 SSM 포트 포워딩 후 /targets · /alerts
 k -n monitoring logs alertmanager-kube-prometheus-stack-alertmanager-0 -c alertmanager | grep -i sns   # 발행 오류
+```
+
+### DB · 캐시 지표 (LDP-180)
+
+```
+CloudWatch AWS/RDS (메인 · 결제) · AWS/ElastiCache (Valkey) ──┐
+CloudWatch Logs /aws/rds/instance/<식별자>/{error,slowquery} ─┴→ Grafana 데이터 소스 CloudWatch (IRSA team04-hotel-grafana, 읽기만)
+메인 RDS ← mysqld_exporter (mysql-exporter, 토글) ─────────────────→ Prometheus (쿼리 수 · 락 대기 · 슬로우 쿼리 수)
+```
+
+- **CloudWatch 데이터 소스**: `kube-prometheus-stack/values.yaml` `grafana.additionalDataSources`. 자격 증명은 IRSA(`monitoring/kube-prometheus-stack-grafana` → `team04-hotel-grafana`, Terraform 70 `irsa.tf`) — 지표 읽기와 `/aws/rds/instance/team04-hotel-*` · `/team04-hotel/prod/*` 로그 그룹의 Logs Insights 조회만 됩니다. 알람(`#alerts`)은 Terraform `90` 이 만들고 [Terraform README](../../terraform/README.md) 14절에 있습니다.
+- **대시보드 `team04 / DB (prod)`** (`monitoring/chart/dashboards-prod/team04-db-prod.json`): 온프레미스 `team04 / DB` 의 운영판입니다. 메인 DB 서버(exporter, 토글이 꺼져 있으면 No data) · RDS 인스턴스(CloudWatch, 메인 · 결제) · 메인 앱 커넥션 풀(backend db-metrics) · Valkey(CloudWatch — 운영엔 redis exporter 없음) · RDS 슬로우 쿼리 · 에러 로그. 결제 서버의 앱 커넥션 풀은 AMP 로 가서 이 Prometheus 에 없습니다.
+- **슬로우 · 에러 로그**: RDS 파라미터 그룹(41 · 42)의 `log_slow_query`(기준 `db_slow_query_seconds`, 기본 1초) · `innodb_print_all_deadlocks` 를 CloudWatch Logs 로 내보냅니다. Grafana Explore → CloudWatch → Logs 에서 그룹 `/aws/rds/instance/team04-hotel-main/slowquery` 를 고릅니다.
+- **mysqld_exporter (토글)**: `mysql-exporter-setup` · `mysql-exporter` 의 `chart.yaml` `enabled` 를 **같이** `true` 로 바꿉니다. 메인 RDS 만 수집합니다 (결제 RDS 는 Payment VPC 라 닿지 않음 — CloudWatch 만).
+  - `mysql-exporter-setup`: ExternalSecret 2개(Job 용 master + exporter / exporter 용 `my.cnf`), RDS CA ConfigMap, 계정 생성 Job(ArgoCD Sync hook — 앱이 sync 할 때 실행: 매일 재생성의 첫 sync, 스크립트 `chart/files/account.sh` · Job 설정 변경). hook 은 ArgoCD 비교 대상이 아니라 Job 만 바뀐 커밋은 sync 를 일으키지 않으므로, 스크립트와 Job spec checksum 을 일반 리소스 ConfigMap `mysql-exporter-account-script` 에 둡니다. 비밀번호는 Terraform 41 이 매일 새로 만들고(`team04-hotel/prod/main-db-exporter`), Job 이 `CREATE USER IF NOT EXISTS` + `ALTER USER` 로 매번 다시 넣습니다. 계정은 `REQUIRE SSL`, `MAX_USER_CONNECTIONS 3`, 권한 `PROCESS` · `REPLICATION CLIENT` · `REPLICA MONITOR` · `SELECT ON performance_schema.*`.
+  - `mysql-exporter`: CA · 호스트 이름을 검증하는 TLS 로 접속합니다(`my.cnf` `ssl-ca`). `performance_schema` 수집기는 끕니다(db.t4g.micro 1 GiB 라 DB 에서 꺼져 있음). `slave_status` 는 복제본이 없어 비어 있지만 읽기 복제본 추가에 대비해 켜 둡니다(MariaDB 는 `REPLICA MONITOR` 권한이 따로 필요 — Job 이 부여). 라벨은 `job="mysql"` · `instance="team04-hotel-main"` (온프레미스 Alloy 와 같은 job).
+  - **`compareOptions: ServerSideDiff=true`**: 차트가 memory limit 을 env `GOMEMLIMIT`(`resourceFieldRef`)로 넣고 API 서버가 `divisor: "0"` 을 채워, 기본 diff 로는 영구 OutOfSync 가 됩니다 → root 가 wave 65 를 기다리다 시간 제한으로 실패(2026-10-29 작업 브랜치 검증). 이 앱만 API 서버 기준 비교(Server-Side Diff, ArgoCD Beta)를 씁니다.
+  - **연결 수 주의**: db.t4g.micro `max_connections` 는 30 입니다(2026-10-29 실측). 평소 22(앱 20 + rdsadmin 2)를 쓰고 exporter 가 1 을 더 씁니다. Job 로그에 그날 값(`max_connections` · `Threads_connected`)이 남습니다.
+
+```bash
+k -n monitoring logs job/mysql-exporter-account                  # 계정 생성 결과 · max_connections
+k -n monitoring get externalsecret mysql-exporter-setup mysql-exporter-config
+# Prometheus /targets 의 serviceMonitor/monitoring/mysql-exporter, 쿼리 mysql_up · rate(mysql_global_status_questions[5m])
+# · increase(mysql_global_status_innodb_row_lock_waits[5m]) · increase(mysql_global_status_slow_queries[5m])
 ```
 
 | 규칙 (`team04.*`) | 조건 | 대응 |

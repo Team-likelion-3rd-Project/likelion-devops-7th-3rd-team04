@@ -755,10 +755,19 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 | `team04-hotel-payment-nlb-unhealthy` | 결제 NLB unhealthy 5분 | 9절 결제 서버 SSM 접속 → `docker ps` · app 로그. ASG 가 교체 중일 수 있음 |
 | `team04-hotel-payment-deploy-failed` | 결제 agent `deploy_failed` · `invalid_release` · `rollback_failed` | `#deploy` 의 인스턴스별 결과 → 9절 배포 이벤트 조회. 없는 태그면 gitops payment values 수정 PR |
 | `team04-hotel-payment-mock-deployed` | 결제 agent `deploy_success` 이면서 `provider = MOCK` | 부하 테스트가 아니면 gitops payment values `PAYMENT_PROVIDER` 를 `TOSS` 로 되돌리는 PR |
+| `team04-hotel-{main,payment}-db-cpu-surplus` | RDS `CPUSurplusCreditBalance` ≥ 10 (5분 3번) | 기준 성능(t4g)을 넘겨 크레딧을 빚지는 중(추가 요금). 슬로우 쿼리 로그 · 접속 수 확인, 계속되면 `db_instance_class` 상향 |
+| `team04-hotel-{main,payment}-db-low-memory` | RDS `FreeableMemory` < 64 MiB (5분 3번) | 접속 수 · 슬로우 쿼리 확인. 평소 110 – 140 MiB (버퍼 풀 421 MiB) |
+| `team04-hotel-{main,payment}-db-low-storage` | RDS `FreeStorageSpace` < 2 GiB | 테이블 · 로그 크기 확인, `db_allocated_storage` 상향 |
+| `team04-hotel-{main,payment}-db-connections` | RDS `DatabaseConnections` ≥ 26 (1분 5번 중 3번) | `max_connections` 30 에 가까움 — 넘으면 새 접속 거부. backend 파드 수 · 커넥션 풀 크기 확인 |
+| `team04-hotel-valkey-main-<노드>-memory` | Valkey `DatabaseMemoryUsagePercentage` > 80% (5분 3번) | 키 수 · TTL 확인, `valkey_node_type` 상향 |
+| `team04-hotel-valkey-main-<노드>-evictions` | Valkey `Evictions` > 0 | 리프레시 토큰이 축출되어 재로그인이 생김 — 메모리 알람과 같이 확인 |
+| `team04-hotel-valkey-main-<노드>-connections` | Valkey `CurrConnections` > 200 (5분 3번) | 평소 10 미만. auth-service 연결 누수 · 파드 수 확인 |
 
 - **Prometheus 알림**(메인 클러스터 Alertmanager, LDP-179)도 같은 `#alerts` 로 옵니다. 제목은 `🚨 Prometheus 알림 | <규칙>` · `✅ Prometheus 해소 | <규칙>` 이고, 규칙 · 대응은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측" 에 있습니다. `severity` 가 `warning` · `critical` 인 것만 보냅니다.
 - 결제 배포 · MOCK 알람은 이벤트가 생긴 1분만 ALARM 이고 다음 1분에 OK 로 돌아옵니다 ("발생 알림"). 이벤트가 있을 때만 생기는 지표라 `FILL(m, 0)` 수식으로 빈 분을 0 으로 채웁니다 — 채우지 않으면 평가 범위에 남은 마지막 1 때문에 ALARM 이 약 8분 이어집니다 (2026-10-24 실측). ALARM 중에 같은 이벤트가 또 생기면 새 메시지는 없습니다.
 - 매일 재생성 직후 결제 서버 · 워커가 부팅 중이면 unhealthy 알람이 한 번 올 수 있습니다 (5분 넘게 이어질 때만).
+- **DB · 캐시 알람 기준값**(LDP-180, 2026-10-29 db.t4g.micro 실측): `max_connections` 30 (`LEAST({DBInstanceClassMemory/25165760},12000)`), 메인 평소 22. 임계값은 `90-observability-alarms/variables.tf`. `CPUCreditBalance`(잔액 낮음)는 쓰지 않습니다 — 생성 직후 0 에서 시간당 약 6 씩 쌓여 매일 재생성 후 몇 시간 동안 울리고, t4g 는 Unlimited 라 잔액 0 이어도 느려지지 않습니다.
+- RDS 에러 · 슬로우 쿼리 로그는 `/aws/rds/instance/team04-hotel-{main,payment}/{error,slowquery}` (41 · 42 가 먼저 만들어 보관 7일, destroy 때 삭제). 조회는 Grafana CloudWatch 데이터 소스 또는 Logs Insights ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "DB · 캐시 지표").
 
 ### `#deploy` 배포 결과
 

@@ -22,6 +22,25 @@ dependency "messaging" {
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
+dependency "main_data" {
+  config_path = "../41-main-data"
+
+  mock_outputs = {
+    db_instance_identifier = "team04-hotel-main"
+    valkey_member_clusters = ["team04-hotel-main-001"]
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
+}
+
+dependency "payment_data" {
+  config_path = "../42-payment-data"
+
+  mock_outputs = {
+    db_instance_identifier = "team04-hotel-payment"
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
+}
+
 dependency "payment_app" {
   config_path = "../60-payment-app"
 
@@ -51,6 +70,12 @@ inputs = {
   payment_nlb_arn_suffix          = dependency.payment_app.outputs.nlb_arn_suffix
   payment_target_group_arn_suffix = dependency.payment_app.outputs.target_group_arn_suffix
   payment_deploy_log_group_name   = dependency.payment_app.outputs.deploy_log_group_name
+
+  db_instance_identifiers = {
+    main    = dependency.main_data.outputs.db_instance_identifier
+    payment = dependency.payment_data.outputs.db_instance_identifier
+  }
+  valkey_member_clusters = dependency.main_data.outputs.valkey_member_clusters
 
   alb_arn_suffix              = dependency.main_edge.outputs.alb_arn_suffix
   alb_target_group_arn_suffix = dependency.main_edge.outputs.target_group_arn_suffix

@@ -29,7 +29,7 @@ variable "oidc_bucket_name" {
 }
 
 variable "secret_names" {
-  description = "41-main-data 의 secret_names (main_db, main_valkey, backend_app). ESO Role 이 읽을 수 있는 Secret"
+  description = "41-main-data 의 secret_names (main_db, main_valkey, backend_app, main_db_exporter). ESO Role 이 읽을 수 있는 Secret"
   type        = map(string)
 }
 

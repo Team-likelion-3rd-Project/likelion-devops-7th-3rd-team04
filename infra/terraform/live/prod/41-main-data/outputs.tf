@@ -9,6 +9,11 @@ output "db_endpoint" {
   value       = aws_db_instance.main.address
 }
 
+output "db_instance_identifier" {
+  description = "RDS 식별자. CloudWatch 지표 차원 DBInstanceIdentifier · 로그 그룹 /aws/rds/instance/<식별자>/* (90 알람)"
+  value       = aws_db_instance.main.identifier
+}
+
 output "db_port" {
   description = "RDS MariaDB 포트 (DB_PORT)"
   value       = aws_db_instance.main.port
@@ -29,8 +34,13 @@ output "valkey_port" {
   value       = aws_elasticache_replication_group.main.port
 }
 
+output "valkey_member_clusters" {
+  description = "Valkey 노드 ID 목록. CloudWatch 지표 차원 CacheClusterId (90 알람)"
+  value       = sort(tolist(aws_elasticache_replication_group.main.member_clusters))
+}
+
 output "secret_names" {
-  description = "Secret 이름 (main_db, main_valkey, backend_app). ESO ExternalSecret 의 remoteRef.key"
+  description = "Secret 이름 (main_db, main_valkey, backend_app, main_db_exporter). ESO ExternalSecret 의 remoteRef.key"
   value       = { for k, s in aws_secretsmanager_secret.this : k => s.name }
 }
 

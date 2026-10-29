@@ -31,9 +31,42 @@ resource "aws_db_parameter_group" "main" {
     value = "utf8mb4_general_ci"
   }
 
+  # 슬로우 · 에러 로그 → CloudWatch Logs (LDP-180). MariaDB 11.8 파라미터 그룹 이름은 log_slow_query · log_slow_query_time
+  # (slow_query_log · long_query_time 은 없음). 기본 log_output 은 TABLE 이라 FILE 이어야 CloudWatch 로 내보낸다.
+  # db.t4g.micro(1 GiB)라 performance_schema 는 켜지 않는다 (static, 기본 0)
+  parameter {
+    name  = "log_output"
+    value = "FILE"
+  }
+
+  parameter {
+    name  = "log_slow_query"
+    value = "1"
+  }
+
+  parameter {
+    name  = "log_slow_query_time"
+    value = tostring(var.db_slow_query_seconds)
+  }
+
+  # 교착 상태를 전부 에러 로그에 남긴다 (기본은 마지막 1건만 SHOW ENGINE INNODB STATUS 에)
+  parameter {
+    name  = "innodb_print_all_deadlocks"
+    value = "1"
+  }
+
   lifecycle {
     create_before_destroy = true
   }
+}
+
+# RDS 가 처음 쓸 때 만드는 로그 그룹을 먼저 만든다 — RDS 가 만들면 보관 기간이 무기한이고 destroy 때 남는다.
+# DB 가 이 그룹에 depends_on 하므로 destroy 는 DB 를 지운 뒤 그룹을 지운다
+resource "aws_cloudwatch_log_group" "db" {
+  for_each = toset(local.db_log_exports)
+
+  name              = "/aws/rds/instance/${local.name}/${each.key}"
+  retention_in_days = var.db_log_retention_days
 }
 
 resource "aws_db_instance" "main" {
@@ -58,6 +91,8 @@ resource "aws_db_instance" "main" {
   publicly_accessible    = false
   multi_az               = var.db_multi_az
 
+  enabled_cloudwatch_logs_exports = local.db_log_exports
+
   backup_retention_period  = var.db_backup_retention_days
   delete_automated_backups = true
   copy_tags_to_snapshot    = true
@@ -72,4 +107,6 @@ resource "aws_db_instance" "main" {
   tags = {
     Name = local.name
   }
+
+  depends_on = [aws_cloudwatch_log_group.db]
 }
