@@ -35,7 +35,7 @@ openbao_policies: [eso-dev, ansible-dev]
 backend_env_file: "{{ (lookup('env', 'BACKEND_ENV_FILE') | default(playbook_dir ~ '/../../backend/.env', true)) | expanduser | realpath }}"
 backend_env: "{{ lookup('file', backend_env_file, errors='ignore') | default('', true) | parse_dotenv }}"
 # db.yml 이 읽는 OpenBao 경로 (openbao_kv_prefix 아래)
-db_openbao_paths: [main-db, main-db-root, main-valkey, minio-root, minio-app, minio-rag, ci-smoke-db, seed-admin]
+db_openbao_paths: [main-db, main-db-root, main-db-exporter, main-valkey, minio-root, minio-app, minio-rag, ci-smoke-db, seed-admin]
 
 db_port: "{{ openbao_kv['main-db'].port | default(backend_env.DB_PORT | default('3306', true), true) }}"
 db_database: "{{ openbao_kv['main-db'].dbname | default(backend_env.DB_DATABASE | default('hotel_service', true), true) }}"
@@ -93,6 +93,13 @@ minio_rag_policy: hotel-rag
 # -dbPath 로 파일에 저장 (로컬 compose 의 -inMemory 와 달리 재시작해도 이력 유지). 인증이 없으므로 tailnet 에서만 허용
 dynamodb_port: 8000
 dynamodb_uid: 1000        # 컨테이너 실행 사용자 = 데이터 디렉토리 소유자
+
+# ── 모니터링 (README 17절) ─────────────────────────────────
+# 수집기(node-exporter · cAdvisor · Alloy)는 roles/node_collectors — 모두 127.0.0.1 바인딩이라 아래 방화벽 목록에 넣지 않음.
+# 메인 DB 서버 지표 — Alloy 내장 mysqld_exporter 가 쓰는 전용 계정 ('exporter'@'127.0.0.1', 최소 권한).
+# 비밀번호는 OpenBao main-db-exporter (없으면 db.yml 이 생성). 비어 있으면(OpenBao 도입 전) 수집하지 않음. Valkey 는 valkey_password 로 접속
+db_exporter_user: exporter
+db_exporter_password: "{{ openbao_kv['main-db-exporter'].password | default('') }}"
 
 # ── 방화벽: tailscale0 에서만 허용할 포트 (firewall role) ─────
 firewall_tailnet_tcp_ports:

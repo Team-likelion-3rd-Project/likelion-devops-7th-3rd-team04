@@ -1,0 +1,1350 @@
+{
+  "uid": "team04-db",
+  "title": "team04 / DB",
+  "description": "메인 DB(DB 노드) · 결제 DB(결제 노드)의 MariaDB 서버 지표, 앱 커넥션 풀, Valkey (Alloy 내장 exporter + backend db-metrics, 온프레미스 전용 — infra/ansible README 17-6)",
+  "tags": [
+    "team04",
+    "db"
+  ],
+  "timezone": "",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "데이터소스",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "메인 DB — 서버 (MariaDB, cluster=db)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "exporter 접속",
+      "description": "0 이면 exporter 가 MariaDB 에 접속하지 못함 (MariaDBDown 알람)",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "mysql_up{cluster=\"db\", job=\"mysql\"}",
+          "legendFormat": "{{instance}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "연결 수 / max_connections",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (instance) (mysql_global_status_threads_connected{cluster=\"db\", job=\"mysql\"})",
+          "legendFormat": "연결 {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (instance) (mysql_global_status_threads_running{cluster=\"db\", job=\"mysql\"})",
+          "legendFormat": "실행 중 {{instance}}"
+        },
+        {
+          "refId": "C",
+          "expr": "max by (instance) (mysql_global_variables_max_connections{cluster=\"db\", job=\"mysql\"})",
+          "legendFormat": "max_connections"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "연결이 max 의 80% 를 5분 넘으면 MariaDBConnectionsHigh. 실행 중(threads_running)이 계속 높으면 쿼리가 밀리는 중",
+      "id": 3,
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 4,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "명령별 처리량",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (command) (rate(mysql_global_status_commands_total{cluster=\"db\", job=\"mysql\", command=~\"select|insert|update|delete|begin|commit|rollback\"}[$__rate_interval]))",
+          "legendFormat": "{{command}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "fillOpacity": 30
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 14,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "느린 쿼리 (long_query_time 초과)",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(mysql_global_status_slow_queries{cluster=\"db\", job=\"mysql\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "long_query_time(1초)을 넘은 쿼리 수. 내용은 노드의 slow.log",
+      "id": 5,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "InnoDB buffer pool 적중률",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - sum by (instance) (rate(mysql_global_status_innodb_buffer_pool_reads{cluster=\"db\", job=\"mysql\"}[$__rate_interval])) / sum by (instance) (rate(mysql_global_status_innodb_buffer_pool_read_requests{cluster=\"db\", job=\"mysql\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "디스크까지 가지 않고 메모리에서 읽은 비율. 계속 낮으면 buffer pool 이 데이터에 비해 작음",
+      "id": 6,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "접속 실패 · 끊긴 연결",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(mysql_global_status_aborted_connects{cluster=\"db\", job=\"mysql\"}[$__rate_interval]))",
+          "legendFormat": "접속 실패 {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (instance) (rate(mysql_global_status_aborted_clients{cluster=\"db\", job=\"mysql\"}[$__rate_interval]))",
+          "legendFormat": "비정상 종료 {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "접속 실패는 비밀번호 · 권한 · max_connections 초과, 비정상 종료는 앱이 연결을 닫지 않고 끊은 경우",
+      "id": 7,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "메인 DB — 앱 커넥션 풀 (backend db-metrics, cluster=main)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "서비스별 사용 중 / 최대",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (db_client_connections{cluster=\"main\", state=\"used\"})",
+          "legendFormat": "사용 중 {{service}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (service) (db_client_connections_max{cluster=\"main\"})",
+          "legendFormat": "최대 {{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Pod 합계. 사용 중이 최대에 붙어 있으면 풀이 모자람 (아래 대기 요청 · 대기 시간이 함께 오름)",
+      "id": 9,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "연결 대기 요청 수",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (service, pod) (db_client_connections_pending{cluster=\"main\"})",
+          "legendFormat": "{{service}} {{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "풀의 연결이 모두 사용 중이라 줄 선 요청. 0 보다 큰 값이 5분 넘게 이어지면 DbPoolWaiting 알람",
+      "id": 10,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "연결을 받기까지 걸린 시간 p95",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, service) (rate(db_client_connection_wait_duration_seconds_bucket{cluster=\"main\"}[$__rate_interval])))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "풀에 연결을 요청하고 받기까지. 쉬는 연결이 있으면 0 에 가까움 — 오르면 풀 크기 · 느린 쿼리 확인",
+      "id": 11,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "앱 풀 합계 vs max_connections",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(db_client_connections_max{cluster=\"main\"})",
+          "legendFormat": "앱 풀 최대 합계 (풀 크기 × Pod 수)"
+        },
+        {
+          "refId": "B",
+          "expr": "max(mysql_global_variables_max_connections{cluster=\"db\", job=\"mysql\"})",
+          "legendFormat": "max_connections"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "레플리카를 늘리면 풀 합계가 늘어남. max_connections 에 가까우면 풀 크기를 줄이거나 max_connections 를 늘림",
+      "id": 12,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Valkey (cluster=db)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "exporter 접속",
+      "description": "0 이면 exporter 가 Valkey 에 접속하지 못함",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "redis_up{cluster=\"db\", job=\"redis\"}",
+          "legendFormat": "{{instance}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "id": 14,
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 0,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "메모리 / maxmemory",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (instance) (redis_memory_used_bytes{cluster=\"db\", job=\"redis\"})",
+          "legendFormat": "사용 {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (instance) (redis_memory_max_bytes{cluster=\"db\", job=\"redis\"})",
+          "legendFormat": "maxmemory"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "maxmemory 를 넘으면 volatile-lru 로 키 축출. 90% 를 5분 넘으면 ValkeyMemoryNearMax",
+      "id": 15,
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 4,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "명령 처리량 · 클라이언트",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(redis_commands_processed_total{cluster=\"db\", job=\"redis\"}[$__rate_interval]))",
+          "legendFormat": "명령/s {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (instance) (redis_connected_clients{cluster=\"db\", job=\"redis\"})",
+          "legendFormat": "클라이언트 {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 16,
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 14,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "캐시 적중률",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(redis_keyspace_hits_total{cluster=\"db\", job=\"redis\"}[$__rate_interval])) / (sum by (instance) (rate(redis_keyspace_hits_total{cluster=\"db\", job=\"redis\"}[$__rate_interval])) + sum by (instance) (rate(redis_keyspace_misses_total{cluster=\"db\", job=\"redis\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 17,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 43
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "키 축출 · 만료",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(redis_evicted_keys_total{cluster=\"db\", job=\"redis\"}[$__rate_interval]))",
+          "legendFormat": "축출 {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (instance) (rate(redis_expired_keys_total{cluster=\"db\", job=\"redis\"}[$__rate_interval]))",
+          "legendFormat": "만료 {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "축출이 생기면 maxmemory 가 부족한 것 (만료는 정상)",
+      "id": 18,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 43
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "키 수",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, db) (redis_db_keys{cluster=\"db\", job=\"redis\"})",
+          "legendFormat": "{{db}} {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 19,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 43
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "결제 DB — 서버 (MariaDB, cluster=payment)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 51
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "exporter 접속",
+      "description": "0 이면 exporter 가 MariaDB 에 접속하지 못함 (MariaDBDown 알람)",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "mysql_up{cluster=\"payment\", job=\"mysql\"}",
+          "legendFormat": "{{instance}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "id": 21,
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 0,
+        "y": 52
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "연결 수 / max_connections",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (instance) (mysql_global_status_threads_connected{cluster=\"payment\", job=\"mysql\"})",
+          "legendFormat": "연결 {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (instance) (mysql_global_status_threads_running{cluster=\"payment\", job=\"mysql\"})",
+          "legendFormat": "실행 중 {{instance}}"
+        },
+        {
+          "refId": "C",
+          "expr": "max by (instance) (mysql_global_variables_max_connections{cluster=\"payment\", job=\"mysql\"})",
+          "legendFormat": "max_connections"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "연결이 max 의 80% 를 5분 넘으면 MariaDBConnectionsHigh. 실행 중(threads_running)이 계속 높으면 쿼리가 밀리는 중",
+      "id": 22,
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 4,
+        "y": 52
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "명령별 처리량",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (command) (rate(mysql_global_status_commands_total{cluster=\"payment\", job=\"mysql\", command=~\"select|insert|update|delete|begin|commit|rollback\"}[$__rate_interval]))",
+          "legendFormat": "{{command}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "fillOpacity": 30
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 23,
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 14,
+        "y": 52
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "느린 쿼리 (long_query_time 초과)",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(mysql_global_status_slow_queries{cluster=\"payment\", job=\"mysql\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "long_query_time(1초)을 넘은 쿼리 수. 내용은 노드의 slow.log",
+      "id": 24,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 60
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "InnoDB buffer pool 적중률",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - sum by (instance) (rate(mysql_global_status_innodb_buffer_pool_reads{cluster=\"payment\", job=\"mysql\"}[$__rate_interval])) / sum by (instance) (rate(mysql_global_status_innodb_buffer_pool_read_requests{cluster=\"payment\", job=\"mysql\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "디스크까지 가지 않고 메모리에서 읽은 비율. 계속 낮으면 buffer pool 이 데이터에 비해 작음",
+      "id": 25,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 60
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "접속 실패 · 끊긴 연결",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(mysql_global_status_aborted_connects{cluster=\"payment\", job=\"mysql\"}[$__rate_interval]))",
+          "legendFormat": "접속 실패 {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (instance) (rate(mysql_global_status_aborted_clients{cluster=\"payment\", job=\"mysql\"}[$__rate_interval]))",
+          "legendFormat": "비정상 종료 {{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "접속 실패는 비밀번호 · 권한 · max_connections 초과, 비정상 종료는 앱이 연결을 닫지 않고 끊은 경우",
+      "id": 26,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 60
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "id": 27,
+      "type": "row",
+      "title": "결제 DB — 앱 커넥션 풀 (backend db-metrics, cluster=payment)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "서비스별 사용 중 / 최대",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (db_client_connections{cluster=\"payment\", state=\"used\"})",
+          "legendFormat": "사용 중 {{service}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (service) (db_client_connections_max{cluster=\"payment\"})",
+          "legendFormat": "최대 {{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Pod 합계. 사용 중이 최대에 붙어 있으면 풀이 모자람 (아래 대기 요청 · 대기 시간이 함께 오름)",
+      "id": 28,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 69
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "연결 대기 요청 수",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (service, pod) (db_client_connections_pending{cluster=\"payment\"})",
+          "legendFormat": "{{service}} {{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "풀의 연결이 모두 사용 중이라 줄 선 요청. 0 보다 큰 값이 5분 넘게 이어지면 DbPoolWaiting 알람",
+      "id": 29,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 69
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "연결을 받기까지 걸린 시간 p95",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, service) (rate(db_client_connection_wait_duration_seconds_bucket{cluster=\"payment\"}[$__rate_interval])))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "풀에 연결을 요청하고 받기까지. 쉬는 연결이 있으면 0 에 가까움 — 오르면 풀 크기 · 느린 쿼리 확인",
+      "id": 30,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 77
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "앱 풀 합계 vs max_connections",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(db_client_connections_max{cluster=\"payment\"})",
+          "legendFormat": "앱 풀 최대 합계 (풀 크기 × Pod 수)"
+        },
+        {
+          "refId": "B",
+          "expr": "max(mysql_global_variables_max_connections{cluster=\"payment\", job=\"mysql\"})",
+          "legendFormat": "max_connections"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "레플리카를 늘리면 풀 합계가 늘어남. max_connections 에 가까우면 풀 크기를 줄이거나 max_connections 를 늘림",
+      "id": 31,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 77
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      }
+    }
+  ]
+}

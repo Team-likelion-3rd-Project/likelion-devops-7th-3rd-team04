@@ -2,9 +2,10 @@
 #
 # files/kube-prometheus-stack-values-common.yaml 위에 겹침 (helm -f common -f dev). 여기에는 dev 환경 값만 둡니다.
 # 배치 — 관측성은 클러스터 기동에 필수가 아니라 control plane(vCPU 2)의 부담을 줄이도록 워커 우선 (README 17절)
-#   operator · admission patch Job · kube-state-metrics · Grafana : 워커 우선, 워커가 모두 꺼져 있으면 control plane
-#     (상태 없음 — 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸. Grafana 는 CP NodePort 로 접속하므로 위치와 무관)
+#   operator · admission patch Job · kube-state-metrics : 워커 우선, 워커가 모두 꺼져 있으면 control plane
+#     (상태 없음 — 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸)
 #   Prometheus : control plane 고정 — 데이터가 control plane 로컬 PV. CPU limit 으로 control plane 을 보호
+#   Grafana : control plane 고정 — tailscale serve(CP)는 다른 노드의 Pod 로 프록시하지 못함 (README 17-7, ArgoCD 와 같은 이유)
 #   node-exporter : DaemonSet (모든 노드)
 
 prometheusOperator:
@@ -76,7 +77,9 @@ prometheus:
         memory: 2Gi
 
 grafana:
-  affinity: *prefer_workers
+  # 9443 의 tailscale serve 가 CP 에서 NodePort 로 프록시 — Pod 가 워커에 있으면 응답이 오지 않음 (README 17-7)
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
   tolerations: *cp_tolerations
   service:
     type: NodePort

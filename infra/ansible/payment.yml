@@ -1,8 +1,9 @@
 ---
-# 결제 서버 노드: 결제 MariaDB + Flyway(payment-migrations) + payment-service + ElasticMQ (Docker Compose)
+# 결제 서버 노드: 결제 MariaDB + Flyway(payment-migrations) + payment-service + ElasticMQ (Docker Compose) → 모니터링 수집기
 # 이미지 태그는 gitops(team04/infra/backend-gitops) envs/dev 의 global.imageTag 를 따름 (README 14절)
 #   전체 구성     : ansible-playbook payment.yml -K
 #   이미지만 갱신 : ansible-playbook payment.yml -K --tags deploy
+#   수집기만      : ansible-playbook payment.yml -K --tags collectors
 - name: 결제 서버 노드 구성 (결제 DB + payment-service + ElasticMQ, Docker Compose)
   hosts: payment
   become: true
@@ -41,6 +42,21 @@
 
   # OpenBao 는 Tailnet 으로 읽으므로 tailscale role 뒤에서 (ACL: tag:payment → tag:db tcp:8200)
   tasks:
+    # 결제 DB 서버 지표용 exporter 계정 비밀번호 — 처음 한 번만 만들고 이후에는 그대로 (README 17-6)
+    - name: OpenBao 저장 (payment-db-exporter, 없을 때만)
+      ansible.builtin.include_role:
+        name: openbao_kv
+        tasks_from: write
+        # include_role 의 tags 는 안쪽 태스크에 전해지지 않음 — 없으면 --tags deploy · collectors 실행에서 비밀번호가 만들어지지 않음
+        apply:
+          tags: [always]
+      vars:
+        openbao_write_path: payment-db-exporter
+        openbao_write_create_only: true
+        openbao_write_data:
+          password: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+      tags: [always]
+
     - name: OpenBao 값 읽기
       ansible.builtin.import_role:
         name: openbao_kv
@@ -111,3 +127,24 @@
       ansible.builtin.import_role:
         name: payment_stack
       tags: [deploy]
+
+    # 호스트 · 컨테이너 + payment-service /metrics + 결제 MariaDB 서버 지표 → 클러스터 Prometheus (README 17절). 단독: --tags collectors
+    - name: 모니터링 수집기
+      ansible.builtin.import_role:
+        name: node_collectors
+      vars:
+        collectors_cluster: payment
+        collectors_namespace: payment
+        collectors_app_scrapes: "{{ [{'job': 'payment-service', 'port': payment_metrics_port}] if payment_metrics_enabled else [] }}"
+        collectors_mysql: "{{ {'port': payment_db_port, 'user': payment_db_exporter_user, 'password': payment_db_exporter_password} if payment_db_exporter_password | length > 0 else {} }}"
+      tags: [deploy, collectors]
+
+    # 수집기가 payment-node 프로젝트에 있던 때의 설정 · WAL (node_collectors 로 옮긴 뒤 남은 것)
+    - name: 이전 수집기 파일 정리
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ payment_base_dir }}/conf/config.alloy"
+        - "{{ payment_data_dir }}/alloy"
+      tags: [deploy, collectors]

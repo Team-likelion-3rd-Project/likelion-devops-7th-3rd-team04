@@ -13,7 +13,7 @@ payment_base_dir: /opt/payment-node        # compose / 설정 / client 자격증
 payment_data_dir: /var/lib/payment-node    # mariadb / elasticmq 데이터
 
 # payment.yml 이 읽는 OpenBao 경로 (openbao_kv_prefix 아래, README 16절)
-payment_openbao_paths: [payment-node, payment-db, payment-db-root, toss-payments]
+payment_openbao_paths: [payment-node, payment-db, payment-db-root, payment-db-exporter, toss-payments]
 
 # ── GitLab: OpenBao payment-node (gitlab.yml --tags bootstrap 이 저장) ──
 # OpenBao 도입 전에는 .secrets/payment-node.env 를 source 한 환경변수에서
@@ -61,8 +61,7 @@ payment_mariadb_max_connections: 100
 payment_mariadb_buffer_pool_mb: "{{ (ansible_memtotal_mb * 0.25) | int }}"
 
 # ── 클러스터 연결 (payment-service → booking-service / pg-mock-service) ──
-# 클러스터 밖이라 ClusterIP 에 닿을 수 없음 → 차트의 nodePort 로 노출한 포트를 control plane Tailscale IP 로 호출
-cluster_entry_ip: "{{ lookup('env', 'CLUSTER_ENTRY_IP') }}"
+# 클러스터 밖이라 ClusterIP 에 닿을 수 없음 → 차트의 nodePort 로 노출한 포트를 control plane Tailscale IP(cluster_entry_ip, all.yml)로 호출
 booking_nodeport: 30303     # booking-service gRPC 3003
 pg_mock_nodeport: 30307     # pg-mock-service HTTP 3007
 
@@ -95,23 +94,16 @@ payment_sqs_env:
   AWS_SECRET_ACCESS_KEY: elasticmq
 payment_result_queue_url: "http://{{ ts_ip | default('') }}:{{ elasticmq_port }}/{{ elasticmq_account_id }}/{{ payment_result_queue }}"
 
-# ── 모니터링 수집기 (README 17절) ──────────────────────────
-# node-exporter(호스트) · cAdvisor(컨테이너) → Grafana Alloy → 클러스터 Prometheus 로 remote_write (push).
-# 운영 결제 EC2 도 같은 구성(노션 "관측성 도입 계획" 10-2) — 버전을 올릴 때 운영 user-data 와 같이
-node_exporter_image: "quay.io/prometheus/node-exporter:v1.12.1"   # 클러스터 DaemonSet(kube-prometheus-stack)과 같은 버전
-cadvisor_image: "ghcr.io/google/cadvisor:v0.60.6"
-alloy_image: "grafana/alloy:v1.20.1"
-# 셋 다 127.0.0.1 에만 바인딩 (Alloy 가 노드 안에서 수집) → ufw · ACL 에 열지 않음
-node_exporter_port: 9100
-cadvisor_port: 8080
-alloy_port: 12345           # Alloy UI · 자체 상태 (ssh -L 12345:127.0.0.1:12345 로 확인)
-payment_scrape_interval: 30s
-# control plane Tailscale IP 의 Prometheus NodePort (ACL tag:payment → tag:k8s-node tcp:30909)
-payment_remote_write_url: "http://{{ cluster_entry_ip }}:{{ prometheus_nodeport }}/api/v1/write"
+# ── 모니터링 (README 17절) ─────────────────────────────────
+# 수집기(node-exporter · cAdvisor · Alloy)는 roles/node_collectors — 이미지 버전 · 포트는 그 role 의 defaults
 # payment-service /metrics — 앱에 METRICS_PORT 를 넣고 Alloy 가 수집 (backend libs/common metrics, 노션 "라벨 세부 정의 v0.2").
 # 이미지가 메트릭 2차(#357) 이후 커밋이어야 gRPC 측정까지 나옴. 9464 는 host network 라 ufw 로 외부 차단
 payment_metrics_enabled: true
 payment_metrics_port: 9464
+# 결제 DB 서버 지표 — Alloy 내장 mysqld_exporter 가 쓰는 전용 계정 ('exporter'@'127.0.0.1', 최소 권한).
+# 비밀번호는 OpenBao payment-db-exporter (없으면 payment.yml 이 생성). 비어 있으면(OpenBao 도입 전) 수집하지 않음
+payment_db_exporter_user: exporter
+payment_db_exporter_password: "{{ openbao_kv['payment-db-exporter'].password | default('') }}"
 
 # ── 방화벽: tailscale0 에서만 허용할 포트 (firewall role) ─────
 # MariaDB(3306)·health(3104)는 열지 않음

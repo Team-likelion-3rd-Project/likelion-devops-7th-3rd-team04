@@ -6,10 +6,10 @@
 |---|---|---|
 | `control-plane.yml` | `[control_plane]` (1대) | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm init` → Calico(VXLAN) 설치 → worker용 `join.env` 생성 |
 | `worker-join.yml` | `[workers]` | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm join` |
-| `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → OpenBao(dev 비밀값, [16절](#16-openbao--external-secrets-operator-dev-비밀값)) → MariaDB + Valkey + MinIO (Docker Compose) → dev 시딩(`--tags seed`, 스키마가 있을 때만) — [7절](#7-db-노드-구성-mariadb--valkey--minio) |
+| `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → OpenBao(dev 비밀값, [16절](#16-openbao--external-secrets-operator-dev-비밀값)) → MariaDB + Valkey + MinIO (Docker Compose) → 모니터링 수집기([17-6](#17-6-db-지표-db-노드--결제-db)) → dev 시딩(`--tags seed`, 스키마가 있을 때만) — [7절](#7-db-노드-구성-mariadb--valkey--minio) |
 | `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
-| `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
+| `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) → 모니터링 수집기(17절) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) — [11절](#11-ingress-controller-traefik) |
 | `k8s-cicd.yml` | `[control_plane]` (1대) | External Secrets Operator(OpenBao 연결) → `backend` 네임스페이스 · 레지스트리 pull Secret · `backend-secrets`(ExternalSecret) → ArgoCD (backend 배포) — [12절](#12-cicd-registry--파이프라인--argocd), [16절](#16-openbao--external-secrets-operator-dev-비밀값) |
 | `monitoring.yml` | `[control_plane]` (1대) | metrics-server → kube-prometheus-stack(Prometheus · Grafana · node-exporter) → 대시보드 → `tailscale serve` HTTPS(Grafana) — [17절](#17-모니터링-prometheus--grafana) |
@@ -112,8 +112,8 @@ infra/ansible/
     { "src": ["tag:k8s-node"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379", "tcp:9000", "tcp:8000"] },
     // OpenBao(8200, 16절) — 각 노드에서 실행하는 playbook 이 값을 읽고 씀, k8s 는 ESO 도 (Ansible 을 실행하는 PC 는 Tailnet 에 없을 수 있어 노드에서 호출)
     { "src": ["tag:k8s-node", "tag:payment", "tag:gitlab", "tag:gitlab-runner"], "dst": ["tag:db"], "ip": ["tcp:8200"] },
-    // OpenBao → k8s API : ESO 로그인 토큰 검증(TokenReview, 16절)
-    { "src": ["tag:db"], "dst": ["tag:k8s-node"], "ip": ["tcp:6443"] },
+    // OpenBao → k8s API : ESO 로그인 토큰 검증(TokenReview, 16절) / DB 노드 Alloy → Prometheus remote_write(30909, 17절)
+    { "src": ["tag:db"], "dst": ["tag:k8s-node"], "ip": ["tcp:6443", "tcp:30909"] },
     // GitLab CI 이미지 smoke test → dev DB 서버 (파이프라인 전용 database ci_<id> 만 사용, 12절)
     { "src": ["tag:gitlab-runner"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379"] },
     // 팀원 PC → DB : SSH, DBeaver 등 DB 클라이언트, valkey-cli 디버깅, 브라우저 → MinIO presigned URL(9000) / Console(9001), OpenBao UI · CLI(8200)
@@ -361,6 +361,7 @@ OpenBao 도입 전에는 DB 계정 정보를 **`backend/.env` 에서 직접 읽�
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | `infra/ansible/.env` | MinIO 관리자 (Console 로그인). 최초 기동 때만 반영 |
 | `MINIO_APP_ACCESS_KEY`, `MINIO_APP_SECRET_KEY` | `infra/ansible/.env` | 앱 전용 계정 (객실 이미지 버킷만). `k8s-cicd.yml` 이 `backend-secrets` 의 `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` 로 넣음 (7-6) |
 | `BACKEND_ENV_FILE` (선택) | `infra/ansible/.env` | backend/.env 대신 다른 파일을 쓸 때 |
+| `CLUSTER_ENTRY_IP` | `infra/ansible/.env` | control plane Tailscale IP — 모니터링 수집기(Alloy)가 Prometheus 로 보낼 주소 (14-2 와 같은 값, 17-6) |
 
 - 비밀번호에는 공백, 따옴표, 역슬래시, `$`, `#`, `` ` `` 를 쓸 수 없습니다. (설정 파일에 그대로 들어가기 때문)
 - `MINIO_*` 는 URL 에 들어가므로 영문, 숫자, `.` `_` `~` `-` 만 씁니다. USER / ACCESS_KEY 는 3자 이상, PASSWORD / SECRET_KEY 는 8자 이상이고, 앱 계정은 root 와 달라야 합니다.
@@ -1378,6 +1379,7 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `main-db-root` · `minio-root` · `ci-smoke-db` | password (· user) | db.yml, gitlab.yml — **ESO 는 못 읽음** |
 | `ghcr-push` | username, token (GHCR 봇 classic PAT — 12-4) | gitlab.yml(bootstrap → CI 변수 `GHCR_USER` · `GHCR_TOKEN`) — **ESO 는 못 읽음** |
 | `payment-db` · `payment-db-root` · `toss-payments` | (운영과 같은 이름) | payment.yml |
+| `main-db-exporter` · `payment-db-exporter` | password (MariaDB `exporter` 계정, 없으면 db.yml · payment.yml 이 생성, 17-6) | db.yml, payment.yml — **ESO 는 못 읽음** |
 | `grafana` | admin_user, admin_password (없으면 monitoring.yml 이 생성, 17절) | ESO(`monitoring/grafana-admin`) |
 | `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `aws-ci-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
 
@@ -1480,12 +1482,12 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 
 ## 17. 모니터링 (Prometheus · Grafana)
 
-클러스터의 Pod · 노드 리소스와 결제 노드(k8s 밖)를 **Grafana 하나**에서 봅니다. 수집 방식 · 라벨은 운영과 같습니다 (노션 "관측성 도입 계획" · "라벨 세부 정의 v0.2").
+클러스터의 Pod · 노드 리소스와 결제 노드 · DB 노드(k8s 밖)를 **Grafana 하나**에서 봅니다. 수집 방식 · 라벨은 운영과 같습니다 (노션 "관측성 도입 계획" · "라벨 세부 정의 v0.2").
 
 ```
-[dev 클러스터 — Prometheus 만 CP 고정, 나머지 워커 우선]       [결제 노드 — Docker Compose]
+[dev 클러스터 — Prometheus·Grafana CP 고정, 나머지 워커 우선]  [결제 · DB 노드 — Docker Compose node-collectors]
  kubelet(cAdvisor) ─┐                                          node-exporter ─┐ 127.0.0.1
- kube-state-metrics ─┼─▶ Prometheus ◀── remote_write(30909) ──── Grafana Alloy ┤
+ kube-state-metrics ─┼─▶ Prometheus ◀── remote_write(30909) ──── Grafana Alloy ┤ (+ 내장 mysqld · redis exporter)
  node-exporter(DS) ──┘    │  로컬 PV                                cAdvisor ──┘ 127.0.0.1
                           ▼
                        Grafana ◀── tailscale serve HTTPS 9443 ── 팀원 PC
@@ -1494,25 +1496,26 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 
 | 구성 | 값 |
 |---|---|
-| playbook | `monitoring.yml` (`[control_plane]`) — roles `metrics_server`, `monitoring` / 결제 노드는 `payment.yml`(roles `payment_stack`) |
+| playbook | `monitoring.yml` (`[control_plane]`) — roles `metrics_server`, `monitoring` / 결제 · DB 노드는 `payment.yml` · `db.yml` 의 role `node_collectors` |
 | chart | metrics-server `3.14.0`, kube-prometheus-stack `92.3.0` (`group_vars/control_plane.yml`) |
 | values | `roles/monitoring/files/kube-prometheus-stack-values-common.yaml` (**운영과 공유하는 정적 파일**) + `templates/kube-prometheus-stack-values-dev.yaml.j2` (dev 값) |
-| 배치 | **Prometheus**: control plane 고정 (로컬 PV), CPU limit `prometheus_cpu_limit`(500m) / **operator · kube-state-metrics · Grafana**: 워커 우선(preferred affinity), 워커가 모두 꺼져 있으면 control plane — 클러스터 기동에 필수가 아니라 control plane(vCPU 2)의 부담을 줄이려고. 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸 / node-exporter: DaemonSet |
+| 배치 | **Prometheus**: control plane 고정 (로컬 PV), CPU limit `prometheus_cpu_limit`(500m) / **Grafana**: control plane 고정 — 9443 tailscale serve 가 CP 에서 프록시하므로 (17-7, ArgoCD 와 같음) / **operator · kube-state-metrics**: 워커 우선(preferred affinity), 워커가 모두 꺼져 있으면 control plane — 클러스터 기동에 필수가 아니라 control plane(vCPU 2)의 부담을 줄이려고. 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸 / node-exporter: DaemonSet |
 | 저장소 | control plane 로컬 PV `prometheus-local` (`/var/lib/monitoring/prometheus`, 20Gi, StorageClass `monitoring-local`), 보존 7일 · 15GB |
 | Grafana | `https://<control plane>.<tailnet>.ts.net:9443` — admin 계정 OpenBao `grafana` → ESO → Secret `monitoring/grafana-admin` |
-| Prometheus | `http://<control plane Tailscale IP>:30909` (UI · `/targets`, 결제 노드 remote_write `/api/v1/write`) |
-| 결제 노드 수집기 | node-exporter · cAdvisor · Grafana Alloy (`group_vars/payment.yml`), 모두 127.0.0.1 바인딩 |
+| Prometheus | `http://<control plane Tailscale IP>:30909` (UI · `/targets`, 결제 · DB 노드 remote_write `/api/v1/write`) |
+| 결제 · DB 노드 수집기 | node-exporter · cAdvisor · Grafana Alloy — role `node_collectors`(이미지 버전 · 포트는 `defaults/main.yml`), Compose 프로젝트 `node-collectors`(`/opt/node-collectors`), 모두 127.0.0.1 바인딩 |
 | 알림 | Alertmanager 꺼짐 (수신처 미정) — Grafana **Alerting → Alert rules** 또는 Prometheus `/alerts` 에서 확인 |
 
 **라벨**
 
-| 라벨 | 클러스터 | 결제 노드 |
-|---|---|---|
-| `cluster` | `main` (Prometheus scrape class) | `payment` (Alloy external_labels) |
-| `env` | `dev` (`monitoring_env`) | `dev` |
-| `namespace` | Pod 네임스페이스 | `payment` |
-| `container` | 컨테이너 이름 = 서비스 이름 | Docker 컨테이너 이름 (cAdvisor `name` → `container`) |
-| `instance` | 대상 주소 | 결제 노드 `node_name` |
+| 라벨 | 클러스터 | 결제 노드 | DB 노드 |
+|---|---|---|---|
+| `cluster` | `main` (Prometheus scrape class) | `payment` (Alloy external_labels) | `db` (Alloy external_labels) |
+| `env` | `dev` (`monitoring_env`) | `dev` | `dev` |
+| `namespace` | Pod 네임스페이스 | `payment` | `db` |
+| `container` | 컨테이너 이름 = 서비스 이름 | Docker 컨테이너 이름 (cAdvisor `name` → `container`) | 결제 노드와 같음 |
+| `instance` | 대상 주소 | 결제 노드 `node_name` | DB 노드 `node_name` |
+| `job` | ServiceMonitor · PodMonitor 기준 | `node-exporter` · `cadvisor` · `payment-service` · `mysql` | `node-exporter` · `cadvisor` · `mysql` · `redis` |
 
 - `externalLabels` 는 저장된 시계열에 붙지 않아 `sum by (cluster)` 에 쓸 수 없습니다. 그래서 클러스터 쪽은 scrape class(`team04-default`) 의 relabel 로 붙입니다.
 - 앱 `/metrics`(backend `libs/common` metrics)는 backend 차트 `metrics.enabled`(PodMonitor) · 결제 노드 `payment_metrics_enabled` 로 수집합니다 (17-5). 앱이 `service` 라벨을 직접 붙이고 수집 쪽은 `honorLabels: true` 입니다.
@@ -1520,7 +1523,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 ### 17-1. Tailscale ACL
 
 1-1 의 정책에 아래 grant 가 들어 있어야 합니다 (1-1 예시에 반영됨).
-- `tag:payment` → `tag:k8s-node` `tcp:30909` (Alloy → Prometheus remote_write)
+- `tag:payment` · `tag:db` → `tag:k8s-node` `tcp:30909` (Alloy → Prometheus remote_write)
 - `autogroup:member` → `tag:k8s-node` `tcp:9443` (Grafana HTTPS)
 
 ### 17-2. 실행
@@ -1539,6 +1542,9 @@ ansible-playbook monitoring.yml -K
 
 # 3) 결제 노드 담당자: 수집기 추가 (CLUSTER_ENTRY_IP = control plane Tailscale IP, 14-2)
 ansible-playbook payment.yml -K --tags deploy
+
+# 4) DB 노드 담당자: 수집기 + exporter 계정 (CLUSTER_ENTRY_IP 같은 값, 17-6)
+ansible-playbook db.yml -K
 ```
 
 - Grafana admin 비밀번호: `bao kv get secret/team04-hotel/dev/grafana` (OpenBao UI 도 가능). 처음 실행 때 랜덤으로 만들고 이후에는 바꾸지 않습니다.
@@ -1553,10 +1559,11 @@ ansible-playbook payment.yml -K --tags deploy
 | **team04 / 서비스 개요** | **시작점.** 서비스별 HTTP · gRPC 요청 수 · p95 · 에러 비율, 클러스터 + 결제 노드 CPU · 메모리, 메모리/limit, 스로틀링, 재시작 |
 | team04 / API · gRPC 상세 | HTTP 라우트별 · gRPC 메서드별 요청 · p95/p99 · 결과 코드, 서비스 간 호출 관계(부른 서비스 → 불린 서비스) |
 | team04 / Node.js 런타임 | 이벤트 루프 지연, heap · RSS, GC, 활성 핸들, 프로세스 재시작 |
-| team04 / 결제 노드 | 수집 상태(up), 호스트 CPU · 메모리 · 디스크, 컨테이너별 CPU · 메모리 |
+| team04 / DB | 메인 DB · 결제 DB 서버(연결 수 · 명령별 처리량 · 느린 쿼리 · buffer pool 적중률), 앱 커넥션 풀(사용 중 · 대기 · 대기 시간 · 풀 합계 vs max_connections), Valkey(메모리 · 적중률 · 축출) — 온프레미스 전용 (17-6) |
+| team04 / 외부 노드 (결제 · DB) | `cluster` 로 결제 · DB 노드 선택. 수집 상태(up), 호스트 CPU · 메모리 · 디스크, 컨테이너별 CPU · 메모리 (파일 이름은 `team04-payment-node.json` 그대로) |
 
 - 대시보드 JSON 은 `roles/monitoring/files/dashboards/` — ConfigMap(label `grafana_dashboard=1`)으로 올라가며 UI 에서 고친 내용은 저장되지 않습니다. JSON 을 고치고 `--tags monitoring` 으로 반영합니다.
-- 알람 규칙은 common values 의 `additionalPrometheusRulesMap`: `PodRestartingFrequently`(15분 3회), `ContainerOOMKilled`, `ContainerMemoryNearLimit`(limit 90%, 5분), `PaymentMetricsAbsent`(결제 노드 메트릭 5분 없음), `ApiGateway5xxRateHigh`(api-gateway 5xx 5% 초과 5분, 0.1 rps 이상일 때만), `NodeEventLoopLagHigh`(이벤트 루프 p99 0.5초 초과 10분). CPU 스로틀링은 기본 규칙 `CPUThrottlingHigh`(25%, 15분).
+- 알람 규칙은 common values 의 `additionalPrometheusRulesMap`: `PodRestartingFrequently`(15분 3회), `ContainerOOMKilled`, `ContainerMemoryNearLimit`(limit 90%, 5분), `PaymentMetricsAbsent` · `DbNodeMetricsAbsent`(결제 · DB 노드 메트릭 5분 없음), DB 규칙(17-6), `ApiGateway5xxRateHigh`(api-gateway 5xx 5% 초과 5분, 0.1 rps 이상일 때만), `NodeEventLoopLagHigh`(이벤트 루프 p99 0.5초 초과 10분). CPU 스로틀링은 기본 규칙 `CPUThrottlingHigh`(25%, 15분).
 - 에러 기준은 **HTTP 5xx 만** 입니다 (노션 합의). gRPC `grpc_code` 는 대시보드에서 비율 · 분포만 봅니다 — `NOT_FOUND` 등 비즈니스 거절이 섞여 있음.
 - **워커 PC 가 꺼져 있으면** `KubeNodeNotReady` · `TargetDown`(그 노드의 kubelet · node-exporter) 등이 firing 입니다. dev 에서는 정상 상황입니다.
 
@@ -1570,7 +1577,7 @@ kubectl -n monitoring get pods,pvc -o wide     # Prometheus 는 control plane, �
 
 1. Prometheus `/targets` — kubelet · cAdvisor · node-exporter · kube-state-metrics · apiserver · coredns 가 UP (꺼진 워커는 DOWN)
 2. Grafana "Kubernetes / Compute Resources / Namespace (Pods)" 에서 namespace `backend` 의 Pod CPU · 메모리
-3. Grafana Explore: `up{cluster="payment"}`, `container_memory_working_set_bytes{cluster="payment"}` → "team04 / 결제 노드" 대시보드
+3. Grafana Explore: `up{cluster="payment"}`, `container_memory_working_set_bytes{cluster="payment"}` → "team04 / 외부 노드 (결제 · DB)" 대시보드 (DB 노드는 `cluster="db"`)
 4. 데이터 유지: `kubectl -n monitoring delete pod prometheus-kube-prometheus-stack-prometheus-0` 뒤에도 이전 그래프가 남아 있음
 5. 결제 알람: 결제 노드에서 `docker stop alloy` → 약 6분 뒤 `PaymentMetricsAbsent` firing → `docker start alloy` (WAL 에 쌓인 값이 다시 들어옴)
 
@@ -1604,7 +1611,59 @@ kubectl -n backend exec deploy/booking-service -- wget -qO- localhost:9464/metri
 - `up{cluster="payment", job="payment-service"}` = 1
 - 프론트에서 예약 · 결제를 한 번 해 본 뒤 "team04 / API · gRPC 상세" 의 호출 관계 표가 채워지는지
 
-### 17-6. 트러블슈팅
+### 17-6. DB 지표 (DB 노드 · 결제 DB)
+
+두 가지를 함께 봅니다. **서버 쪽**은 MariaDB · Valkey 가 스스로 내는 상태, **앱 쪽**은 backend 가 본 커넥션 풀(`backend/libs/common/src/metrics/db-metrics.ts`, 메트릭 3차 #373)입니다.
+
+| 지표 | 수집 | 위치 |
+|---|---|---|
+| 메인 MariaDB 서버 (`mysql_*`) | DB 노드 Alloy 내장 mysqld_exporter → job `mysql`, `cluster="db"` | `db.yml` (role `node_collectors`, `collectors_mysql`) |
+| Valkey 서버 (`redis_*`) | DB 노드 Alloy 내장 redis_exporter → job `redis`, `cluster="db"` | `db.yml` (`collectors_redis`, 비밀번호는 `valkey_password`) |
+| 결제 MariaDB 서버 (`mysql_*`) | 결제 노드 Alloy 내장 mysqld_exporter → job `mysql`, `cluster="payment"` | `payment.yml` (`collectors_mysql`) |
+| DB 노드 호스트 · 컨테이너 | node-exporter · cAdvisor (MinIO · OpenBao · DynamoDB Local 은 컨테이너 CPU · 메모리만) | `db.yml` |
+| 앱 커넥션 풀 (`db_client_connections*`) | 서비스 `/metrics` — 클러스터 PodMonitor(auth · booking · hotel · user, `cluster="main"`) · 결제 노드 Alloy(payment-service) | 추가 작업 없음 (17-5 경로 그대로) |
+
+- **exporter 계정**: MariaDB 마다 `'exporter'@'127.0.0.1'` (`MAX_USER_CONNECTIONS 3`, 권한 `PROCESS, REPLICATION CLIENT, REPLICA MONITOR` + `performance_schema` 읽기 — 앱 데이터는 못 읽음). 비밀번호는 OpenBao `main-db-exporter` · `payment-db-exporter` — 없으면 playbook 이 만들고, 매 실행 접속 · 권한을 검사해 다를 때만 다시 맞춥니다. OpenBao 를 쓰지 않으면(`OPENBAO_ADDR` 없음) MariaDB 지표만 빠집니다.
+- 접속 비밀값은 `/opt/node-collectors/secrets/` (Alloy 실행 uid 만 읽기, 0600). Alloy `local.file` 이 다시 읽으므로 비밀번호가 바뀌어도 재시작하지 않습니다.
+- 수집기는 모두 127.0.0.1 에서 읽으므로 ufw · DB 포트 설정은 그대로입니다. 새로 필요한 것은 ACL `tag:db → tag:k8s-node tcp:30909` 하나입니다 (17-1).
+- **운영(prod)은 대상이 아닙니다** — RDS · ElastiCache 는 CloudWatch 지표입니다. 그래서 "team04 / DB" 대시보드와 `team04.db` 규칙은 운영 사본에서 뺍니다 (`.github/workflows/ci.yml` monitoring-copies 제외 목록). 앱 커넥션 풀 지표는 운영 클러스터에서도 수집됩니다.
+- 결제 노드는 수집기가 `payment-node` Compose 프로젝트에서 `node-collectors` 로 옮겨졌습니다. 첫 실행 때 이전 컨테이너를 지우고 다시 만들며, 이전 WAL(`/var/lib/payment-node/alloy`)은 지웁니다 (수집 공백 1분 이내).
+
+**알람** (`team04.db`, cluster 라벨로 메인 · 결제 DB 를 함께 봄)
+
+| 알람 | 조건 |
+|---|---|
+| `DbNodeMetricsAbsent` | DB 노드 node-exporter 메트릭이 5분 없음 |
+| `MariaDBDown` | `mysql_up == 0` 2분 (critical) |
+| `MariaDBConnectionsHigh` | 연결 수 > `max_connections` 의 80%, 5분 |
+| `ValkeyMemoryNearMax` | 사용 메모리 > `maxmemory` 의 90%, 5분 |
+| `DbPoolWaiting` | 앱 풀에서 연결을 기다리는 요청이 5분 넘게 있음 |
+
+디스크 · 메모리 부족은 kube-prometheus-stack 기본 node 규칙(`NodeFilesystemSpaceFillingUp` 등)이 job `node-exporter` 로 결제 · DB 노드에도 적용됩니다.
+
+**순서**
+
+1. Tailscale 관리자 콘솔: `tag:db → tag:k8s-node` grant 에 `tcp:30909` 추가 (1-1)
+2. `ansible-playbook monitoring.yml -K --tags monitoring` (대시보드 · 알람)
+3. `ansible-playbook db.yml -K` (`.env` 에 `CLUSTER_ENTRY_IP`) — exporter 계정 · 수집기. 이후 수집기만 바꿀 때는 `--tags collectors`
+4. `ansible-playbook payment.yml -K --tags deploy` — 수집기 이관 · 결제 DB exporter (앱 풀 지표는 payment-service 이미지가 #373 이후 커밋일 때)
+
+**확인**
+
+```bash
+# DB · 결제 노드
+docker compose -p node-collectors ps                       # node-exporter · cadvisor · alloy
+curl -s 127.0.0.1:12345/-/ready                            # Alloy (UI: ssh -L 12345:127.0.0.1:12345 <노드>)
+docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/exporter.cnf -e "SHOW GRANTS"   # 결제 노드는 payment-mariadb
+```
+
+- Prometheus: `up{cluster="db"}` — `node-exporter` · `cadvisor` · `mysql` · `redis` 가 1, `up{cluster="payment", job="mysql"}` = 1
+- `mysql_up{cluster=~"db|payment"}` = 1, `redis_memory_max_bytes{cluster="db"}` = 1GiB (`valkey_maxmemory`)
+- `count by (cluster, service) (db_client_connections_max)` — main 4개(auth · booking · hotel · user) + payment 1개
+- `count by (cluster, job) ({cluster=~"db|payment"})` — job 당 수천 이하
+- Grafana "team04 / DB" 의 모든 행, "team04 / 외부 노드" 에서 `cluster=db` 선택
+
+### 17-7. 트러블슈팅
 
 | 증상 | 확인 |
 |---|---|
@@ -1613,7 +1672,10 @@ kubectl -n backend exec deploy/booking-service -- wget -qO- localhost:9464/metri
 | Prometheus Pod 가 Pending | `kubectl get pv prometheus-local` — `Released` 면 PVC 를 지웠던 것. 데이터를 유지하려면 `kubectl patch pv prometheus-local -p '{"spec":{"claimRef":null}}'` 로 다시 Available 로 |
 | Prometheus Pod 가 `permission denied` 로 재시작 | 데이터 디렉토리 소유자 1000:2000 — `--tags monitoring` 재실행 |
 | `kubectl top` 이 `Metrics API not available` | `kubectl get apiservice v1beta1.metrics.k8s.io`, metrics-server 로그(kubelet 10250 접속). 직접 설치한 metrics-server 가 있으면 role 이 건너뜀 — 지우고 다시 실행 |
-| 결제 노드 메트릭이 없음 | 결제 노드에서 `docker logs alloy` (remote_write 오류), `curl -s 127.0.0.1:12345/-/ready`, ACL `tag:payment → tag:k8s-node tcp:30909`, `CLUSTER_ENTRY_IP` |
-| Grafana 9443 접속 불가 | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status`. Grafana Pod 가 워커에 있으면 CP `:30300` NodePort → 워커 Pod 경로라 `kubectl -n monitoring get pod -o wide` 로 Pod 가 Running 인지도 확인 |
+| 결제 · DB 노드 메트릭이 없음 | 그 노드에서 `docker logs alloy` (remote_write 오류), `curl -s 127.0.0.1:12345/-/ready`, ACL `tag:payment` · `tag:db` → `tag:k8s-node tcp:30909`, `CLUSTER_ENTRY_IP` |
+| `mysql_up` 이 0 · `up{job="mysql"}` 없음 | Alloy UI 의 `prometheus.exporter.mysql.main` 오류, `/opt/node-collectors/secrets/mysql.dsn` 존재 여부(OpenBao `*-db-exporter` 가 없으면 만들지 않음), 위 `SHOW GRANTS` 로 exporter 계정 접속 |
+| 수집기 기동이 `container name ... already in use` | 이전 프로젝트 컨테이너가 남은 경우 — `docker rm -f node-exporter cadvisor alloy` 후 `--tags collectors` |
+| Grafana 9443 접속 불가 (연결 자체가 안 됨) | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status` 에 `:9443 → http://<CP Tailscale IP>:30300` 이 있는지 |
+| Grafana 9443 이 TLS 연결 뒤 응답 없이 시간 초과 (브라우저 502 · 무한 로딩), Pod 는 Running · Ready | Grafana Pod 가 **워커**에 떠 있는 경우 (`kubectl -n monitoring get pod -l app.kubernetes.io/name=grafana -o wide`). CP 의 tailscale serve 가 보낸 요청은 다른 노드 Pod 로 가지 못함 — tailscaled 가 자기 패킷에 붙이는 fwmark(`0x80000`)가 달린 채로는 Calico VXLAN(다른 노드 Pod) 경로가 막힘 (CP 에서 SO_MARK 0x80000 소켓으로 워커 Pod 접속 시 시간 초과, mark 없이 · CP Pod 는 정상으로 확인). 같은 CP 에서 curl 로 NodePort · Pod IP 를 부르면 200 이라 Grafana 문제로 보이지 않음. dev values 는 Grafana 를 CP 에 고정함 → `monitoring.yml --tags monitoring` 으로 반영 (이전 버전 values 는 워커 우선이라 `rollout restart` · 워커 기동 후 재스케줄 때 발생) |
 | control plane 과부하 (load 가 vCPU 수보다 훨씬 높음, controller-manager · scheduler 가 `leaderelection lost` 로 재시작) | `kubectl get pods -A -o wide --field-selector spec.nodeName=<CP>` 로 CP 에 몰린 Pod 확인. 급하면 `kubectl -n monitoring scale deploy --all --replicas=0 && kubectl -n monitoring scale sts --all --replicas=0` (데이터 유지, `monitoring.yml` 재실행으로 복구) |
 | chart 메이저 버전 업그레이드 | kube-prometheus-stack 은 helm 이 CRD 를 갱신하지 않음 — chart UPGRADE 문서대로 CRD 를 먼저 `kubectl apply --server-side` |

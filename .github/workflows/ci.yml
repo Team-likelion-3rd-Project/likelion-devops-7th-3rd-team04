@@ -99,7 +99,7 @@ jobs:
             --set global.imageTag=lint --set ingress.enabled=true > /dev/null
 
   # 운영 Grafana 대시보드(infra/gitops/prod/monitoring)는 온프레미스 원본의 사본 — 원본만 고치고 복사를 잊지 않도록 검사.
-  # 원본의 team04-payment-node 는 운영에서 뺀다 (운영 결제 지표는 AMP, 메인 Prometheus 에 없음)
+  # 원본의 team04-payment-node(외부 노드) · team04-db 는 운영에서 뺀다 (운영 결제 지표는 AMP, 운영 DB 는 RDS · ElastiCache 라 exporter 지표가 없음)
   monitoring-copies:
     name: Monitoring Dashboard Copies
     runs-on: ubuntu-latest
@@ -110,8 +110,8 @@ jobs:
         run: |
           src=infra/ansible/roles/monitoring/files/dashboards
           dst=infra/gitops/prod/monitoring/chart/dashboards
-          diff -r -x team04-payment-node.json "$src" "$dst" || {
-            echo "::error::$dst 가 $src 와 다릅니다 — 원본을 복사해 커밋하세요 (team04-payment-node.json 제외)"
+          diff -r -x team04-payment-node.json -x team04-db.json "$src" "$dst" || {
+            echo "::error::$dst 가 $src 와 다릅니다 — 원본을 복사해 커밋하세요 (team04-payment-node.json · team04-db.json 제외)"
             exit 1
           }
 

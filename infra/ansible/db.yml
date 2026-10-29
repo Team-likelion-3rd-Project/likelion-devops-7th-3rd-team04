@@ -1,8 +1,9 @@
 ---
-# DB 노드: OpenBao(dev 비밀값 단일 소스) → MariaDB + Valkey + MinIO + DynamoDB Local (README 7절, 16절)
+# DB 노드: OpenBao(dev 비밀값 단일 소스) → MariaDB + Valkey + MinIO + DynamoDB Local → 모니터링 수집기 (README 7절, 16절, 17절)
 #   전체           : ansible-playbook db.yml -K
 #   OpenBao 만     : ansible-playbook db.yml -K --tags openbao
 #   .env 값 이관만 : ansible-playbook db.yml -K --tags openbao_import
+#   수집기만       : ansible-playbook db.yml -K --tags collectors   (CLUSTER_ENTRY_IP 필요)
 - name: DB 노드 구성 (OpenBao + MariaDB + Valkey + MinIO, Docker Compose)
   hosts: db
   become: true
@@ -48,6 +49,21 @@
         name: openbao
         tasks_from: import
       tags: [openbao, openbao_import]
+
+    # DB 서버 지표용 exporter 계정 비밀번호 — 처음 한 번만 만들고 이후에는 그대로 (README 17-6)
+    - name: OpenBao 저장 (main-db-exporter, 없을 때만)
+      ansible.builtin.include_role:
+        name: openbao_kv
+        tasks_from: write
+        # include_role 의 tags 는 안쪽 태스크에 전해지지 않음 — 없으면 --tags deploy · collectors 실행에서 비밀번호가 만들어지지 않음
+        apply:
+          tags: [always]
+      vars:
+        openbao_write_path: main-db-exporter
+        openbao_write_create_only: true
+        openbao_write_data:
+          password: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+      tags: [always]
 
     - name: OpenBao 값 읽기
       ansible.builtin.import_role:
@@ -117,6 +133,19 @@
     - name: DB 스택
       ansible.builtin.import_role:
         name: db_stack
+
+    # 호스트 · 컨테이너 + 메인 MariaDB · Valkey 서버 지표 → 클러스터 Prometheus (README 17-6). 단독: --tags collectors
+    - name: 모니터링 수집기
+      ansible.builtin.import_role:
+        name: node_collectors
+      vars:
+        collectors_cluster: db
+        collectors_namespace: db
+        collectors_mysql: "{{ {'port': db_port, 'user': db_exporter_user, 'password': db_exporter_password} if db_exporter_password | length > 0 else {} }}"
+        collectors_redis:
+          port: "{{ valkey_port }}"
+          password: "{{ valkey_password }}"
+      tags: [collectors]
 
     # dev 초기 데이터 — 메인 DB 스키마(ArgoCD sync 때 main-db-migration hook 이 적용)가 있어야 실행, 없으면 건너뜀
     - name: dev DB 시딩

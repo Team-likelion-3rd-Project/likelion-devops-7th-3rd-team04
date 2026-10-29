@@ -1,0 +1,121 @@
+// Ansible(node_collectors role)이 생성 — 직접 수정하지 마세요.
+// {{ collectors_cluster }} 노드 수집기: node-exporter · cAdvisor{{ ' · ' ~ (collectors_app_scrapes | map(attribute='job') | join(' · ')) if collectors_app_scrapes else '' }}{{ ' · MariaDB' if collectors_mysql else '' }}{{ ' · Valkey' if collectors_redis else '' }} → 클러스터 Prometheus(remote_write) (README 17절)
+// 라벨은 클러스터와 맞춤: cluster · env · namespace 는 external_labels, 컨테이너 이름은 container (k8s cAdvisor 와 같은 이름)
+
+prometheus.scrape "node" {
+  job_name        = "node-exporter"
+  targets         = [{"__address__" = "127.0.0.1:{{ node_exporter_port }}", "instance" = "{{ node_name }}"}]
+  scrape_interval = "{{ collectors_scrape_interval }}"
+  forward_to      = [prometheus.remote_write.main.receiver]
+}
+
+prometheus.scrape "cadvisor" {
+  job_name        = "cadvisor"
+  targets         = [{"__address__" = "127.0.0.1:{{ cadvisor_port }}", "instance" = "{{ node_name }}"}]
+  scrape_interval = "{{ collectors_scrape_interval }}"
+  forward_to      = [prometheus.relabel.cadvisor.receiver]
+}
+
+// Docker 컨테이너 이름(name) → container. id(cgroup 경로)는 컨테이너를 다시 만들 때마다 바뀌어 지움
+prometheus.relabel "cadvisor" {
+  forward_to = [prometheus.remote_write.main.receiver]
+
+  rule {
+    source_labels = ["name"]
+    target_label  = "container"
+  }
+
+  rule {
+    action = "labeldrop"
+    regex  = "name|id"
+  }
+}
+{% for app in collectors_app_scrapes %}
+
+// 앱이 service 라벨을 직접 붙임 (노션 "라벨 세부 정의 v0.2") — 앱 값을 그대로 씀
+prometheus.scrape "{{ app.job | replace('-', '_') }}" {
+  job_name        = "{{ app.job }}"
+  targets         = [{"__address__" = "127.0.0.1:{{ app.port }}", "instance" = "{{ node_name }}"}]
+  scrape_interval = "{{ collectors_scrape_interval }}"
+  honor_labels    = true
+  forward_to      = [prometheus.remote_write.main.receiver]
+}
+{% endfor %}
+{% if collectors_mysql %}
+
+// MariaDB 서버 지표 (내장 mysqld_exporter, 기본 collector). 접속 정보는 secrets/mysql.dsn (exporter 전용 계정, 최소 권한)
+local.file "mysql_dsn" {
+  filename  = "/etc/alloy/secrets/mysql.dsn"
+  is_secret = true
+}
+
+prometheus.exporter.mysql "main" {
+  data_source_name = local.file.mysql_dsn.content
+}
+
+// exporter 가 붙이는 job(integrations/mysql) · instance(접속 주소)를 다른 대상과 같은 방식으로 맞춤
+discovery.relabel "mysql" {
+  targets = prometheus.exporter.mysql.main.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "mysql"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = "{{ node_name }}"
+  }
+}
+
+prometheus.scrape "mysql" {
+  targets         = discovery.relabel.mysql.output
+  scrape_interval = "{{ collectors_scrape_interval }}"
+  forward_to      = [prometheus.remote_write.main.receiver]
+}
+{% endif %}
+{% if collectors_redis %}
+
+// Valkey 서버 지표 (내장 redis_exporter — Valkey 와 프로토콜 호환). 비밀번호는 secrets/redis.pass
+local.file "redis_password" {
+  filename  = "/etc/alloy/secrets/redis.pass"
+  is_secret = true
+}
+
+prometheus.exporter.redis "main" {
+  redis_addr     = "127.0.0.1:{{ collectors_redis.port }}"
+  redis_password = local.file.redis_password.content
+}
+
+discovery.relabel "redis" {
+  targets = prometheus.exporter.redis.main.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "redis"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = "{{ node_name }}"
+  }
+}
+
+prometheus.scrape "redis" {
+  targets         = discovery.relabel.redis.output
+  scrape_interval = "{{ collectors_scrape_interval }}"
+  forward_to      = [prometheus.remote_write.main.receiver]
+}
+{% endif %}
+
+prometheus.remote_write "main" {
+  endpoint {
+    url = "{{ collectors_remote_write_url }}"
+  }
+
+  external_labels = {
+    cluster   = "{{ collectors_cluster }}",
+    env       = "{{ monitoring_env }}",
+    namespace = "{{ collectors_namespace }}",
+  }
+}
