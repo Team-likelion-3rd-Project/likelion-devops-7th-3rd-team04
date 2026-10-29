@@ -1485,7 +1485,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 클러스터의 Pod · 노드 리소스와 결제 노드 · DB 노드(k8s 밖)를 **Grafana 하나**에서 봅니다. 수집 방식 · 라벨은 운영과 같습니다 (노션 "관측성 도입 계획" · "라벨 세부 정의 v0.2").
 
 ```
-[dev 클러스터 — Prometheus 만 CP 고정, 나머지 워커 우선]       [결제 · DB 노드 — Docker Compose node-collectors]
+[dev 클러스터 — Prometheus·Grafana CP 고정, 나머지 워커 우선]  [결제 · DB 노드 — Docker Compose node-collectors]
  kubelet(cAdvisor) ─┐                                          node-exporter ─┐ 127.0.0.1
  kube-state-metrics ─┼─▶ Prometheus ◀── remote_write(30909) ──── Grafana Alloy ┤ (+ 내장 mysqld · redis exporter)
  node-exporter(DS) ──┘    │  로컬 PV                                cAdvisor ──┘ 127.0.0.1
@@ -1499,7 +1499,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 | playbook | `monitoring.yml` (`[control_plane]`) — roles `metrics_server`, `monitoring` / 결제 · DB 노드는 `payment.yml` · `db.yml` 의 role `node_collectors` |
 | chart | metrics-server `3.14.0`, kube-prometheus-stack `92.3.0` (`group_vars/control_plane.yml`) |
 | values | `roles/monitoring/files/kube-prometheus-stack-values-common.yaml` (**운영과 공유하는 정적 파일**) + `templates/kube-prometheus-stack-values-dev.yaml.j2` (dev 값) |
-| 배치 | **Prometheus**: control plane 고정 (로컬 PV), CPU limit `prometheus_cpu_limit`(500m) / **operator · kube-state-metrics · Grafana**: 워커 우선(preferred affinity), 워커가 모두 꺼져 있으면 control plane — 클러스터 기동에 필수가 아니라 control plane(vCPU 2)의 부담을 줄이려고. 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸 / node-exporter: DaemonSet |
+| 배치 | **Prometheus**: control plane 고정 (로컬 PV), CPU limit `prometheus_cpu_limit`(500m) / **Grafana**: control plane 고정 — 9443 tailscale serve 가 CP 에서 프록시하므로 (17-7, ArgoCD 와 같음) / **operator · kube-state-metrics**: 워커 우선(preferred affinity), 워커가 모두 꺼져 있으면 control plane — 클러스터 기동에 필수가 아니라 control plane(vCPU 2)의 부담을 줄이려고. 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸 / node-exporter: DaemonSet |
 | 저장소 | control plane 로컬 PV `prometheus-local` (`/var/lib/monitoring/prometheus`, 20Gi, StorageClass `monitoring-local`), 보존 7일 · 15GB |
 | Grafana | `https://<control plane>.<tailnet>.ts.net:9443` — admin 계정 OpenBao `grafana` → ESO → Secret `monitoring/grafana-admin` |
 | Prometheus | `http://<control plane Tailscale IP>:30909` (UI · `/targets`, 결제 · DB 노드 remote_write `/api/v1/write`) |
@@ -1675,6 +1675,7 @@ docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/exporter.cn
 | 결제 · DB 노드 메트릭이 없음 | 그 노드에서 `docker logs alloy` (remote_write 오류), `curl -s 127.0.0.1:12345/-/ready`, ACL `tag:payment` · `tag:db` → `tag:k8s-node tcp:30909`, `CLUSTER_ENTRY_IP` |
 | `mysql_up` 이 0 · `up{job="mysql"}` 없음 | Alloy UI 의 `prometheus.exporter.mysql.main` 오류, `/opt/node-collectors/secrets/mysql.dsn` 존재 여부(OpenBao `*-db-exporter` 가 없으면 만들지 않음), 위 `SHOW GRANTS` 로 exporter 계정 접속 |
 | 수집기 기동이 `container name ... already in use` | 이전 프로젝트 컨테이너가 남은 경우 — `docker rm -f node-exporter cadvisor alloy` 후 `--tags collectors` |
-| Grafana 9443 접속 불가 | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status`. Grafana Pod 가 워커에 있으면 CP `:30300` NodePort → 워커 Pod 경로라 `kubectl -n monitoring get pod -o wide` 로 Pod 가 Running 인지도 확인 |
+| Grafana 9443 접속 불가 (연결 자체가 안 됨) | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status` 에 `:9443 → http://<CP Tailscale IP>:30300` 이 있는지 |
+| Grafana 9443 이 TLS 연결 뒤 응답 없이 시간 초과 (브라우저 502 · 무한 로딩), Pod 는 Running · Ready | Grafana Pod 가 **워커**에 떠 있는 경우 (`kubectl -n monitoring get pod -l app.kubernetes.io/name=grafana -o wide`). CP 의 tailscale serve 가 보낸 요청은 다른 노드 Pod 로 가지 못함 — tailscaled 가 자기 패킷에 붙이는 fwmark(`0x80000`)가 달린 채로는 Calico VXLAN(다른 노드 Pod) 경로가 막힘 (CP 에서 SO_MARK 0x80000 소켓으로 워커 Pod 접속 시 시간 초과, mark 없이 · CP Pod 는 정상으로 확인). 같은 CP 에서 curl 로 NodePort · Pod IP 를 부르면 200 이라 Grafana 문제로 보이지 않음. dev values 는 Grafana 를 CP 에 고정함 → `monitoring.yml --tags monitoring` 으로 반영 (이전 버전 values 는 워커 우선이라 `rollout restart` · 워커 기동 후 재스케줄 때 발생) |
 | control plane 과부하 (load 가 vCPU 수보다 훨씬 높음, controller-manager · scheduler 가 `leaderelection lost` 로 재시작) | `kubectl get pods -A -o wide --field-selector spec.nodeName=<CP>` 로 CP 에 몰린 Pod 확인. 급하면 `kubectl -n monitoring scale deploy --all --replicas=0 && kubectl -n monitoring scale sts --all --replicas=0` (데이터 유지, `monitoring.yml` 재실행으로 복구) |
 | chart 메이저 버전 업그레이드 | kube-prometheus-stack 은 helm 이 CRD 를 갱신하지 않음 — chart UPGRADE 문서대로 CRD 를 먼저 `kubectl apply --server-side` |
