@@ -1,4 +1,5 @@
 import { adminAuth } from './tokenStore'
+import { adminErrorMessage, adminScopeOf, filterHotelsInScope } from '../admin/adminScope'
 import { refreshAdminAccessToken } from './gateway'
 
 // 비워 두면 같은 출처의 /api/...로 호출한다 — 로컬 개발에서는 Vite 개발 서버가 /api를 클러스터로 프록시한다.
@@ -86,7 +87,7 @@ async function parseJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new Error(message ?? `${res.status} ${res.statusText}`)
+    throw new Error(adminErrorMessage(body?.code, message ?? `${res.status} ${res.statusText}`))
   }
   return res.json()
 }
@@ -148,10 +149,11 @@ export async function fetchAdminUserById(userId: string | number): Promise<Admin
 }
 
 // GET /api/hotels - 전체 호텔 목록 (공개 API지만 관리자 화면에서도 동일하게 사용)
+// 지점 계정에는 자기 지점만 돌려준다 (LDP-184) — 대시보드·호텔 목록·예약 필터·호실 배정이 모두 이 목록을 쓴다.
 export async function fetchAdminHotels(): Promise<AdminHotel[]> {
   const res = await authedFetch('/api/hotels')
   const data = await parseJson<{ hotels: AdminHotel[] }>(res)
-  return data.hotels ?? []
+  return filterHotelsInScope(adminScopeOf(adminAuth.getAccessToken()), data.hotels ?? [])
 }
 
 // GET /api/hotels/:hotelId - 호텔 상세
