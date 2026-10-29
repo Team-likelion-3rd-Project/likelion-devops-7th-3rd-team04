@@ -1,6 +1,18 @@
 import { Inject, Module, OnModuleDestroy } from '@nestjs/common';
-import Redis from 'ioredis';
+import Redis, { RedisOptions } from 'ioredis';
 import { REDIS_CLIENT } from './redis.constants';
+
+// REDIS_* 환경변수로 접속 정보를 만듭니다. api-gateway 요청 제한 저장소(throttle-storage.ts)도 같은 값을 씁니다.
+export function redisOptionsFromEnv(): RedisOptions {
+  return {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: Number(process.env.REDIS_PORT || 6379),
+    password: process.env.REDIS_PASSWORD || undefined,
+    // 같은 Redis를 쓰는 다른 용도(GitLab CI 이미지 smoke test 등)와 키가 섞이지 않게 DB 번호를 분리할 때 사용
+    db: Number(process.env.REDIS_DB || 0),
+    tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
+  };
+}
 
 // auth-service가 리프레시 토큰을 저장/조회/삭제하는 데 사용하는 ioredis 클라이언트를 등록합니다.
 // 로컬 개발: docker-compose의 redis 컨테이너, 운영: AWS ElastiCache (REDIS_TLS=true + REDIS_PASSWORD=AUTH 토큰)
@@ -10,16 +22,7 @@ import { REDIS_CLIENT } from './redis.constants';
   providers: [
     {
       provide: REDIS_CLIENT,
-      useFactory: (): Redis => {
-        return new Redis({
-          host: process.env.REDIS_HOST || 'localhost',
-          port: Number(process.env.REDIS_PORT || 6379),
-          password: process.env.REDIS_PASSWORD || undefined,
-          // 같은 Redis를 쓰는 다른 용도(GitLab CI 이미지 smoke test 등)와 키가 섞이지 않게 DB 번호를 분리할 때 사용
-          db: Number(process.env.REDIS_DB || 0),
-          tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
-        });
-      },
+      useFactory: (): Redis => new Redis(redisOptionsFromEnv()),
     },
   ],
   exports: [REDIS_CLIENT],
