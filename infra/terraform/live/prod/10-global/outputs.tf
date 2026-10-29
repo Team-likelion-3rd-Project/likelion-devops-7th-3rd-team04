@@ -69,3 +69,14 @@ output "notifications_kms_key_id" {
   description = "알림 토픽 암호화 키 ID. 발행 주체 Role 에 kms:GenerateDataKey · Decrypt 를 줄 때 ARN 을 만든다"
   value       = aws_kms_key.notifications.key_id
 }
+
+# 결제 지표 AMP (metrics.tf). 엔드포인트 주소에는 계정 ID 가 없다 (gitops Grafana 데이터 소스 URL 에 그대로 넣음)
+output "payment_metrics_workspace_id" {
+  description = "결제 지표 AMP 워크스페이스 ID (60 Alloy remote_write · 70 Grafana 조회 권한 · 90 DiscardedSamples 알람)"
+  value       = aws_prometheus_workspace.payment.id
+}
+
+output "payment_metrics_endpoint" {
+  description = "결제 지표 AMP 워크스페이스 Prometheus 엔드포인트 (https://aps-workspaces.<리전>.amazonaws.com/workspaces/<ID>/). remote_write 는 뒤에 api/v1/remote_write"
+  value       = aws_prometheus_workspace.payment.prometheus_endpoint
+}

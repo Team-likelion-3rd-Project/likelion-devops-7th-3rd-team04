@@ -85,6 +85,11 @@ variable "notifications_kms_key_id" {
   type        = string
 }
 
+variable "payment_metrics_workspace_id" {
+  description = "10-global 의 payment_metrics_workspace_id (결제 지표 AMP). Grafana Role 이 이 워크스페이스만 조회한다"
+  type        = string
+}
+
 variable "log_bucket_name" {
   description = "10-global 의 log_bucket_name output. Fluent Bit Role 이 app-logs/main-cluster/ 에 쓴다"
   type        = string

@@ -42,6 +42,12 @@ variable "payment_app_role_name" {
   default     = "team04-hotel-payment-app"
 }
 
+variable "db_exporter_username" {
+  description = "mysqld_exporter 계정 이름. 결제 서버가 부팅 때 이 이름으로 만든다 (60 payment-metrics-setup)"
+  type        = string
+  default     = "exporter"
+}
+
 # ── RDS MariaDB ──
 
 variable "db_engine_version" {

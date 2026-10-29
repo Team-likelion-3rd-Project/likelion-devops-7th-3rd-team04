@@ -23,6 +23,11 @@ variable "alerts_topic_name" {
   type        = string
 }
 
+variable "payment_metrics_workspace_id" {
+  description = "10-global 의 payment_metrics_workspace_id. 결제 지표 AMP 알람(payment-metrics.tf) 차원"
+  type        = string
+}
+
 variable "queue_names" {
   description = "43-messaging 의 queue_names (payment_result_dlq 를 본다)"
   type        = map(string)

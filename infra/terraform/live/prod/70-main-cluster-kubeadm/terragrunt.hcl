@@ -100,6 +100,8 @@ inputs = {
   alerts_topic_name        = dependency.global.outputs.alerts_topic_name
   notifications_kms_key_id = dependency.global.outputs.notifications_kms_key_id
 
+  payment_metrics_workspace_id = dependency.global.outputs.payment_metrics_workspace_id
+
   cluster_log_group_names = dependency.observability_base.outputs.cluster_log_group_names
 
   image_bucket_name = dependency.frontend.outputs.image_bucket_name

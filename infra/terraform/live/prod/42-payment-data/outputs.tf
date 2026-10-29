@@ -27,3 +27,8 @@ output "secret_name" {
   description = "결제 DB 접속 정보 Secret 이름"
   value       = aws_secretsmanager_secret.payment_db.name
 }
+
+output "exporter_secret_name" {
+  description = "결제 DB mysqld_exporter 계정 Secret 이름 (60 결제 서버 Alloy)"
+  value       = aws_secretsmanager_secret.payment_db_exporter.name
+}

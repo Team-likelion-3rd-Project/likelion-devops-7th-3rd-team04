@@ -43,6 +43,26 @@ variable "queue_names" {
   type        = map(string)
 }
 
+variable "payment_db_exporter_secret_name" {
+  description = "42-payment-data 의 exporter_secret_name (결제 DB mysqld_exporter 계정 Secret)"
+  type        = string
+}
+
+variable "payment_metrics_workspace_id" {
+  description = "10-global 의 payment_metrics_workspace_id (결제 지표 AMP 워크스페이스, aps:RemoteWrite 대상)"
+  type        = string
+}
+
+variable "payment_metrics_endpoint" {
+  description = "10-global 의 payment_metrics_endpoint (https://aps-workspaces.<리전>.amazonaws.com/workspaces/<ID>/, / 로 끝남)"
+  type        = string
+
+  validation {
+    condition     = endswith(var.payment_metrics_endpoint, "/")
+    error_message = "payment_metrics_endpoint 는 / 로 끝나야 합니다 (뒤에 api/v1/remote_write 를 붙임)."
+  }
+}
+
 # ── 결제 서버 ──
 
 variable "deploy_topic_name" {
@@ -140,6 +160,38 @@ variable "grpc_port" {
   description = "payment-service gRPC 포트 (NLB 리스너 · Target Group). 30-security payment_grpc_port 와 같게"
   type        = number
   default     = 3004
+}
+
+variable "metrics_port" {
+  description = "payment-service Prometheus 메트릭 포트 (GET /metrics, METRICS_PORT). 127.0.0.1 의 Alloy 만 읽어 SG 에 열지 않는다. 메인 차트 · 온프레미스와 같은 9464"
+  type        = number
+  default     = 9464
+}
+
+# ── 지표 수집기 (LDP-181) ──
+
+variable "alloy_version" {
+  description = "Grafana Alloy 버전 (11-registry 미러 <project>/alloy 의 태그). 온프레미스 node_collectors alloy_image 와 같게, 올릴 때는 미러부터 (README 결제 서버 지표 절)"
+  type        = string
+  default     = "v1.20.1"
+}
+
+variable "alloy_port" {
+  description = "Alloy UI · 자체 상태 포트 (127.0.0.1 에만 바인딩, SSM 포트 포워딩으로 확인)"
+  type        = number
+  default     = 12345
+}
+
+variable "metrics_scrape_interval" {
+  description = "결제 서버 지표 수집 간격. 짧을수록 AMP 수집 비용이 늘어난다 (샘플 수에 비례)"
+  type        = string
+  default     = "30s"
+}
+
+variable "db_exporter_max_user_connections" {
+  description = "결제 DB exporter 계정의 MAX_USER_CONNECTIONS. 결제 서버마다 scrape 동안 연결 1개 — max_size 이상으로"
+  type        = number
+  default     = 3
 }
 
 variable "health_port" {
