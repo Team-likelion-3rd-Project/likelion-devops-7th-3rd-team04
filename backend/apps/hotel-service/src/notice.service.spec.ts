@@ -1,5 +1,6 @@
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { parseApiRpcError } from '@app/common';
+import { Hotel } from './entities/hotel.entity';
 import { Notice, NoticeCategory } from './entities/notice.entity';
 import { NoticeService } from './notice.service';
 
@@ -12,8 +13,10 @@ describe('NoticeService', () => {
     save: jest.fn(),
     delete: jest.fn(),
   };
+  const hotelRepository = { exists: jest.fn() };
   const service = new NoticeService(
     repository as unknown as Repository<Notice>,
+    hotelRepository as unknown as Repository<Hotel>,
   );
   const saved: Notice = {
     noticeId: 7,
@@ -22,6 +25,7 @@ describe('NoticeService', () => {
     category: NoticeCategory.MAINTENANCE,
     isPinned: true,
     createdByAdminId: null,
+    hotelId: null,
     createdAt: new Date('2026-10-10T00:00:00Z'),
     updatedAt: new Date('2026-10-11T00:00:00Z'),
   };
@@ -36,6 +40,7 @@ describe('NoticeService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    hotelRepository.exists.mockResolvedValue(true);
   });
 
   describe('listNotices', () => {
@@ -58,6 +63,7 @@ describe('NoticeService', () => {
             createdByAdminId: 0, // seed 공지는 작성 직원 없음
             createdAt: '2026-10-10T00:00:00.000Z',
             updatedAt: '2026-10-11T00:00:00.000Z',
+            hotelId: 0, // 전체 공지
           },
         ],
         total: 1,
@@ -71,6 +77,18 @@ describe('NoticeService', () => {
 
       expect(repository.findAndCount).toHaveBeenCalledWith(
         expect.objectContaining({ skip: 3, take: 3 }),
+      );
+    });
+
+    it('지점 필터면 그 지점 공지 + 전체 공지(hotel_id NULL)만 (LDP-188)', async () => {
+      repository.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.listNotices(0, 20, 2);
+
+      expect(repository.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: [{ hotelId: 2 }, { hotelId: IsNull() }],
+        }),
       );
     });
   });
@@ -96,9 +114,32 @@ describe('NoticeService', () => {
       body: '02:00~04:00 점검',
       category: NoticeCategory.MAINTENANCE,
       isPinned: true,
+      hotelId: null, // 지점을 안 주면 전체 공지
       createdByAdminId: 3,
     });
     expect(result.createdByAdminId).toBe(3);
+  });
+
+  it('작성: 지점 공지는 대상 지점을 저장하고, 없는 호텔이면 404 HOTEL_NOT_FOUND (LDP-188)', async () => {
+    repository.save.mockResolvedValue({ ...saved, hotelId: 2 });
+
+    const result = await service.createNotice({
+      ...input,
+      adminId: 3,
+      hotelId: 2,
+    });
+
+    expect(repository.create).toHaveBeenCalledWith(
+      expect.objectContaining({ hotelId: 2 }),
+    );
+    expect(result.hotelId).toBe(2);
+
+    hotelRepository.exists.mockResolvedValue(false);
+    repository.save.mockClear();
+    expect(
+      await codeOf(service.createNotice({ ...input, adminId: 3, hotelId: 99 })),
+    ).toMatchObject({ status: 404, code: 'HOTEL_NOT_FOUND' });
+    expect(repository.save).not.toHaveBeenCalled();
   });
 
   it('수정: 제목·본문·분류·고정만 바꾸고 작성 직원·작성일은 그대로', async () => {

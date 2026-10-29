@@ -8,8 +8,12 @@ export class NoticeController {
   constructor(private readonly noticeService: NoticeService) {}
 
   @GrpcMethod('NoticeService', 'ListNotices')
-  async listNotices(data: { page: number; size: number }) {
-    return this.noticeService.listNotices(data.page ?? 0, data.size ?? 0);
+  async listNotices(data: { page: number; size: number; hotelId?: number }) {
+    return this.noticeService.listNotices(
+      data.page ?? 0,
+      data.size ?? 0,
+      data.hotelId ?? 0,
+    );
   }
 
   @GrpcMethod('NoticeService', 'GetNotice')

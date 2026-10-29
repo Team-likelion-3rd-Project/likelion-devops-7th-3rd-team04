@@ -3,7 +3,7 @@ import { of, throwError } from 'rxjs';
 import { AuthenticatedUser, apiRpcException } from '@app/common';
 import { NoticeController } from './notice.controller';
 
-// LDP-147: 공지사항 API — 조회는 공개, 작성·수정·삭제는 관리자 (권한은 가드가, 여기서는 변환·전달만)
+// LDP-147: 공지사항 API — 조회는 공개, 작성·수정·삭제는 관리자 (직급은 가드가, 지점은 여기서 — LDP-188)
 describe('NoticeController', () => {
   const notices = {
     listNotices: jest.fn(),
@@ -18,6 +18,13 @@ describe('NoticeController', () => {
     role: 'ADMIN',
     type: 'ADMIN',
   } as AuthenticatedUser;
+  // 서울(1) 지점 관리자 (LDP-188)
+  const seoulManager = {
+    ...admin,
+    userId: 4,
+    hotelId: 1,
+    adminRole: 'MANAGER',
+  } as AuthenticatedUser;
   const grpcNotice = {
     noticeId: 1,
     title: '머묾 온라인 예약 오픈',
@@ -27,6 +34,7 @@ describe('NoticeController', () => {
     createdByAdminId: 0,
     createdAt: '2026-10-01T00:00:00.000Z',
     updatedAt: '2026-10-01T00:00:00.000Z',
+    hotelId: 0, // 전체 공지
   };
   const body = { title: '제목', body: '본문', category: 'EVENT' as const };
   let controller: NoticeController;
@@ -61,9 +69,14 @@ describe('NoticeController', () => {
 
     const result = await controller.listNotices({});
 
-    expect(notices.listNotices).toHaveBeenCalledWith({ page: 0, size: 20 });
+    expect(notices.listNotices).toHaveBeenCalledWith({
+      page: 0,
+      size: 20,
+      hotelId: 0,
+    });
     expect(result.total).toBe(6);
     expect(result.notices[0].createdByAdminId).toBeNull();
+    expect(result.notices[0].hotelId).toBeNull(); // 전체 공지
   });
 
   it('목록: page·size를 넘기고, gRPC가 빈 목록을 생략해도 채워 준다', async () => {
@@ -73,7 +86,23 @@ describe('NoticeController', () => {
       notices: [],
       total: 0,
     });
-    expect(notices.listNotices).toHaveBeenCalledWith({ page: 1, size: 3 });
+    expect(notices.listNotices).toHaveBeenCalledWith({
+      page: 1,
+      size: 3,
+      hotelId: 0,
+    });
+  });
+
+  it('목록: 지점 필터를 넘긴다 (그 지점 + 전체 공지)', async () => {
+    notices.listNotices.mockReturnValue(of({}));
+
+    await controller.listNotices({ hotelId: 2 });
+
+    expect(notices.listNotices).toHaveBeenCalledWith({
+      page: 0,
+      size: 20,
+      hotelId: 2,
+    });
   });
 
   it('작성: 작성 직원은 토큰의 관리자, 고정을 생략하면 false', async () => {
@@ -83,18 +112,77 @@ describe('NoticeController', () => {
       ...body,
       isPinned: false,
       adminId: 3,
+      hotelId: 0, // 본사가 지점을 생략하면 전체 공지
     });
     expect(result.createdByAdminId).toBe(3);
   });
 
+  it('작성: 본사는 지점 공지도 쓸 수 있다', async () => {
+    await controller.createNotice(admin, { ...body, hotelId: 3 });
+
+    expect(notices.createNotice).toHaveBeenCalledWith(
+      expect.objectContaining({ hotelId: 3 }),
+    );
+  });
+
+  it('작성: 지점 관리자가 지점을 생략하면 자기 지점 공지', async () => {
+    await controller.createNotice(seoulManager, body);
+
+    expect(notices.createNotice).toHaveBeenCalledWith(
+      expect.objectContaining({ hotelId: 1, adminId: 4 }),
+    );
+  });
+
+  it('작성: 지점 관리자가 전체 공지·다른 지점을 고르면 403 ADMIN_HOTEL_FORBIDDEN', async () => {
+    for (const hotelId of [null, 2]) {
+      const { status, body: response } = await httpError(
+        controller.createNotice(seoulManager, { ...body, hotelId }),
+      );
+      expect(status).toBe(403);
+      expect(response).toMatchObject({ code: 'ADMIN_HOTEL_FORBIDDEN' });
+    }
+    expect(notices.createNotice).not.toHaveBeenCalled();
+  });
+
   it('수정: 모든 칸을 함께 넘긴다', async () => {
-    await controller.updateNotice(1, { ...body, isPinned: true });
+    await controller.updateNotice(admin, 1, { ...body, isPinned: true });
 
     expect(notices.updateNotice).toHaveBeenCalledWith({
       noticeId: 1,
       ...body,
       isPinned: true,
+      hotelId: 0,
     });
+    expect(notices.getNotice).not.toHaveBeenCalled(); // 본사는 대상 지점 확인 없이
+  });
+
+  it('수정·삭제: 지점 관리자는 자기 지점 공지만', async () => {
+    notices.getNotice.mockReturnValue(of({ ...grpcNotice, hotelId: 1 }));
+
+    await controller.updateNotice(seoulManager, 1, body);
+    await controller.deleteNotice(seoulManager, 1);
+
+    expect(notices.updateNotice).toHaveBeenCalledWith(
+      expect.objectContaining({ hotelId: 1 }),
+    );
+    expect(notices.deleteNotice).toHaveBeenCalledWith({ noticeId: 1 });
+  });
+
+  it('수정·삭제: 지점 관리자가 전체 공지·다른 지점 공지를 건드리면 403', async () => {
+    for (const hotelId of [0, 2]) {
+      notices.getNotice.mockReturnValue(of({ ...grpcNotice, hotelId }));
+
+      for (const request of [
+        controller.updateNotice(seoulManager, 1, body),
+        controller.deleteNotice(seoulManager, 1),
+      ]) {
+        const { status, body: response } = await httpError(request);
+        expect(status).toBe(403);
+        expect(response).toMatchObject({ code: 'ADMIN_HOTEL_FORBIDDEN' });
+      }
+    }
+    expect(notices.updateNotice).not.toHaveBeenCalled();
+    expect(notices.deleteNotice).not.toHaveBeenCalled();
   });
 
   it('hotel-service의 404는 그대로 404 NOTICE_NOT_FOUND', async () => {
@@ -123,7 +211,7 @@ describe('NoticeController', () => {
     );
 
     const { status, body: response } = await httpError(
-      controller.deleteNotice(1),
+      controller.deleteNotice(admin, 1),
     );
 
     expect(status).toBe(503);

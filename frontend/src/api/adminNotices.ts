@@ -10,6 +10,8 @@ export interface NoticeInput {
   body: string
   category: NoticeCategory
   isPinned: boolean
+  /** 대상 지점 (LDP-188). null = 전체 공지(본사만). 지점 관리자는 자기 지점만 */
+  hotelId: number | null
 }
 
 export const NOTICE_TITLE_MAX = 200
@@ -18,6 +20,7 @@ export const NOTICE_BODY_MAX = 10000
 const NOTICE_ERROR_MESSAGE: Record<string, string> = {
   NOTICE_NOT_FOUND: '공지를 찾을 수 없습니다. 이미 삭제됐을 수 있으니 목록을 새로고침해 주세요.',
   HOTEL_SERVICE_UNAVAILABLE: '공지 서비스에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  HOTEL_NOT_FOUND: '대상 지점을 찾을 수 없습니다. 목록을 새로고침해 주세요.',
 }
 
 export function noticeErrorMessage(err: unknown, fallback: string): string {
