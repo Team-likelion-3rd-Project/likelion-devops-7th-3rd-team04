@@ -1,0 +1,120 @@
+---
+# k8s 밖 노드의 수집기: node-exporter · cAdvisor · Grafana Alloy (Docker Compose 프로젝트 node-collectors, README 17절)
+# payment.yml(결제 노드) · db.yml(DB 노드)이 collectors_cluster · collectors_mysql 등을 넘겨 호출.
+# 노드 서비스와 무관하게 실패해도 앞 단계는 이미 반영됨. remote_write 가 막혀도 Alloy 는 뜨고 WAL 에 쌓음
+
+- name: 수집기 값 확인
+  ansible.builtin.assert:
+    that:
+      - collectors_cluster | length > 0
+      - collectors_namespace | length > 0
+      - cluster_entry_ip | length > 0
+    fail_msg: >-
+      collectors_cluster · collectors_namespace 는 playbook 이, CLUSTER_ENTRY_IP(control plane Tailscale IP)는 .env 가 채워야 합니다 (README 17절).
+    quiet: true
+
+- name: 설정 디렉토리 (비밀값 포함 → root 전용)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ collectors_base_dir }}"
+    - "{{ collectors_base_dir }}/conf"
+
+# Alloy 이미지의 실행 uid 로 WAL · 비밀값 디렉토리 소유자를 맞춤
+- name: Alloy 이미지 pull
+  ansible.builtin.command: docker pull --quiet {{ alloy_image }}
+  changed_when: false
+
+- name: Alloy 실행 uid 조회
+  ansible.builtin.command: docker run --rm --entrypoint id {{ alloy_image }} -u
+  register: collectors_alloy_uid
+  changed_when: false
+
+- name: Alloy 데이터 디렉토리 (remote_write WAL) · 비밀값 디렉토리
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ collectors_alloy_uid.stdout | trim }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ collectors_data_dir }}/alloy", mode: "0750" }
+    - { path: "{{ collectors_base_dir }}/secrets", mode: "0700" }
+
+# Alloy local.file 이 읽음 — 줄바꿈 없이 값만
+- name: DB 접속 비밀값
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "{{ collectors_base_dir }}/secrets/{{ item.name }}"
+    owner: "{{ collectors_alloy_uid.stdout | trim }}"
+    mode: "0600"
+  loop:
+    - name: mysql.dsn
+      content: "{{ (collectors_mysql.user ~ ':' ~ collectors_mysql.password ~ '@(127.0.0.1:' ~ collectors_mysql.port ~ ')/') if collectors_mysql else '' }}"
+    - name: redis.pass
+      content: "{{ collectors_redis.password | default('') }}"
+  when: item.content | length > 0
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: 쓰지 않는 비밀값 삭제
+  ansible.builtin.file:
+    path: "{{ collectors_base_dir }}/secrets/{{ item.name }}"
+    state: absent
+  loop:
+    - { name: mysql.dsn, used: "{{ collectors_mysql | length > 0 }}" }
+    - { name: redis.pass, used: "{{ collectors_redis | length > 0 }}" }
+  when: not (item.used | bool)
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Alloy 설정 (수집 대상 · remote_write)
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: "{{ collectors_base_dir }}/conf/config.alloy"
+    mode: "0644"
+  register: collectors_alloy_conf
+
+- name: compose 파일
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ collectors_base_dir }}/compose.yml"
+    mode: "0600"
+
+# 결제 노드는 수집기가 payment-node 프로젝트 안에 있었음 → 같은 container_name 이라 먼저 지워야 새 프로젝트로 뜸 (처음 한 번만)
+- name: 수집기 컨테이너의 compose 프로젝트 조회
+  ansible.builtin.command: >-
+    docker container inspect --format {% raw %}'{{ index .Config.Labels "com.docker.compose.project" }}'{% endraw %} {{ item }}
+  loop: [node-exporter, cadvisor, alloy]
+  register: collectors_owner
+  changed_when: false
+  failed_when: false
+
+- name: 다른 프로젝트의 수집기 컨테이너 삭제
+  ansible.builtin.command: docker rm -f {{ item.item }}
+  loop: "{{ collectors_owner.results | selectattr('rc', 'equalto', 0) | rejectattr('stdout', 'equalto', 'node-collectors') | list }}"
+  loop_control:
+    label: "{{ item.item }} ({{ item.stdout }})"
+
+- name: 수집기 기동 (node-exporter · cAdvisor · Alloy)
+  ansible.builtin.command: docker compose up -d --wait --wait-timeout 120
+  args:
+    chdir: "{{ collectors_base_dir }}"
+  register: collectors_up
+  changed_when: >-
+    'Started' in collectors_up.stderr or
+    'Recreated' in collectors_up.stderr or
+    'Created' in collectors_up.stderr
+
+- name: Alloy 준비 확인
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ alloy_port }}/-/ready"
+    status_code: 200
+  register: collectors_alloy_ready
+  until: collectors_alloy_ready.status == 200
+  retries: 12
+  delay: 5

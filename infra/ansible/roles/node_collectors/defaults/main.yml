@@ -1,0 +1,26 @@
+---
+# k8s 밖 노드(결제 · DB)의 수집기: node-exporter(호스트) · cAdvisor(컨테이너) → Grafana Alloy → 클러스터 Prometheus 로 remote_write (README 17절)
+# 운영 결제 EC2 도 같은 구성(노션 "관측성 도입 계획" 10-2) — 버전을 올릴 때 운영 user-data 와 같이
+node_exporter_image: "quay.io/prometheus/node-exporter:v1.12.1"   # 클러스터 DaemonSet(kube-prometheus-stack)과 같은 버전
+cadvisor_image: "ghcr.io/google/cadvisor:v0.60.6"
+alloy_image: "grafana/alloy:v1.20.1"
+
+# 셋 다 127.0.0.1 에만 바인딩 (Alloy 가 노드 안에서 수집) → ufw · ACL 에 열지 않음
+node_exporter_port: 9100
+cadvisor_port: 8080
+alloy_port: 12345           # Alloy UI · 자체 상태 (ssh -L 12345:127.0.0.1:12345 로 확인)
+collectors_scrape_interval: 30s
+
+collectors_base_dir: /opt/node-collectors        # compose / Alloy 설정 / 접속 비밀값 (0700)
+collectors_data_dir: /var/lib/node-collectors    # Alloy remote_write WAL
+
+# ── 호출하는 playbook 이 넘기는 값 ───────────────────────────
+# external_labels — 클러스터 쪽 라벨과 맞춤 (cluster · env · namespace, 노션 "라벨 세부 정의 v0.2")
+collectors_cluster: ""
+collectors_namespace: ""
+# 앱 /metrics — 앱이 service 라벨을 직접 붙이므로 honor_labels. [{job, port}]
+collectors_app_scrapes: []
+# MariaDB 서버 지표 (Alloy 내장 mysqld_exporter). {port, user, password} — 비우면 수집하지 않음
+collectors_mysql: {}
+# Valkey 서버 지표 (Alloy 내장 redis_exporter). {port, password} — 비우면 수집하지 않음
+collectors_redis: {}

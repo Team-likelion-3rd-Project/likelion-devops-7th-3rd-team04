@@ -1,0 +1,60 @@
+# Ansible(node_collectors role)이 생성 — 직접 수정하지 마세요.
+# 모니터링 수집기 (README 17절) — 셋 다 127.0.0.1 에만 바인딩, Alloy 가 클러스터 Prometheus 로 push
+name: node-collectors
+
+services:
+  node-exporter:
+    image: {{ node_exporter_image }}
+    container_name: node-exporter
+    network_mode: host
+    pid: host
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=127.0.0.1:{{ node_exporter_port }}
+    volumes:
+      - /:/host:ro,rslave
+
+  # 컨테이너별 CPU · 메모리. cgroup · Docker 메타데이터를 읽기 위해 privileged
+  cadvisor:
+    image: {{ cadvisor_image }}
+    container_name: cadvisor
+    network_mode: host
+    restart: unless-stopped
+    privileged: true
+    command:
+      - --listen_ip=127.0.0.1
+      - --port={{ cadvisor_port }}
+      - --docker_only=true
+      - --store_container_labels=false
+      - --housekeeping_interval=30s
+      # 쓰지 않는 지표는 끔 (CPU · 메모리 · 디스크 · 네트워크 · OOM 만 남김)
+      - --disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,percpu,perf_event,process,referenced_memory,resctrl,sched,tcp,udp
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+
+  alloy:
+    image: {{ alloy_image }}
+    container_name: alloy
+    network_mode: host
+    restart: unless-stopped
+    labels:
+      node-collectors.config-checksum: "{{ collectors_alloy_conf.checksum }}"
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:{{ alloy_port }}
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./conf/config.alloy:/etc/alloy/config.alloy:ro
+      # DB 접속 비밀값 (Alloy 실행 uid 만 읽음). local.file 이 바뀌면 다시 읽으므로 재시작 불필요
+      - ./secrets:/etc/alloy/secrets:ro
+      # remote_write WAL — 클러스터에 닿지 않는 동안 쌓았다가 다시 보냄
+      - {{ collectors_data_dir }}/alloy:/var/lib/alloy/data
+    depends_on:
+      - node-exporter
+      - cadvisor
