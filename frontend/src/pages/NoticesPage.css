@@ -76,6 +76,39 @@
   }
 }
 
+/* 지점별 공지 보기 (LDP-188) */
+.notice-filter {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.notice-filter-chip {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-h);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+
+  &.is-active {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
+}
+
+.notice-branch {
+  margin-right: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
 .notice-category {
   flex: 0 0 auto;
   min-width: 48px;

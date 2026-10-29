@@ -29,6 +29,10 @@ export class Notice {
   @Column({ type: 'enum', enum: NoticeCategory })
   category!: NoticeCategory;
 
+  // 대상 지점 (메인 V14 · LDP-188). null = 전체 공지 — 모든 지점 화면에 보인다
+  @Column({ name: 'hotel_id', type: 'int', nullable: true })
+  hotelId?: number | null;
+
   // 중요 공지 — 목록 맨 위에 고정 (MariaDB에서 boolean = TINYINT(1))
   @Column({ name: 'is_pinned', type: 'boolean', default: false })
   isPinned!: boolean;

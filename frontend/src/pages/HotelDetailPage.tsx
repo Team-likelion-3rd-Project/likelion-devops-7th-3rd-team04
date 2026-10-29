@@ -1,5 +1,8 @@
+import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Link, useOutletContext } from 'react-router-dom'
+import { fetchNotices, formatNoticeDate, NOTICE_CATEGORY_LABEL } from '../api/notices'
+import type { Notice } from '../api/notices'
 import type { HotelOutletContext } from '../layouts/HotelLayout'
 import './HotelDetailPage.css'
 
@@ -17,6 +20,20 @@ function photoVar(name: string, src: string | undefined): CSSProperties {
  */
 function HotelDetailPage() {
   const { hotel } = useOutletContext<HotelOutletContext>()
+  // 이 지점 공지 + 전체 공지 최신 3개 (LDP-188). 못 불러오거나 없으면 구역을 숨긴다
+  const [notices, setNotices] = useState<Notice[]>([])
+
+  useEffect(() => {
+    let ignore = false
+    fetchNotices(1, 3, hotel.hotelId)
+      .then(({ notices: list }) => {
+        if (!ignore) setNotices(list)
+      })
+      .catch(() => {})
+    return () => {
+      ignore = true
+    }
+  }, [hotel.hotelId])
 
   return (
     <>
@@ -65,6 +82,28 @@ function HotelDetailPage() {
             </div>
           </Link>
         </div>
+
+        {notices.length > 0 && (
+          <section className="hotel-detail-news">
+            <div className="hotel-detail-news-header">
+              <h2>{hotel.name} 소식</h2>
+              <Link to={`/notices?hotel=${hotel.hotelId}`}>공지 더 보기 →</Link>
+            </div>
+            <ul>
+              {notices.map((notice) => (
+                <li key={notice.noticeId}>
+                  <Link to={`/notices?hotel=${hotel.hotelId}`}>
+                    <span className="hotel-detail-news-category">
+                      {notice.isPinned ? '중요' : (NOTICE_CATEGORY_LABEL[notice.category] ?? notice.category)}
+                    </span>
+                    <span className="hotel-detail-news-title">{notice.title}</span>
+                    <time dateTime={notice.createdAt}>{formatNoticeDate(notice.createdAt)}</time>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     </>
   )
