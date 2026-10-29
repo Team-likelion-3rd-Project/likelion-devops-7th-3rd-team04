@@ -1,4 +1,5 @@
 import { authedFetch, authedJsonFetch } from './adminApi'
+import { adminErrorMessage } from '../admin/adminScope'
 import { ApiError } from './gateway'
 import type { Notice, NoticeCategory } from './notices'
 
@@ -30,7 +31,7 @@ async function parseNoticeResponse<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => null)
   if (!res.ok) {
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(message ?? `${res.status} ${res.statusText}`, res.status, body?.code)
+    throw new ApiError(adminErrorMessage(body?.code, message ?? `${res.status} ${res.statusText}`), res.status, body?.code)
   }
   return body as T
 }

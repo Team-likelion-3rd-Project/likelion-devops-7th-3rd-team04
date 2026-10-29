@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchAdminHotelRooms, fetchAdminHotelStats, fetchAdminHotels } from '../../api/adminApi'
 import type { AdminHotel, AdminHotelStats } from '../../api/adminApi'
+import { canAccessArea, useAdminScope } from '../adminScope'
 import './AdminPages.css'
 
 // 대시보드는 전역 합산 지표 대신 호텔별 요약 테이블을 보여준다. 점유율 같은 지표는 호텔마다
@@ -15,6 +16,8 @@ interface HotelSummaryRow {
 
 function AdminDashboardPage() {
   const navigate = useNavigate()
+  const scope = useAdminScope()
+  const canManageHotels = canAccessArea(scope, 'hotels')
   const [rows, setRows] = useState<HotelSummaryRow[] | null>(null)
   const [error, setError] = useState('')
 
@@ -68,7 +71,10 @@ function AdminDashboardPage() {
             </thead>
             <tbody>
               {rows.map(({ hotel, stats, totalRooms }) => (
-                <tr key={hotel.hotelId} onClick={() => navigate(`/admin/hotels/${hotel.hotelId}`)}>
+                <tr
+                  key={hotel.hotelId}
+                  onClick={canManageHotels ? () => navigate(`/admin/hotels/${hotel.hotelId}`) : undefined}
+                >
                   <td>{hotel.name}</td>
                   <td>
                     {stats.checkInsToday} / {stats.checkOutsToday}
@@ -88,14 +94,31 @@ function AdminDashboardPage() {
       )}
 
       <div className="admin-dashboard-grid">
-        <Link to="/admin/users" className="admin-card admin-dashboard-card">
-          <h2>유저 관리</h2>
-          <p>전체 유저 목록 및 상세 정보를 조회합니다.</p>
-        </Link>
-        <Link to="/admin/hotels" className="admin-card admin-dashboard-card">
-          <h2>호텔 관리</h2>
-          <p>전체 호텔 목록 및 상세 정보를 조회합니다.</p>
-        </Link>
+        {/* 직급별로 들어갈 수 있는 메뉴만 보여준다 (LDP-184) */}
+        {canAccessArea(scope, 'users') && (
+          <Link to="/admin/users" className="admin-card admin-dashboard-card">
+            <h2>유저 관리</h2>
+            <p>전체 유저 목록 및 상세 정보를 조회합니다.</p>
+          </Link>
+        )}
+        {canManageHotels && (
+          <Link to="/admin/hotels" className="admin-card admin-dashboard-card">
+            <h2>호텔 관리</h2>
+            <p>{scope.hotelId === null ? '전체 호텔' : '소속 지점'} 정보와 객실을 관리합니다.</p>
+          </Link>
+        )}
+        {!canManageHotels && (
+          <Link to="/admin/reservations" className="admin-card admin-dashboard-card">
+            <h2>예약 관리</h2>
+            <p>소속 지점의 예약을 조회하고 대리 예약·취소·연장을 처리합니다.</p>
+          </Link>
+        )}
+        {!canManageHotels && (
+          <Link to="/admin/room-assignments" className="admin-card admin-dashboard-card">
+            <h2>호실 배정</h2>
+            <p>소속 지점 예약에 호실을 배정합니다.</p>
+          </Link>
+        )}
       </div>
     </section>
   )

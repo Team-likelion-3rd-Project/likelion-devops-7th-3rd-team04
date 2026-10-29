@@ -17,6 +17,22 @@ export function AdminNotFound() {
   )
 }
 
+// 직급·지점 권한이 없는 메뉴에 주소로 직접 들어왔을 때 (LDP-184)
+export function AdminForbidden({ message }: { message: string }) {
+  return (
+    <div className="admin-card admin-status" role="alert">
+      <span className="admin-status-code">403</span>
+      <h1>접근 권한이 없습니다</h1>
+      <p>{message}</p>
+      <div className="admin-status-actions">
+        <Link to="/admin" className="admin-btn is-primary">
+          대시보드로
+        </Link>
+      </div>
+    </div>
+  )
+}
+
 export function AdminErrorFallback() {
   return (
     <div className="admin-card admin-status" role="alert">
