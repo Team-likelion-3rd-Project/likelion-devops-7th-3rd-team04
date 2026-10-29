@@ -37,14 +37,15 @@ template:
           {{- end }}
           {{- if $s.adminSecretName }}
           # 관리자 계정 — 비밀번호가 backend-secrets 와 섞이지 않게 별도 Secret (prod: backend-secrets 앱의 ExternalSecret)
-          # 이름은 없으면 seed.ts 기본값('관리자')
-          {{- range $key := list "SEED_ADMIN_EMAIL" "SEED_ADMIN_PASSWORD" "SEED_ADMIN_NAME" }}
+          # 이름은 없으면 seed.ts 기본값('본사 관리자'). 지점 계정 비밀번호(LDP-190)는 없으면 본사 비밀번호를 쓴다
+          {{- $optional := list "SEED_ADMIN_NAME" "SEED_SEOUL_MANAGER_PASSWORD" "SEED_BUSAN_MANAGER_PASSWORD" "SEED_JEJU_MANAGER_PASSWORD" "SEED_SEOUL_STAFF_PASSWORD" }}
+          {{- range $key := concat (list "SEED_ADMIN_EMAIL" "SEED_ADMIN_PASSWORD") $optional }}
           - name: {{ $key }}
             valueFrom:
               secretKeyRef:
                 name: {{ $s.adminSecretName }}
                 key: {{ $key }}
-                {{- if eq $key "SEED_ADMIN_NAME" }}
+                {{- if has $key $optional }}
                 optional: true
                 {{- end }}
           {{- end }}

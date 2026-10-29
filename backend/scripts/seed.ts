@@ -114,37 +114,43 @@ const SEED_ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL;
 const SEED_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD;
 const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME || '본사 관리자';
 
-// 지점 관리자·직원 계정 (LDP-176). 위 본사 계정(SUPER)과 같은 비밀번호·이메일 도메인을 쓴다
+// 지점 관리자·직원 계정 (LDP-176). 이메일 도메인은 위 본사 계정(SUPER)을 따른다
 // (예: admin@example.com → seoul.manager@example.com). 지점은 HOTEL_SEEDS의 호텔 이름으로 찾는다.
+// 비밀번호는 계정마다 passwordEnv 환경변수로 따로 둔다 (LDP-190). 비어 있으면 본사 비밀번호를 쓰고 경고를 남긴다.
 const BRANCH_ADMIN_SEEDS: {
   localPart: string;
   name: string;
   hotelName: string;
   adminRole: 'MANAGER' | 'STAFF';
+  passwordEnv: string;
 }[] = [
   {
     localPart: 'seoul.manager',
     name: '서울점 관리자',
     hotelName: '서울점',
     adminRole: 'MANAGER',
+    passwordEnv: 'SEED_SEOUL_MANAGER_PASSWORD',
   },
   {
     localPart: 'busan.manager',
     name: '부산점 관리자',
     hotelName: '부산점',
     adminRole: 'MANAGER',
+    passwordEnv: 'SEED_BUSAN_MANAGER_PASSWORD',
   },
   {
     localPart: 'jeju.manager',
     name: '제주점 관리자',
     hotelName: '제주점',
     adminRole: 'MANAGER',
+    passwordEnv: 'SEED_JEJU_MANAGER_PASSWORD',
   },
   {
     localPart: 'seoul.staff',
     name: '서울점 직원',
     hotelName: '서울점',
     adminRole: 'STAFF',
+    passwordEnv: 'SEED_SEOUL_STAFF_PASSWORD',
   },
 ];
 
@@ -575,7 +581,6 @@ async function seedBranchAdmins(dataSource: DataSource): Promise<void> {
   const hotelRepository = dataSource.getRepository(Hotel);
   const adminRepository = dataSource.getRepository(Admin);
   const credentialRepository = dataSource.getRepository(AdminCredential);
-  const passwordHash = await bcrypt.hash(SEED_ADMIN_PASSWORD, SALT_ROUNDS);
 
   for (const seed of BRANCH_ADMIN_SEEDS) {
     const email = `${seed.localPart}@${domain}`;
@@ -591,6 +596,14 @@ async function seedBranchAdmins(dataSource: DataSource): Promise<void> {
       );
       continue;
     }
+    let password = process.env[seed.passwordEnv];
+    if (!password) {
+      console.warn(
+        `[seed] ${seed.passwordEnv}가 없어 본사 비밀번호로 만듭니다: ${email}`,
+      );
+      password = SEED_ADMIN_PASSWORD;
+    }
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
     const admin = await adminRepository.save(
       adminRepository.create({
         email,
