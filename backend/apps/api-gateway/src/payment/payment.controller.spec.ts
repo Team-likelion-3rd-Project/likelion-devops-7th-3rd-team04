@@ -27,6 +27,8 @@ describe('PaymentController', () => {
             }),
           },
         },
+        // 관리자 결제 조회의 지점 확인용 (LDP-178)
+        { provide: 'BOOKING_SERVICE', useValue: { getService: () => ({}) } },
       ],
     }).compile();
 

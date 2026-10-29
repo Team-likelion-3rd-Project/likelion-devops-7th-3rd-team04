@@ -32,7 +32,10 @@ import {
   Roles,
   CurrentUser,
   AuthenticatedUser,
+  adminHotelScope,
+  assertAdminHotel,
 } from '@app/common';
+import { toBookingLookupError } from '../booking/booking.controller';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 
 const DEFAULT_MOCK_PG_SECRET = 'mock-pg-secret';
@@ -75,6 +78,16 @@ interface PaymentService {
   }): Observable<{ payments: PaymentDto[] }>;
 }
 
+// proto(booking.proto)의 BookingService 중 관리자 지점 확인에 쓰는 것 (LDP-178)
+interface BookingLookupService {
+  getBookingById(data: {
+    reservationId: number;
+  }): Observable<{ hotelId: number }>;
+  getBookingsByUserId(data: {
+    userId: number;
+  }): Observable<{ bookings?: { reservationId: number; hotelId: number }[] }>;
+}
+
 // gRPC 클라이언트가 던지는 에러 형태 (nestjs/microservices의 RpcException을 클라이언트가
 // 받으면 이 형태로 옴). 메시지는 details/message 둘 중 하나에 실려 온다.
 interface GrpcErrorLike {
@@ -87,13 +100,19 @@ interface GrpcErrorLike {
 @Controller('api/payments')
 export class PaymentController implements OnModuleInit {
   private paymentService!: PaymentService;
+  private bookingService!: BookingLookupService;
 
-  constructor(@Inject('PAYMENT_SERVICE') private readonly client: ClientGrpc) {}
+  constructor(
+    @Inject('PAYMENT_SERVICE') private readonly client: ClientGrpc,
+    @Inject('BOOKING_SERVICE') private readonly bookingClient: ClientGrpc,
+  ) {}
 
   // NestJS 생명주기: 모듈이 초기화될 때 gRPC 서비스 객체를 추출합니다.
   onModuleInit() {
     this.paymentService =
       this.client.getService<PaymentService>('PaymentService');
+    this.bookingService =
+      this.bookingClient.getService<BookingLookupService>('BookingService');
   }
 
   /**
@@ -200,9 +219,32 @@ export class PaymentController implements OnModuleInit {
   @ApiResponse({ status: 200, description: '결제 목록 조회 성공' })
   @ApiResponse({ status: 403, description: '관리자 권한이 없음' })
   async getPaymentsByUserId(
+    @CurrentUser() admin: AuthenticatedUser,
     @Param('userId', ParseIntPipe) userId: number,
   ): Promise<{ payments: PaymentDto[] }> {
-    return firstValueFrom(this.paymentService.getPaymentsByUserId({ userId }));
+    const result = await firstValueFrom(
+      this.paymentService.getPaymentsByUserId({ userId }),
+    );
+    // 지점 관리자·직원에게는 자기 지점 예약의 결제만 (LDP-178). 결제에는 지점이 없어 회원의 예약으로 거른다
+    const scope = adminHotelScope(admin);
+    if (scope === null) {
+      return result;
+    }
+    const { bookings = [] } = await firstValueFrom(
+      this.bookingService.getBookingsByUserId({ userId }),
+    ).catch((err) => {
+      throw toBookingLookupError(err);
+    });
+    const reservationIds = new Set(
+      bookings
+        .filter((booking) => booking.hotelId === scope)
+        .map((booking) => booking.reservationId),
+    );
+    return {
+      payments: (result.payments ?? []).filter((payment) =>
+        reservationIds.has(payment.reservationId),
+      ),
+    };
   }
 
   /**
@@ -227,9 +269,10 @@ export class PaymentController implements OnModuleInit {
   @ApiResponse({ status: 403, description: '관리자 권한이 없음' })
   @ApiResponse({ status: 404, description: '존재하지 않는 결제내역' })
   async getPaymentById(
+    @CurrentUser() admin: AuthenticatedUser,
     @Param('paymentId', ParseIntPipe) paymentId: number,
   ): Promise<PaymentDto> {
-    return firstValueFrom(
+    const payment = await firstValueFrom(
       this.paymentService.getPaymentById({ paymentId }),
     ).catch((err: unknown) => {
       const grpcErr = err as GrpcErrorLike;
@@ -240,6 +283,18 @@ export class PaymentController implements OnModuleInit {
       }
       throw new BadGatewayException(message);
     });
+    // 지점 관리자·직원은 자기 지점 예약의 결제만 (LDP-178)
+    if (adminHotelScope(admin) !== null) {
+      const booking = await firstValueFrom(
+        this.bookingService.getBookingById({
+          reservationId: payment.reservationId,
+        }),
+      ).catch((err) => {
+        throw toBookingLookupError(err);
+      });
+      assertAdminHotel(admin, booking.hotelId);
+    }
+    return payment;
   }
 
   // pg-mock-service의 sendWebhook과 동일한 방식(signature 필드를 뺀 나머지를

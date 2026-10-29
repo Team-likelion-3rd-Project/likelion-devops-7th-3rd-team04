@@ -53,7 +53,7 @@ ci_smoke_db_password: "{{ openbao_kv['ci-smoke-db'].password | default(lookup('e
 # backend/scripts/seed.ts 를 scripts/Dockerfile.seed 로 DB 노드에서 빌드해 실행. 관리자 계정 값은 backend/.env
 seed_admin_email: "{{ openbao_kv['seed-admin'].email | default(backend_env.SEED_ADMIN_EMAIL | default(''), true) }}"
 seed_admin_password: "{{ openbao_kv['seed-admin'].password | default(backend_env.SEED_ADMIN_PASSWORD | default(''), true) }}"
-seed_admin_name: "{{ backend_env.SEED_ADMIN_NAME | default('관리자', true) }}"
+seed_admin_name: "{{ backend_env.SEED_ADMIN_NAME | default('본사 관리자', true) }}"
 db_seed_backend_dir: "{{ backend_env_file | dirname }}"   # backend/.env 가 있는 backend 디렉토리
 db_seed_dir: "{{ db_base_dir }}/seed"                      # 빌드 소스 / seed.env (root 전용)
 db_seed_image_name: hotel-db-seed

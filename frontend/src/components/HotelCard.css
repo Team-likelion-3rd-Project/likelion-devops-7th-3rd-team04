@@ -49,3 +49,14 @@
   line-height: 145%;
   color: var(--text);
 }
+
+.hotel-card-price {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--text);
+
+  strong {
+    font-size: 17px;
+    color: var(--text-h);
+  }
+}

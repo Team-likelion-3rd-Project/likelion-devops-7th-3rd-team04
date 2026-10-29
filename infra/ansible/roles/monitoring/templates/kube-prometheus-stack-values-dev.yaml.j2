@@ -1,22 +1,32 @@
 # kube-prometheus-stack chart {{ kube_prometheus_stack_chart_version }} dev values — Ansible(roles/monitoring) 이 관리. 직접 수정 금지
 #
 # files/kube-prometheus-stack-values-common.yaml 위에 겹침 (helm -f common -f dev). 여기에는 dev 환경 값만 둡니다.
-# 워커는 팀원 PC 의 VM 이라 꺼질 수 있으므로 node-exporter(DaemonSet) 외에는 control plane 에 고정 (Traefik · ArgoCD 와 같은 이유)
+# 배치 — 관측성은 클러스터 기동에 필수가 아니라 control plane(vCPU 2)의 부담을 줄이도록 워커 우선 (README 17절)
+#   operator · admission patch Job · kube-state-metrics · Grafana : 워커 우선, 워커가 모두 꺼져 있으면 control plane
+#     (상태 없음 — 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸. Grafana 는 CP NodePort 로 접속하므로 위치와 무관)
+#   Prometheus : control plane 고정 — 데이터가 control plane 로컬 PV. CPU limit 으로 control plane 을 보호
+#   node-exporter : DaemonSet (모든 노드)
 
 prometheusOperator:
-  nodeSelector: &cp_node_selector
-    node-role.kubernetes.io/control-plane: ""
+  affinity: &prefer_workers
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
   tolerations: &cp_tolerations
     - key: node-role.kubernetes.io/control-plane
       operator: Exists
       effect: NoSchedule
   admissionWebhooks:
     patch:
-      nodeSelector: *cp_node_selector
+      affinity: *prefer_workers
       tolerations: *cp_tolerations
 
 kube-state-metrics:
-  nodeSelector: *cp_node_selector
+  affinity: *prefer_workers
   tolerations: *cp_tolerations
 
 prometheus:
@@ -25,7 +35,9 @@ prometheus:
     type: NodePort
     nodePort: {{ prometheus_nodeport }}
   prometheusSpec:
-    nodeSelector: *cp_node_selector
+    # 로컬 PV(prometheus-local)가 control plane 에 있어 고정
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
     tolerations: *cp_tolerations
     # 모든 ServiceMonitor · PodMonitor 수집 대상에 cluster · env 라벨을 붙임.
     # externalLabels 는 저장된 시계열에 붙지 않아(remote_write · 알림에만 붙음) 쿼리 sum by (cluster) 에 쓸 수 없음.
@@ -54,15 +66,17 @@ prometheus:
           resources:
             requests:
               storage: {{ prometheus_storage_gb }}Gi
+    # CPU limit: control plane 의 apiserver · etcd · controller-manager 몫을 남김 (넘으면 수집 · 쿼리가 느려질 뿐 죽지 않음)
     resources:
       requests:
         cpu: 100m
         memory: 512Mi
       limits:
+        cpu: {{ prometheus_cpu_limit | to_json }}
         memory: 2Gi
 
 grafana:
-  nodeSelector: *cp_node_selector
+  affinity: *prefer_workers
   tolerations: *cp_tolerations
   service:
     type: NodePort

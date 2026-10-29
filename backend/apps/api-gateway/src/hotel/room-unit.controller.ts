@@ -23,6 +23,7 @@ import {
 } from '@nestjs/swagger';
 import { ApiCommonResponses } from '@app/common/decorators/api-response.decorator';
 import {
+  AdminRoles,
   JwtAuthGuard,
   RolesGuard,
   Roles,
@@ -220,6 +221,7 @@ export class RoomUnitController implements OnModuleInit {
    * POST /api/hotels/{hotelId}/rooms/{roomId}/units
    */
   @Post(':hotelId/rooms/:roomId/units')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiParam({ name: 'hotelId', type: Number, example: 1 })
   @ApiParam({
     name: 'roomId',
@@ -257,6 +259,7 @@ export class RoomUnitController implements OnModuleInit {
    * PUT /api/hotels/{hotelId}/units/{roomUnitId}
    */
   @Put(':hotelId/units/:roomUnitId')
+  @AdminRoles('SUPER', 'MANAGER')
   @ApiParam({ name: 'hotelId', type: Number, example: 1 })
   @ApiParam({ name: 'roomUnitId', type: Number, example: 1 })
   @ApiOperation({

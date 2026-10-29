@@ -39,9 +39,12 @@ const DB_DATABASE = process.env.DB_DATABASE;
 // admin_credentials 해시 방식은 auth-service.service.ts의 SALT_ROUNDS와 동일하게 맞춥니다.
 const SALT_ROUNDS = 10;
 
-// room_availabilities 시딩 시 기본 가격 — hotel-service 스펙 테스트(hotel-service.controller.spec.ts)의
-// 예시 값과 동일하게 맞춥니다.
+// room_availabilities 시딩 시 기본 가격 — 아래 요금표(HOTEL_SEEDS의 weekdayPrice)에 없는 객실(관리자가 만든
+// 객실 종류)에 쓰고, 예전 시드가 모든 날짜에 넣던 값이라 요금표 적용 대상을 고를 때도 쓴다 (LDP-174).
 const DEFAULT_ROOM_PRICE = 100000;
+
+// 주말(금·토 밤 숙박) 요금 = 평일 요금 × 1.2 (LDP-174, 10-26 요금표)
+const WEEKEND_PRICE_RATE = 1.2;
 
 // room_availabilities에 채워 넣을 기간(오늘부터 며칠간). 시드를 다시 실행하면 이 기간 중 빠진 날짜만 채운다.
 const AVAILABILITY_DAYS = Number(process.env.SEED_AVAILABILITY_DAYS) || 365;
@@ -109,13 +112,49 @@ const NOTICE_SEEDS: {
 
 const SEED_ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL;
 const SEED_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD;
-const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME ?? '관리자';
+const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME || '본사 관리자';
+
+// 지점 관리자·직원 계정 (LDP-176). 위 본사 계정(SUPER)과 같은 비밀번호·이메일 도메인을 쓴다
+// (예: admin@example.com → seoul.manager@example.com). 지점은 HOTEL_SEEDS의 호텔 이름으로 찾는다.
+const BRANCH_ADMIN_SEEDS: {
+  localPart: string;
+  name: string;
+  hotelName: string;
+  adminRole: 'MANAGER' | 'STAFF';
+}[] = [
+  {
+    localPart: 'seoul.manager',
+    name: '서울점 관리자',
+    hotelName: '서울점',
+    adminRole: 'MANAGER',
+  },
+  {
+    localPart: 'busan.manager',
+    name: '부산점 관리자',
+    hotelName: '부산점',
+    adminRole: 'MANAGER',
+  },
+  {
+    localPart: 'jeju.manager',
+    name: '제주점 관리자',
+    hotelName: '제주점',
+    adminRole: 'MANAGER',
+  },
+  {
+    localPart: 'seoul.staff',
+    name: '서울점 직원',
+    hotelName: '서울점',
+    adminRole: 'STAFF',
+  },
+];
 
 interface HotelSeed {
   hotel: Pick<Hotel, 'name' | 'address' | 'phoneNumber' | 'description'>;
   // images: scripts/seed-images/ 안의 사진 파일 이름 (배열 순서 = 노출 순서, 첫 번째가 대표 사진) — seedRoomImages()
+  // weekdayPrice: 평일(일~목 밤 숙박) 1박 요금 — 주말은 WEEKEND_PRICE_RATE를 곱한다 (LDP-174)
   rooms: (Pick<RoomType, 'name' | 'capacity' | 'totalCount' | 'description'> & {
     images: string[];
+    weekdayPrice: number;
   })[];
 }
 
@@ -155,6 +194,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
     rooms: [
       {
         name: '디럭스 더블룸',
+        weekdayPrice: 120000,
         images: [
           '01-seoul-deluxe-double-1.jpg',
           '01-seoul-deluxe-double-2.jpg',
@@ -180,6 +220,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '스탠다드 트윈룸',
+        weekdayPrice: 100000,
         images: [
           '02-seoul-standard-twin-1.jpg',
           '02-seoul-standard-twin-2.jpg',
@@ -196,6 +237,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '프리미어 스위트룸',
+        weekdayPrice: 150000,
         images: [
           '03-seoul-premier-suite-1.jpg',
           '03-seoul-premier-suite-2.jpg',
@@ -221,6 +263,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '패밀리룸',
+        weekdayPrice: 150000,
         images: ['04-seoul-family-1.jpg', '04-seoul-family-2.jpg'],
         capacity: 4,
         totalCount: 3,
@@ -252,6 +295,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
     rooms: [
       {
         name: '오션뷰 스위트룸',
+        weekdayPrice: 170000,
         images: [
           '05-busan-oceanview-suite-1.jpg',
           '05-busan-oceanview-suite-2.jpg',
@@ -276,6 +320,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '스탠다드 더블룸',
+        weekdayPrice: 90000,
         images: [
           '06-busan-standard-double-1.jpg',
           '06-busan-standard-double-2.jpg',
@@ -292,6 +337,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '프리미엄 오션뷰룸',
+        weekdayPrice: 150000,
         images: [
           '07-busan-premium-oceanview-1.jpg',
           '07-busan-premium-oceanview-2.jpg',
@@ -316,6 +362,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '패밀리 트윈룸',
+        weekdayPrice: 140000,
         images: ['08-busan-family-twin-1.jpg', '08-busan-family-twin-2.jpg'],
         capacity: 4,
         totalCount: 5,
@@ -346,6 +393,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
     rooms: [
       {
         name: '가든뷰 트윈룸',
+        weekdayPrice: 110000,
         images: [
           '09-jeju-gardenview-twin-1.jpg',
           '09-jeju-gardenview-twin-2.jpg',
@@ -362,6 +410,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '스탠다드 더블룸',
+        weekdayPrice: 90000,
         images: [
           '10-jeju-standard-double-1.jpg',
           '10-jeju-standard-double-2.jpg',
@@ -378,6 +427,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '프라이빗 풀빌라룸',
+        weekdayPrice: 250000,
         images: [
           '11-jeju-private-poolvilla-1.jpg',
           '11-jeju-private-poolvilla-2.jpg',
@@ -401,6 +451,7 @@ const HOTEL_SEEDS: HotelSeed[] = [
       },
       {
         name: '패밀리 스위트룸',
+        weekdayPrice: 170000,
         images: ['12-jeju-family-suite-1.jpg', '12-jeju-family-suite-2.jpg'],
         capacity: 4,
         totalCount: 2,
@@ -485,6 +536,13 @@ async function seedAdmin(dataSource: DataSource): Promise<void> {
     where: { email: SEED_ADMIN_EMAIL },
   });
   if (existing) {
+    // 이름만 SEED_ADMIN_NAME에 맞춘다 (기존 '관리자' → '본사 관리자', LDP-176). 이미 같으면 그대로
+    if (existing.name !== SEED_ADMIN_NAME) {
+      await adminRepository.update(existing.id, { name: SEED_ADMIN_NAME });
+      console.log(
+        `[seed] 관리자 이름 변경: ${existing.name} → ${SEED_ADMIN_NAME}`,
+      );
+    }
     console.log(
       `[seed] 관리자 계정이 이미 존재합니다 (${SEED_ADMIN_EMAIL}) — 건너뜁니다.`,
     );
@@ -492,7 +550,12 @@ async function seedAdmin(dataSource: DataSource): Promise<void> {
   }
 
   const admin = await adminRepository.save(
-    adminRepository.create({ email: SEED_ADMIN_EMAIL, name: SEED_ADMIN_NAME }),
+    adminRepository.create({
+      email: SEED_ADMIN_EMAIL,
+      name: SEED_ADMIN_NAME,
+      hotelId: null,
+      adminRole: 'SUPER',
+    }),
   );
   const passwordHash = await bcrypt.hash(SEED_ADMIN_PASSWORD, SALT_ROUNDS);
   await credentialRepository.save(
@@ -500,6 +563,49 @@ async function seedAdmin(dataSource: DataSource): Promise<void> {
   );
 
   console.log(`[seed] 관리자 계정 생성 완료: ${SEED_ADMIN_EMAIL}`);
+}
+
+// 지점 관리자 3 + 서울점 직원 1 (LDP-176). 호텔이 있어야 지점을 정할 수 있어 seedHotelsAndRooms 뒤에 실행한다.
+// 이미 있는 이메일은 건너뛰어 여러 번 실행해도 안전하다.
+async function seedBranchAdmins(dataSource: DataSource): Promise<void> {
+  if (!SEED_ADMIN_EMAIL || !SEED_ADMIN_PASSWORD) {
+    return;
+  }
+  const domain = SEED_ADMIN_EMAIL.split('@')[1];
+  const hotelRepository = dataSource.getRepository(Hotel);
+  const adminRepository = dataSource.getRepository(Admin);
+  const credentialRepository = dataSource.getRepository(AdminCredential);
+  const passwordHash = await bcrypt.hash(SEED_ADMIN_PASSWORD, SALT_ROUNDS);
+
+  for (const seed of BRANCH_ADMIN_SEEDS) {
+    const email = `${seed.localPart}@${domain}`;
+    if (await adminRepository.exists({ where: { email } })) {
+      continue;
+    }
+    const hotel = await hotelRepository.findOne({
+      where: { name: seed.hotelName },
+    });
+    if (!hotel) {
+      console.warn(
+        `[seed] ${seed.hotelName}이 없어 지점 계정을 건너뜁니다: ${email}`,
+      );
+      continue;
+    }
+    const admin = await adminRepository.save(
+      adminRepository.create({
+        email,
+        name: seed.name,
+        hotelId: hotel.hotelId,
+        adminRole: seed.adminRole,
+      }),
+    );
+    await credentialRepository.save(
+      credentialRepository.create({ adminId: admin.id, passwordHash }),
+    );
+    console.log(
+      `[seed] 지점 계정 생성 완료: ${email} (${seed.hotelName} ${seed.adminRole})`,
+    );
+  }
 }
 
 async function seedHotelsAndRooms(dataSource: DataSource): Promise<void> {
@@ -644,7 +750,16 @@ function formatDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+// 그 날짜 밤 숙박 요금 — 금·토 밤은 주말 요금 (date는 'YYYY-MM-DD', 그 날 밤 묵는 1박)
+function nightlyPrice(weekdayPrice: number, date: string): number {
+  const day = new Date(`${date}T00:00:00`).getDay();
+  return day === 5 || day === 6
+    ? Math.round(weekdayPrice * WEEKEND_PRICE_RATE)
+    : weekdayPrice;
+}
+
 async function seedRoomAvailabilities(dataSource: DataSource): Promise<void> {
+  const hotelRepository = dataSource.getRepository(Hotel);
   const roomRepository = dataSource.getRepository(RoomType);
   const availabilityRepository = dataSource.getRepository(RoomAvailability);
 
@@ -663,9 +778,33 @@ async function seedRoomAvailabilities(dataSource: DataSource): Promise<void> {
     return formatDate(date);
   });
 
+  // 시드 객실(호텔 이름 + 객실 종류 이름이 같은 것)의 평일 요금. 없으면 관리자가 만든 객실 종류라 기본 가격 그대로.
+  const hotelNameById = new Map(
+    (await hotelRepository.find()).map((hotel) => [hotel.hotelId, hotel.name]),
+  );
+  const weekdayPriceBySeedRoom = new Map(
+    HOTEL_SEEDS.flatMap((seed) =>
+      seed.rooms.map(
+        (room) =>
+          [`${seed.hotel.name}/${room.name}`, room.weekdayPrice] as const,
+      ),
+    ),
+  );
+
   // 날짜 단위로 빠진 날짜만 채운다 — 이미 있는 날짜는 그대로 두므로 그 날의 예약 수(booked_count)·
-  // 판매 중지·가격이 유지되고, 시드를 다시 실행하면 오늘 기준으로 기간이 연장된다.
+  // 판매 중지가 유지되고, 시드를 다시 실행하면 오늘 기준으로 기간이 연장된다.
   for (const room of rooms) {
+    const weekdayPrice = weekdayPriceBySeedRoom.get(
+      `${hotelNameById.get(room.hotelId)}/${room.name}`,
+    );
+    const priceOf = (date: string) =>
+      weekdayPrice === undefined
+        ? DEFAULT_ROOM_PRICE
+        : nightlyPrice(weekdayPrice, date);
+    if (weekdayPrice !== undefined) {
+      await syncSeedRoomPrices(dataSource, room.roomId, dates, priceOf);
+    }
+
     const existing = await availabilityRepository.find({
       select: { date: true },
       where: {
@@ -686,7 +825,7 @@ async function seedRoomAvailabilities(dataSource: DataSource): Promise<void> {
       missing.map((date) => ({
         roomId: room.roomId,
         date,
-        price: DEFAULT_ROOM_PRICE,
+        price: priceOf(date),
         isAvailable: true,
         bookedCount: 0,
       })),
@@ -694,6 +833,42 @@ async function seedRoomAvailabilities(dataSource: DataSource): Promise<void> {
     console.log(
       `[seed] roomId=${room.roomId} 예약 가능 정보 ${missing.length}건 추가 (${dates[0]} ~ ${dates[dates.length - 1]} 중 빠진 날짜)`,
     );
+  }
+}
+
+// 요금표 이전 시드가 모든 날짜에 넣은 기본 가격(100,000원)을 요금표 값으로 바꾼다 (LDP-174).
+// 이미 데이터가 있는 DB(온프레미스 dev)용 — 매일 새로 만드는 운영 DB는 위 insert에서 바로 요금표 값이 들어간다.
+// 아직 기본 가격이고 예약이 없는 날짜만 바꿔서, 예약된 날짜·이미 다른 값으로 바뀐 날짜는 건드리지 않는다.
+async function syncSeedRoomPrices(
+  dataSource: DataSource,
+  roomId: number,
+  dates: string[],
+  priceOf: (date: string) => number,
+): Promise<void> {
+  const availabilityRepository = dataSource.getRepository(RoomAvailability);
+  const datesByPrice = new Map<number, string[]>();
+  for (const date of dates) {
+    const price = priceOf(date);
+    if (price !== DEFAULT_ROOM_PRICE) {
+      datesByPrice.set(price, [...(datesByPrice.get(price) ?? []), date]);
+    }
+  }
+
+  for (const [price, targetDates] of datesByPrice) {
+    const { affected } = await availabilityRepository.update(
+      {
+        roomId,
+        date: In(targetDates),
+        price: DEFAULT_ROOM_PRICE,
+        bookedCount: 0,
+      },
+      { price },
+    );
+    if (affected) {
+      console.log(
+        `[seed] roomId=${roomId} 요금 적용: ${affected}일 → ${price.toLocaleString()}원`,
+      );
+    }
   }
 }
 
@@ -889,6 +1064,7 @@ async function main(): Promise<void> {
   try {
     await seedAdmin(dataSource);
     await seedHotelsAndRooms(dataSource);
+    await seedBranchAdmins(dataSource);
     await seedRoomUnits(dataSource);
     await seedFacilities(dataSource);
     await seedRoomAvailabilities(dataSource);

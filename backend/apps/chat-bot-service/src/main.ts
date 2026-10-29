@@ -1,6 +1,6 @@
 import {
   bootstrapGrpcWithHealth,
-  getGrpcOptions,
+  getGrpcServerOptions,
   startMetrics,
 } from '@app/common';
 import { ChatBotServiceModule } from './chat-bot-service.module';
@@ -13,7 +13,7 @@ async function bootstrap() {
   // SIGTERM 처리(enableShutdownHooks)도 bootstrapGrpcWithHealth 안에서 합니다.
   await bootstrapGrpcWithHealth(
     ChatBotServiceModule,
-    getGrpcOptions('chatBot', 'chat-bot.proto', '0.0.0.0:3005'),
+    getGrpcServerOptions('chatBot', 'chat-bot.proto', '0.0.0.0:3005'),
     3105,
   );
 }

@@ -96,6 +96,7 @@ inputs = {
   log_bucket_name  = dependency.global.outputs.log_bucket_name
 
   deploy_topic_name        = dependency.global.outputs.deploy_topic_name
+  alerts_topic_name        = dependency.global.outputs.alerts_topic_name
   notifications_kms_key_id = dependency.global.outputs.notifications_kms_key_id
 
   cluster_log_group_names = dependency.observability_base.outputs.cluster_log_group_names

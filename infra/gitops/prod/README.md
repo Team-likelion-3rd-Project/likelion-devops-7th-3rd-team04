@@ -17,14 +17,18 @@
 infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── Chart.yaml · values.yaml · templates/ · files/   root 앱 차트 (앱 정의 → Application, 배포 결과 알림)
 ├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080)
+├── prometheus-operator-crds/ chart.yaml                     12  PodMonitor · ServiceMonitor 등 CRD (backend PodMonitor 용)
 ├── cert-manager/          chart.yaml · values.yaml          15  webhook TLS 인증서 발급 · caBundle 주입
 ├── pod-identity-webhook/  chart.yaml · values.yaml          20  IRSA 주입 (ns/SA → Role 매핑)
 ├── whoami/                chart.yaml · values.yaml · chart/ 20  수직 경로 검증용 테스트 백엔드 (/whoami)
 ├── fluent-bit/            chart.yaml · values.yaml          25  파드 로그 수집 → CloudWatch Logs · 로그 버킷 app-logs/main-cluster/
+├── metrics-server/        chart.yaml · values.yaml          25  Resource Metrics API (kubectl top · HPA)
 ├── external-secrets/      chart.yaml · values.yaml          30  External Secrets Operator
 ├── cluster-secret-store/  chart.yaml · chart/               40  ClusterSecretStore aws-secrets-manager
 ├── backend-secrets/       chart.yaml · chart/               45  backend Secret(ExternalSecret) · RDS CA ConfigMap
 ├── backend/               chart.yaml · values.yaml          50  backend (모노레포 backend-deploy/charts/backend, 커밋 SHA 고정)
+├── monitoring/            chart.yaml · chart/               55  Grafana admin Secret(ExternalSecret) · 대시보드 ConfigMap
+├── kube-prometheus-stack/ chart.yaml · values.yaml          60  Prometheus · Alertmanager · Grafana · kube-state-metrics · node-exporter
 └── frontend/              values.yaml                       —   프론트 version(main SHA) · 빌드 설정 (앱 정의 아님, Terraform 13-frontend)
 ```
 
@@ -128,6 +132,44 @@ gitops 레포 작업 브랜치에 push 한 뒤, root 의 대상 브랜치를 바
 k -n argocd patch application prod-apps --type merge -p '{"spec":{"source":{"targetRevision":"<작업 브랜치>"}}}'
 k -n argocd patch application prod-apps --type merge -p '{"spec":{"source":{"targetRevision":"main"}}}'   # 복구
 ```
+
+## 관측 (Prometheus · Grafana · 알림)
+
+메인 클러스터 지표는 클러스터 안 Prometheus 가 모읍니다 (위키 「운영환경 비용 추정」 혼합형 — 결제 서버 지표는 AMP 로 가므로 여기에 없음). 매일 재생성이라 저장소는 emptyDir 이고 **지표 기록은 다음 날로 넘어가지 않습니다**.
+
+```
+backend 서비스 :9464/metrics (PodMonitor) ┐
+kubelet · cAdvisor · apiserver · CoreDNS   ├→ Prometheus (워커, 보존 2일 · 3GB) ─┬→ Grafana  https://grafana.<도메인> (WAF 허용 IP 만)
+node-exporter (모든 노드) · kube-state-metrics ┘                                └→ Alertmanager → SNS team04-hotel-alerts → Slack #alerts
+```
+
+| 앱 | order | 이유 |
+|---|---|---|
+| `prometheus-operator-crds` | 12 | backend PodMonitor 는 CRD 만 있으면 됨. CRD 버전은 kube-prometheus-stack 의 Operator 와 같게 |
+| `metrics-server` | 25 | 의존 없음 |
+| `monitoring` · `kube-prometheus-stack` | 55 · 60 | **backend 뒤** — 관측 스택이 Healthy 가 아니어도(Grafana Secret 없음 등) 서비스 배포는 먼저 끝나고, root sync 만 실패로 알림 |
+
+- **온프레미스와 values 를 공유하지 않습니다.** 운영은 Alertmanager · 저장소 · 노출 · 결제 지표가 달라 `kube-prometheus-stack/values.yaml` 하나에 둡니다. 다만 `team04.resources` · `team04.app` 규칙은 온프레미스 `infra/ansible/roles/monitoring/files/kube-prometheus-stack-values-common.yaml` 의 사본이라 규칙을 바꿀 때 양쪽을 같이 고칩니다 (`team04.payment-node` 는 운영에 없음).
+- **대시보드**는 온프레미스 `files/dashboards/*.json` 의 사본(`monitoring/chart/dashboards/`, `team04-payment-node` 제외)입니다. 원본만 고치고 복사합니다 — GitHub CI `Monitoring Dashboard Copies` 가 다르면 실패합니다.
+- **수집 대상 · 라벨**: 모든 대상에 `cluster="main"` · `env="prod"` 를 붙입니다(온프레미스 대시보드 · 규칙 쿼리와 호환). kubeadm 제어부(etcd · scheduler · controller-manager · kube-proxy)는 127.0.0.1 바인딩이라 수집하지 않습니다. backend 는 `backend/values.yaml` `metrics.enabled`(llm-service 제외), 9464 는 Service · Ingress 에 없습니다. Prometheus(워커 파드) → 노드 kubelet 10250 · node-exporter 9100 은 Terraform `30-security` M8 입니다.
+- **Grafana**: `https://grafana.<도메인>` (ALB → Traefik Ingress). WAF 가 `grafana_allowed_cidrs`(Terraform `80-main-edge/terraform.tfvars`) 외 출발지를 403 으로 막습니다 ([Terraform README](../../terraform/README.md) 7절). 로그인은 `admin` / Secrets Manager `team04-hotel/prod/grafana-admin`(Terraform `12-secrets`, 등록 전에는 Grafana 파드가 Secret 을 기다림). 대시보드 · 데이터소스는 코드로만 관리하고 저장소가 없어, UI 에서 고친 것은 재생성 때 사라집니다.
+- **알림**: Alertmanager 가 `severity` `warning` · `critical` 을 10-global 알림 토픽으로 보냅니다(IRSA `team04-hotel-alertmanager`, 토픽 Publish 만). `info` · `Watchdog` 은 보내지 않습니다. 알람 이름 · 네임스페이스로 묶고 해소도 보내며, 같은 알림은 12시간마다 다시 옵니다. 메시지는 Chatbot 사용자 정의 형식이라 `values.yaml` `alertmanager.templateFiles` 를 고칠 때는 결과가 JSON 인지 `amtool template render` 로 확인합니다 (JSON 이 아니면 Chatbot 이 버림 — 로그 `/aws/chatbot/team04-hotel-alerts`).
+- `alertmanager.config` 는 토픽 ARN 의 계정 ID 때문에 helm `tpl` 로 렌더링합니다 (`tplConfig`). config 안에 Alertmanager 템플릿을 쓰려면 `{{ "{{" }}` 로 감쌉니다.
+
+```bash
+# CP 에 SSM 접속 후 (위 "확인 · 운영" 의 alias k)
+k top nodes; k top pods -n backend                                     # metrics-server
+k -n monitoring get pods
+k -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090  # 다른 터미널에서 SSM 포트 포워딩 후 /targets · /alerts
+k -n monitoring logs alertmanager-kube-prometheus-stack-alertmanager-0 -c alertmanager | grep -i sns   # 발행 오류
+```
+
+| 규칙 (`team04.*`) | 조건 | 대응 |
+|---|---|---|
+| `ApiGateway5xxRateHigh` | api-gateway 5xx 비율 > 5% 5분 (0.1 rps 이상) | Grafana `team04-service-overview` · api-gateway 로그. ALB 5xx 알람과 같이 오면 워커 · Traefik 쪽 |
+| `NodeEventLoopLagHigh` | 이벤트 루프 지연 p99 > 0.5초 10분 | `team04-nodejs-runtime` 에서 그 파드의 CPU · GC. 동기 작업 · CPU limit |
+| `PodRestartingFrequently` · `ContainerOOMKilled` · `ContainerMemoryNearLimit` | 재시작 · OOM · 메모리 limit 90% | `k -n <ns> describe pod`, 이전 컨테이너 로그(`--previous`), limit 조정 |
+| 기본 규칙 (`Kube*` · `Node*` · `Prometheus*` 등) | kube-prometheus-stack 기본 | 알림 description 의 runbook (`runbook_url` 라벨) |
 
 ## 릴리스
 

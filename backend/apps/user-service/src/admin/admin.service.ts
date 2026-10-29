@@ -12,6 +12,8 @@ export interface AdminGrpcResponse {
   name: string;
   department?: string;
   position?: string;
+  hotelId: number; // 0 = 본사 (proto3 int32라 null 대신 0)
+  adminRole: string;
 }
 
 // 관리자(admins) 도메인 전용 서비스입니다. 고객(users) 도메인은 ../user/user.service.ts가 별도로 소유합니다.
@@ -82,6 +84,8 @@ export class AdminService {
       name: admin.name,
       department: admin.department,
       position: admin.position,
+      hotelId: admin.hotelId ?? 0,
+      adminRole: admin.adminRole,
     };
   }
 }

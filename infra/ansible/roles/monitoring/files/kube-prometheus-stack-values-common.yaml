@@ -98,6 +98,30 @@ additionalPrometheusRulesMap:
               severity: warning
             annotations:
               summary: 컨테이너 메모리(working set)가 limit 의 90% 를 5분 넘게 초과
+      # 앱 메트릭 (backend libs/common metrics). 에러 기준은 api-gateway HTTP 5xx 만 — gRPC 코드는 대시보드에서 비율 · 지연만 봄
+      - name: team04.app
+        rules:
+          # 요청이 거의 없을 때(0.1 rps 미만) 한두 건 실패로 울리지 않게 최소 트래픽 조건을 함께 둠
+          - alert: ApiGateway5xxRateHigh
+            expr: |
+              (
+                sum by (cluster) (rate(http_server_request_duration_seconds_count{service="api-gateway", http_status_code=~"5.."}[5m]))
+                / sum by (cluster) (rate(http_server_request_duration_seconds_count{service="api-gateway"}[5m]))
+              ) > 0.05
+              and sum by (cluster) (rate(http_server_request_duration_seconds_count{service="api-gateway"}[5m])) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: api-gateway 응답 중 5xx 비율이 5% 를 5분 넘게 초과
+          # 이벤트 루프가 막히면 그 Pod 의 모든 요청이 함께 밀림 (동기 작업 · CPU 포화)
+          - alert: NodeEventLoopLagHigh
+            expr: max by (cluster, service, pod) (nodejs_eventloop_lag_p99_seconds) > 0.5
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: 이벤트 루프 지연 p99 가 0.5초를 10분 넘게 초과
       - name: team04.payment-node
         rules:
           # push 방식이라 결제 노드가 꺼지면 데이터가 "안 들어올 뿐" → 없는 것 자체를 알람으로
