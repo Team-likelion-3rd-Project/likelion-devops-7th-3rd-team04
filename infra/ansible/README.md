@@ -757,6 +757,7 @@ GitLab 파이프라인 (.gitlab-ci.yml)
                frontend:build — 프론트 변경 시 운영 빌드 값(결제만 MOCK)으로 lint · vite build (배포 없음)
   build      : kaniko → <registry>/team04/hotel/<svc>:ci-<sha>             (develop 만 push)
   image-test : ci_<id>(결제) · ci_main_<id>(메인) DB 생성 → flyway(main, payment) → 후보 이미지 기동 → GET /health
+               scan:image — 후보 이미지 Trivy 취약점 · 비밀값 검사 (1단계: 보고만, artifact trivy/<svc>.json)
   push       : crane tag ci-<sha> → <sha>                                  (레이어 재업로드 없음)
                push:ghcr → ghcr.io/team-likelion-3rd-project/team04-hotel/<svc>:<full sha>  (운영 릴리스 원본, 12-4)
                (프론트만 바뀐 커밋: ghcr:reuse-resolve · push:ghcr-reuse — 직전 이미지에 이 SHA 태그 추가)
@@ -905,6 +906,10 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
   docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf -N \
     -e "SHOW DATABASES LIKE 'ci%'"
   ```
+- **이미지 취약점 검사(`scan:image`)**: develop 파이프라인에서 후보 이미지 12개를 Trivy 로 검사합니다 (취약점 + 이미지에 들어간 비밀값).
+  - 지금은 **1단계(보고만)** 입니다. 탐지가 있어도, 스캐너가 실패해도(`allow_failure`) 승격 · GHCR · 배포를 막지 않습니다.
+  - 결과는 job 로그의 이미지별 HIGH · CRITICAL 표와, job artifacts 의 `trivy/<svc>.json`(전체 심각도, 30일 보관)입니다. n8n 은 외부 이미지라 CRITICAL 만 참고로 출력합니다.
+  - 2단계(예정): 기준선을 보고 베이스 이미지를 정리한 뒤, 고칠 수 있는 CRITICAL 이 있으면 승격을 막고(`--exit-code 1`, `allow_failure` 제거) 받아들인 위험은 `.trivyignore` 에 사유 · 만료일과 함께 둡니다.
 - prod: 이 파이프라인의 main 분기는 릴리스(ECR push · prod gitops 릴리스 PR)만 합니다 (`infra/gitops/prod/README.md` "릴리스").
 
 ### 12-6. ArgoCD 전환 기록 (2026-10-21)
@@ -925,7 +930,7 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
 | 대상 | 적용 | playbook |
 |---|---|---|
 | ArgoCD repo-server | `configs.tls.certificates.<gitlab fqdn>` | `k8s-cicd.yml` |
-| CI job | Runner `/etc/gitlab-runner/certs/<fqdn>.crt` → job 에 `CI_SERVER_TLS_CA_FILE` 로 전달 (kaniko 는 이 파일을 CA 번들에 추가) | `gitlab-runner.yml` |
+| CI job | Runner `/etc/gitlab-runner/certs/<fqdn>.crt` → job 에 `CI_SERVER_TLS_CA_FILE` 로 전달 (kaniko 는 이 파일을 CA 번들에 추가. `scan:image` 의 Trivy 는 지금 처리하지 않으므로 `SSL_CERT_FILE: $CI_SERVER_TLS_CA_FILE` 을 추가해야 함) | `gitlab-runner.yml` |
 | 모든 노드 containerd | `/etc/containerd/certs.d/<registry>/hosts.toml` + `ca.crt` | `registry-trust.yml -l <노드>` (워커는 각자) |
 
 - Runner 의 docker.sock 바인드: backend 파이프라인은 kaniko 라 필요 없습니다. 다른 프로젝트가 docker CLI 를 쓰지 않으면 `group_vars/gitlab_runner.yml` 의 `gitlab_runner_mount_docker_sock: false` 로 바꿔 job 이 호스트 root 권한을 갖지 않게 합니다.
@@ -937,6 +942,7 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
 - **`push:ghcr` 실패**: `GHCR_USER · GHCR_TOKEN 이 없습니다` 면 12-4 GHCR 설정 3. `crane auth login ghcr.io` 의 401/403 이면 봇 PAT 만료 · scope(`write:packages`) · org 멤버 여부 → 토큰 교체(12-4). `denied: permission_denied` 로 push 가 거부되면 패키지 Settings 에서 봇 계정에 Write 권한이 있는지 확인합니다.
 - **`GHCR retention` workflow 의 버전 조회 · 삭제 실패**: 패키지 Manage Actions access 에 모노레포가 Admin 인지 확인합니다 (12-4).
 - **ImagePullBackOff**: `kubectl -n backend describe pod` → 401 이면 `gitlab-registry` Secret(Deploy Token), `no such host` 면 노드의 MagicDNS, timeout 이면 ACL `tag:k8s-node → tag:gitlab tcp:5050` 입니다.
+- **`scan:image` 실패(주황 경고)**: 1단계라 승격에는 영향이 없습니다. DB 다운로드 실패(`TOOMANYREQUESTS` · timeout)면 job 을 다시 실행합니다(두 번째부터 cache 사용). `검사하지 못한 이미지` 에 이름이 있고 로그가 401 이면 레지스트리 인증, `MANIFEST_UNKNOWN` 이면 그 이미지의 build job 을 확인합니다.
 - **smoke test 에서 DB 접속 실패**: ACL `tag:gitlab-runner → tag:db tcp:3306,6379`, CI 변수 `SMOKE_DB_HOST`(Tailscale IP), `db.yml` 로 `ci_smoke` 계정을 만들었는지 확인합니다.
 - ArgoCD 쪽(sync 실패 · OutOfSync · 레포 접근)은 12-9 "트러블슈팅".
 
