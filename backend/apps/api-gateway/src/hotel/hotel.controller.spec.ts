@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { HotelController } from './hotel.controller';
 
 describe('HotelController', () => {
@@ -51,7 +52,9 @@ describe('HotelController', () => {
     getHotelMock.mockReturnValue(of(hotel));
     updateHotelMock.mockReturnValue(of(hotel));
     getRoomsMock.mockReturnValue(of({ rooms: [room] }));
-    searchRoomsMock.mockReturnValue(of({ results: [{ room, minPrice: 90000 }] }));
+    searchRoomsMock.mockReturnValue(
+      of({ results: [{ room, minPrice: 90000 }] }),
+    );
     getRoomMock.mockReturnValue(of(room));
     createRoomMock.mockReturnValue(of(room));
     updateRoomMock.mockReturnValue(of(room));
@@ -100,12 +103,68 @@ describe('HotelController', () => {
 
   describe('getHotels', () => {
     it('should call hotel-service via gRPC and return the hotel list', async () => {
-      const result = await new Promise((resolve) =>
-        controller.getHotels().subscribe(resolve),
-      );
+      const result = await controller.getHotels();
 
       expect(getHotelsMock).toHaveBeenCalledWith({});
       expect(result).toEqual({ hotels: [hotel] });
+    });
+  });
+
+  // LDP-198: hotel-service 장애는 "없음"(404)이 아니라 503
+  describe('hotel-service 장애', () => {
+    it.each([
+      ['연결 실패', GrpcStatus.UNAVAILABLE],
+      ['시간 초과', GrpcStatus.DEADLINE_EXCEEDED],
+    ])('%s면 호텔 조회가 503 HOTEL_SERVICE_UNAVAILABLE', async (_, code) => {
+      getHotelMock.mockReturnValue(throwError(() => ({ code })));
+
+      await expect(controller.getHotel('1')).rejects.toMatchObject({
+        status: 503,
+        response: {
+          code: 'HOTEL_SERVICE_UNAVAILABLE',
+          retryable: true,
+        },
+      });
+    });
+
+    it('호텔 목록도 503 (예전에는 catch가 없어 500)', async () => {
+      getHotelsMock.mockReturnValue(
+        throwError(() => ({ code: GrpcStatus.UNAVAILABLE })),
+      );
+
+      await expect(controller.getHotels()).rejects.toMatchObject({
+        status: 503,
+      });
+    });
+
+    it('없는 호텔은 404 HOTEL_NOT_FOUND', async () => {
+      getHotelMock.mockReturnValue(
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 호텔입니다.',
+        })),
+      );
+
+      await expect(controller.getHotel('999')).rejects.toMatchObject({
+        status: 404,
+        response: {
+          code: 'HOTEL_NOT_FOUND',
+          message: '존재하지 않는 호텔입니다.',
+        },
+      });
+    });
+
+    it('호실이 남은 객실 삭제는 409 (예전에는 404)', async () => {
+      deleteRoomMock.mockReturnValue(
+        throwError(() => ({
+          code: GrpcStatus.FAILED_PRECONDITION,
+          details: '호실이 3개 남아 있는 객실 종류는 삭제할 수 없습니다.',
+        })),
+      );
+
+      await expect(controller.deleteRoom(1, 1)).rejects.toMatchObject({
+        status: 409,
+      });
     });
   });
 
@@ -117,14 +176,17 @@ describe('HotelController', () => {
       expect(result).toEqual(hotel);
     });
 
-    it('should throw NotFoundException when the hotel does not exist', async () => {
+    it('should respond 404 when the hotel does not exist', async () => {
       getHotelMock.mockReturnValue(
-        throwError(() => ({ message: '존재하지 않는 호텔입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 호텔입니다.',
+        })),
       );
 
-      await expect(controller.getHotel('999')).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(controller.getHotel('999')).rejects.toMatchObject({
+        status: 404,
+      });
     });
   });
 
@@ -143,9 +205,12 @@ describe('HotelController', () => {
       expect(result).toEqual(hotel);
     });
 
-    it('should throw NotFoundException when the hotel does not exist', async () => {
+    it('should respond 404 when the hotel does not exist', async () => {
       updateHotelMock.mockReturnValue(
-        throwError(() => ({ message: '존재하지 않는 호텔입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 호텔입니다.',
+        })),
       );
       const dto = {
         name: '신라 스테이 서울',
@@ -153,9 +218,9 @@ describe('HotelController', () => {
         phoneNumber: '02-9876-5432',
       };
 
-      await expect(controller.updateHotel(999, dto)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(controller.updateHotel(999, dto)).rejects.toMatchObject({
+        status: 404,
+      });
     });
   });
 
@@ -167,18 +232,27 @@ describe('HotelController', () => {
       expect(result).toEqual({ rooms: [room] });
     });
 
-    it('should throw NotFoundException when the hotel does not exist', async () => {
+    it('should respond 404 when the hotel does not exist', async () => {
       getRoomsMock.mockReturnValue(
-        throwError(() => ({ message: '존재하지 않는 호텔입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 호텔입니다.',
+        })),
       );
 
-      await expect(controller.getRooms(999)).rejects.toThrow(NotFoundException);
+      await expect(controller.getRooms(999)).rejects.toMatchObject({
+        status: 404,
+      });
     });
   });
 
   describe('searchRooms', () => {
     it('should search rooms by the hotelId path param and query conditions', async () => {
-      const query = { checkIn: '2026-09-01', checkOut: '2026-09-03', guests: 2 };
+      const query = {
+        checkIn: '2026-09-01',
+        checkOut: '2026-09-03',
+        guests: 2,
+      };
 
       const result = await controller.searchRooms(1, query);
 
@@ -186,19 +260,30 @@ describe('HotelController', () => {
       expect(result).toEqual({ results: [{ room, minPrice: 90000 }] });
     });
 
-    it('should throw NotFoundException when the hotel does not exist', async () => {
+    it('should respond 404 when the hotel does not exist', async () => {
       searchRoomsMock.mockReturnValue(
-        throwError(() => ({ message: '존재하지 않는 호텔입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 호텔입니다.',
+        })),
       );
-      const query = { checkIn: '2026-09-01', checkOut: '2026-09-03', guests: 2 };
+      const query = {
+        checkIn: '2026-09-01',
+        checkOut: '2026-09-03',
+        guests: 2,
+      };
 
-      await expect(controller.searchRooms(999, query)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(controller.searchRooms(999, query)).rejects.toMatchObject({
+        status: 404,
+      });
     });
 
     it('should throw BadRequestException when checkOut is not after checkIn without calling gRPC', async () => {
-      const query = { checkIn: '2026-09-03', checkOut: '2026-09-01', guests: 2 };
+      const query = {
+        checkIn: '2026-09-03',
+        checkOut: '2026-09-01',
+        guests: 2,
+      };
       searchRoomsMock.mockClear();
 
       await expect(controller.searchRooms(1, query)).rejects.toThrow(
@@ -216,14 +301,17 @@ describe('HotelController', () => {
       expect(result).toEqual(room);
     });
 
-    it('should throw NotFoundException when the room does not exist', async () => {
+    it('should respond 404 when the room does not exist', async () => {
       getRoomMock.mockReturnValue(
-        throwError(() => ({ message: '존재하지 않는 객실입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 객실입니다.',
+        })),
       );
 
-      await expect(controller.getRoom(1, 999)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(controller.getRoom(1, 999)).rejects.toMatchObject({
+        status: 404,
+      });
     });
   });
 
@@ -241,15 +329,18 @@ describe('HotelController', () => {
       expect(result).toEqual(room);
     });
 
-    it('should throw NotFoundException when the hotel does not exist', async () => {
+    it('should respond 404 when the hotel does not exist', async () => {
       createRoomMock.mockReturnValue(
-        throwError(() => ({ message: '존재하지 않는 호텔입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 호텔입니다.',
+        })),
       );
       const dto = { name: '디럭스 더블룸', capacity: 2 };
 
-      await expect(controller.createRoom(999, dto)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(controller.createRoom(999, dto)).rejects.toMatchObject({
+        status: 404,
+      });
     });
   });
 
@@ -267,7 +358,7 @@ describe('HotelController', () => {
       expect(result.objectKey).toBe('room-types/1/x.jpg');
     });
 
-    it('should throw NotFoundException when the room does not exist', async () => {
+    it('should respond 404 when the room does not exist', async () => {
       createRoomImageUploadUrlMock.mockReturnValue(
         throwError(() => ({ details: '존재하지 않는 객실입니다.' })),
       );
@@ -277,7 +368,7 @@ describe('HotelController', () => {
           mimeType: 'image/jpeg',
           size: 1024,
         }),
-      ).rejects.toThrow(NotFoundException);
+      ).rejects.toMatchObject({ status: 404 });
     });
 
     it('should throw BadRequestException when hotel-service rejects the file', async () => {
@@ -314,15 +405,18 @@ describe('HotelController', () => {
       expect(result).toEqual(room);
     });
 
-    it('should throw NotFoundException when the room does not exist', async () => {
+    it('should respond 404 when the room does not exist', async () => {
       updateRoomMock.mockReturnValue(
-        throwError(() => ({ message: '존재하지 않는 객실입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 객실입니다.',
+        })),
       );
       const dto = { name: '디럭스 더블룸', capacity: 2 };
 
-      await expect(controller.updateRoom(1, 999, dto)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(controller.updateRoom(1, 999, dto)).rejects.toMatchObject({
+        status: 404,
+      });
     });
 
     it('should pass images through to hotel-service (full replace)', async () => {
@@ -366,14 +460,17 @@ describe('HotelController', () => {
       expect(result).toEqual({ message: '객실이 삭제되었습니다.' });
     });
 
-    it('should throw NotFoundException when the room does not exist', async () => {
+    it('should respond 404 when the room does not exist', async () => {
       deleteRoomMock.mockReturnValue(
-        throwError(() => ({ message: '존재하지 않는 객실입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 객실입니다.',
+        })),
       );
 
-      await expect(controller.deleteRoom(1, 999)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(controller.deleteRoom(1, 999)).rejects.toMatchObject({
+        status: 404,
+      });
     });
   });
 
@@ -391,15 +488,18 @@ describe('HotelController', () => {
       expect(result).toEqual(availability);
     });
 
-    it('should throw NotFoundException when the room does not exist', async () => {
+    it('should respond 404 when the room does not exist', async () => {
       getRoomAvailabilityMock.mockReturnValue(
-        throwError(() => ({ message: '존재하지 않는 객실입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 객실입니다.',
+        })),
       );
       const query = { startDate: '2026-08-20', endDate: '2026-08-21' };
 
       await expect(
         controller.getRoomAvailability(1, 999, query),
-      ).rejects.toThrow(NotFoundException);
+      ).rejects.toMatchObject({ status: 404 });
     });
 
     it('should throw BadRequestException when startDate is after endDate without calling gRPC', async () => {

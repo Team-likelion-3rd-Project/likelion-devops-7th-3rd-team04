@@ -364,19 +364,27 @@ export class BookingServiceService implements OnModuleInit {
         endDate: lastNightDate,
       }),
     ).catch((err: { code?: number; details?: string; message?: string }) => {
-      // gRPC 14 UNAVAILABLE = hotel-service에 연결 못 함 (재고 판단 전)
-      if (admin && err?.code === 14) {
+      // hotel-service의 거절만 매진(409)·없는 객실(404)로 옮긴다. 연결 실패·시간 초과·DB 오류 등은
+      // 재고를 판단하지 못한 것이라 503 — 손님 예약도 매진과 장애를 구분한다 (LDP-198, 예전에는 관리자 예약만)
+      if (err?.code === GrpcStatus.FAILED_PRECONDITION) {
         throw fail(
-          503,
-          'HOTEL_SERVICE_UNAVAILABLE',
-          '객실 재고를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
-          true,
+          409,
+          'ROOM_NOT_AVAILABLE',
+          err.details || '예약 가능한 객실이 아닙니다.',
+        );
+      }
+      if (err?.code === GrpcStatus.NOT_FOUND) {
+        throw fail(
+          404,
+          'ROOM_NOT_FOUND',
+          err.details || '존재하지 않는 객실입니다.',
         );
       }
       throw fail(
-        409,
-        'ROOM_NOT_AVAILABLE',
-        err?.details || err?.message || '예약 가능한 객실이 아닙니다.',
+        503,
+        'HOTEL_SERVICE_UNAVAILABLE',
+        '객실 재고를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+        true,
       );
     });
 
