@@ -372,8 +372,9 @@ migrations:
 #   dev(온프레미스)도 gitops envs/dev 에서 켬 — 롤백으로 DB 를 다시 만든 뒤(migrations.*.resetOnDowngrade) 그 버전의 seed.ts 가 다시 채움
 #   env           : 평문 환경변수 (tpl 렌더링). S3_* 를 비우면 객실 사진 단계만 건너뜀
 #   secretEnv     : global.secretName Secret 에서 같은 이름의 key 를 읽음 (메인 DB 접속 정보)
-#   adminSecretName : SEED_ADMIN_EMAIL · SEED_ADMIN_PASSWORD · SEED_ADMIN_NAME key 를 가진 Secret. 비우면 관리자 계정 시딩을 건너뜀
-#                     지점 계정 비밀번호 SEED_{SEOUL,BUSAN,JEJU}_MANAGER_PASSWORD · SEED_SEOUL_STAFF_PASSWORD 는 선택 (없으면 본사 비밀번호, LDP-190)
+#   adminSecretName : 관리자 계정 Secret — key 를 모두 같은 이름의 env 로 넣음 (envFrom, key 이름 = 환경변수 이름). 비우면 관리자 계정 시딩을 건너뜀
+#                     SEED_ADMIN_EMAIL · SEED_ADMIN_PASSWORD (+ 선택 SEED_ADMIN_NAME), 지점 계정 비밀번호 SEED_{SEOUL,BUSAN,JEJU}_MANAGER_PASSWORD ·
+#                     SEED_SEOUL_STAFF_PASSWORD 는 선택 (없으면 본사 비밀번호, LDP-190). seed.ts 가 새 key 를 읽게 돼도 차트는 그대로 (LDP-193)
 #   db.caConfigMap  : 지정하면 /certs 에 마운트하고 DB_SSL=true · DB_SSL_CA_PATH=/certs/<db.caFile> (서버 인증서 · 호스트 이름 검증)
 # GCP Workload Identity Federation (prod, Terraform 14-gcp-llm) — services.*.gcpWorkloadIdentity: true 인 서비스와 llmIngest 에 적용.
 # 파드 projected SA 토큰 → STS 교환 → GCP 서비스 계정 impersonate. 키가 없고 값은 모두 공개 값 (14 output)
