@@ -37,6 +37,8 @@ backend_external_secret_refs: >-
     {%- endfor -%}
   {%- endfor -%}
   {{ out }}
+# seed Job 의 관리자 계정 Secret (gitops envs/dev 의 seed.adminSecretName). ESO 가 OpenBao seed-admin 의 속성을 모두 가져옴 (LDP-193)
+seed_admin_secret_name: seed-admin
 # k8s-cicd.yml 이 읽는 OpenBao 경로 — GitLab 토큰 + backend-secrets 원본 (값 확인용)
 k8s_cicd_openbao_paths: "{{ ['gitlab-k8s'] + (backend_external_secret_data.keys() | list) }}"
 
