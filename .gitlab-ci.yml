@@ -5,6 +5,7 @@
 #                 frontend:build: 프론트 변경 시 운영 값(VITE_PAYMENT_MODE 만 MOCK)으로 lint · 빌드 검증 (배포 없음)
 #   build       : kaniko 로 이미지 10개 빌드 → 후보 태그 ci-<sha> 로 push (develop 만, 그 외는 빌드만)
 #   image-test  : 파이프라인 전용 DB(ci_<id>, ci_main_<id>) 준비 → 후보 이미지를 띄워 /health smoke test
+#                 scan:image: 후보 이미지 Trivy 취약점 · 비밀값 검사 (1단계: 보고만, 결과 artifact trivy/)
 #   push        : 통과한 후보를 최종 태그 <sha> 로 승격 (crane tag — 레이어 재업로드 없음)
 #                 push:ghcr: 승격한 이미지를 GHCR 에 커밋 SHA 40자 태그로 복사 — 운영 릴리스가 ECR 로 옮겨 갈 원본
 #                 ghcr:reuse-resolve · push:ghcr-reuse: 프론트만 바뀐 커밋은 백엔드가 같은 직전 커밋의 GHCR 이미지에 이 SHA 태그를 붙임
@@ -57,6 +58,9 @@ variables:
   # kaniko 업스트림은 2025년 archive — 마지막 릴리스로 고정. 문제가 생기면 buildah 로 교체
   KANIKO_IMAGE: gcr.io/kaniko-project/executor:v1.23.2-debug
   CRANE_IMAGE: gcr.io/go-containerregistry/crane/debug:v0.20.3
+  # 이미지 취약점 검사 (scan:image). 2026-03 Trivy 릴리스 공급망 침해(CVE-2026-33634, 0.69.4~0.69.6)가 있어 태그 + digest 로 고정
+  #   올릴 때: 보안 공지(GHSA-69fq-xp46-6x23) · 릴리스 노트 확인 → Docker Hub · GHCR 의 index digest 가 같은지 확인
+  TRIVY_IMAGE: aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
   # kubectl · helm · yq · git 포함. kubectl 은 클러스터(v1.33)와 맞춤
   DEPLOY_IMAGE: alpine/k8s:1.33.4
   # DB 노드(infra/ansible group_vars/db.yml)와 같은 버전
@@ -472,6 +476,53 @@ test:image:
         sleep 2
       done
       echo "$SERVICE 이 90초 안에 /health 에 응답하지 않음 — 위의 service 로그(app)를 확인하세요"; exit 1
+
+# 후보 이미지(ci-<sha>) 취약점 · 비밀값 검사 — 1단계: 보고만 (탐지가 있어도 파이프라인을 막지 않음)
+#   결과: job 로그(HIGH · CRITICAL 표), artifact trivy/<svc>.json (전체 심각도 — 기준선 집계용)
+#   push 는 needs 가 없어 image-test 의 모든 job 을 기다림 → 2단계에서 --exit-code 1 · allow_failure 제거로 승격 관문이 됨
+#   취약점 DB 는 한 번만 받아 cache 로 재사용하고 이미지 12개를 차례로 검사 (Runner concurrent 2 라 matrix 로 나눌 이득이 적음)
+scan:image:
+  extends: .rules-develop
+  stage: image-test
+  image:
+    name: $TRIVY_IMAGE
+    entrypoint: [""]
+  needs: [build]
+  # 1단계: DB 다운로드 실패 등 스캐너 자체 오류도 승격 · 릴리스를 막지 않음
+  allow_failure: true
+  variables:
+    GIT_STRATEGY: none
+    TRIVY_USERNAME: $CI_REGISTRY_USER
+    TRIVY_PASSWORD: $CI_REGISTRY_PASSWORD
+    TRIVY_CACHE_DIR: $CI_PROJECT_DIR/.trivycache
+    TRIVY_NO_PROGRESS: "true"
+    TRIVY_TIMEOUT: 10m
+  cache:
+    key: trivy-db
+    paths: [.trivycache/]
+  script:
+    - mkdir -p trivy
+    # 취약점 DB + Java DB(flyway 이미지의 jar 검사용)
+    - trivy image --download-db-only
+    - trivy image --download-java-db-only
+    - |
+      failed=""
+      for svc in $IMAGES; do
+        ref="$CI_REGISTRY_IMAGE/$svc:$CANDIDATE_TAG"
+        echo "── $ref"
+        if trivy image --skip-db-update --skip-java-db-update --scanners vuln,secret --format json -o "trivy/$svc.json" "$ref"; then
+          trivy convert --format table --severity HIGH,CRITICAL "trivy/$svc.json"
+        else
+          failed="$failed $svc"
+        fi
+      done
+      [ -z "$failed" ] || { echo "검사하지 못한 이미지:$failed"; exit 1; }
+    # n8n: 외부 이미지 미러(고칠 수 없음) — 참고용. push 전에는 레지스트리에 없을 수 있어 Docker Hub 원본을 검사
+    - trivy image --skip-db-update --skip-java-db-update --scanners vuln --severity CRITICAL "docker.io/n8nio/n8n:$N8N_VERSION" || true
+  artifacts:
+    when: always
+    paths: [trivy/]
+    expire_in: 30 days
 
 # 파이프라인 결과와 관계없이 전용 DB 삭제 (남은 ci_% 는 README 12-5 의 정리 쿼리)
 smoke:db-drop:
