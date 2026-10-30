@@ -57,4 +57,26 @@ export class AuthServiceController {
   async withdraw(data: { userId: number }) {
     return this.authServiceService.withdraw(data);
   }
+
+  // proto의 AuthService / SocialAuthorizeUrl 메서드와 매핑 (카카오 인가 화면 주소, LDP-194)
+  @GrpcMethod('AuthService', 'SocialAuthorizeUrl')
+  async socialAuthorizeUrl(data: { provider: string; redirectUri: string }) {
+    return this.authServiceService.socialAuthorizeUrl(data);
+  }
+
+  // proto의 AuthService / SocialLogin 메서드와 매핑 (카카오 인가 코드 로그인)
+  @GrpcMethod('AuthService', 'SocialLogin')
+  async socialLogin(data: { provider: string; code: string; state: string }) {
+    return this.authServiceService.socialLogin(data);
+  }
+
+  // proto의 AuthService / SocialSignup 메서드와 매핑 (소셜 회원 가입 — 이름·전화번호 입력 후)
+  @GrpcMethod('AuthService', 'SocialSignup')
+  async socialSignup(data: {
+    signupToken: string;
+    name: string;
+    phoneNumber: string;
+  }) {
+    return this.authServiceService.socialSignup(data);
+  }
 }

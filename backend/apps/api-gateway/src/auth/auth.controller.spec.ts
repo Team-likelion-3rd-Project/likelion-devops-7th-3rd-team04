@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';
-import { UnauthorizedException } from '@nestjs/common';
+import { HttpException, UnauthorizedException } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { status as GrpcStatus } from '@grpc/grpc-js';
 import { AuthController } from './auth.controller';
@@ -12,6 +12,7 @@ describe('AuthController', () => {
   const refreshMock = jest.fn();
   const logoutMock = jest.fn();
   const changePasswordMock = jest.fn();
+  const socialLoginMock = jest.fn();
 
   // 컨트롤러가 @Res({ passthrough: true })로 주입받는 response 객체를 흉내낸 목(mock)
   const createResMock = () =>
@@ -57,6 +58,7 @@ describe('AuthController', () => {
               refresh: refreshMock,
               logout: logoutMock,
               changePassword: changePasswordMock,
+              socialLogin: socialLoginMock,
             }),
           },
         },
@@ -259,6 +261,80 @@ describe('AuthController', () => {
       await expect(controller.changePassword(user, dto)).rejects.toThrow(
         UnauthorizedException,
       );
+    });
+  });
+
+  // LDP-194: 카카오 로그인 state는 이 브라우저 쿠키와 같아야 한다
+  describe('kakaoLogin', () => {
+    const dto = { code: 'code-1', state: 'state-1' };
+    const reqWith = (cookies: Record<string, string>) =>
+      ({ cookies }) as unknown as Request;
+
+    it('state 쿠키가 없거나 다르면 auth-service를 부르지 않고 400 SOCIAL_STATE_INVALID', async () => {
+      const res = createResMock();
+
+      const error = await controller
+        .kakaoLogin(dto, reqWith({ socialState: 'other' }), res)
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(HttpException);
+      expect((error as HttpException).getResponse()).toMatchObject({
+        statusCode: 400,
+        code: 'SOCIAL_STATE_INVALID',
+      });
+      expect(socialLoginMock).not.toHaveBeenCalled();
+      expect(res.clearCookie).toHaveBeenCalledWith('socialState', expect.anything());
+    });
+
+    it('연결된 회원이면 리프레시 쿠키를 심고 로그인 응답 + signupRequired: false', async () => {
+      socialLoginMock.mockReturnValue(
+        of({
+          signupRequired: false,
+          signupToken: '',
+          email: '',
+          name: '',
+          auth: { ...tokenPayload, socialProvider: 'KAKAO' },
+        }),
+      );
+      const res = createResMock();
+
+      const result = await controller.kakaoLogin(dto, reqWith({ socialState: 'state-1' }), res);
+
+      expect(socialLoginMock).toHaveBeenCalledWith({ provider: 'KAKAO', ...dto });
+      expect(res.cookie).toHaveBeenCalledWith(
+        'refreshToken',
+        'refresh',
+        expect.objectContaining({ httpOnly: true }),
+      );
+      expect(result).toMatchObject({ signupRequired: false, accessToken: 'access', socialProvider: 'KAKAO' });
+      expect(result).not.toHaveProperty('refreshToken');
+    });
+
+    it('auth-service 장애(UNAVAILABLE)는 400이 아니라 503 AUTH_SERVICE_UNAVAILABLE (LDP-198)', async () => {
+      socialLoginMock.mockReturnValue(
+        throwError(() => ({ code: 14, details: 'No connection established' })),
+      );
+
+      const error = await controller
+        .kakaoLogin(dto, reqWith({ socialState: 'state-1' }), createResMock())
+        .catch((e: unknown) => e);
+
+      expect((error as HttpException).getStatus()).toBe(503);
+      expect((error as HttpException).getResponse()).toMatchObject({
+        code: 'AUTH_SERVICE_UNAVAILABLE',
+      });
+    });
+
+    it('처음 온 회원이면 쿠키 없이 가입 대기 토큰만 돌려준다', async () => {
+      socialLoginMock.mockReturnValue(
+        of({ signupRequired: true, signupToken: 'tok', email: 'k@t.com', name: '닉', auth: null }),
+      );
+      const res = createResMock();
+
+      const result = await controller.kakaoLogin(dto, reqWith({ socialState: 'state-1' }), res);
+
+      expect(result).toEqual({ signupRequired: true, signupToken: 'tok', email: 'k@t.com', name: '닉' });
+      expect(res.cookie).not.toHaveBeenCalled();
     });
   });
 });
