@@ -2,6 +2,7 @@
 # 클러스터 모니터링: metrics-server → kube-prometheus-stack(Prometheus · Grafana) + 대시보드 (README 17절)
 #   Grafana admin 비밀번호 · ESO 는 OpenBao 필요 (db.yml 로 eso-dev 정책 갱신 → k8s-cicd.yml 로 ESO 구성이 먼저)
 #   metrics-server 만 다시: --tags metrics_server / Prometheus · Grafana 만 다시: --tags monitoring
+#   로그 수집(Alloy → DB 노드 Loki, 17-8)만 다시: --tags logging — DB_TS_IP(.env) 필요
 - name: 클러스터 모니터링 구성 (metrics-server + kube-prometheus-stack)
   hosts: control_plane
   become: true
@@ -47,3 +48,6 @@
       tags: [metrics_server]
     - role: monitoring
       tags: [monitoring]
+    # 로그 수집(Alloy → DB 노드 Loki). Loki(db.yml --tags loki)가 먼저 (README 17-8)
+    - role: logging
+      tags: [logging]

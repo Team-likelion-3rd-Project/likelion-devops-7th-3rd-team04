@@ -1345,6 +1345,87 @@
         "type": "prometheus",
         "uid": "${datasource}"
       }
+    },
+    {
+      "id": 32,
+      "type": "row",
+      "title": "로그 (Loki — infra/ansible README 17-8)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 85
+      },
+      "panels": []
+    },
+    {
+      "id": 33,
+      "type": "logs",
+      "title": "DB 노드 컨테이너 로그 (에러 · 경고)",
+      "description": "mariadb · valkey · minio · dynamodb · openbao · loki 등 DB 노드 Docker 컨테이너의 stdout/stderr 중 error · warn 이 들어간 줄. 전체는 Explore 에서 {cluster=\"db\", job=\"docker\"}",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 0,
+        "y": 86
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{cluster=\"db\", job=\"docker\"} |~ \"(?i)(error|warn|exception|fatal)\"",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "logs",
+      "title": "메인 DB 슬로우 쿼리",
+      "description": "메인 MariaDB 슬로우 쿼리 로그 (long_query_time 이상)",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 12,
+        "y": 86
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{cluster=\"db\", job=\"slowlog\"}",
+          "queryType": "range"
+        }
+      ]
     }
   ]
 }

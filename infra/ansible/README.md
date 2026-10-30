@@ -108,6 +108,8 @@ infra/ansible/
     // ── DB ───────────────────────────────────────────────
     // k8s Pod → DB · MinIO(S3 API 9000) · DynamoDB Local(8000, chat-bot-service). Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
     { "src": ["tag:k8s-node"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379", "tcp:9000", "tcp:8000"] },
+    // 로그 → DB 노드 Loki(3100, 17-8) : 클러스터 Alloy · 결제 노드 Alloy push, Grafana(CP) 조회
+    { "src": ["tag:k8s-node", "tag:payment"], "dst": ["tag:db"], "ip": ["tcp:3100"] },
     // OpenBao(8200, 16절) — 각 노드에서 실행하는 playbook 이 값을 읽고 씀, k8s 는 ESO 도 (Ansible 을 실행하는 PC 는 Tailnet 에 없을 수 있어 노드에서 호출)
     { "src": ["tag:k8s-node", "tag:payment", "tag:gitlab", "tag:gitlab-runner"], "dst": ["tag:db"], "ip": ["tcp:8200"] },
     // OpenBao → k8s API : ESO 로그인 토큰 검증(TokenReview, 16절) / DB 노드 Alloy → Prometheus remote_write(30909, 17절)
@@ -322,6 +324,7 @@ backend 서비스가 사용할 MariaDB와, 향후 Redis를 대체할 Valkey, 객
 | MariaDB | `mariadb:11.4.13` (LTS) | `DB_PORT` (3306) | backend `DB_*` 와 동일한 계정/DB |
 | Valkey | `valkey/valkey:9.1.2` | 6379 | 기동만 — backend `REDIS_*` 연동은 추후 |
 | MinIO | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` | 9000 (S3 API) / 9001 (Console) | dev 용 S3 — 객실 이미지 버킷 (hotel-service, [7-6](#7-6-minio-dev-용-s3)) |
+| Loki | `grafana/loki:3.7.9` | 3100 | 클러스터 · 결제 · DB 노드 로그 저장소, 저장은 MinIO 버킷 `loki` ([17-8](#17-8-로그-loki--alloy)) |
 
 - 모든 컨테이너가 `network_mode: host` 로 뜨고, **ufw 가 `tailscale0` 으로 들어오는 3306/6379/9000/9001 만 허용**합니다. (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
 - 데이터: `/var/lib/hotel-db/{mariadb,valkey,minio}`, 설정·자격증명: `/opt/hotel-db` (root 전용 0700)
@@ -1472,6 +1475,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 | Prometheus | `http://<control plane Tailscale IP>:30909` (UI · `/targets`, 결제 · DB 노드 remote_write `/api/v1/write`) |
 | 결제 · DB 노드 수집기 | node-exporter · cAdvisor · Grafana Alloy — role `node_collectors`(이미지 버전 · 포트는 `defaults/main.yml`), Compose 프로젝트 `node-collectors`(`/opt/node-collectors`), 모두 127.0.0.1 바인딩 |
 | 알림 | Alertmanager 꺼짐 (수신처 미정) — Grafana **Alerting → Alert rules** 또는 Prometheus `/alerts` 에서 확인 |
+| 로그 | 클러스터 Alloy(로그 전용) · 결제 · DB 노드 Alloy → DB 노드 **Loki** → Grafana 데이터소스 `Loki` — [17-8](#17-8-로그-loki--alloy) |
 
 **라벨**
 
@@ -1492,6 +1496,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 1-1 의 정책에 아래 grant 가 들어 있어야 합니다 (1-1 예시에 반영됨).
 - `tag:payment` · `tag:db` → `tag:k8s-node` `tcp:30909` (Alloy → Prometheus remote_write)
 - `autogroup:member` → `tag:k8s-node` `tcp:9443` (Grafana HTTPS)
+- `tag:k8s-node` · `tag:payment` → `tag:db` `tcp:3100` (Alloy → Loki push, Grafana → Loki 조회 — 17-8)
 
 ### 17-2. 실행
 
@@ -1646,3 +1651,82 @@ docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/exporter.cn
 | Grafana 9443 이 TLS 연결 뒤 응답 없이 시간 초과 (브라우저 502 · 무한 로딩), Pod 는 Running · Ready | Grafana Pod 가 **워커**에 떠 있는 경우 (`kubectl -n monitoring get pod -l app.kubernetes.io/name=grafana -o wide`). CP 의 tailscale serve 가 보낸 요청은 다른 노드 Pod 로 가지 못함 — tailscaled 가 자기 패킷에 붙이는 fwmark(`0x80000`)가 달린 채로는 Calico VXLAN(다른 노드 Pod) 경로가 막힘 (CP 에서 SO_MARK 0x80000 소켓으로 워커 Pod 접속 시 시간 초과, mark 없이 · CP Pod 는 정상으로 확인). 같은 CP 에서 curl 로 NodePort · Pod IP 를 부르면 200 이라 Grafana 문제로 보이지 않음. dev values 는 Grafana 를 CP 에 고정함 → `monitoring.yml --tags monitoring` 으로 반영 (이전 버전 values 는 워커 우선이라 `rollout restart` · 워커 기동 후 재스케줄 때 발생) |
 | control plane 과부하 (load 가 vCPU 수보다 훨씬 높음, controller-manager · scheduler 가 `leaderelection lost` 로 재시작) | `kubectl get pods -A -o wide --field-selector spec.nodeName=<CP>` 로 CP 에 몰린 Pod 확인. 급하면 `kubectl -n monitoring scale deploy --all --replicas=0 && kubectl -n monitoring scale sts --all --replicas=0` (데이터 유지, `monitoring.yml` 재실행으로 복구) |
 | chart 메이저 버전 업그레이드 | kube-prometheus-stack 은 helm 이 CRD 를 갱신하지 않음 — chart UPGRADE 문서대로 CRD 를 먼저 `kubectl apply --server-side` |
+
+### 17-8. 로그 (Loki · Alloy)
+
+클러스터 · 결제 노드 · DB 노드의 로그를 DB 노드의 **Loki** 에 모으고, 지표와 같은 **Grafana** 에서 봅니다 (Explore → 데이터소스 `Loki`). 파드가 지워져도 보존 기간(7일) 동안 로그가 남습니다.
+
+```
+[dev 클러스터]  alloy-logs (DaemonSet, CP 포함 모든 노드) — /var/log/pods · journald ─┐
+                alloy-events (Deployment 1개) — 쿠버네티스 Events ───────────────────┤
+[결제 노드]     node-collectors Alloy — docker 컨테이너 · journald · 결제 DB slow.log ─┼─▶ Loki (DB 노드 :3100) ─▶ MinIO 버킷 loki
+[DB 노드]       node-collectors Alloy — docker 컨테이너 · journald · 메인 DB slow.log ─┘        ▲      (보존 7일, compactor 가 삭제)
+                                                                                    Grafana (CP) ─┘
+```
+
+| 구성 | 값 |
+|---|---|
+| Loki | role `loki` (`db.yml --tags loki`), Compose 프로젝트 `hotel-loki`(`/opt/hotel-db/loki`), 이미지 · 보존 · 수집 한도는 `roles/loki/defaults/main.yml`. 단일 바이너리 · 복제 없음 · 인증 없음 → ufw(tailscale0) + ACL 로만 접근 |
+| 저장 | MinIO 버킷 `loki`, 전용 계정 OpenBao `minio-loki`(없으면 `db.yml` 이 생성, 이 버킷에만 권한). WAL · 인덱스 캐시는 `/var/lib/hotel-db/loki` |
+| 클러스터 수집 | role `logging` (`monitoring.yml --tags logging`) — grafana/alloy chart(`alloy_chart_version`, `group_vars/control_plane.yml`) release `alloy-logs` · `alloy-events` (ns `monitoring`). **로그만** 수집 — 지표는 지금처럼 Prometheus (중복 수집 없음) |
+| 결제 · DB 노드 수집 | 기존 `node_collectors` 의 Alloy 에 로그 블록 추가 (`collectors_loki_url` 이 있을 때). DB 노드는 `127.0.0.1:3100`, 결제 노드는 DB 노드 Tailscale IP |
+| Loki 주소 | `group_vars/all.yml` `loki_host` — OpenBao `main-db`(host), 없으면 `.env` 의 `DB_TS_IP`. 결제 노드 · 클러스터 쪽 실행에 필요 |
+| Grafana | 데이터소스 `Loki`(uid `loki`, `kube-prometheus-stack-values-dev.yaml.j2`). 대시보드 `team04 / DB` · `결제 노드` 아래쪽에 컨테이너 에러 로그 · 슬로우 쿼리 패널 (dev 전용 대시보드만 — `team04-service-overview` 는 운영 사본이라 넣지 않음) |
+
+**수집 범위 · 라벨** — 라벨은 지표(17절 표)와 같게 두고 개수를 적게 유지합니다. 파드 이름은 라벨이 아니라 structured metadata(`pod`)입니다.
+
+| job | 대상 | 라벨 |
+|---|---|---|
+| `pods` | 클러스터 모든 네임스페이스의 컨테이너 stdout · stderr | `cluster="main"` · `env` · `namespace` · `container` · `instance`(노드) |
+| `events` | 쿠버네티스 Events (스케줄 실패, OOMKilled, ImagePullBackOff, Probe 실패 …) | `cluster="main"` · `namespace` |
+| `docker` | 결제 · DB 노드의 모든 Docker 컨테이너 (일회성 `payment-db-migration` 포함) | `cluster`(`payment` · `db`) · `namespace` · `container` · `instance` |
+| `journal` | 노드 journald — 클러스터: kubelet · containerd · tailscaled, 결제 · DB: docker · containerd · tailscaled, 모두 + 커널 메시지 | `unit` · `instance` (+ `cluster`) |
+| `slowlog` | MariaDB 슬로우 쿼리 로그(1초 이상) — 메인 DB · 결제 DB. 항목 하나(`# User@Host` ~ 쿼리)가 한 줄 | `cluster` · `container`(`mariadb` · `payment-mariadb`) |
+
+- 범위 밖: GitLab · Runner 노드, kube-apiserver audit 로그(정책 미설정).
+- 예약 · 결제 로그에는 개인정보가 섞일 수 있습니다. 보존은 7일(`loki_retention`)이고, Loki 는 팀원 PC 에 열지 않습니다(조회는 Grafana 로만).
+
+**실행 순서** (처음 한 번)
+
+1. Tailscale ACL 에 `tag:k8s-node` · `tag:payment` → `tag:db` `tcp:3100` 추가 (1-1 예시에 반영됨)
+2. DB 노드: `ansible-playbook db.yml -K --tags loki` → `ansible-playbook db.yml -K --tags collectors`
+3. 결제 노드: `ansible-playbook payment.yml -K --tags collectors` (`.env` 의 `DB_TS_IP` 필요 — 비어 있으면 로그 없이 지표만 수집)
+4. 클러스터: `ansible-playbook monitoring.yml -K --tags monitoring,logging` (Grafana 데이터소스 + Alloy 2개)
+
+```bash
+cd infra/ansible
+set -a; source .env; source .secrets/openbao.env; set +a
+```
+
+**조회 예시** (Grafana → Explore → Loki)
+
+```logql
+{cluster="main", namespace="backend", container="booking-service"}            # 서비스 로그
+{cluster="main", namespace="backend"} | json | level="error"                  # JSON 로그를 필드로 풀어 거르기
+{cluster="main", namespace="backend"} | pod=~"booking-service-.*"             # 파드 이름(structured metadata)
+{cluster="payment", container="payment-service"} |= "error"
+{job="events"} |= "Warning"                                                   # 쿠버네티스 경고 이벤트
+{job="journal", unit="kubelet.service", instance="<노드>"}
+{job="slowlog"}
+```
+
+**검증**
+
+- DB 노드: `curl -s 127.0.0.1:3100/ready` → `ready`, `docker exec minio mcli ls local/loki` 에 `index/` · `fake/` 가 생김, `sudo ufw status | grep 3100` 이 `on tailscale0` 만
+- 수집기: 결제 · DB 노드 `ssh -L 12345:127.0.0.1:12345` → Alloy UI 에서 `loki.source.*` · `loki.write.main` 이 healthy. 클러스터는 `kubectl -n monitoring port-forward ds/alloy-logs 12345`
+- Grafana Explore 에서 위 조회 예시가 모두 결과를 돌려줌. 파드를 지운 뒤에도 그 파드 로그가 보임
+- `kubectl -n monitoring get pods -o wide | grep alloy-logs` — 노드 수만큼 (CP 포함)
+- Prometheus `/targets` 의 대상 수가 설치 전과 같음 (Alloy 가 지표를 수집하지 않음)
+- 1주일 뒤 `docker exec minio mcli du local/loki` 로 용량을 확인하고 보존 기간 · 수집 범위를 조정합니다.
+
+**트러블슈팅**
+
+| 증상 | 확인 |
+|---|---|
+| `monitoring.yml --tags logging` 이 `Loki 응답 없음` | `db.yml --tags loki` 실행 여부, ACL `tag:k8s-node → tag:db tcp:3100`, DB 노드 `sudo ufw status` |
+| Grafana 데이터소스 `Loki` 가 없음 | `DB_TS_IP` 없이 `--tags monitoring` 을 실행한 경우 — `.env` 를 source 하고 다시 실행 |
+| 클러스터 로그가 안 들어옴 | `kubectl -n monitoring logs ds/alloy-logs` 의 `loki.write` 오류 (4xx `rate limit` 이면 `loki_ingestion_rate_mb`), Pod 가 그 노드에 떠 있는지 |
+| 결제 · DB 노드 컨테이너 로그가 없음 | `docker logs alloy` 의 docker.sock 권한 오류 → `--tags collectors` 재실행(group_add 의 docker gid), 결제 노드는 `DB_TS_IP` · ACL `tag:payment → tag:db tcp:3100` |
+| 슬로우 쿼리가 안 들어옴 | slow.log 가 없을 때 실행했으면 MariaDB 기동 후 `--tags collectors` 다시 (읽기 ACL 을 그때 줌). `getfacl <데이터 디렉토리>/slow.log` 에 Alloy uid 가 있는지 |
+| journald 로그가 없음 | 그 노드에 `/var/log/journal` 이 있는지(영구 저장) — 없으면 `/run/log/journal`(휘발)만 읽음 |
+| Loki 가 S3 오류로 재시작 | `docker logs loki` 의 `AccessDenied` → OpenBao `minio-loki` 를 바꿨다면 `docker exec minio mcli admin user remove local loki` 후 `db.yml --tags loki` |

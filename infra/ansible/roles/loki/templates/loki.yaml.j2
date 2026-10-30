@@ -1,0 +1,59 @@
+# Ansible(roles/loki)이 생성 — 직접 수정하지 마세요. Loki 단일 바이너리 (README 17-8)
+# 단일 노드 · 복제 없음 · 인증 없음(ufw + Tailscale ACL 로 접근 제한). 청크 · 인덱스(tsdb)는 MinIO 버킷 {{ minio_loki_bucket }}
+auth_enabled: false
+
+server:
+  # host 네트워크 — ufw 가 tailscale0 에서만 {{ loki_port }} 을 허용 (firewall_tailnet_tcp_ports)
+  http_listen_address: 0.0.0.0
+  http_listen_port: {{ loki_port }}
+  grpc_listen_address: 127.0.0.1
+  grpc_listen_port: {{ loki_grpc_port }}
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    s3:
+      endpoint: 127.0.0.1:{{ minio_api_port }}
+      region: {{ minio_region }}
+      bucketnames: {{ minio_loki_bucket }}
+      access_key_id: ${LOKI_S3_ACCESS_KEY}
+      secret_access_key: ${LOKI_S3_SECRET_KEY}
+      insecure: true
+      s3forcepathstyle: true
+
+schema_config:
+  configs:
+    - from: "2026-10-01"
+      store: tsdb
+      object_store: s3
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# 보존 기간이 지난 청크를 지움 (retention_delete_delay 뒤)
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: s3
+  retention_delete_delay: 2h
+
+limits_config:
+  retention_period: {{ loki_retention }}
+  max_query_lookback: {{ loki_retention }}
+  reject_old_samples: true
+  reject_old_samples_max_age: {{ loki_retention }}
+  # 파드 이름 등은 라벨이 아니라 structured metadata 로 받음 (라벨 수를 낮게 유지)
+  allow_structured_metadata: true
+  volume_enabled: true
+  ingestion_rate_mb: {{ loki_ingestion_rate_mb }}
+  ingestion_burst_size_mb: {{ loki_ingestion_burst_mb }}
+
+analytics:
+  reporting_enabled: false
