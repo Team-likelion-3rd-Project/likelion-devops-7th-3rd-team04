@@ -3,6 +3,7 @@
 #   team04-hotel-alerts  ← CloudWatch 알람 ALARM (90-observability-alarms alarm_actions)    → #alerts
 #                          EventBridge 규칙: 알람 ALARM → OK 전환만 (아래 alarm_recovered)
 #                          메인 클러스터 Alertmanager (70 IRSA alertmanager, gitops kube-prometheus-stack)
+#                          결제 지표 AMP Alertmanager (metrics.tf, 서비스 주체 aps)
 #   team04-hotel-deploy  ← 메인 클러스터 ArgoCD 알림 hook (70 IRSA deploy-notify)          → #deploy
 #                          결제 서버 pull agent (60 Instance Role, 44 sns 엔드포인트)
 #                          gitops sync-frontend-version workflow (gitops_ssm_sync Role)
@@ -46,7 +47,7 @@ data "aws_iam_policy_document" "notifications_kms" {
     }
   }
 
-  # CloudWatch 알람(ALARM) · EventBridge 규칙(ALARM → OK)이 암호화된 토픽에 발행
+  # CloudWatch 알람(ALARM) · EventBridge 규칙(ALARM → OK) · AMP Alertmanager(metrics.tf)가 암호화된 토픽에 발행
   statement {
     sid       = "AlarmPublishers"
     actions   = ["kms:GenerateDataKey*", "kms:Decrypt"]
@@ -54,7 +55,7 @@ data "aws_iam_policy_document" "notifications_kms" {
 
     principals {
       type        = "Service"
-      identifiers = ["cloudwatch.amazonaws.com", "events.amazonaws.com"]
+      identifiers = ["cloudwatch.amazonaws.com", "events.amazonaws.com", "aps.amazonaws.com"]
     }
   }
 }
@@ -136,6 +137,30 @@ data "aws_iam_policy_document" "alerts_topic" {
     }
   }
 
+  # 결제 지표 AMP 워크스페이스의 Alertmanager (metrics.tf). GetTopicAttributes 는 AMP 가 발행 전에 토픽을 확인할 때 쓴다
+  statement {
+    sid       = "PaymentMetricsAlertmanagerPublish"
+    actions   = ["sns:Publish", "sns:GetTopicAttributes"]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["aps.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [local.account_id]
+    }
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_prometheus_workspace.payment.arn]
+    }
+  }
+
   # 같은 계정 IAM 주체(관리자 포함)의 직접 발행을 막는다. 서비스 주체 요청에는 aws:PrincipalServiceName 이 있다.
   # 두 조건은 AND — 서비스 주체도 아니고 발행 Role(alert_publisher_role_names)도 아니면 거부.
   # 서비스 주체 요청에는 aws:PrincipalArn 이 없어 두 번째 조건이 참이지만 첫 번째가 거짓이라 통과한다.
@@ -154,7 +179,7 @@ data "aws_iam_policy_document" "alerts_topic" {
     condition {
       test     = "StringNotEquals"
       variable = "aws:PrincipalServiceName"
-      values   = ["cloudwatch.amazonaws.com", "events.amazonaws.com"]
+      values   = ["cloudwatch.amazonaws.com", "events.amazonaws.com", "aps.amazonaws.com"]
     }
 
     condition {

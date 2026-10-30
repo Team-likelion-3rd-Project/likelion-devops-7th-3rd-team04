@@ -83,9 +83,10 @@ locals {
       namespace       = "monitoring"
       service_account = "kube-prometheus-stack-alertmanager"
     }
-    # Grafana CloudWatch 데이터 소스 (LDP-180, gitops kube-prometheus-stack). SA 이름은 그 values 의 grafana.serviceAccount.name
+    # Grafana CloudWatch 데이터 소스 (LDP-180) · 결제 지표 AMP 데이터 소스 (LDP-181), gitops kube-prometheus-stack.
+    # SA 이름은 그 values 의 grafana.serviceAccount.name
     grafana = {
-      description     = "Grafana CloudWatch data source (metrics, Logs Insights read)"
+      description     = "Grafana CloudWatch, AMP data sources (read only)"
       namespace       = "monitoring"
       service_account = "kube-prometheus-stack-grafana"
     }
@@ -353,4 +354,24 @@ resource "aws_iam_role_policy" "grafana" {
   name   = "cloudwatch-read"
   role   = aws_iam_role.irsa["grafana"].id
   policy = data.aws_iam_policy_document.grafana.json
+}
+
+# grafana: 결제 지표 AMP 워크스페이스(10-global) 조회만 (LDP-181). RemoteWrite · 규칙 · Alertmanager 변경 없음
+data "aws_iam_policy_document" "grafana_amp" {
+  statement {
+    sid = "QueryPaymentMetrics"
+    actions = [
+      "aps:QueryMetrics",
+      "aps:GetSeries",
+      "aps:GetLabels",
+      "aps:GetMetricMetadata",
+    ]
+    resources = ["arn:${data.aws_partition.current.partition}:aps:${var.region}:${data.aws_caller_identity.current.account_id}:workspace/${var.payment_metrics_workspace_id}"]
+  }
+}
+
+resource "aws_iam_role_policy" "grafana_amp" {
+  name   = "amp-read"
+  role   = aws_iam_role.irsa["grafana"].id
+  policy = data.aws_iam_policy_document.grafana_amp.json
 }

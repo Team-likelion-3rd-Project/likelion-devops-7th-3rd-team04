@@ -214,3 +214,50 @@ resource "aws_ecr_repository_policy" "release_dryrun" {
   repository = aws_ecr_repository.release_dryrun.name
   policy     = data.aws_iam_policy_document.push_only_ci.json
 }
+
+# 외부 이미지 미러 (LDP-181). 결제 VPC 는 Docker Hub 에 갈 수 없어(NFW 허용 목록은 토스만) 결제 서버 수집기 이미지를 여기서 받는다.
+# 버전을 올릴 때 apply 주체가 한 번 복사한다 (README 결제 서버 지표 절, amd64 단일 아키텍처).
+# 60-payment-app 은 data "aws_ecr_image" 로 digest 를 읽으므로 미러가 없으면 plan 에서 실패한다.
+# 태그 = 원본 버전, 같은 버전을 다른 이미지로 덮어쓰지 못하게 IMMUTABLE
+resource "aws_ecr_repository" "mirror" {
+  for_each = var.mirror_images
+
+  name                 = "${var.project}/${each.key}"
+  image_tag_mutability = "IMMUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "mirror" {
+  for_each = aws_ecr_repository.mirror
+
+  repository = each.value.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "최근 ${var.mirror_keep_count}개 버전만 보관"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = var.mirror_keep_count
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
+
+resource "aws_ecr_repository_policy" "mirror" {
+  for_each = aws_ecr_repository.mirror
+
+  repository = each.value.name
+  policy     = data.aws_iam_policy_document.push_only_ci.json
+}

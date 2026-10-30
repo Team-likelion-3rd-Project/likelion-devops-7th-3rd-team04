@@ -3,11 +3,12 @@
 #   - docker · jq 설치 (AL2023 저장소, S3 게이트웨이 엔드포인트 경유)
 #   - pull agent(/usr/local/bin/payment-deploy) · 설정 · RDS CA 번들 · systemd timer 설치
 #   - 첫 배포를 같은 agent 로 실행한 뒤 timer(1분) 를 켠다 → 부팅 · 교체 · 매일 재생성이 모두 같은 경로로 배포된다
+#   - 지표 수집기(LDP-181): Alloy 설정 · payment-metrics · systemd service (첫 배포와 별개로 바로 켠다)
 # Launch Template 은 이 내용을 gzip 으로 넣는다 (16KB 한도). cloud-init 이 풀어서 실행한다.
 set -Eeuo pipefail
 
-echo "[bootstrap] docker · jq 설치 (flock · ss 도 확인)"
-dnf install -y -q docker jq util-linux-core iproute
+echo "[bootstrap] docker · jq · MariaDB 클라이언트 설치 (flock · ss 도 확인)"
+dnf install -y -q docker jq util-linux-core iproute mariadb105
 systemctl enable --now docker
 
 echo "[bootstrap] pull agent 설치"
@@ -55,7 +56,45 @@ AccuracySec=5
 WantedBy=timers.target
 UNIT_EOF
 
+echo "[bootstrap] 지표 수집기 설치"
+install -d -m 0755 /etc/payment-metrics
+
+cat > /etc/payment-metrics/config.env <<'CONFIG_EOF'
+# Terraform 60-payment-app 이 만든 설정 (비밀값 없음). 바꾸려면 Terraform 을 고치고 인스턴스를 교체한다
+%{ for key, value in metrics_config ~}
+${key}=${jsonencode(value)}
+%{ endfor ~}
+CONFIG_EOF
+
+cat > /etc/payment-metrics/config.alloy <<'ALLOY_EOF'
+${alloy_config}
+ALLOY_EOF
+chmod 0644 /etc/payment-metrics/config.alloy
+
+cat > /usr/local/bin/payment-metrics <<'METRICS_EOF'
+${metrics_script}
+METRICS_EOF
+chmod 0755 /usr/local/bin/payment-metrics
+
+# 실패하거나 Alloy 가 끝나면 30초 뒤 다시 실행한다 (exporter 계정 생성도 다시 시도)
+cat > /etc/systemd/system/payment-metrics.service <<'UNIT_EOF'
+[Unit]
+Description=Payment server metrics (Grafana Alloy -> AMP)
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/payment-metrics
+ExecStop=/usr/bin/docker stop alloy
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
 systemctl daemon-reload
+systemctl enable --now payment-metrics.service
 
 echo "[bootstrap] 첫 배포"
 /usr/local/bin/payment-deploy --boot ||

@@ -513,7 +513,7 @@ gitops envs/prod/payment/values.yaml merge (사람 승인)
 결제 서버 agent(`60-payment-app/templates/payment-deploy.sh`) 순서:
 
 1. release 가 현재 적용값과 같거나, 이미 실패한 값이면 아무것도 하지 않습니다.
-2. 검증: `image_tag` 는 커밋 SHA, `env` 는 한 줄 문자열 값만. 인프라가 넣는 키(`PAYMENT_DB_*` · `TOSS_SECRET_KEY` · `SQS_*` · `PAYMENT_RESULT_QUEUE_URL` · `PG_MOCK_SERVICE_URL` · `AWS_*` · `HEALTH_PORT`)는 거부합니다 (gitops validate 도 같은 규칙).
+2. 검증: `image_tag` 는 커밋 SHA, `env` 는 한 줄 문자열 값만. 인프라가 넣는 키(`PAYMENT_DB_*` · `TOSS_SECRET_KEY` · `SQS_*` · `PAYMENT_RESULT_QUEUE_URL` · `PG_MOCK_SERVICE_URL` · `AWS_*` · `HEALTH_PORT` · `METRICS_PORT`)는 거부합니다 (gitops validate 도 같은 규칙).
 3. 순서 맞추기: 첫 AZ(a)가 먼저, 다음 AZ 는 release 를 처음 본 뒤 `deploy_stagger_seconds`(180초) 뒤에 합니다. 다른 서버가 InService 가 아니면(배포 · 부팅 중) 다음 주기로 미룹니다.
 4. ECR pull (`payment-service` · `payment-migrations`, 같은 태그) → 결제 DB · 토스 Secret 을 읽어 `/run`(tmpfs)의 0600 env 파일로
 5. Flyway migrate (`useSsl=true&serverSslCert=<RDS CA>` — 이미지의 드라이버가 Connector/J 2.x 라 3.x 옵션 `sslMode` 는 무시되고 평문 접속됨. 호스트 이름 검증은 기본 켜짐). 이전 버전이 아직 서비스 중이므로 마이그레이션은 추가만 합니다
@@ -575,6 +575,62 @@ AWS_PROFILE=team04 aws ssm get-parameter --name /team04-hotel/prod/payment/relea
 | 서버 1대 종료 → ASG 교체 | 교체 서버가 같은 release 로 부팅 배포 (종료 후 2분 06초에 성공). 호출 403회 실패 0 |
 | gitops PR merge → 자동 교체 (MOCK → TOSS) | sync-payment-tag 가 OIDC 로 release 갱신 → 50초 뒤 a 시작, b 까지 5분 39초에 완료. 사람 개입 없음. 호출 830회 실패 0 |
 | 로그 · 이벤트 | 비밀값 없음, 이벤트의 이미지 이름에 레지스트리(계정 ID) 없음 |
+
+### 결제 서버 지표 (Alloy → AMP)
+
+메인 Prometheus 는 결제 VPC 를 scrape 할 수 없습니다 (PrivateLink 단방향). 결제 서버가 AWS API 로 밀어 넣고 메인 Grafana 가 AWS API 로 읽습니다. VPC 간 경로는 늘지 않습니다.
+
+```
+결제 서버 payment-metrics.service (Alloy, host 네트워크)
+  ├ 내장 unix(node-exporter) · cadvisor · 127.0.0.1:9464 payment-service /metrics · 내장 mysqld_exporter(결제 RDS, TLS)
+  └▶ sigv4 remote_write ─ 44 aps-workspaces 엔드포인트 ─▶ AMP 워크스페이스 team04-hotel-payment (10-global 🔒)
+                                                         ├▶ 규칙 → AMP Alertmanager → SNS team04-hotel-alerts → #alerts
+메인 Grafana (IRSA team04-hotel-grafana, amp-read) ◀─────┘   데이터 소스 "AMP (payment)", 대시보드 team04 / 결제 (prod)
+```
+
+- 수집 대상 · 라벨은 온프레미스 결제 노드(`ansible/roles/node_collectors`)와 같습니다 (`job` = `node-exporter` · `cadvisor` · `payment-service` · `mysql`, `cluster="payment"`). `instance` 는 EC2 인스턴스 ID, `az` 라벨이 더 붙습니다. node-exporter · cAdvisor 이미지를 따로 미러하지 않으려고 Alloy 내장 exporter 를 씁니다.
+- 결제 DB 는 두 결제 서버가 각자 수집합니다 (`instance` = 수집한 서버). 전역 카운터를 서버끼리 더하면 2배가 되므로 대시보드는 `max` 로 봅니다. exporter 계정은 부팅 때 `payment-metrics` 가 master 로 만들고(메인 `mysql-exporter-setup` 과 같은 권한, `MAX_USER_CONNECTIONS 3`), 실패해도 Alloy 는 뜹니다 (`mysql_up 0` → `PaymentDbExporterDown`).
+- RDS CA: Alloy mysqld_exporter 에는 CA 옵션이 없어 `SSL_CERT_DIR` 에 CA 디렉터리를 더하고 DSN 은 `tls=true`(호스트 이름 검증)입니다.
+- AMP 워크스페이스는 🔒 라 ID 가 고정입니다 (gitops `kube-prometheus-stack` values 의 데이터 소스 URL). 지표는 AMP 기본 보관 기간(150일) 동안 남습니다. 결제 지표는 AMP 에만 있어 메인 지표와 한 쿼리 · 한 규칙으로 묶을 수 없습니다.
+- 비용: 워크스페이스 시간 과금은 없고 수집 샘플 수 · 조회량만 과금됩니다. `metrics_scrape_interval`(30초)을 늘리면 수집 비용이 줄어듭니다. `aps-workspaces` 엔드포인트는 다른 인터페이스 엔드포인트처럼 AZ 2개 시간 과금입니다.
+
+**Alloy 이미지 미러 (버전당 1회)**: 결제 VPC 는 Docker Hub 에 갈 수 없어 `11-registry` 미러 저장소 `team04-hotel/alloy`(IMMUTABLE)에서 받습니다. `60` 은 `data "aws_ecr_image"` 로 digest 를 읽으므로 **미러가 없으면 `60` plan 이 실패합니다**. 버전(`60` `alloy_version`)은 온프레미스 `node_collectors` `alloy_image` 와 맞춥니다.
+
+```bash
+# apply 주체로 (저장소 정책이 push 를 Runner · 릴리스 Role · apply 주체로 제한). 결제 서버는 amd64
+ver=v1.20.1
+reg=$(AWS_PROFILE=team04 aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com
+AWS_PROFILE=team04 aws ecr get-login-password | crane auth login "$reg" -u AWS --password-stdin
+crane copy "docker.io/grafana/alloy:$ver" "$reg/team04-hotel/alloy:$ver" --platform linux/amd64
+```
+
+```bash
+# 결제 서버 안에서 (SSM 접속 후)
+sudo journalctl -u payment-metrics --since -30min --no-pager      # 이미지 · exporter 계정 · Alloy 시작
+curl -s 127.0.0.1:12345/-/ready                                  # Alloy 준비 (UI 는 SSM 포트 포워딩 12345)
+curl -s 127.0.0.1:9464/metrics | head                            # payment-service 메트릭
+
+# 로컬에서
+AWS_PROFILE=team04 aws logs tail /team04-hotel/prod/payment/app --since 10m --log-stream-name-prefix i-   # <인스턴스>/alloy 스트림
+ws=$(cd live/prod/10-global && terragrunt output -raw payment_metrics_workspace_id)
+AWS_PROFILE=team04 aws amp describe-alert-manager-definition --workspace-id "$ws" --query 'alertManagerDefinition.status.statusCode'   # ACTIVE
+AWS_PROFILE=team04 aws amp describe-rule-groups-namespace --workspace-id "$ws" --name payment --query 'ruleGroupsNamespace.status.statusCode'
+```
+
+- 설정 변경(Alloy 설정 · 버전 · 수집 간격)은 다른 user-data 처럼 새로 뜨는 서버부터 반영됩니다 (매일 재생성 · instance refresh).
+- AMP 는 1시간 넘은 샘플을 버립니다. 엔드포인트 · 권한이 막혀 WAL 에 1시간 넘게 쌓였다가 보내면 `team04-hotel-payment-metrics-discarded` 알람이 옵니다.
+
+검증 결과 (2026-10-29, 결제 서버 2대 instance refresh 후, gitops 작업 브랜치로 Grafana 확인):
+
+| 확인 | 결과 |
+|---|---|
+| 부팅 | dnf(`mariadb105` 포함) → exporter 계정 생성 → Alloy 시작까지 부팅 약 2분, NLB healthy. 1대씩 교체하는 동안 다른 1대가 healthy 유지 |
+| AMP 수집 | 2대 × `up` 4개(node-exporter · cadvisor · payment-service · mysql) 모두 1, `mysql_up 1`(RDS TLS, `SSL_CERT_DIR`), 서버당 시계열 약 2,530개 |
+| 라벨 | `cluster=payment` · `env=prod` · `namespace=payment` · `az`, `instance` = 인스턴스 ID, 컨테이너 `alloy` · `payment-service`, 디스크 `mountpoint="/"` |
+| 메인 Grafana | AMP 플러그인 3.3.2 설치, 데이터 소스 쿼리 `status=ok`(40 – 200ms), `team04 / 결제 (prod)` 36 패널 |
+| gRPC | 메인 테스트 파드 → `GetHello` 60회 실패 0 · 없는 ID `GetPaymentById` 10회 NOT_FOUND. 두 서버에 고르게 분산(32 · 30), p95 약 24ms |
+| 알림 | AMP Alertmanager 시험 알림 → #alerts 발생 · 해소 수신, `AlertManagerNotificationsFailed` 0, 규칙 평가 실패 0 |
+| NFW | 그날 꺼져 있어 미확인 (AMP 는 인터페이스 엔드포인트라 NFW 를 지나지 않음) |
 
 ---
 
@@ -729,7 +785,8 @@ kubectl -n fluent-bit logs ds/fluent-bit --tail=50 | grep -iE 'error|warn'
 ```
 CloudWatch 알람 ALARM (90) ─────────────────────┬→ SNS team04-hotel-alerts ─┐
 EventBridge 규칙 ALARM → OK 전환만 (10-global) ──┤                           │
-메인 Alertmanager (alertmanager, IRSA) ─────────┘                           │
+메인 Alertmanager (alertmanager, IRSA) ─────────┤                           │
+결제 지표 AMP Alertmanager (10-global, aps) ────┘                           │
 메인 ArgoCD 알림 hook (deploy-notify, IRSA) ────┐                            ├→ AWS Chatbot (us-east-2) → Slack #alerts · #deploy
 결제 pull agent (60 Role, 44 sns 엔드포인트) ────┼→ SNS team04-hotel-deploy ──┘
 gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 · Chatbot 은 10-global 🔒, KMS 암호화)
@@ -738,7 +795,7 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 - SNS 토픽 · KMS 키 · Chatbot 채널 설정은 `10-global` 🔒 이라 매일 재생성과 상관없이 유지됩니다. Chatbot 이 구독을 직접 관리하므로 구독 확인 · Slack 재연결이 없습니다.
 - 해소(OK) 알림은 알람의 `ok_actions` 가 아니라 `10-global` EventBridge 규칙 `team04-hotel-alarm-recovered` 가 보냅니다. `ok_actions` 는 알람을 새로 만들 때의 "데이터 부족 → OK" 에도 실행되어 매일 재생성마다 OK 가 오기 때문에, 이름이 `team04-hotel-` 로 시작하는 알람의 **ALARM → OK 전환만** 보냅니다. 새 알람도 이 접두사를 쓰고 `ok_actions` 는 넣지 않습니다.
 - Chatbot 은 EventBridge 의 알람 상태 변경 이벤트 원본을 지원하지 않아(`/aws/chatbot/team04-hotel-alerts` 로그: `Event received is not supported`), 규칙 대상의 입력 변환으로 사용자 정의 알림 형식(`✅ CloudWatch Alarm 해소 | <알람>`)으로 바꿔 보냅니다. Slack 에 메시지가 안 오면 이 로그 그룹(us-east-1)을 먼저 봅니다.
-- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람 · 위 EventBridge 규칙 · Role `team04-hotel-alertmanager`(`alert_publisher_role_names`)만, 배포 토픽은 Role 3개(`team04-hotel-deploy-notify` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
+- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람 · 위 EventBridge 규칙 · 결제 지표 AMP 워크스페이스(서비스 주체 `aps`, `aws:SourceArn`) · Role `team04-hotel-alertmanager`(`alert_publisher_role_names`)만, 배포 토픽은 Role 3개(`team04-hotel-deploy-notify` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
 - Chatbot 채널 Role 에는 정책이 없고 guardrail 이 `AWSDenyAll` 이라 Slack 에서 AWS 명령을 실행할 수 없습니다.
 - 결제 VPC 는 Slack 으로 나가지 않습니다 (SNS 인터페이스 엔드포인트, NFW 허용 목록은 토스 API 만).
 - Slack 워크스페이스 · 채널 ID 는 `10-global/terraform.tfvars`(gitignore)에 둡니다 (`terraform.tfvars.example`). 기본값이 없어 파일이 없으면 `10-global` plan 이 멈춥니다. 비공개 채널이면 채널에서 `/invite @Amazon Q` 를 먼저 합니다.
@@ -762,8 +819,11 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 | `team04-hotel-valkey-main-<노드>-memory` | Valkey `DatabaseMemoryUsagePercentage` > 80% (5분 3번) | 키 수 · TTL 확인, `valkey_node_type` 상향 |
 | `team04-hotel-valkey-main-<노드>-evictions` | Valkey `Evictions` > 0 | 리프레시 토큰이 축출되어 재로그인이 생김 — 메모리 알람과 같이 확인 |
 | `team04-hotel-valkey-main-<노드>-connections` | Valkey `CurrConnections` > 200 (5분 3번) | 평소 10 미만. auth-service 연결 누수 · 파드 수 확인 |
+| `team04-hotel-payment-metrics-discarded` | AMP `DiscardedSamples` > 0 (5분, 모든 Reason) | `Reason` 차원 확인. `greater_than_max_sample_age` 면 결제 서버 Alloy 가 1시간 넘게 못 보냈던 것 — 9절 결제 서버 지표 · Alloy 로그 |
+| `team04-hotel-payment-metrics-notify-failed` | AMP `AlertManagerNotificationsFailed` > 0 (5분) | 결제 지표 알림이 Slack 에 안 옴 — `10-global` 토픽 정책(`aps`) · KMS 키 정책 · `metrics.tf` 메시지 템플릿 |
 
 - **Prometheus 알림**(메인 클러스터 Alertmanager, LDP-179)도 같은 `#alerts` 로 옵니다. 제목은 `🚨 Prometheus 알림 | <규칙>` · `✅ Prometheus 해소 | <규칙>` 이고, 규칙 · 대응은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측" 에 있습니다. `severity` 가 `warning` · `critical` 인 것만 보냅니다.
+- **결제 지표 Prometheus 알림**(AMP, LDP-181)도 같은 형식으로 `#alerts` 에 옵니다 (`*클러스터* payment (prod, AMP)`). 규칙은 `10-global/metrics.tf`: `PaymentTargetDown`(`up == 0` 5분) · `PaymentDbExporterDown`(`mysql_up == 0` 5분, critical) · `PaymentHostDiskAlmostFull`(< 15%) · `PaymentHostMemoryLow`(< 10%). `absent()` 규칙은 매일 destroy 로 울려서 두지 않습니다 — 결제 서버 자체 장애는 `payment-nlb-unhealthy` 알람이 알립니다.
 - 결제 배포 · MOCK 알람은 이벤트가 생긴 1분만 ALARM 이고 다음 1분에 OK 로 돌아옵니다 ("발생 알림"). 이벤트가 있을 때만 생기는 지표라 `FILL(m, 0)` 수식으로 빈 분을 0 으로 채웁니다 — 채우지 않으면 평가 범위에 남은 마지막 1 때문에 ALARM 이 약 8분 이어집니다 (2026-10-24 실측). ALARM 중에 같은 이벤트가 또 생기면 새 메시지는 없습니다.
 - 매일 재생성 직후 결제 서버 · 워커가 부팅 중이면 unhealthy 알람이 한 번 올 수 있습니다 (5분 넘게 이어질 때만).
 - **DB · 캐시 알람 기준값**(LDP-180, 2026-10-29 db.t4g.micro 실측): `max_connections` 30 (`LEAST({DBInstanceClassMemory/25165760},12000)`), 메인 평소 22. 임계값은 `90-observability-alarms/variables.tf`. `CPUCreditBalance`(잔액 낮음)는 쓰지 않습니다 — 생성 직후 0 에서 시간당 약 6 씩 쌓여 매일 재생성 후 몇 시간 동안 울리고, t4g 는 Unlimited 라 잔액 0 이어도 느려지지 않습니다.

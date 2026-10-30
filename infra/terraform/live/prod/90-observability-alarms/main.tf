@@ -9,6 +9,7 @@
 #   payment-deploy-failed    결제 배포 실패 · 롤백 (60 deploy 로그 지표 필터)
 #   payment-mock-deployed    운영에 PAYMENT_PROVIDER=MOCK 배포 (60 deploy 로그 지표 필터, 부하 테스트 때는 예상된 알림)
 #   RDS · Valkey 알람         data-stores.tf (LDP-180)
+#   결제 지표 AMP 알람        payment-metrics.tf (LDP-181)
 #
 # 대응 절차는 infra/terraform/README.md "알림" 절. 지표가 없을 때(트래픽 · 이벤트 없음)는 정상으로 본다.
 

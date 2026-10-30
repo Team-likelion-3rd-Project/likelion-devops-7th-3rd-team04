@@ -65,6 +65,8 @@ dependency "main_edge" {
 inputs = {
   alerts_topic_name = dependency.global.outputs.alerts_topic_name
 
+  payment_metrics_workspace_id = dependency.global.outputs.payment_metrics_workspace_id
+
   queue_names = dependency.messaging.outputs.queue_names
 
   payment_nlb_arn_suffix          = dependency.payment_app.outputs.nlb_arn_suffix

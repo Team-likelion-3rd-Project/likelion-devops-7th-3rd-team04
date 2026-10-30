@@ -28,6 +28,7 @@ locals {
     PG_MOCK_SERVICE_URL       = "http://${cidrhost(local.network.app_static_cidr, var.pg_mock_private_ip_hostnum)}:${var.pg_mock_port}"
     GRPC_PORT                 = var.grpc_port
     HEALTH_PORT               = var.health_port
+    METRICS_PORT              = var.metrics_port
     RDS_CA_PATH               = "/etc/payment-deploy/rds-ca-bundle.pem"
     APP_LOG_GROUP             = aws_cloudwatch_log_group.app.name
     DEPLOY_LOG_GROUP          = aws_cloudwatch_log_group.deploy.name
@@ -38,6 +39,44 @@ locals {
     HEALTH_TIMEOUT  = var.deploy_health_timeout
     STANDBY_TIMEOUT = 180
   }
+
+  # /etc/payment-metrics/config.env (payment-metrics.sh 가 읽는다, LDP-181). 비밀값 · 계정 ID 없음
+  metrics_config = {
+    EXPORTER_SECRET_ID            = var.payment_db_exporter_secret_name
+    EXPORTER_MAX_USER_CONNECTIONS = var.db_exporter_max_user_connections
+    ALLOY_REPOSITORY              = data.aws_ecr_image.alloy.repository_name
+    ALLOY_DIGEST                  = data.aws_ecr_image.alloy.image_digest
+    ALLOY_PORT                    = var.alloy_port
+    DATA_DIR                      = "/var/lib/payment-metrics/alloy"
+  }
+}
+
+locals {
+  # 스크립트 · CA 를 그대로 넣으면 user-data 한도(16KB, gzip 후 크기)를 넘어 gzip 으로 넣는다.
+  # 지표 수집기(LDP-181)까지 넣어 gzip 약 14KB — 더 늘리면 아래 precondition 이 막는다
+  user_data = base64gzip(templatefile("${path.module}/templates/user-data.sh.tftpl", {
+    config         = local.deploy_config
+    rds_ca_path    = local.deploy_config.RDS_CA_PATH
+    rds_ca_bundle  = trimspace(local.rds_ca_bundle)
+    agent_script   = trimspace(file("${path.module}/templates/payment-deploy.sh"))
+    metrics_config = local.metrics_config
+    metrics_script = trimspace(file("${path.module}/templates/payment-metrics.sh"))
+    # 주석 줄은 빼고 넣는다 (user-data 한도. 설명은 레포의 템플릿에)
+    alloy_config = trimspace(replace(templatefile("${path.module}/templates/config.alloy.tftpl", {
+      region           = var.region
+      environment      = var.environment
+      scrape_interval  = var.metrics_scrape_interval
+      metrics_port     = var.metrics_port
+      remote_write_url = "${var.payment_metrics_endpoint}api/v1/remote_write"
+    }), "/(?m)^[ \t]*//.*\n/", ""))
+  }))
+}
+
+# 11-registry 미러의 Alloy 이미지 (버전당 1회 복사, README 결제 서버 지표 절). 없으면 plan 이 여기서 실패한다.
+# digest 로 받으므로 같은 태그를 다시 올려도(IMMUTABLE 이라 불가) 서버마다 다른 이미지가 뜨지 않는다
+data "aws_ecr_image" "alloy" {
+  repository_name = "${var.project}/alloy"
+  image_tag       = var.alloy_version
 }
 
 resource "aws_launch_template" "app" {
@@ -50,13 +89,7 @@ resource "aws_launch_template" "app" {
     name = aws_iam_instance_profile.app.name
   }
 
-  # 스크립트 · CA 를 그대로 넣으면 user-data 한도(16KB)를 넘어 gzip 으로 넣는다
-  user_data = base64gzip(templatefile("${path.module}/templates/user-data.sh.tftpl", {
-    config        = local.deploy_config
-    rds_ca_path   = local.deploy_config.RDS_CA_PATH
-    rds_ca_bundle = trimspace(local.rds_ca_bundle)
-    agent_script  = trimspace(file("${path.module}/templates/payment-deploy.sh"))
-  }))
+  user_data = local.user_data
 
   metadata_options {
     http_endpoint               = local.metadata_options.http_endpoint
@@ -89,6 +122,14 @@ resource "aws_launch_template" "app" {
 
   tags = {
     Name = "${local.name}-app"
+  }
+
+  lifecycle {
+    # base64gzip 결과의 3/4 = gzip 크기. EC2 한도는 인코딩 전 16384 바이트
+    precondition {
+      condition     = length(local.user_data) * 3 / 4 <= 16384
+      error_message = "user-data(gzip)가 16KB 를 넘습니다. 템플릿 · 스크립트를 줄여야 합니다."
+    }
   }
 
   # user-data 는 첫 부팅에만 실행되므로 권한이 먼저 있어야 한다

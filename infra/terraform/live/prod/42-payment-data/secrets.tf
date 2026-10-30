@@ -2,6 +2,8 @@
 #
 #   team04-hotel/prod/payment-db : {engine, host, port, dbname, username, password}
 #                                  → PAYMENT_DB_HOST · PAYMENT_DB_PORT · PAYMENT_DB_DATABASE · PAYMENT_DB_USERNAME · PAYMENT_DB_PASSWORD
+#   team04-hotel/prod/payment-db-exporter : {host, port, username, password}
+#                                  → 결제 서버 Alloy mysqld_exporter (LDP-181). 계정은 DB 에 없고 결제 서버가 부팅 때 만든다
 #
 # 값은 secret_string_wo 라 state 에 남지 않는다. RDS 와 같은 실행에서 같은 ephemeral 값을 넣는다.
 # RDS 가 교체되면(새 비밀번호로 생성) Secret 값도 같은 실행에서 다시 넣도록 replace_triggered_by 를 건다.
@@ -30,6 +32,27 @@ resource "aws_secretsmanager_secret_version" "payment_db" {
   lifecycle {
     replace_triggered_by = [aws_db_instance.payment.id]
   }
+}
+
+resource "aws_secretsmanager_secret" "payment_db_exporter" {
+  name        = "${local.secret_prefix}/payment-db-exporter"
+  description = "Payment RDS MariaDB mysqld_exporter account"
+
+  recovery_window_in_days = 0
+}
+
+# 계정 생성 단계(60 payment-metrics-setup)가 부팅마다 ALTER USER 로 이 비밀번호를 다시 넣으므로,
+# DB 가 교체되어도 Secret 을 다시 쓸 필요가 없다 (주소는 식별자가 고정이라 같다. 41-main-data 와 같은 방식)
+resource "aws_secretsmanager_secret_version" "payment_db_exporter" {
+  secret_id = aws_secretsmanager_secret.payment_db_exporter.id
+
+  secret_string_wo = jsonencode({
+    host     = aws_db_instance.payment.address
+    port     = aws_db_instance.payment.port
+    username = var.db_exporter_username
+    password = ephemeral.aws_secretsmanager_random_password.db_exporter.random_password
+  })
+  secret_string_wo_version = var.credentials_version
 }
 
 # 값 조회(GetSecretValue)는 결제 서버 Role 과 관리자(이 스택을 apply 하는 주체)만 허용한다.
@@ -68,7 +91,18 @@ data "aws_iam_policy_document" "payment_db_secret" {
 }
 
 resource "aws_secretsmanager_secret_policy" "payment_db" {
-  secret_arn          = aws_secretsmanager_secret.payment_db.arn
+  for_each = {
+    payment_db          = aws_secretsmanager_secret.payment_db.arn
+    payment_db_exporter = aws_secretsmanager_secret.payment_db_exporter.arn
+  }
+
+  secret_arn          = each.value
   policy              = data.aws_iam_policy_document.payment_db_secret.json
   block_public_policy = true
+}
+
+# 기존 단일 리소스 → for_each (주소만 옮김, 정책은 그대로)
+moved {
+  from = aws_secretsmanager_secret_policy.payment_db
+  to   = aws_secretsmanager_secret_policy.payment_db["payment_db"]
 }

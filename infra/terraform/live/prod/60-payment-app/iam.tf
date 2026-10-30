@@ -2,9 +2,10 @@
 # 42 결제 DB Secret · 12 토스 Secret 정책과 43 큐 정책이 이 이름으로 결제 서버만 허용한다.
 #
 #   Session Manager       접속 (AmazonSSMManagedInstanceCore)
-#   ECR pull              payment-service, payment-migrations 저장소만
+#   ECR pull              payment-service, payment-migrations, alloy(미러) 저장소만
 #   SSM GetParameter      배포 release {image_tag, env} (11-registry, gitops merge 후 GitHub Actions 가 갱신). 쓰기 권한 없음
-#   Secret 조회           결제 DB 접속 정보(42), 토스 시크릿 키(12)
+#   Secret 조회           결제 DB 접속 정보 · exporter 계정(42), 토스 시크릿 키(12)
+#   AMP RemoteWrite       결제 지표 (10-global 워크스페이스만, 44 aps-workspaces 엔드포인트)
 #   SQS SendMessage       결제 결과 큐(43)
 #   ASG Standby           배포 중 자기 ASG 에서 Standby 진입 · 해제 (NLB drain)
 #   CloudWatch Logs       컨테이너 로그 · 배포 이벤트 (logs.tf 로그 그룹만)
@@ -54,7 +55,7 @@ data "aws_iam_policy_document" "app" {
       "ecr:GetDownloadUrlForLayer",
     ]
     resources = [
-      for repo in var.image_repositories :
+      for repo in concat(tolist(var.image_repositories), ["alloy"]) :
       "${local.arn_prefix}:ecr:${var.region}:${local.account_id}:repository/${var.project}/${repo}"
     ]
   }
@@ -71,8 +72,15 @@ data "aws_iam_policy_document" "app" {
     actions = ["secretsmanager:GetSecretValue"]
     resources = [
       "${local.arn_prefix}:secretsmanager:${var.region}:${local.account_id}:secret:${var.payment_db_secret_name}-??????",
+      "${local.arn_prefix}:secretsmanager:${var.region}:${local.account_id}:secret:${var.payment_db_exporter_secret_name}-??????",
       "${local.arn_prefix}:secretsmanager:${var.region}:${local.account_id}:secret:${local.toss_secret_name}-??????",
     ]
+  }
+
+  statement {
+    sid       = "WritePaymentMetrics"
+    actions   = ["aps:RemoteWrite"]
+    resources = ["${local.arn_prefix}:aps:${var.region}:${local.account_id}:workspace/${var.payment_metrics_workspace_id}"]
   }
 
   statement {

@@ -40,6 +40,18 @@ variable "services" {
   ]
 }
 
+variable "mirror_images" {
+  description = "외부 이미지 미러 저장소 (<project>/<이름>, 태그 = 원본 버전). alloy = Docker Hub grafana/alloy (60 결제 서버 지표 수집기)"
+  type        = set(string)
+  default     = ["alloy"]
+}
+
+variable "mirror_keep_count" {
+  description = "미러 저장소마다 남겨 둘 최근 버전 개수 (이전 버전으로 되돌릴 여유)"
+  type        = number
+  default     = 3
+}
+
 variable "image_keep_count" {
   description = "리포지토리마다 남겨 둘 최근 이미지 개수"
   type        = number
