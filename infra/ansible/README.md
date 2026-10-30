@@ -82,7 +82,6 @@ infra/ansible/
 | `tag:gitlab-runner` | GitLab Runner 노드 | `gitlab-runner.yml` |
 | `tag:payment` | 결제 서버 노드 (결제 DB + payment-service + ElasticMQ) | `payment.yml` |
 | `tag:ci` | GitHub Actions runner (ephemeral, 미러링 workflow) | `.github/workflows/mirror-gitlab.yml` |
-| `tag:ci-runner` | AWS GitLab Runner (ephemeral, Terraform `40-cicd`) | `aws-runner.yml` (user-data, 13절 "AWS GitLab Runner") |
 
 ```jsonc
 {
@@ -93,8 +92,7 @@ infra/ansible/
     "tag:gitlab":        ["autogroup:admin"],
     "tag:gitlab-runner": ["autogroup:admin"],
     "tag:payment":       ["autogroup:admin"],
-    "tag:ci":            ["autogroup:admin"],
-    "tag:ci-runner":     ["autogroup:admin"]
+    "tag:ci":            ["autogroup:admin"]
   },
   "grants": [
     // ── k8s ──────────────────────────────────────────────
@@ -126,8 +124,6 @@ infra/ansible/
     { "src": ["tag:k8s-node"], "dst": ["tag:gitlab"], "ip": ["tcp:443", "tcp:5050"] },
     // GitHub Actions runner → GitLab : 코드 미러링 push (HTTPS, .github/workflows/mirror-gitlab.yml)
     { "src": ["tag:ci"], "dst": ["tag:gitlab"], "ip": ["tcp:443"] },
-    // AWS Runner → GitLab : job 수신, git clone (HTTPS) 만. 이미지는 ECR 로 push 하므로 Registry · dev DB 는 열지 않음 (13절 "AWS GitLab Runner")
-    { "src": ["tag:ci-runner"], "dst": ["tag:gitlab"], "ip": ["tcp:443"] },
     // 팀원 PC → GitLab : SSH(VM 관리), 웹 UI / git (HTTPS, SSH 2222), Registry(5050)
     { "src": ["autogroup:member"], "dst": ["tag:gitlab"], "ip": ["tcp:22", "tcp:443", "tcp:2222", "tcp:5050"] },
     // 팀원 PC → Runner : SSH(VM 관리)
@@ -156,7 +152,6 @@ infra/ansible/
 | GitLab Runner 용 | `tag:gitlab-runner` | `TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET` | Runner 담당자 |
 | 결제 노드 용 | `tag:payment` | `TS_PAYMENT_OAUTH_CLIENT_SECRET` | 결제 노드 담당자 |
 | GitHub Actions 용 | `tag:ci` | GitHub Repository Secret `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` | 레포 관리자 ([12절](#12-cicd-registry--파이프라인--argocd)) |
-| AWS Runner 용 | `tag:ci-runner` | `TS_CI_RUNNER_OAUTH_CLIENT_SECRET` → Terraform `12-secrets` 로 Secrets Manager 등록 | AWS 담당자 (13절 "AWS GitLab Runner") |
 
 1. [Admin console → Settings → Trust credentials (OAuth clients)](https://login.tailscale.com/admin/settings/trust-credentials) → **새 credential (OAuth)** 생성
 2. Scope: **Keys → Auth Keys : Write** (Write 를 체크해야 아래에 태그 선택칸이 나타남)
@@ -166,7 +161,7 @@ infra/ansible/
 
 > **용도별로 나누는 이유**: secret 을 가진 사람은 그 태그(= ACL 상의 신원)로 기기를 Tailnet 에 추가할 수 있습니다. 팀원 전체가 가진 k8s 용 secret 으로 `tag:db` 까지 만들 수 없게 분리해 두면, 한쪽이 유출돼도 다른 쪽 신원은 안전하고 교체도 독립적으로 할 수 있습니다.
 
-> Playbook은 이 secret을 `tailscale up --auth-key=<secret>?ephemeral=<ts_ephemeral>&preauthorized=true --advertise-tags=<태그>` 형태로 직접 사용합니다 (`ts_ephemeral` 기본 false, 매일 재생성되는 AWS Runner 만 true — 꺼지면 Tailnet 에서 자동 삭제). 태그가 붙은 디바이스는 사용자 소유가 아니며 key expiry도 기본 비활성입니다.
+> Playbook은 이 secret을 `tailscale up --auth-key=<secret>?ephemeral=<ts_ephemeral>&preauthorized=true --advertise-tags=<태그>` 형태로 직접 사용합니다 (`ts_ephemeral` 기본 false, true 면 꺼질 때 Tailnet 에서 자동 삭제). 태그가 붙은 디바이스는 사용자 소유가 아니며 key expiry도 기본 비활성입니다.
 
 ### 1-3. MagicDNS / HTTPS Certificates 활성화 (GitLab HTTPS 용)
 
@@ -562,7 +557,6 @@ ansible-playbook gitlab.yml -K
 | 파일 | Runner (description) | 설정 | 용도 |
 |---|---|---|---|
 | `.secrets/gitlab-runner.env` | `gitlab-runner` | tags `docker`, untagged 실행, 모든 브랜치 | 온프레미스 Runner 노드 (9절) — 담당자에게 **비밀 채널로** 전달 |
-| `.secrets/aws-ci-runner.env` | `aws-ci-runner` | tags `aws` · `ecr`, untagged 안 받음, **보호 브랜치만**(`ref_protected`) | AWS Runner — Terraform `12-secrets` 로 등록 (13절 "AWS GitLab Runner") |
 
 - 각 Runner 는 description 이름의 **instance runner** 로 생성되며, 재실행 시 같은 runner 를 재사용합니다 (설정은 처음 만들 때만 반영 — 바꾸려면 GitLab 에서 runner 를 삭제 후 재실행). 토큰만 다시 뽑으려면:
   ```bash
@@ -1002,11 +996,11 @@ kubectl -n argocd get application backend -o jsonpath='{range .status.resources[
 
 ## 13. AWS Main 클러스터 (user-data 전용)
 
-`aws-control-plane.yml`, `aws-worker.yml`, `aws-runner.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대와 워커 ASG 인스턴스의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
+`aws-control-plane.yml`, `aws-worker.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대와 워커 ASG 인스턴스의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
 
 - **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/argocd` 의 `tasks/aws.yml` · `*-aws.yaml.j2` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다.
 - **Ansible 은 노드 작업 · Calico · CCM · NTH · ArgoCD 설치까지만 합니다.** 클러스터 서비스(Traefik · whoami · backend 등)는 CP-a 가 설치하는 ArgoCD root 앱(`prod-apps`)이 gitops 레포 `envs/prod`(원본: 모노레포 [`infra/gitops/prod`](../gitops/prod/README.md))에서 설치합니다. user-data 는 첫 부팅 때만 돌아서, Ansible 이 설치하면 변경이 다음 재생성까지 반영되지 않기 때문입니다. NTH 는 CCM 과 같은 role · post-renderer 를 써서 ArgoCD 전환 때 함께 옮깁니다.
-- `inventory/aws.ini` 는 CP · 워커 group_vars 가 섞이지 않게 `localhost` 대신 별칭(`aws-cp`, `aws-worker`)을 쓰고, `aws-cp` 를 `control_plane` 그룹에도 넣어 helm 버전을 온프레미스와 같이 씁니다. AWS Runner(`aws-runner`)는 쿠버네티스 노드가 아니라 `[aws]` 대신 `gitlab_runner` 의 자식 그룹으로 둡니다 (아래 "AWS GitLab Runner").
+- `inventory/aws.ini` 는 CP · 워커 group_vars 가 섞이지 않게 `localhost` 대신 별칭(`aws-cp`, `aws-worker`)을 쓰고, `aws-cp` 를 `control_plane` 그룹에도 넣어 helm 버전을 온프레미스와 같이 씁니다.
 - S3 에는 커밋 대상 파일만 올라갑니다. `.env`, `.secrets/`, `inventory/hosts.ini` 는 올라가지 않습니다.
 
 | 항목 | 온프레미스 (`control-plane.yml`) | AWS (`aws-control-plane.yml`) |
@@ -1048,43 +1042,6 @@ CP-a 는 init 후 10-global OIDC 버킷의 `keys.json` 도 덮어씁니다 (CP R
 - **IRSA:** kube-apiserver 발급자를 10-global OIDC 버킷 URL 로 두고(join CP 는 `kubeadm-config` 에서 같은 값을 받음), CP-a 가 init 직후 발급자 문서의 issuer 를 확인한 뒤 `/openid/v1/jwks` 를 `keys.json` 으로 올립니다. 업로드는 `ca-cert-hash` 기록 전이라, 실패하면 교체된 CP-a 가 다시 init 합니다. webhook · ESO 는 gitops 앱, Role 은 Terraform 70 `irsa.tf` ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "IRSA · 비밀값").
 - 클러스터 확인 (SSM 접속 후): `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide`
 - Ingress 확인 (워커에 SSM 접속 후): `curl -i http://$(hostname -I | awk '{print $1}'):30080/whoami` → whoami 200 (`/` 는 Traefik 404 가 정상). 워커 30080 인바운드는 ALB SG 에서만 열려 있어(M2) **다른 노드에서는 연결되지 않습니다.** 노드 자신의 IP 로 확인합니다 (Traefik 파드가 다른 워커에 있어도 kube-proxy 가 넘겨 줍니다).
-
-### AWS GitLab Runner (`aws-runner.yml`)
-
-> **LDP-173 부터 쓰지 않습니다.** 운영 릴리스가 GitHub Actions `release.yml`(GHCR → ECR 복사)로 옮겨 `.gitlab-ci.yml` 의 `release:*` · `aws-runner:*` job 을 지웠습니다. `40-cicd` · 이 playbook 제거는 후속 작업입니다.
-
-Terraform `40-cicd` 의 Runner(Deployment VPC, ASG 1대, Graviton) 가 user-data 로 `aws-runner.yml` 을 자기 자신에게 실행합니다. 운영 이미지 빌드 · ECR push 용이며, **보호 브랜치의 `aws` 태그 job 만** 받습니다.
-
-```
-Secrets Manager (Terraform 12-secrets)  ─▶  aws_runner role ─┬▶ tailscale    (tag:ci-runner, ephemeral)
-  ci-runner-tailscale {oauth_client_secret}                  ├▶ GitLab Tailscale IP 조회 (tailscale ip)
-  ci-runner-gitlab    {url, token}                           ├▶ docker
-                                                             └▶ gitlab_runner (docker.sock · privileged 끔)
-job(kaniko) ─▶ IMDS(hop limit 2) ─▶ Runner Role ─▶ ECR push (team04-hotel/* 만)
-```
-
-| 항목 | 온프레미스 Runner (`gitlab-runner.yml`) | AWS Runner (`aws-runner.yml`) |
-|---|---|---|
-| GitLab runner | `gitlab-runner` (tags `docker`, untagged 실행, 모든 브랜치) | `aws-ci-runner` (tags `aws` · `ecr`, untagged 안 받음, 보호 브랜치만) |
-| Tailscale | `tag:gitlab-runner` — GitLab 443 · 2222 · 5050, dev DB | `tag:ci-runner` — GitLab 443 만, ephemeral |
-| 접속 정보 | `.env` · `.secrets/gitlab-runner.env` 환경변수 | Secrets Manager (부모 그룹 `gitlab_runner` 의 환경변수 값을 덮어씀) |
-| GitLab Tailscale IP | `.secrets` 의 `GITLAB_TS_IP` | 부팅 때 `tailscale ip -4 <GitLab>` 로 조회 |
-| docker.sock 바인드 | 켬 (`gitlab_runner_mount_docker_sock: true`) | 끔 — kaniko 로 빌드 |
-| 등록 확인 실패 | playbook 실패 | 진행 (`gitlab_runner_verify_required: false`) — GitLab 이 꺼진 날 ASG 가 계속 교체하지 않게. GitLab 이 켜지면 다시 연결 |
-| 이미지 아키텍처 | 노드 아키텍처 | arm64 (운영 워커 t4g 와 같음) |
-| 사양 · 동시 job | VM 사양 (9-1), `concurrent` 2 | m7g.large (2 vCPU · 8 GiB, 고정 성능 — Terraform `40-cicd` `instance_type`), `concurrent` 2 |
-
-**최초 1회 / 값 교체**
-1. Tailscale: 1-1 ACL 에 `tag:ci-runner` 추가, 1-2 OAuth client(`tag:ci-runner`) 생성 → `.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET`
-2. `ansible-playbook gitlab.yml -K --tags runner_token` → `.secrets/aws-ci-runner.env` (8절)
-3. Terraform `12-secrets` apply 로 두 값을 Secrets Manager 에 등록 ([Terraform README](../terraform/README.md) 5절 "외부에서 발급한 비밀값")
-4. `40-cicd` apply (매일 재생성에 포함). 이후 사람이 할 일은 없습니다.
-
-**확인**
-- GitLab Admin → CI/CD → Runners 에 `aws-ci-runner` 가 online (매일 새 인스턴스가 같은 runner 에 붙음)
-- Tailscale Machines 에 `ci-runner-<인스턴스 ID>` (`tag:ci-runner`, Ephemeral). 인스턴스가 사라지면 자동 삭제
-- 부트스트랩 로그: Runner 에 SSM 접속 후 `sudo tail -n 50 /var/log/cloud-init-output.log` ("[bootstrap] 완료")
-- **보안**: hop limit 2 라 job 이 Runner Role 을 그대로 씁니다 (ECR push 를 위해 의도한 것). 같은 이유로 job 은 Runner Secret 도 읽을 수 있으므로, 이 Runner 는 리뷰를 거친 보호 브랜치 job 만 받습니다. Tailscale 권한은 GitLab 443 만이라 Secret 이 새도 다른 노드에 접근할 수 없습니다.
 
 ---
 
@@ -1381,7 +1338,7 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `payment-db` · `payment-db-root` · `toss-payments` | (운영과 같은 이름) | payment.yml |
 | `main-db-exporter` · `payment-db-exporter` | password (MariaDB `exporter` 계정, 없으면 db.yml · payment.yml 이 생성, 17-6) | db.yml, payment.yml — **ESO 는 못 읽음** |
 | `grafana` | admin_user, admin_password (없으면 monitoring.yml 이 생성, 17절) | ESO(`monitoring/grafana-admin`) |
-| `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `aws-ci-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
+| `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
 
 - `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책은 이 목록과 `eso_extra_read_paths`(backend 밖에서 ESO 가 읽는 경로, 예: `grafana`)로 만듭니다.
   - 경로를 추가하면 OpenBao 관리자가 `db.yml --tags openbao` 로 `eso-dev` 정책을 갱신해야 ESO 가 읽을 수 있습니다. 그다음 `db.yml --tags openbao_import`(값 이관), `k8s-cicd.yml --tags backend_secrets` 순서로 실행합니다.
@@ -1469,7 +1426,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 | 파일 | 만드는 곳 | OpenBao | 읽는 곳 |
 |---|---|---|---|
 | `gitlab-k8s.env`, `payment-node.env`, `github-mirror.env` | `gitlab.yml --tags bootstrap` | `gitlab-k8s`, `payment-node`, `github-mirror` | `k8s-cicd.yml`, `payment.yml`, bootstrap 재실행(토큰 재사용) / github-mirror 는 GitHub Secrets 등록용 기록 |
-| `gitlab-runner.env`, `aws-ci-runner.env` | `gitlab.yml` (runner_token) | `gitlab-runner`, `aws-ci-runner` | `gitlab-runner.yml` / aws-ci-runner 는 Terraform 12-secrets 등록용 기록 |
+| `gitlab-runner.env` | `gitlab.yml` (runner_token) | `gitlab-runner` | `gitlab-runner.yml` |
 | `argocd.env` | `k8s-cicd.yml` (argocd) | `argocd` | 사람 (UI 로그인) |
 | `join.env`, `admin.conf` | `control-plane.yml` | `k8s-join`, `k8s-admin` (OpenBao 가 있을 때) | `worker-join.yml`(source) / kubectl |
 | `llm-service-dev-sa.json` | gcloud | `gcp-sa` (16-3 이관) | ESO — 이관 뒤 파일 삭제 가능 |

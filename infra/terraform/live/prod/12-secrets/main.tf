@@ -1,9 +1,7 @@
 # 🔒 상시 유지 외부 비밀값. 매일 재생성 스택이 만들 수 없는 값(사람이 외부에서 발급)을 고정 이름 Secret 으로 둔다.
 #
-#   team04-hotel/prod/ci-runner-tailscale : {oauth_client_secret}  Tailscale OAuth client (tag:ci-runner)
-#   team04-hotel/prod/ci-runner-gitlab    : {url, token}           온프레미스 GitLab 의 AWS Runner(aws-ci-runner) 인증 토큰
 #   team04-hotel/prod/github-app          : {app_id, installation_id, private_key}
-#                                           gitops 레포 릴리스 PR 용 GitHub App (Runner 의 release:gitops-pr job · 모노레포 release.yml 이 읽음)
+#                                           gitops 레포 릴리스 PR 용 GitHub App (모노레포 release.yml 이 읽음)
 #   team04-hotel/prod/toss-payments       : {secret_key}           토스페이먼츠 시크릿 키 → TOSS_SECRET_KEY (결제 서버가 읽음)
 #   team04-hotel/prod/seed-admin          : {email, password, name} 시드 관리자 계정 → backend 시드 Job 의 SEED_ADMIN_*
 #                                           (ESO 가 읽어 Secret seed-admin 생성, gitops backend-secrets 앱)
@@ -11,36 +9,25 @@
 #                                           (ESO 가 읽어 Secret grafana-admin 생성, gitops monitoring 앱)
 #
 #   SSM /team04-hotel/prod/frontend/toss-client-key (String)       토스 결제위젯 클라이언트 키 → VITE_TOSS_CLIENT_KEY
-#                                           Runner 의 release:prepare · release.yml 이 읽어 빌드에 넣는다 (아래 frontend.tf)
+#                                           release.yml 이 읽어 빌드에 넣는다 (아래 frontend.tf)
 #
 # 값은 ephemeral 변수 → write-only(secret_string_wo) 로 넣어 state · plan 에 남지 않는다.
 # write-only 값은 생성 시와 *_version 이 바뀔 때만 전달되므로, 값을 바꿀 때는 version 을 올려 apply 한다 (README 5절).
 # 값은 terragrunt.hcl 이 이 디렉터리의 .env(gitignore)가 가리키는 파일에서 읽어 넘긴다.
 # 이 스택은 값 등록 때만 직접 apply 한다 (run --all 대상 아님, terragrunt.hcl).
 #
-# 읽는 쪽은 40-cicd 의 Runner Role(var.ci_runner_role_name), 10-global 의 릴리스 Role(var.release_role_name, github-app 만), 60-payment-app 의 결제 서버 Role(var.payment_app_role_name),
+# 읽는 쪽은 10-global 의 릴리스 Role(var.release_role_name, github-app 만), 60-payment-app 의 결제 서버 Role(var.payment_app_role_name),
 # 70-main-cluster-kubeadm 의 ESO Role(var.external_secrets_role_name)이다.
-# 고정 이름으로 ARN 을 만들므로 40 · 60 · 70 과 의존 관계가 없다.
+# 고정 이름으로 ARN 을 만들므로 60 · 70 과 의존 관계가 없다.
 
 locals {
   secret_prefix = "${var.project}/${var.environment}"
 
   secrets = {
-    ci_runner_tailscale = {
-      name        = "${local.secret_prefix}/ci-runner-tailscale"
-      description = "AWS GitLab Runner Tailscale OAuth client (tag:ci-runner)"
-      readers     = [var.ci_runner_role_name]
-    }
-    ci_runner_gitlab = {
-      name        = "${local.secret_prefix}/ci-runner-gitlab"
-      description = "AWS GitLab Runner URL and authentication token (aws-ci-runner)"
-      readers     = [var.ci_runner_role_name]
-    }
     github_app = {
       name        = "${local.secret_prefix}/github-app"
       description = "GitHub App for gitops release PRs (contents, pull_requests write on gitops repo only)"
-      # GitLab release:gitops-pr(Runner) · GitHub Actions release.yml(릴리스 Role) — 릴리스 경로 이전 중 병행
-      readers = [var.ci_runner_role_name, var.release_role_name]
+      readers     = [var.release_role_name]
     }
     toss_payments = {
       name        = "${local.secret_prefix}/toss-payments"
@@ -69,23 +56,6 @@ resource "aws_secretsmanager_secret" "this" {
   lifecycle {
     prevent_destroy = true
   }
-}
-
-resource "aws_secretsmanager_secret_version" "ci_runner_tailscale" {
-  secret_id = aws_secretsmanager_secret.this["ci_runner_tailscale"].id
-
-  secret_string_wo         = jsonencode({ oauth_client_secret = var.ci_runner_tailscale_oauth_client_secret })
-  secret_string_wo_version = var.ci_runner_credentials_version
-}
-
-resource "aws_secretsmanager_secret_version" "ci_runner_gitlab" {
-  secret_id = aws_secretsmanager_secret.this["ci_runner_gitlab"].id
-
-  secret_string_wo = jsonencode({
-    url   = var.ci_runner_gitlab_url
-    token = var.ci_runner_gitlab_token
-  })
-  secret_string_wo_version = var.ci_runner_credentials_version
 }
 
 resource "aws_secretsmanager_secret_version" "github_app" {
@@ -138,7 +108,7 @@ data "aws_iam_session_context" "current" {
   arn = data.aws_caller_identity.current.arn
 }
 
-# Runner Secret 3개는 Runner 만 (github-app 은 release:gitops-pr job 과 release.yml 릴리스 Role 도), 토스 시크릿 키는 결제 서버만, 시드 관리자 · Grafana admin 계정은 ESO 만 읽는다
+# github-app 은 release.yml 릴리스 Role 만, 토스 시크릿 키는 결제 서버만, 시드 관리자 · Grafana admin 계정은 ESO 만 읽는다
 data "aws_iam_policy_document" "secret" {
   for_each = local.secrets
 

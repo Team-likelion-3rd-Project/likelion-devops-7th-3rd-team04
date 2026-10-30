@@ -33,4 +33,3 @@
     msg:
       - "Runner 접속 정보: {{ gitlab_runners | map(attribute='env_file') | map('regex_replace', '^', local_secrets_dir ~ '/') | join(', ') }}"
       - "온프레미스 Runner: set -a; source .env; source .secrets/gitlab-runner.env; set +a && ansible-playbook gitlab-runner.yml -K"
-      - "AWS Runner: Terraform 12-secrets apply 로 Secrets Manager 에 등록 (README 13절)"

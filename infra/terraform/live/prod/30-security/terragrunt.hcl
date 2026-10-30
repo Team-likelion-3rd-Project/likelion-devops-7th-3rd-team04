@@ -13,15 +13,11 @@ dependency "network" {
     payment = {
       vpc_id = "vpc-00000000000000002"
     }
-    deployment = {
-      vpc_id = "vpc-00000000000000001"
-    }
   }
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
 inputs = {
-  main_vpc_id       = dependency.network.outputs.main.vpc_id
-  payment_vpc_id    = dependency.network.outputs.payment.vpc_id
-  deployment_vpc_id = dependency.network.outputs.deployment.vpc_id
+  main_vpc_id    = dependency.network.outputs.main.vpc_id
+  payment_vpc_id = dependency.network.outputs.payment.vpc_id
 }

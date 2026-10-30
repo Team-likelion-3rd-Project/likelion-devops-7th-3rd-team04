@@ -58,18 +58,6 @@ variable "image_keep_count" {
   default     = 10
 }
 
-variable "build_cache_expire_days" {
-  description = "빌드 캐시 저장소(<project>/cache)에서 캐시를 지우기까지의 일수. .gitlab-ci.yml release:build 의 --cache-ttl 과 같게"
-  type        = number
-  default     = 14
-}
-
-variable "ci_runner_role_name" {
-  description = "이미지를 push 하는 40-cicd Runner IAM Role 이름. 저장소 정책이 이 Role 과 관리자만 push 를 허용한다"
-  type        = string
-  default     = "team04-hotel-ci-runner"
-}
-
 variable "release_role_name" {
   description = "GHCR 이미지를 ECR 로 복사하는 모노레포 release.yml Role 이름 (10-global monorepo_release_role_name). 저장소 정책이 push 를 허용한다"
   type        = string

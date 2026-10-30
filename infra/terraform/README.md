@@ -38,7 +38,6 @@ infra/terraform/
         ├── 20-network/              🔁
         ├── 21-observability-base/   🔁 메인 클러스터 로그 그룹 (Fluent Bit)
         ├── 30-security/             🔁
-        ├── 40-cicd/                 🔁
         ├── 41-main-data/            🔁
         ├── 42-payment-data/         🔁
         ├── 43-messaging/            🔁
@@ -150,7 +149,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 ─────────────────────── 매일 재생성 ───────────────────────
 20-network   21-observability-base
 30-security
-40-cicd   41-main-data   42-payment-data   43-messaging   44-payment-endpoints
+41-main-data   42-payment-data   43-messaging   44-payment-endpoints
 50-payment-webhook
 60-payment-app   61-payment-mock
 70-main-cluster-kubeadm   71-payment-link
@@ -171,11 +170,10 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `13-frontend` 🔒 | 최초 1회. 버킷 2개 · CloudFront(2분 49초) · KeyValueStore(1분 24초) · Function · 레코드 4개 (2026-10-22) | 5분 07초 | (destroy 안 함) |
 | `14-gcp-llm` 🔒 | 최초 1회. API 4개(STS 25초) · 서비스 계정 · Pool · Provider · IAM 3개, 사전 작업 때문에 2번 나눠 apply (2026-10-23) | 52초 + 37초 | (destroy 안 함) |
 | `15-chatbot-vectors` 🔒 | 최초 1회. 벡터 버킷 · 인덱스 (각 1초, 2026-10-23) | 약 4초 | (destroy 안 함) |
-| `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
+| `20-network` | `single_nat_gateway = true` (NAT 2개, 기본값. 시간은 Deployment VPC 포함 3개 때 실측), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
-| `20-network` | `single_nat_gateway = false` (NAT 5개, NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
-| `30-security` | `enable_control_plane = true` (SG 13개, 규칙 43개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
-| `40-cicd` | GitLab Runner 1대 + Ansible 묶음 업로드 (t4g.medium 기준 실측, 2026-10-21 m7g.large 로 변경. 부트스트랩 별도: 시작부터 GitLab 등록까지 약 3분 30초 – 4분) | 54초 – 58초 | 1분 25초 |
+| `20-network` | `single_nat_gateway = false` (NAT 4개, Deployment VPC 포함 5개 · NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
+| `30-security` | `enable_control_plane = true` (SG 12개, 규칙 39개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
 | `41-main-data` | RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
 | `42-payment-data` | 결제 RDS db.t4g.micro Single-AZ, Secret | 6분 37초 – 6분 39초 | 2분 13초 |
 | `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 38초 | 2분 10초 |
@@ -195,7 +193,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 결제 쪽(`42` → `60` → `71`)이 메인 쪽(`41` → `70`)과 병렬이라 `60` · `61` · `71` 을 넣어도 전체 시간은 거의 늘지 않습니다. 가장 긴 경로는 `42` RDS(6분 40초 – 10분)에 따라 정해지고, `70` 은 `60` · `71` 을 기다리지 않습니다. 필요한 스택만 올릴 때는 `--filter '<스택>...'`(그 스택과 의존 스택)로 고릅니다.
 
 ```bash
-# 결제 서버 · PrivateLink 검증 범위 (40 Runner · 80 ALB 제외). NFW 를 켤 때는 20 만 받는 변수를 환경변수로 넘긴다 (다른 스택은 무시)
+# 결제 서버 · PrivateLink 검증 범위 (80 ALB 제외). NFW 를 켤 때는 20 만 받는 변수를 환경변수로 넘긴다 (다른 스택은 무시)
 TF_VAR_enable_payment_network_firewall=true terragrunt run --all apply \
   --filter './71-payment-link...' --filter './61-payment-mock...' --filter './70-main-cluster-kubeadm...'
 ```
@@ -230,19 +228,17 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 
 ### 외부에서 발급한 비밀값 (`12-secrets`)
 
-사람이 외부 서비스에서 발급하는 값(Tailscale OAuth client, GitLab Runner 토큰 등)은 🔒 `12-secrets` 에 고정 이름 Secret 으로 둡니다. 값은 **ephemeral 변수 → `secret_string_wo`** 로 넣어 state · plan 에 남지 않습니다.
+사람이 외부 서비스에서 발급하는 값(GitHub App 개인 키, 토스 키 등)은 🔒 `12-secrets` 에 고정 이름 Secret 으로 둡니다. 값은 **ephemeral 변수 → `secret_string_wo`** 로 넣어 state · plan 에 남지 않습니다.
 
 | Secret | 값 | 출처 | 읽는 쪽 |
 |---|---|---|---|
-| `team04-hotel/prod/ci-runner-tailscale` | `{oauth_client_secret}` | Tailscale 콘솔 OAuth client (`tag:ci-runner`, `infra/ansible/.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET` 과 같은 값) | `40-cicd` Runner Role |
-| `team04-hotel/prod/ci-runner-gitlab` | `{url, token}` | `gitlab.yml --tags runner_token` 이 만든 `infra/ansible/.secrets/aws-ci-runner.env` ([Ansible README](../ansible/README.md) 13절) | `40-cicd` Runner Role |
 | `team04-hotel/prod/toss-payments` | `{secret_key}` | 토스페이먼츠 개발자센터 API 키 → 결제위젯 연동 키의 **시크릿 키**(테스트 `test_gsk_*`, 지금은 로컬 `backend/.env` 의 `TOSS_SECRET_KEY` 와 같은 값). 프론트 클라이언트 키(`test_gck_*`)와 같은 줄의 한 쌍 | `60-payment-app` 결제 서버 Role (`TOSS_SECRET_KEY`) |
-| `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `40-cicd` Runner Role (`release:gitops-pr` job) · `10-global` 릴리스 Role `team04-hotel-release` (`release.yml` gitops-pr job) |
-| SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 Runner 가 시크릿 키까지 읽게 되므로 분리 | `40-cicd` Runner Role (`release:prepare` → `release:frontend-build` 의 `VITE_TOSS_CLIENT_KEY`) · `10-global` 릴리스 Role (`release.yml` plan job) |
+| `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `10-global` 릴리스 Role `team04-hotel-release` (`release.yml` gitops-pr job) |
+| SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 릴리스 Role 이 시크릿 키까지 읽게 되므로 분리 | `10-global` 릴리스 Role (`release.yml` plan job 의 `VITE_TOSS_CLIENT_KEY`) |
 | `team04-hotel/prod/seed-admin` | `{email, password, name}` | 운영 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*`, 비밀번호 12자 이상). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | `70` ESO Role (`team04-hotel-external-secrets`) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
 | `team04-hotel/prod/grafana-admin` | `{admin_user, admin_password}` | 운영 Grafana admin 계정. 이름은 `admin` 고정, 비밀번호만 사람이 정함(`.env` 의 `GRAFANA_ADMIN_PASSWORD`, 16자 이상). **등록 전에는 운영 Grafana 가 뜨지 않습니다**(서비스 배포에는 영향 없음, [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측") | `70` ESO Role → Secret `grafana-admin` (gitops `monitoring` 앱) |
 
-처음 등록 · 값 교체 (온프레미스 GitLab 재생성으로 토큰이 바뀐 경우 등):
+처음 등록 · 값 교체 (GitHub App 개인 키 교체 등):
 
 값을 export 하지 않습니다. `terragrunt.hcl` 이 이 디렉터리의 `.env`(gitignore)를 읽어 넘깁니다. 운영 값은 이 파일에만 두고 `backend/.env` · `infra/ansible/.env` 같은 개발 설정을 읽지 않습니다 (개발 설정을 바꿔도 운영 값이 따라가지 않게). 같은 값이라도 여기에 따로 적습니다.
 
@@ -250,20 +246,19 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 cd infra/terraform/live/prod/12-secrets
 cp .env.example .env   # 처음 한 번. 값을 채운다 (GitHub App 개인 키만 .pem 파일 경로)
 
-# 교체할 때는 variables.tf 의 해당 version(ci_runner_credentials_version · github_app_credentials_version · toss_credentials_version · seed_admin_credentials_version)을 올린 뒤
+# 교체할 때는 variables.tf 의 해당 version(github_app_credentials_version · toss_credentials_version · seed_admin_credentials_version · grafana_admin_credentials_version)을 올린 뒤
 AWS_PROFILE=team04 terragrunt apply
 ```
 
 - 값은 모두 필요합니다 (값을 바꾸지 않는 Secret 도 plan 에 값이 있어야 함). 실제로 다시 보내는 것은 version 이 바뀐 Secret 만입니다.
 - `.env` 가 없거나 항목이 비면 값이 빈 문자열로 넘어가 변수 검증에서 막힙니다. 어떤 값이 비었는지는 검증 오류 메시지의 변수 이름으로 확인합니다.
 - `--inputs-debug` 는 값을 `terragrunt-debug.tfvars.json` 파일로 쓰므로 쓰지 않습니다. `terragrunt render` 도 값을 화면에 출력합니다.
-- 값이 바뀌면 `.env` 를 고치고 해당 version 을 올립니다. 예: 온프레미스 GitLab 재생성으로 `aws-ci-runner.env` 의 토큰이 바뀜 → `GITLAB_RUNNER_TOKEN` 수정 + `ci_runner_credentials_version` 증가.
-- 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-` · `test_gsk_` 등 시크릿 키 · `test_gck_` 클라이언트 키)이 다르면 변수 검증에서 막힙니다.
+- 값이 바뀌면 `.env` 를 고치고 해당 version 을 올립니다. 예: 토스 테스트 키 → 라이브 키 전환 → `TOSS_SECRET_KEY` · `TOSS_CLIENT_KEY` 수정 + `toss_credentials_version` 증가.
+- 값이 비었거나 형식(`test_gsk_` 등 시크릿 키 · `test_gck_` 클라이언트 키)이 다르면 변수 검증에서 막힙니다.
 - 토스 시크릿 키와 클라이언트 키는 한 쌍이라 `toss_credentials_version` 하나로 함께 다시 넣습니다. 클라이언트 키는 다음 릴리스 빌드부터 반영됩니다 (변경 이력: `aws ssm get-parameter-history`).
-- Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(Runner Secret 은 `team04-hotel-ci-runner`, 토스는 `team04-hotel-payment-app`, 시드 관리자 계정은 `team04-hotel-external-secrets`)과 apply 한 주체만 허용합니다.
+- Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(GitHub App 은 `team04-hotel-release`, 토스는 `team04-hotel-payment-app`, 시드 관리자 계정은 `team04-hotel-external-secrets`)과 apply 한 주체만 허용합니다.
 - 시드 관리자 비밀번호를 바꾸면 다음 DB 재생성부터 새 값으로 만들어집니다. 이미 떠 있는 DB 의 계정은 그대로입니다 (시드는 이미 있는 계정을 건너뜀).
 - GitHub App 개인 키(`.pem`)는 GitHub 에서 다시 받을 수 없습니다. 분실하면 새 키를 만들고 `github_app_credentials_version` 을 올려 다시 등록합니다.
-- 이미 떠 있는 Runner 는 부팅 때 값을 읽었으므로, 교체 후에는 Runner 를 다시 만듭니다 (`40-cicd` apply 또는 ASG 인스턴스 종료).
 
 ```bash
 # 값 확인 (관리자만 가능)
@@ -417,7 +412,7 @@ NAT 응답  ─ public RT <app · lb 서브넷 CIDR> ─▶ 같은 NFW 엔드포
   AWS_PROFILE=team04 terragrunt apply     # NFW 삭제 약 3분 30초 (firewall 2분 18초 + 정책 · rule group)
   ```
 - 엔드포인트 수는 NAT 와 맞춥니다. `single_nat_gateway = true` 면 a 하나, `false` 면 a · b.
-- Main · Deployment VPC 는 검사하지 않습니다 (`modules/vpc` 의 `firewall_endpoint_ids` 기본값 `{}`).
+- Main VPC 는 검사하지 않습니다 (`modules/vpc` 의 `firewall_endpoint_ids` 기본값 `{}`).
 
 | 계층 | 막는 것 |
 |---|---|
@@ -501,7 +496,7 @@ kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/pl-test --timeout=60
 
 ### 결제 서버 배포 (pull agent)
 
-결제 서버는 GitHub · Runner 가 명령을 보낼 수 없습니다. 서버가 Parameter Store 를 읽어 스스로 바꿉니다.
+결제 서버는 GitHub Actions 가 명령을 보낼 수 없습니다. 서버가 Parameter Store 를 읽어 스스로 바꿉니다.
 
 ```
 gitops envs/prod/payment/values.yaml merge (사람 승인)
@@ -597,7 +592,7 @@ AWS_PROFILE=team04 aws ssm get-parameter --name /team04-hotel/prod/payment/relea
 **Alloy 이미지 미러 (버전당 1회)**: 결제 VPC 는 Docker Hub 에 갈 수 없어 `11-registry` 미러 저장소 `team04-hotel/alloy`(IMMUTABLE)에서 받습니다. `60` 은 `data "aws_ecr_image"` 로 digest 를 읽으므로 **미러가 없으면 `60` plan 이 실패합니다**. 버전(`60` `alloy_version`)은 온프레미스 `node_collectors` `alloy_image` 와 맞춥니다.
 
 ```bash
-# apply 주체로 (저장소 정책이 push 를 Runner · 릴리스 Role · apply 주체로 제한). 결제 서버는 amd64
+# apply 주체로 (저장소 정책이 push 를 릴리스 Role · apply 주체로 제한). 결제 서버는 amd64
 ver=v1.20.1
 reg=$(AWS_PROFILE=team04 aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com
 AWS_PROFILE=team04 aws ecr get-login-password | crane auth login "$reg" -u AWS --password-stdin
@@ -643,8 +638,8 @@ https://www.<도메인>/*         → 301 루트 (api-gateway CORS 출처가 루
 ```
 
 - 🔒 상시 유지라 매일 재생성과 무관하게 프론트 · 사진이 남습니다. Zone · 인증서는 같은 1x 단계인 `10-global` 을 dependency 대신 도메인 이름으로 조회합니다.
-- `40-cicd`(Runner 업로드 권한) · `70-main-cluster-kubeadm`(hotel-service IRSA) 이 `13` 의 output 을 mock 없이 읽으므로 **`13` 을 먼저 apply** 합니다 (`run --all apply` 는 순서대로 처리).
-- 버킷은 CloudFront(OAC, `aws:SourceArn` = 이 배포)만 읽습니다. 쓰기는 버킷 정책이 Runner(사이트 `releases/*`) · hotel-service(사진) · apply 주체 외에는 거부합니다.
+- `70-main-cluster-kubeadm`(hotel-service IRSA) 이 `13` 의 output 을 mock 없이 읽으므로 **`13` 을 먼저 apply** 합니다 (`run --all apply` 는 순서대로 처리).
+- 버킷은 CloudFront(OAC, `aws:SourceArn` = 이 배포)만 읽습니다. 쓰기는 버킷 정책이 릴리스 Role(사이트 `releases/*`) · hotel-service(사진) · apply 주체 외에는 거부합니다.
 - 릴리스 · 롤백 절차는 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스" — 버전 전환은 gitops merge 후 GitHub Actions 만 합니다 (`release.tf`).
 
 처음 apply 한 뒤 한 번만:

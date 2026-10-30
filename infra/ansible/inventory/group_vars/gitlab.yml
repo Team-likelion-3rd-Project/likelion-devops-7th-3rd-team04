@@ -40,12 +40,6 @@ gitlab_runners:
     run_untagged: true
     access_level: not_protected
     env_file: gitlab-runner.env
-  # AWS Runner (Terraform 40-cicd). 토큰은 12-secrets apply 로 Secrets Manager 에 등록 (README 13절)
-  - description: aws-ci-runner
-    tags: [aws, ecr]
-    run_untagged: false
-    access_level: ref_protected
-    env_file: aws-ci-runner.env
 
 # ── CI/CD 부트스트랩 (gitlab_bootstrap role, gitlab.yml --tags bootstrap) ──
 # 온프레미스 ArgoCD 는 그룹 Deploy Token(argocd-repo-read) 하나로 team04 아래의 차트 미러 · gitops 레포를 읽음

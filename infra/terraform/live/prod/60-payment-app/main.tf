@@ -9,7 +9,7 @@
 # 결제 서버는 Amazon Linux 2023(x86_64 — 이미지가 온프레미스 amd64 빌드). 패키지 저장소가 S3 라 S3 게이트웨이 엔드포인트로 받고, NAT 로는 토스만 나간다.
 # 배포는 결제 서버 안의 pull agent 가 한다 (server.tf, templates/payment-deploy.sh, README 결제 서버 배포 절).
 #   gitops envs/prod/payment/values.yaml merge → GitHub Actions(OIDC) → Parameter Store release → agent(1분) → ECR pull · Flyway · 교체
-#   GitHub · Runner 는 결제 서버에 명령을 실행할 수 없다 (agent 가 읽기만 한다).
+#   GitHub Actions 는 결제 서버에 명령을 실행할 수 없다 (agent 가 읽기만 한다).
 # 접속은 SSM Session Manager 로 한다 (22 포트, 키 페어 없음).
 
 data "aws_ssm_parameter" "al2023_ami" {

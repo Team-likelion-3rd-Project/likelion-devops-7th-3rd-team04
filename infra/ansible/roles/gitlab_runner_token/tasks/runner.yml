@@ -53,7 +53,7 @@
   become: false
   no_log: true
 
-# 경로 이름 = 파일 이름에서 .env 를 뺀 것 (gitlab-runner, aws-ci-runner). gitlab-runner.yml 이 OpenBao 에서 읽음
+# 경로 이름 = 파일 이름에서 .env 를 뺀 것 (gitlab-runner). gitlab-runner.yml 이 OpenBao 에서 읽음
 - name: "OpenBao 저장 ({{ runner.env_file | splitext | first }})"
   ansible.builtin.include_role:
     name: openbao_kv
