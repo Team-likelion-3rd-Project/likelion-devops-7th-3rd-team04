@@ -4,7 +4,8 @@
 #
 #   payment-result-dlq       결제 결과 DLQ 에 메시지 (43)                 booking-service 가 처리하지 못한 결제 결과
 #   main-alb-5xx-rate        ALB 5xx 비율 (80)                            api-gateway · 백엔드 오류, 워커 전부 다운
-#   main-alb-unhealthy       워커 Target Group unhealthy (80)              워커 · Traefik 이상
+#   main-alb-<클러스터>-unhealthy  Target Group unhealthy (80, kubeadm · eks)   워커 · Traefik 이상
+#   ec2-cpu-surplus-charged  계정 EC2 CPU 초과 크레딧 과금 (Metrics Insights)  t3a unlimited 초과 사용 → 인스턴스 타입 검토
 #   payment-nlb-unhealthy    결제 NLB(PrivateLink) Target unhealthy (60)   결제 서버 이상 (배포 중 Standby 는 unhealthy 가 아님)
 #   payment-deploy-failed    결제 배포 실패 · 롤백 (60 deploy 로그 지표 필터)
 #   payment-mock-deployed    운영에 PAYMENT_PROVIDER=MOCK 배포 (60 deploy 로그 지표 필터, 부하 테스트 때는 예상된 알림)
@@ -21,6 +22,12 @@ locals {
   alerts_topic     = "arn:${data.aws_partition.current.partition}:sns:${var.region}:${data.aws_caller_identity.current.account_id}:${var.alerts_topic_name}"
   alarm_actions    = [local.alerts_topic]
   deploy_namespace = "${var.project}/payment-deploy"
+
+  # unhealthy 알람 설명의 확인 대상 (키 = 80 target_group_arn_suffixes 키)
+  alb_target_checks = {
+    kubeadm = "워커 노드 · Traefik(NodePort 30080) 확인"
+    eks     = "Traefik 파드(8000) · TargetGroupBinding · 노드 확인"
+  }
 }
 
 # ── 결제 결과 DLQ ──
@@ -100,15 +107,18 @@ resource "aws_cloudwatch_metric_alarm" "main_alb_5xx_rate" {
   alarm_actions = local.alarm_actions
 }
 
+# Target Group 별 (kubeadm 워커 NodePort, eks Traefik 파드). 대상이 없는 TG(전환 전 eks)는 지표가 없어 울리지 않는다
 resource "aws_cloudwatch_metric_alarm" "main_alb_unhealthy" {
-  alarm_name        = "${local.name}-main-alb-unhealthy"
-  alarm_description = "워커 Target Group 에 unhealthy 대상이 ${var.unhealthy_evaluation_minutes}분 이상 있습니다. 워커 노드 · Traefik(NodePort 30080) 확인"
+  for_each = var.alb_target_group_arn_suffixes
+
+  alarm_name        = "${local.name}-main-alb-${each.key}-unhealthy"
+  alarm_description = "${each.key} Target Group 에 unhealthy 대상이 ${var.unhealthy_evaluation_minutes}분 이상 있습니다. ${local.alb_target_checks[each.key]}"
 
   namespace   = "AWS/ApplicationELB"
   metric_name = "UnHealthyHostCount"
   dimensions = {
     LoadBalancer = var.alb_arn_suffix
-    TargetGroup  = var.alb_target_group_arn_suffix
+    TargetGroup  = each.value
   }
   statistic           = "Maximum"
   period              = 60
@@ -116,6 +126,32 @@ resource "aws_cloudwatch_metric_alarm" "main_alb_unhealthy" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = 0
   treat_missing_data  = "notBreaching"
+
+  alarm_actions = local.alarm_actions
+}
+
+# ── EC2 CPU 크레딧 (클러스터 종류와 무관) ──
+# 계정의 모든 EC2(메인 노드 · 결제 서버, 전부 t3a unlimited)의 CPUSurplusCreditsCharged 합계.
+# ASG 이름(EKS MNG 는 생성 때 정해짐)에 의존하지 않도록 Metrics Insights 로 계정 전체를 합한다.
+# 초과 크레딧은 인스턴스가 종료될 때도 과금되므로 매일 destroy 직전에 값이 생길 수 있다 (알람 스택이 먼저 지워지면 알림 없음).
+# 노드 평균 CPU(m6a.large 손익분기 약 41%)는 gitops kube-prometheus-stack PrometheusRule 이 본다
+
+resource "aws_cloudwatch_metric_alarm" "ec2_cpu_surplus_charged" {
+  alarm_name        = "${local.name}-ec2-cpu-surplus-charged"
+  alarm_description = "EC2 CPU 초과 크레딧이 과금되었습니다 (계정 합계, 5분 합 ${var.ec2_cpu_surplus_charged_threshold} 초과). 노드 평균 CPU 알람 · Grafana 노드 대시보드 확인, 계속되면 m6a 등 고정 성능 타입 검토"
+
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.ec2_cpu_surplus_charged_threshold
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+
+  metric_query {
+    id          = "charged"
+    label       = "CPUSurplusCreditsCharged (계정 합계)"
+    expression  = "SELECT SUM(CPUSurplusCreditsCharged) FROM SCHEMA(\"AWS/EC2\", InstanceId)"
+    period      = 300
+    return_data = true
+  }
 
   alarm_actions = local.alarm_actions
 }

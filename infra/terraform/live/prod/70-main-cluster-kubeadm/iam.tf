@@ -91,7 +91,7 @@ data "aws_iam_policy_document" "cp_bootstrap" {
     ]
   }
 
-  # CP-a 가 init 후 SA 서명 공개키(JWKS)를 올린다 (irsa.tf). 발급자 문서는 10-global 이 관리하므로 keys.json 만
+  # CP-a 가 init 후 SA 서명 공개키(JWKS)를 올린다 (IRSA, Role 은 51-pod-roles). 발급자 문서는 10-global 이 관리하므로 keys.json 만
   statement {
     sid       = "PutOidcKeys"
     actions   = ["s3:PutObject"]

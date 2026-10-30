@@ -45,7 +45,7 @@ variable "payment_result_max_receive_count" {
 # ── 큐 정책이 허용하는 Role (고정 이름, Role 은 사용하는 쪽 스택이 만든다) ──
 
 variable "booking_role_name" {
-  description = "결제 결과를 받는(receive · delete) booking-service IRSA Role 이름 (70 irsa.tf)"
+  description = "결제 결과를 받는(receive · delete) booking-service IRSA Role 이름 (51-pod-roles)"
   type        = string
   default     = "team04-hotel-booking-service"
 }
