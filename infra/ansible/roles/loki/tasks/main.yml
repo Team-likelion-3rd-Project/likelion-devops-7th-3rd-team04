@@ -123,6 +123,18 @@
   retries: 24
   delay: 5
 
+# ── --tags loki 단독 실행 대비 (tailscale role 을 건너뛴 경우) ──
+- name: Tailscale IP 조회
+  ansible.builtin.command: tailscale ip -4
+  register: loki_ts_ip
+  changed_when: false
+  when: ts_ip is not defined
+
+- name: ts_ip fact 등록
+  ansible.builtin.set_fact:
+    ts_ip: "{{ loki_ts_ip.stdout_lines | first }}"
+  when: ts_ip is not defined
+
 - name: 접속 정보
   ansible.builtin.debug:
     msg:
