@@ -30,9 +30,38 @@ resource "aws_db_parameter_group" "payment" {
     value = "utf8mb4_general_ci"
   }
 
+  # 슬로우 · 에러 로그 → CloudWatch Logs (LDP-180, 이름 · log_output 이유는 41-main-data rds.tf)
+  parameter {
+    name  = "log_output"
+    value = "FILE"
+  }
+
+  parameter {
+    name  = "log_slow_query"
+    value = "1"
+  }
+
+  parameter {
+    name  = "log_slow_query_time"
+    value = tostring(var.db_slow_query_seconds)
+  }
+
+  parameter {
+    name  = "innodb_print_all_deadlocks"
+    value = "1"
+  }
+
   lifecycle {
     create_before_destroy = true
   }
+}
+
+# RDS 가 만들기 전에 먼저 만든다 (보관 기간, destroy 때 삭제). DB 가 depends_on 하므로 destroy 는 DB → 그룹 순서
+resource "aws_cloudwatch_log_group" "db" {
+  for_each = toset(local.db_log_exports)
+
+  name              = "/aws/rds/instance/${local.name}/${each.key}"
+  retention_in_days = var.db_log_retention_days
 }
 
 resource "aws_db_instance" "payment" {
@@ -57,6 +86,8 @@ resource "aws_db_instance" "payment" {
   publicly_accessible    = false
   multi_az               = var.db_multi_az
 
+  enabled_cloudwatch_logs_exports = local.db_log_exports
+
   backup_retention_period  = var.db_backup_retention_days
   delete_automated_backups = true
   copy_tags_to_snapshot    = true
@@ -71,4 +102,6 @@ resource "aws_db_instance" "payment" {
   tags = {
     Name = local.name
   }
+
+  depends_on = [aws_cloudwatch_log_group.db]
 }

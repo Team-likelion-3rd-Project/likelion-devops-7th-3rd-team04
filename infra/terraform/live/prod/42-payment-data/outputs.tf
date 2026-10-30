@@ -8,6 +8,11 @@ output "db_endpoint" {
   value       = aws_db_instance.payment.address
 }
 
+output "db_instance_identifier" {
+  description = "RDS 식별자. CloudWatch 지표 차원 DBInstanceIdentifier · 로그 그룹 /aws/rds/instance/<식별자>/* (90 알람)"
+  value       = aws_db_instance.payment.identifier
+}
+
 output "db_port" {
   description = "결제 RDS MariaDB 포트 (PAYMENT_DB_PORT)"
   value       = aws_db_instance.payment.port

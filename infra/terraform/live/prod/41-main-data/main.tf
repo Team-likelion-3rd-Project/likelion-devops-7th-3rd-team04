@@ -7,16 +7,26 @@
 #   ephemeral 리소스로 실행마다 비밀번호를 만들고, write-only 속성(*_wo)으로 RDS · Valkey · Secret 에 같은 값을 넣는다.
 #   write-only 값은 생성 시와 *_wo_version(credentials_version) 이 바뀔 때만 전달되므로
 #   셋을 이 스택 하나에 묶고 같은 version 변수를 쓴다. 다른 스택으로 output 할 수 없다.
-#   앱은 고정 이름 Secret(team04-hotel/prod/main-db · main-valkey · backend-app) 을 ESO 로 읽는다.
+#   앱은 고정 이름 Secret(team04-hotel/prod/main-db · main-valkey · backend-app · main-db-exporter) 을 ESO 로 읽는다.
 
 locals {
   name = "${var.project}-main"
 
   secret_prefix = "${var.project}/${var.environment}"
+
+  # RDS → CloudWatch Logs /aws/rds/instance/<식별자>/<종류> (LDP-180)
+  db_log_exports = ["error", "slowquery"]
 }
 
 # 영숫자만 쓴다. RDS 는 / @ " 공백, Valkey AUTH 는 @ " / 등을 허용하지 않는다
 ephemeral "aws_secretsmanager_random_password" "db" {
+  password_length            = 32
+  exclude_punctuation        = true
+  require_each_included_type = true
+}
+
+# mysqld_exporter 계정 (LDP-180). 계정은 gitops mysql-exporter-setup Job 이 master 로 만든다 (secrets.tf)
+ephemeral "aws_secretsmanager_random_password" "db_exporter" {
   password_length            = 32
   exclude_punctuation        = true
   require_each_included_type = true

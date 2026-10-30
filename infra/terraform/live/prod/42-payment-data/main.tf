@@ -12,6 +12,9 @@ locals {
   name = "${var.project}-payment"
 
   secret_prefix = "${var.project}/${var.environment}"
+
+  # RDS → CloudWatch Logs /aws/rds/instance/<식별자>/<종류> (LDP-180)
+  db_log_exports = ["error", "slowquery"]
 }
 
 # 영숫자만 쓴다. RDS 는 / @ " 공백을 허용하지 않는다

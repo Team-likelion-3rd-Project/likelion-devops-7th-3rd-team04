@@ -91,3 +91,15 @@ variable "db_require_secure_transport" {
   type        = bool
   default     = true
 }
+
+variable "db_slow_query_seconds" {
+  description = "슬로우 쿼리 로그 기준(초, log_slow_query_time). 이보다 오래 걸린 쿼리를 CloudWatch Logs slowquery 로 남긴다"
+  type        = number
+  default     = 1
+}
+
+variable "db_log_retention_days" {
+  description = "RDS 에러 · 슬로우 쿼리 로그 그룹 보관 기간(일)"
+  type        = number
+  default     = 7
+}

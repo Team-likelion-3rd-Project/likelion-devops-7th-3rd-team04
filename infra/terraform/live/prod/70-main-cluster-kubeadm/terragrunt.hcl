@@ -66,9 +66,10 @@ dependency "main_data" {
 
   mock_outputs = {
     secret_names = {
-      main_db     = "team04-hotel/prod/main-db"
-      main_valkey = "team04-hotel/prod/main-valkey"
-      backend_app = "team04-hotel/prod/backend-app"
+      main_db          = "team04-hotel/prod/main-db"
+      main_valkey      = "team04-hotel/prod/main-valkey"
+      backend_app      = "team04-hotel/prod/backend-app"
+      main_db_exporter = "team04-hotel/prod/main-db-exporter"
     }
     dynamodb_table_names = {
       chat_sessions = "team04-hotel-ChatSessions"

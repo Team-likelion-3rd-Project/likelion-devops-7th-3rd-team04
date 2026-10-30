@@ -83,6 +83,12 @@ locals {
       namespace       = "monitoring"
       service_account = "kube-prometheus-stack-alertmanager"
     }
+    # Grafana CloudWatch 데이터 소스 (LDP-180, gitops kube-prometheus-stack). SA 이름은 그 values 의 grafana.serviceAccount.name
+    grafana = {
+      description     = "Grafana CloudWatch data source (metrics, Logs Insights read)"
+      namespace       = "monitoring"
+      service_account = "kube-prometheus-stack-grafana"
+    }
   }
 
   # 15-chatbot-vectors 인덱스 (s3vectors 리소스 ARN 형식 bucket/<버킷>/index/<인덱스>)
@@ -307,4 +313,44 @@ resource "aws_iam_role_policy" "alertmanager" {
   name   = "alerts-publish"
   role   = aws_iam_role.irsa["alertmanager"].id
   policy = data.aws_iam_policy_document.alertmanager.json
+}
+
+# grafana: CloudWatch 지표 조회 + 이 프로젝트 로그 그룹의 Logs Insights 조회만 (쓰기 · 알람 변경 없음).
+#   GetMetricData · ListMetrics     리소스 지정을 지원하지 않아 * (읽기 전용 지표 API)
+#   DescribeLogGroups               쿼리 편집기의 로그 그룹 선택 목록 (계정 · 리전의 log-group:* 만 지원)
+#   StartQuery · GetLogGroupFields  RDS(41 · 42 /aws/rds/instance/<project>-*) · 이 환경 로그(/<project>/<env>/*: 클러스터 · 결제 서버)
+#   GetQueryResults · StopQuery     쿼리 ID 로 동작해 리소스 지정을 지원하지 않음 (StartQuery 가 허용한 그룹만 결과가 있음)
+data "aws_iam_policy_document" "grafana" {
+  statement {
+    sid       = "ReadMetrics"
+    actions   = ["cloudwatch:GetMetricData", "cloudwatch:ListMetrics"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "ListLogGroups"
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:*"]
+  }
+
+  statement {
+    sid     = "QueryProjectLogs"
+    actions = ["logs:StartQuery", "logs:GetLogGroupFields"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/rds/instance/${var.project}-*",
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/${var.project}/${var.environment}/*",
+    ]
+  }
+
+  statement {
+    sid       = "QueryResults"
+    actions   = ["logs:GetQueryResults", "logs:StopQuery"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "grafana" {
+  name   = "cloudwatch-read"
+  role   = aws_iam_role.irsa["grafana"].id
+  policy = data.aws_iam_policy_document.grafana.json
 }
