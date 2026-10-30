@@ -1,7 +1,8 @@
 import { createHmac } from 'crypto';
 import type { Request } from 'express';
 import { Test, TestingModule } from '@nestjs/testing';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { BadRequestException } from '@nestjs/common';
 import { PaymentController } from './payment.controller';
 
@@ -10,6 +11,7 @@ describe('PaymentController', () => {
 
   const getHelloMock = jest.fn();
   const handlePaymentWebhookMock = jest.fn();
+  const getPaymentsByUserIdMock = jest.fn();
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -24,6 +26,7 @@ describe('PaymentController', () => {
             getService: () => ({
               getHello: getHelloMock,
               handlePaymentWebhook: handlePaymentWebhookMock,
+              getPaymentsByUserId: getPaymentsByUserIdMock,
             }),
           },
         },
@@ -38,6 +41,25 @@ describe('PaymentController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  // LDP-198: catch가 없어 500으로 나가던 것을 일시 장애(503)로
+  describe('getMyPayments', () => {
+    it('결제 서비스 장애면 503 PAYMENT_SERVICE_UNAVAILABLE', async () => {
+      getPaymentsByUserIdMock.mockReturnValue(
+        throwError(() => ({ code: GrpcStatus.UNAVAILABLE })),
+      );
+
+      await expect(
+        controller.getMyPayments({ userId: 1 } as never),
+      ).rejects.toMatchObject({
+        status: 503,
+        response: {
+          code: 'PAYMENT_SERVICE_UNAVAILABLE',
+          retryable: true,
+        },
+      });
+    });
   });
 
   describe('handleWebhook', () => {

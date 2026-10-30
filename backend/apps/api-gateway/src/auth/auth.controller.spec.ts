@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';
 import { UnauthorizedException } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { AuthController } from './auth.controller';
 
 describe('AuthController', () => {
@@ -121,6 +122,46 @@ describe('AuthController', () => {
         role: 'USER',
       });
     });
+
+    // LDP-198: 예전에는 모든 실패가 401이라 auth-service·Redis 장애가 "비밀번호 틀림"으로 보였다
+    it('이메일·비밀번호가 틀리면 401', async () => {
+      loginMock.mockReturnValue(
+        throwError(() => ({
+          code: GrpcStatus.UNAUTHENTICATED,
+          details: '이메일 또는 비밀번호가 일치하지 않습니다.',
+        })),
+      );
+
+      await expect(
+        controller.login(
+          { email: 'user@example.com', password: 'wrong-password' },
+          createResMock(),
+        ),
+      ).rejects.toMatchObject({
+        status: 401,
+        response: {
+          message: '이메일 또는 비밀번호가 일치하지 않습니다.',
+        },
+      });
+    });
+
+    it('auth-service 장애면 401이 아니라 503', async () => {
+      loginMock.mockReturnValue(
+        throwError(() => ({ code: GrpcStatus.UNAVAILABLE })),
+      );
+
+      await expect(
+        controller.login(
+          { email: 'user@example.com', password: 'password123' },
+          createResMock(),
+        ),
+      ).rejects.toMatchObject({
+        status: 503,
+        response: {
+          code: 'AUTH_SERVICE_UNAVAILABLE',
+        },
+      });
+    });
   });
 
   describe('refresh', () => {
@@ -161,7 +202,12 @@ describe('AuthController', () => {
 
   describe('logout', () => {
     it('should call auth-service with the current user id, clear the refresh cookie, and return a success message', async () => {
-      const user = { userId: 1, email: 'user@example.com', role: 'USER', type: 'USER' as const };
+      const user = {
+        userId: 1,
+        email: 'user@example.com',
+        role: 'USER',
+        type: 'USER' as const,
+      };
       const res = createResMock();
 
       const result = await controller.logout(user, res);
@@ -178,7 +224,12 @@ describe('AuthController', () => {
 
   describe('changePassword', () => {
     it('should call auth-service via gRPC with the current user id and dto, and return a success message', async () => {
-      const user = { userId: 1, email: 'user@example.com', role: 'USER', type: 'USER' as const };
+      const user = {
+        userId: 1,
+        email: 'user@example.com',
+        role: 'USER',
+        type: 'USER' as const,
+      };
       const dto = {
         currentPassword: 'password123',
         newPassword: 'newPassword456',
@@ -194,7 +245,12 @@ describe('AuthController', () => {
       changePasswordMock.mockReturnValue(
         throwError(() => ({ message: '현재 비밀번호가 일치하지 않습니다.' })),
       );
-      const user = { userId: 1, email: 'user@example.com', role: 'USER', type: 'USER' as const };
+      const user = {
+        userId: 1,
+        email: 'user@example.com',
+        role: 'USER',
+        type: 'USER' as const,
+      };
       const dto = {
         currentPassword: 'wrong-password',
         newPassword: 'newPassword456',

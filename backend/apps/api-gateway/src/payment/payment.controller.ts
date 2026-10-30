@@ -34,6 +34,7 @@ import {
   AuthenticatedUser,
   adminHotelScope,
   assertAdminHotel,
+  grpcErrorToHttp,
 } from '@app/common';
 import { toBookingLookupError } from '../booking/booking.controller';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
@@ -196,9 +197,15 @@ export class PaymentController implements OnModuleInit {
   async getMyPayments(
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<{ payments: PaymentDto[] }> {
+    // 실패 = 결제 서비스 장애·타임아웃 → 503 (LDP-198, catch가 없으면 500으로 나가 일시 장애와 구분되지 않는다)
     return firstValueFrom(
       this.paymentService.getPaymentsByUserId({ userId: user.userId }),
-    );
+    ).catch((err) => {
+      throw grpcErrorToHttp(err, {
+        code: 'PAYMENT_SERVICE_UNAVAILABLE',
+        message: '결제 내역을 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.',
+      });
+    });
   }
 
   /**

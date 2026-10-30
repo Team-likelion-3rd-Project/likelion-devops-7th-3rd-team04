@@ -29,6 +29,7 @@ import {
   AuthenticatedUser,
   PrincipalType,
   getRequiredEnv,
+  grpcErrorToHttp,
   parseApiRpcError,
   toHttpException,
 } from '@app/common';
@@ -198,11 +199,13 @@ export class AuthController implements OnModuleInit {
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
+    // 이메일·비밀번호가 틀리면 auth-service가 UNAUTHENTICATED → 401. auth-service·Redis 장애는 503 (LDP-198)
     const tokens = await firstValueFrom(this.authService.login(dto)).catch(
       (err) => {
-        throw new UnauthorizedException(
-          err?.details || err?.message || '로그인에 실패했습니다.',
-        );
+        throw grpcErrorToHttp(err, {
+          code: 'AUTH_SERVICE_UNAVAILABLE',
+          message: '로그인할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+        });
       },
     );
     this.setRefreshCookie(res, 'USER', tokens.refreshToken);
@@ -226,7 +229,8 @@ export class AuthController implements OnModuleInit {
   })
   @ApiResponse({
     status: 200,
-    description: '로그인 성공 (액세스 토큰은 응답 바디, 리프레시 토큰은 httpOnly 쿠키로 발급)',
+    description:
+      '로그인 성공 (액세스 토큰은 응답 바디, 리프레시 토큰은 httpOnly 쿠키로 발급)',
   })
   @ApiResponse({
     status: 401,
@@ -249,11 +253,7 @@ export class AuthController implements OnModuleInit {
 
   // refresh()/adminRefresh()가 공유하는 실제 재발급 로직. type에 따라 어느 쿠키를 읽고 어느 쿠키에
   // 다시 써야 하는지만 다르고, 나머지(gRPC 호출, 응답 형태)는 고객/관리자가 완전히 동일합니다.
-  private async doRefresh(
-    type: PrincipalType,
-    req: Request,
-    res: Response,
-  ) {
+  private async doRefresh(type: PrincipalType, req: Request, res: Response) {
     const refreshToken = req.cookies?.[REFRESH_COOKIE_NAME[type]];
     if (!refreshToken) {
       throw new UnauthorizedException('리프레시 토큰이 없습니다.');
