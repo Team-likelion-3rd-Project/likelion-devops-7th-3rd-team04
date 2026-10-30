@@ -310,6 +310,21 @@ describe('AuthController', () => {
       expect(result).not.toHaveProperty('refreshToken');
     });
 
+    it('auth-service 장애(UNAVAILABLE)는 400이 아니라 503 AUTH_SERVICE_UNAVAILABLE (LDP-198)', async () => {
+      socialLoginMock.mockReturnValue(
+        throwError(() => ({ code: 14, details: 'No connection established' })),
+      );
+
+      const error = await controller
+        .kakaoLogin(dto, reqWith({ socialState: 'state-1' }), createResMock())
+        .catch((e: unknown) => e);
+
+      expect((error as HttpException).getStatus()).toBe(503);
+      expect((error as HttpException).getResponse()).toMatchObject({
+        code: 'AUTH_SERVICE_UNAVAILABLE',
+      });
+    });
+
     it('처음 온 회원이면 쿠키 없이 가입 대기 토큰만 돌려준다', async () => {
       socialLoginMock.mockReturnValue(
         of({ signupRequired: true, signupToken: 'tok', email: 'k@t.com', name: '닉', auth: null }),

@@ -114,14 +114,13 @@ const COOKIE_BASE_OPTIONS = {
 const SOCIAL_STATE_COOKIE_NAME = 'socialState';
 const SOCIAL_STATE_MAX_AGE_MS = 10 * 60 * 1000; // auth-service의 state 보관 시간과 같음
 
-// gRPC로 받은 실패를 HTTP로 — { code, retryable }이 있는 실패는 그 형식 그대로, 나머지는 400
-function toSocialHttpError(err: unknown, fallbackMessage: string) {
-  const payload = parseApiRpcError(err);
-  if (payload) {
-    return toHttpException(payload);
-  }
-  const e = err as { details?: string; message?: string } | undefined;
-  return new BadRequestException(e?.details || e?.message || fallbackMessage);
+// gRPC로 받은 실패를 HTTP로 (LDP-198과 같은 규칙) — { code, retryable } 형식은 그대로, 요청 쪽 문제(중복 이메일 등)는 4xx,
+// auth-service·Valkey 장애처럼 서버 쪽 문제는 503 AUTH_SERVICE_UNAVAILABLE
+function toSocialHttpError(err: unknown, unavailableMessage: string) {
+  return grpcErrorToHttp(err, {
+    code: 'AUTH_SERVICE_UNAVAILABLE',
+    message: unavailableMessage,
+  });
 }
 
 @ApiTags('AuthService')
@@ -491,7 +490,7 @@ export class AuthController implements OnModuleInit {
         redirectUri: redirectUri ?? '',
       }),
     ).catch((err) => {
-      throw toSocialHttpError(err, '카카오 로그인을 시작하지 못했습니다.');
+      throw toSocialHttpError(err, '카카오 로그인을 시작할 수 없습니다. 잠시 후 다시 시도해 주세요.');
     });
     res.cookie(SOCIAL_STATE_COOKIE_NAME, state, {
       ...COOKIE_BASE_OPTIONS,
@@ -548,7 +547,7 @@ export class AuthController implements OnModuleInit {
     const result = await firstValueFrom(
       this.authService.socialLogin({ provider: 'KAKAO', ...dto }),
     ).catch((err) => {
-      throw toSocialHttpError(err, '카카오 로그인에 실패했습니다.');
+      throw toSocialHttpError(err, '카카오 로그인을 할 수 없습니다. 잠시 후 다시 시도해 주세요.');
     });
 
     if (result.signupRequired || !result.auth) {
@@ -589,7 +588,7 @@ export class AuthController implements OnModuleInit {
   ) {
     const tokens = await firstValueFrom(this.authService.socialSignup(dto)).catch(
       (err) => {
-        throw toSocialHttpError(err, '회원가입에 실패했습니다.');
+        throw toSocialHttpError(err, '회원가입을 할 수 없습니다. 잠시 후 다시 시도해 주세요.');
       },
     );
     this.setRefreshCookie(res, 'USER', tokens.refreshToken);
