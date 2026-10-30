@@ -1,0 +1,130 @@
+---
+# DB 노드 Loki (README 17-8): MinIO 버킷 · 전용 계정 → 설정 → 기동. db_stack(MinIO) 다음에 실행
+#   계정 비밀값은 OpenBao minio-loki (db.yml 이 없을 때 생성)
+
+- name: Loki 값 확인
+  ansible.builtin.assert:
+    that:
+      - minio_loki_access_key | length >= 3
+      - minio_loki_secret_key | length >= 8
+      - minio_loki_access_key is regex(minio_key_charset_regex)
+      - minio_loki_secret_key is regex(minio_key_charset_regex)
+      - minio_loki_access_key not in [minio_root_user, minio_app_access_key, minio_rag_access_key]
+    fail_msg: >-
+      OpenBao {{ openbao_kv_prefix }}/minio-loki(access_key · secret_key)가 비어 있거나 형식이 맞지 않습니다.
+      OPENBAO_ADDR · OPENBAO_TOKEN 을 넣고 db.yml 을 다시 실행하면 만들어집니다 (README 16절, 17-8).
+    quiet: true
+  no_log: true
+
+# ── MinIO 버킷 · 전용 계정 (db_stack 의 RAG 버킷과 같은 방식) ─────
+- name: MinIO Loki 정책 파일
+  ansible.builtin.template:
+    src: minio-loki-policy.json.j2
+    dest: "{{ db_base_dir }}/minio/loki-policy.json"
+    mode: "0644"
+  register: loki_policy_file
+
+- name: MinIO Loki 버킷 생성
+  ansible.builtin.command: docker exec minio mcli mb --ignore-existing local/{{ minio_loki_bucket }}
+  register: loki_mb
+  changed_when: "'created' in loki_mb.stdout"
+
+- name: MinIO Loki 버킷 private 고정
+  ansible.builtin.command: docker exec minio mcli anonymous set none local/{{ minio_loki_bucket }}
+  changed_when: false
+
+- name: MinIO Loki 정책 확인
+  ansible.builtin.command: docker exec minio mcli admin policy info local {{ minio_loki_policy }}
+  register: loki_policy_info
+  changed_when: false
+  failed_when: false
+
+- name: MinIO Loki 정책 생성 / 갱신
+  ansible.builtin.command: >-
+    docker exec minio mcli admin policy create local {{ minio_loki_policy }} /etc/minio/ansible/loki-policy.json
+  when: loki_policy_info.rc != 0 or loki_policy_file.changed
+  changed_when: true
+
+- name: MinIO Loki 계정 확인
+  ansible.builtin.command: docker exec minio mcli admin user info local {{ minio_loki_access_key }}
+  register: loki_user_info
+  changed_when: false
+  failed_when: false
+
+# 계정이 없거나 정책이 붙어 있지 않을 때만. secret 을 바꿨으면 이 계정을 지우고(mcli admin user remove) 다시 실행 (README 17-8)
+- name: MinIO Loki 계정 재설정
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - docker exec minio mcli admin user add local {{ minio_loki_access_key }} {{ minio_loki_secret_key }}
+    - docker exec minio mcli admin policy attach local {{ minio_loki_policy }} --user {{ minio_loki_access_key }}
+  when: loki_user_info.rc != 0 or minio_loki_policy not in loki_user_info.stdout
+  register: loki_user_reconcile
+  failed_when: loki_user_reconcile.rc != 0 and 'already' not in loki_user_reconcile.stderr
+  changed_when: loki_user_reconcile.rc == 0
+  no_log: true
+
+# ── Loki ───────────────────────────────────────────────────
+- name: 설정 디렉토리 (비밀값 포함 → root 전용)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ loki_base_dir }}"
+    - "{{ loki_base_dir }}/conf"
+
+- name: 데이터 디렉토리 (컨테이너 실행 사용자 소유)
+  ansible.builtin.file:
+    path: "{{ loki_data_dir }}"
+    state: directory
+    owner: "{{ loki_uid }}"
+    group: "{{ loki_uid }}"
+    mode: "0750"
+
+- name: Loki 설정
+  ansible.builtin.template:
+    src: loki.yaml.j2
+    dest: "{{ loki_base_dir }}/conf/loki.yaml"
+    mode: "0644"
+  register: loki_conf
+
+- name: MinIO 접속 비밀값 (env_file)
+  ansible.builtin.template:
+    src: loki.env.j2
+    dest: "{{ loki_base_dir }}/loki.env"
+    mode: "0600"
+  no_log: true
+
+- name: compose 파일
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ loki_base_dir }}/compose.yml"
+    mode: "0600"
+
+# 설정 checksum 을 label 로 넣어 두었으므로 설정이 바뀌면 재생성됨 (env_file 변경은 compose 가 감지)
+- name: Loki 기동
+  ansible.builtin.command: docker compose up -d
+  args:
+    chdir: "{{ loki_base_dir }}"
+  register: loki_up
+  changed_when: >-
+    'Started' in loki_up.stderr or
+    'Recreated' in loki_up.stderr or
+    'Created' in loki_up.stderr
+
+- name: Loki 준비 확인
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ loki_port }}/ready"
+    status_code: 200
+  register: loki_ready
+  until: loki_ready.status == 200
+  retries: 24
+  delay: 5
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "Loki : http://{{ ts_ip }}:{{ loki_port }}  (push /loki/api/v1/push, 보존 {{ loki_retention }}, 저장 MinIO {{ minio_loki_bucket }})"
+      - "로그 확인: docker logs loki · 조회는 Grafana Explore → Loki (README 17-8)"

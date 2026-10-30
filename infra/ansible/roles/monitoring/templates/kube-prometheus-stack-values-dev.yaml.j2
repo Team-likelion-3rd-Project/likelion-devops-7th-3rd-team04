@@ -94,3 +94,14 @@ grafana:
       memory: 128Mi
     limits:
       memory: 512Mi
+{% if loki_host | length > 0 %}
+  # 로그 — DB 노드 Loki (README 17-8). Grafana Pod(CP) → DB 노드는 ACL tag:k8s-node → tag:db tcp:{{ loki_port }}
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      access: proxy
+      url: "http://{{ loki_host }}:{{ loki_port }}"
+      jsonData:
+        maxLines: 1000
+{% endif %}

@@ -1,0 +1,189 @@
+# grafana/alloy chart {{ alloy_chart_version }} values — 클러스터 로그 수집 (DaemonSet). Ansible(roles/logging)이 관리, 직접 수정 금지 (README 17-8)
+#
+#   /var/log/pods (모든 노드 · 모든 네임스페이스) ─┐
+#   journald (kubelet · containerd · tailscaled · 커널) ┴─▶ Loki (DB 노드 {{ loki_push_url }})
+#
+# 로그만 수집합니다. 지표는 kube-prometheus-stack 의 Prometheus 가 수집하므로 여기에 prometheus.* 를 넣지 않습니다 (중복 수집 방지).
+# 라벨: cluster="main" · env · namespace · container · instance(노드) · job(pods · journal). 파드 이름은 structured metadata(pod)
+
+alloy:
+  configMap:
+    content: |
+      // ── 파드 로그: 자기 노드의 파드만 ──
+      discovery.kubernetes "pods" {
+        role = "pod"
+
+        selectors {
+          role  = "pod"
+          field = "spec.nodeName=" + sys.env("K8S_NODE_NAME")
+        }
+      }
+
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          target_label = "job"
+          replacement  = "pods"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          target_label  = "instance"
+        }
+
+        // /var/log/pods/<namespace>_<pod>_<uid>/<container>/<재시작 횟수>.log
+        rule {
+          source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+          separator     = "/"
+          replacement   = "/var/log/pods/*$1/*.log"
+          target_label  = "__path__"
+        }
+      }
+
+      local.file_match "pod_logs" {
+        path_targets = discovery.relabel.pod_logs.output
+      }
+
+      loki.source.file "pod_logs" {
+        targets    = local.file_match.pod_logs.targets
+        forward_to = [loki.process.pod_logs.receiver]
+      }
+
+      loki.process "pod_logs" {
+        forward_to = [loki.write.main.receiver]
+
+        // containerd 로그 형식(<시각> <stream> <P|F> <내용>)을 풀고, 잘린 줄(P)을 이어 붙임
+        stage.cri { }
+
+        // 파드 이름은 라벨이 아니라 structured metadata — 라벨 수를 낮게 유지 (재배포마다 바뀜)
+        stage.structured_metadata {
+          values = {pod = ""}
+        }
+
+        stage.label_drop {
+          values = ["pod", "filename"]
+        }
+      }
+
+      // ── 노드 journald: 노드 NotReady · 이미지 pull · Tailscale 끊김 추적용 ──
+      loki.relabel "journal" {
+        forward_to = []
+
+        rule {
+          source_labels = ["__journal__systemd_unit"]
+          target_label  = "unit"
+        }
+
+        rule {
+          source_labels = ["__journal__transport"]
+          regex         = "kernel"
+          target_label  = "unit"
+          replacement   = "kernel"
+        }
+
+        rule {
+          source_labels = ["unit"]
+          regex         = "({{ (logging_journal_units + ['kernel']) | join('|') }})"
+          action        = "keep"
+        }
+      }
+
+      loki.source.journal "node" {
+        path          = "/var/log/journal"
+        max_age       = "12h"
+        relabel_rules = loki.relabel.journal.rules
+        labels        = {job = "journal", instance = sys.env("K8S_NODE_NAME")}
+        forward_to    = [loki.write.main.receiver]
+      }
+
+      loki.write "main" {
+        endpoint {
+          url = "{{ loki_push_url }}"
+        }
+
+        external_labels = {
+          cluster = "main",
+          env     = "{{ monitoring_env }}",
+        }
+      }
+
+  # 어디까지 읽었는지(positions) — 노드 hostPath 에 둬 Pod 가 다시 떠도 처음부터 다시 보내지 않음
+  storagePath: /var/lib/alloy
+  enableReporting: false
+
+  # /var/log/pods · /var/log/journal (읽기 전용)
+  mounts:
+    varlog: true
+    extra:
+      - name: alloy-data
+        mountPath: /var/lib/alloy
+      - name: machine-id
+        mountPath: /etc/machine-id
+        readOnly: true
+
+  # 노드 로그 파일(root 소유 0640)을 읽기만 하는 root, 권한(capability) 없음 — 운영 Fluent Bit 와 같은 방식
+  securityContext:
+    runAsUser: 0
+    runAsGroup: 0
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+controller:
+  type: daemonset
+  # control plane 포함 모든 노드 (종료 예정 등 다른 taint 도 견딤)
+  tolerations:
+    - operator: Exists
+  # 로그 수집이 노드 압박으로 먼저 쫓겨나지 않게
+  priorityClassName: system-node-critical
+  volumes:
+    extra:
+      - name: alloy-data
+        hostPath:
+          path: {{ logging_alloy_host_dir }}
+          type: DirectoryOrCreate
+      - name: machine-id
+        hostPath:
+          path: /etc/machine-id
+          type: File
+
+# 로그 수집에 필요한 권한만 (기본값은 secrets · configmaps 읽기 등을 포함). chart 가 rules + clusterRules 를 한 ClusterRole 에
+# 이어 붙이는데 clusterRules: [] 는 렌더링이 깨져서 둘로 나눔
+rbac:
+  rules:
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "list", "watch"]
+  clusterRules:
+    - apiGroups: [""]
+      resources: ["namespaces"]
+      verbs: ["get", "list", "watch"]
+
+configReloader:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi

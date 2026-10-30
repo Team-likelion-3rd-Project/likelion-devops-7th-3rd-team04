@@ -1,0 +1,49 @@
+---
+# 클러스터 로그 수집 (README 17-8): Alloy 2개(alloy-logs DaemonSet · alloy-events Deployment) → DB 노드 Loki
+#   monitoring role(네임스페이스 · Grafana Loki 데이터소스) 다음에 실행. Loki 는 db.yml --tags loki 가 먼저
+- name: Loki 주소 확인
+  ansible.builtin.assert:
+    that: loki_host | length > 0
+    fail_msg: >-
+      Loki(DB 노드) 주소가 비어 있습니다. .env 의 DB_TS_IP(DB 노드 Tailscale IP)를 채우고
+      set -a; source .env; set +a 후 다시 실행하세요 (README 17-8).
+    quiet: true
+
+- name: Loki 응답 확인 (ACL tag:k8s-node → tag:db tcp:{{ loki_port }})
+  ansible.builtin.uri:
+    url: "http://{{ loki_host }}:{{ loki_port }}/ready"
+    status_code: 200
+  register: logging_loki_ready
+  failed_when: false
+
+- name: Loki 응답 없음
+  ansible.builtin.fail:
+    msg: >-
+      http://{{ loki_host }}:{{ loki_port }}/ready 응답이 없습니다 (HTTP {{ logging_loki_ready.status | default('?') }}).
+      db.yml --tags loki 실행 여부, Tailscale ACL(tag:k8s-node → tag:db tcp:{{ loki_port }}), DB 노드 ufw 를 확인하세요 (README 17-8).
+  when: logging_loki_ready.status | default(-1) != 200
+
+- name: values 디렉토리
+  ansible.builtin.file:
+    path: "{{ logging_manifest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# kube-prometheus-stack 과 같은 방식: 설치된 chart 버전 · values 가 원하는 상태와 같으면 helm upgrade 를 건너뜀
+- name: Alloy 설치 / 업그레이드
+  ansible.builtin.include_tasks:
+    file: release.yml
+    # include_tasks 의 tags 는 안쪽 태스크에 전해지지 않음 — 없으면 --tags logging 실행에서 건너뜀
+    apply:
+      tags: [logging]
+  loop: [alloy-logs, alloy-events]
+  loop_control:
+    loop_var: logging_release
+
+- name: 접속 정보
+  ansible.builtin.debug:
+    msg:
+      - "로그: Grafana → Explore → Loki — {cluster=\"main\", namespace=\"backend\"} (README 17-8)"
+      - "수집 상태: kubectl -n {{ monitoring_namespace }} port-forward ds/alloy-logs 12345 → http://127.0.0.1:12345"

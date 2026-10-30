@@ -1,5 +1,6 @@
 ---
-# k8s 밖 노드(결제 · DB)의 수집기: node-exporter(호스트) · cAdvisor(컨테이너) → Grafana Alloy → 클러스터 Prometheus 로 remote_write (README 17절)
+# k8s 밖 노드(결제 · DB)의 수집기: node-exporter(호스트) · cAdvisor(컨테이너) → Grafana Alloy → 클러스터 Prometheus 로 remote_write,
+# 컨테이너 · journald · 슬로우 쿼리 로그 → Loki(DB 노드, collectors_loki_url 이 있을 때 — README 17-8)
 # 운영 결제 EC2 도 같은 구성(노션 "관측성 도입 계획" 10-2) — 버전을 올릴 때 운영 user-data 와 같이
 node_exporter_image: "quay.io/prometheus/node-exporter:v1.12.1"   # 클러스터 DaemonSet(kube-prometheus-stack)과 같은 버전
 cadvisor_image: "ghcr.io/google/cadvisor:v0.60.6"
@@ -24,3 +25,12 @@ collectors_app_scrapes: []
 collectors_mysql: {}
 # Valkey 서버 지표 (Alloy 내장 redis_exporter). {port, password} — 비우면 수집하지 않음
 collectors_redis: {}
+
+# ── 로그 → Loki (README 17-8) ──────────────────────────────────
+# Loki push 주소 — 비우면 로그를 수집하지 않음 (지표만)
+collectors_loki_url: ""
+# MariaDB 슬로우 쿼리 로그 (호스트 경로) — 비우면 수집하지 않음. Alloy 실행 uid 에 읽기 ACL 을 줌
+collectors_slow_log: ""
+collectors_slow_log_container: mariadb          # 슬로우 로그의 container 라벨 (그 MariaDB 컨테이너 이름)
+# journald 에서 남길 unit (그 밖은 버림). 커널 메시지(OOM killer 등)는 unit 과 관계없이 남김
+collectors_journal_units: [docker.service, containerd.service, tailscaled.service]

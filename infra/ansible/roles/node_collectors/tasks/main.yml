@@ -34,6 +34,56 @@
   register: collectors_alloy_uid
   changed_when: false
 
+# ── 로그 수집 권한 (collectors_loki_url 이 있을 때, README 17-8) ──
+# Alloy 는 non-root 로 실행 — docker.sock(컨테이너 로그) · journald 를 읽도록 그 그룹 gid 를 compose group_add 로 줌
+- name: 로그 수집용 그룹 조회
+  ansible.builtin.getent:
+    database: group
+  when: collectors_loki_url | length > 0
+
+- name: 로그 수집용 gid (docker · systemd-journal)
+  ansible.builtin.set_fact:
+    collectors_log_gids:
+      - "{{ ansible_facts.getent_group['docker'][1] }}"
+      - "{{ ansible_facts.getent_group['systemd-journal'][1] }}"
+  when: collectors_loki_url | length > 0
+
+# 슬로우 쿼리 로그는 MariaDB 데이터 디렉토리 안의 파일(mysql 소유, 0660) — Alloy uid 에만 읽기 ACL (데이터 파일은 그대로 못 읽음)
+- name: 슬로우 쿼리 로그 확인
+  ansible.builtin.stat:
+    path: "{{ collectors_slow_log }}"
+  register: collectors_slow_log_stat
+  when: collectors_loki_url | length > 0 and collectors_slow_log | length > 0
+
+- name: 슬로우 쿼리 로그가 아직 없음
+  ansible.builtin.debug:
+    msg: "{{ collectors_slow_log }} 가 없습니다 — MariaDB 가 slow_query_log=ON 으로 뜬 뒤 다시 실행하면 수집합니다 (README 17-8)"
+  when: collectors_slow_log_stat.stat is defined and not collectors_slow_log_stat.stat.exists
+
+- name: acl 패키지
+  ansible.builtin.apt:
+    name: acl
+    state: present
+  when: collectors_slow_log_stat.stat.exists | default(false)
+
+- name: 슬로우 쿼리 로그 읽기 ACL (디렉토리 통과 · 파일 읽기)
+  ansible.builtin.shell: |
+    set -e
+    uid={{ collectors_alloy_uid.stdout | trim }}
+    changed=0
+    for spec in "x:{{ collectors_slow_log | dirname }}" "r:{{ collectors_slow_log }}"; do
+      perm="${spec%%:*}"; path="${spec#*:}"
+      if ! getfacl -cpn "$path" | grep -q "^user:$uid:.*$perm"; then
+        setfacl -m "u:$uid:$perm" "$path"; changed=1
+      fi
+    done
+    echo "changed=$changed"
+  args:
+    executable: /bin/bash
+  register: collectors_slow_log_acl
+  changed_when: "'changed=1' in collectors_slow_log_acl.stdout"
+  when: collectors_slow_log_stat.stat.exists | default(false)
+
 - name: Alloy 데이터 디렉토리 (remote_write WAL) · 비밀값 디렉토리
   ansible.builtin.file:
     path: "{{ item.path }}"

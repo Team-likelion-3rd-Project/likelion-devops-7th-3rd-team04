@@ -1,0 +1,43 @@
+---
+# grafana/alloy release 하나 (logging_release = alloy-logs | alloy-events, values 는 templates/<release>-values.yaml.j2)
+- name: "values 파일 ({{ logging_release }})"
+  ansible.builtin.template:
+    src: "{{ logging_release }}-values.yaml.j2"
+    dest: "{{ logging_manifest_dir }}/{{ logging_release }}-values.yaml"
+    mode: "0644"
+
+- name: "설치된 release 조회 ({{ logging_release }})"
+  ansible.builtin.command: >-
+    helm list -n {{ monitoring_namespace }} --filter '^{{ logging_release }}$' -o json
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: logging_release_list
+  changed_when: false
+
+- name: "적용된 values 조회 ({{ logging_release }})"
+  ansible.builtin.command: helm get values {{ logging_release }} -n {{ monitoring_namespace }} -o json
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: logging_values_applied
+  changed_when: false
+  when: logging_release_list.stdout | from_json | length > 0
+
+- name: "helm upgrade --install ({{ logging_release }})"
+  ansible.builtin.command: >-
+    helm upgrade --install {{ logging_release }} alloy
+    --repo {{ alloy_chart_repo }}
+    --version {{ alloy_chart_version }}
+    -n {{ monitoring_namespace }}
+    -f {{ logging_manifest_dir }}/{{ logging_release }}-values.yaml
+    --wait --timeout 5m
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  vars:
+    logging_values_wanted: "{{ lookup('ansible.builtin.template', logging_release ~ '-values.yaml.j2') | from_yaml }}"
+  # 지난 설치가 --wait 시간 초과 등으로 failed 로 남았으면 values 가 같아도 다시 설치
+  when: >-
+    (logging_release_list.stdout | from_json | length == 0)
+    or ((logging_release_list.stdout | from_json | first).status != 'deployed')
+    or ((logging_release_list.stdout | from_json | first).chart != 'alloy-' ~ alloy_chart_version)
+    or ((logging_values_applied.stdout | from_json) != logging_values_wanted)
+  changed_when: true
