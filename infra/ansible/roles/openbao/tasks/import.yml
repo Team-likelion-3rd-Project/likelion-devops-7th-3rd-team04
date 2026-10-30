@@ -78,7 +78,6 @@
       payment-node: "{{ openbao_import_files['payment-node.env'] }}"
       github-mirror: "{{ openbao_import_files['github-mirror.env'] }}"
       gitlab-runner: "{{ openbao_import_files['gitlab-runner.env'] }}"
-      aws-ci-runner: "{{ openbao_import_files['aws-ci-runner.env'] }}"
       argocd: "{{ openbao_import_files['argocd.env'] }}"
       k8s-join: "{{ openbao_import_files['join.env'] }}"
       k8s-admin:
@@ -90,7 +89,7 @@
          else (playbook_dir ~ '/' ~ openbao_import_gcp_key_file) | realpath }}
     openbao_import_files: >-
       {%- set out = {} -%}
-      {%- for f in ['gitlab-k8s.env', 'payment-node.env', 'github-mirror.env', 'gitlab-runner.env', 'aws-ci-runner.env', 'argocd.env', 'join.env'] -%}
+      {%- for f in ['gitlab-k8s.env', 'payment-node.env', 'github-mirror.env', 'gitlab-runner.env', 'argocd.env', 'join.env'] -%}
         {%- set _ = out.update({f: lookup('ansible.builtin.file', local_secrets_dir ~ '/' ~ f, errors='ignore') | default('', true) | parse_dotenv}) -%}
       {%- endfor -%}
       {{ out }}
@@ -116,7 +115,6 @@
       payment-node: [GITLAB_URL, GITLAB_TS_IP, GITLAB_REGISTRY, PAYMENT_DEPLOY_USER, PAYMENT_DEPLOY_TOKEN]
       github-mirror: [GITLAB_HOST, GITLAB_MIRROR_REPO, GITLAB_MIRROR_TOKEN]
       gitlab-runner: [GITLAB_URL, GITLAB_TS_IP, GITLAB_RUNNER_TOKEN]
-      aws-ci-runner: [GITLAB_URL, GITLAB_TS_IP, GITLAB_RUNNER_TOKEN]
       argocd: [ARGOCD_URL, ARGOCD_ADMIN_USER, ARGOCD_ADMIN_PASSWORD]
       k8s-join: [K8S_API_ENDPOINT, K8S_JOIN_TOKEN, K8S_CA_CERT_HASH]
   run_once: true

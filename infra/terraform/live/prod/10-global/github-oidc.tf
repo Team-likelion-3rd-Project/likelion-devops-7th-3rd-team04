@@ -3,7 +3,7 @@
 #   gitops 릴리스 PR merge (사람 승인) → GitHub Actions(main) → OIDC 토큰 → 이 Role → SSM PutParameter
 #   결제 서버 pull agent 가 VPC 엔드포인트로 같은 파라미터를 읽어 갱신한다 (결제 VPC 는 GitHub 로 나가지 않음).
 #
-# 장기 액세스 키를 GitHub 에 두지 않는다. Runner 에는 이 쓰기 권한을 주지 않는다 (승인 없이 결제 서버를 바꾸는 경로가 됨).
+# 장기 액세스 키를 GitHub 에 두지 않는다. 모노레포 릴리스 Role 에는 이 쓰기 권한을 주지 않는다 (승인 없이 결제 서버를 바꾸는 경로가 됨).
 # 같은 공급자로 모노레포 main 의 운영 릴리스 Role(아래 monorepo_release)도 받는다 — 산출물 업로드 · gitops PR 까지, 운영 전환 권한 없음.
 #
 # ⚠️ GitHub OIDC 공급자는 URL 이 고정이라 계정에 하나만 만들 수 있다 — 공유 계정의 다른 팀과 함께 쓰는 리소스다.
@@ -87,7 +87,7 @@ resource "aws_iam_role_policy" "gitops_ssm_sync" {
 # ── 모노레포 운영 릴리스 (.github/workflows/release.yml) ─────────────
 #   릴리스 PR merge (사람 승인) → main push → GitHub Actions → OIDC 토큰 → 이 Role
 #   → develop 에서 검증한 GHCR 이미지를 ECR 로 복사 · 프론트 빌드를 S3 releases/<SHA>/ 에 업로드 → gitops 릴리스 PR
-# 40-cicd Runner Role 과 같은 산출물 권한이다. 운영 전환(KeyValueStore · 결제 release 파라미터)은 없다 — gitops 승인 후 위 Role 만.
+# 산출물 권한만 있다. 운영 전환(KeyValueStore · 결제 release 파라미터)은 없다 — gitops 승인 후 위 Role 만.
 # 신뢰 정책은 모노레포 main 실행만 받는다. workflow 에 environment 를 지정하면 sub 가 ...:environment:<이름> 으로 바뀌어 거부된다
 data "aws_iam_policy_document" "monorepo_release_assume" {
   statement {

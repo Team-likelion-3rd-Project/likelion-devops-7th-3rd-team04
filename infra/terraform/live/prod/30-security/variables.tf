@@ -28,11 +28,6 @@ variable "payment_vpc_id" {
   type        = string
 }
 
-variable "deployment_vpc_id" {
-  description = "20-network 의 deployment.vpc_id (GitLab Runner)"
-  type        = string
-}
-
 variable "enable_control_plane" {
   description = "kubeadm 컨트롤 플레인 SG(main-cp, main-internal-nlb) 와 관련 규칙 생성 여부. 20-network 의 enable_control_plane_subnets 와 짝, EKS 전환 후 false"
   type        = bool

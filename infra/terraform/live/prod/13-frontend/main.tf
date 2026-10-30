@@ -5,7 +5,7 @@
 #   https://www.<도메인>/*          → CloudFront Function 이 루트로 301 (api-gateway CORS 출처가 루트 하나라서)
 #
 # 릴리스 (승인 전에는 운영에 노출되지 않음)
-#   1) 모노레포 main 파이프라인(release:frontend) 이 빌드를 releases/<main SHA>/ 에 업로드 — Runner 는 업로드만 (40-cicd)
+#   1) 모노레포 main 의 GitHub Actions(release.yml) 가 빌드를 releases/<main SHA>/ 에 업로드 — 릴리스 Role 은 업로드만 (10-global)
 #   2) gitops 릴리스 PR 의 envs/prod/frontend/values.yaml version = <main SHA>
 #   3) merge 후 gitops GitHub Actions 가 KeyValueStore 의 version 을 바꾼다 — Actions 는 전환만 (release.tf)
 #   롤백 = gitops revert PR → version 이 이전 SHA 로 돌아감. 버전마다 경로가 달라 재업로드 · 무효화가 필요 없다

@@ -32,10 +32,6 @@ locals {
 }
 
 inputs = {
-  ci_runner_tailscale_oauth_client_secret = lookup(local.env, "TS_CI_RUNNER_OAUTH_CLIENT_SECRET", "")
-  ci_runner_gitlab_url                    = lookup(local.env, "GITLAB_URL", "")
-  ci_runner_gitlab_token                  = lookup(local.env, "GITLAB_RUNNER_TOKEN", "")
-
   github_app_id              = lookup(local.env, "GITHUB_APP_ID", "")
   github_app_installation_id = lookup(local.env, "GITHUB_APP_INSTALLATION_ID", "")
   github_app_private_key = (
