@@ -82,7 +82,7 @@ migrations:
     enabled: false
 
 # dev 초기 데이터(seed.ts) — 운영과 같은 차트 seed Job. 마이그레이션 hook 뒤, 배포 버전과 같은 seed 이미지로 실행 (멱등)
-# 객실 사진은 DB 노드 MinIO 의 room-images 버킷, 관리자 계정은 backend-secrets 의 SEED_ADMIN_* (OpenBao seed-admin, infra/ansible README 7-5)
+# 객실 사진은 DB 노드 MinIO 의 room-images 버킷
 seed:
   enabled: true
   env:
@@ -90,4 +90,7 @@ seed:
     S3_BUCKET: room-images
     S3_FORCE_PATH_STYLE: "true"
   # 리스트는 차트 기본값을 덮어쓰므로 DB_* 도 다시 적음
-  secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD]
+  secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY]
+  # 관리자 계정 — Secret seed-admin 의 key 전체를 env 로 (OpenBao seed-admin → ESO, 속성 이름 = 환경변수 이름, infra/ansible README 7-5)
+  # 계정 비밀번호 추가 · 변경은 OpenBao 만 (SEED_ADMIN_EMAIL · SEED_ADMIN_PASSWORD 필수, 지점 계정 SEED_*_PASSWORD 선택)
+  adminSecretName: seed-admin

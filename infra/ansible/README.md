@@ -410,8 +410,12 @@ kubectl run vktest --rm -it --image=valkey/valkey:9.1 --restart=Never --   valke
 | 초기 데이터 | 클러스터 — 차트의 `seed` Job (운영과 같은 템플릿) | ArgoCD sync 때 마이그레이션 hook 뒤에 `seed:<tag>`(배포 버전과 같은 `scripts/seed.ts`) 실행 — 관리자 계정, 호텔 3 · 객실 · 사진, 편의시설, 객실 재고. Job 이름이 `seed-<태그 8자>-<spec 해시>` 라 새 버전마다 다시 돌고, 멱등이라 이미 있는 데이터는 건너뜀 |
 | DynamoDB 테이블 | DB 노드 — `db.yml --tags seed` (`db_seed` role) | `scripts/dynamodb-init.ts` (스키마 버전과 무관) |
 
-- 관리자 계정은 OpenBao `seed-admin`(`email`, `password`, 이관 원본: `backend/.env` 의 `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`) → `backend-secrets` → `seed` Job 으로 들어갑니다 (gitops `seed.secretEnv`).
-- gitops `envs/dev/values.yaml` 에 `seed` 설정(`enabled: true`, 객실 사진용 `env`, `secretEnv`)이 있어야 합니다 (gitops-seed 로 만든 레포에는 들어 있음, 기존 레포는 MR — `backend-deploy/gitops-seed/envs/dev/values.yaml.j2` 의 `seed:` 블록을 그대로 복사).
+- 관리자 계정은 OpenBao `seed-admin` → ESO 가 Secret `backend/seed-admin` 으로 **속성 전체를 이름 그대로** 동기화(`dataFrom.extract`, `k8s-cicd.yml --tags backend_secrets`) → `seed` Job 이 그 Secret 을 통째로 env 로 받음 (gitops `seed.adminSecretName: seed-admin`, 차트 `envFrom`). 운영의 Secret `seed-admin` 과 같은 역할입니다 (LDP-193).
+  - 속성 이름 = 환경변수 이름: `SEED_ADMIN_EMAIL` · `SEED_ADMIN_PASSWORD` (필수), `SEED_ADMIN_NAME`, 지점 계정 `SEED_SEOUL_MANAGER_PASSWORD` · `SEED_BUSAN_MANAGER_PASSWORD` · `SEED_JEJU_MANAGER_PASSWORD` · `SEED_SEOUL_STAFF_PASSWORD` (선택 — 없으면 본사 비밀번호, LDP-190). 이관 원본은 `backend/.env` 의 같은 이름.
+  - **값 추가 · 변경은 OpenBao 만** — UI 에서 `seed-admin` → *Create new version* (*Create secret* 은 기존 경로라 거부됨) 또는 `bao kv patch secret/team04-hotel/dev/seed-admin SEED_…=<값>`. ESO 가 1시간 안에 반영(바로: `kubectl -n backend annotate externalsecret seed-admin force-sync=$(date +%s) --overwrite`), 다음 `seed` Job 부터 적용. seed.ts 가 새 `SEED_*` 를 읽게 돼도 Ansible · gitops · 차트는 고치지 않습니다.
+  - seed.ts 는 **이미 있는 계정을 건너뜁니다** — 이미 만들어진 계정의 비밀번호는 OpenBao 값을 바꿔도 그대로입니다 (관리자 화면에서 바꾸거나 계정을 지운 뒤 다시 시딩).
+  - `seed-admin` 이 없거나 동기화에 실패해도 서비스용 `backend-secrets` 는 영향 없고 `seed` Job 만 Secret 을 기다립니다.
+- gitops `envs/dev/values.yaml` 에 `seed` 설정(`enabled: true`, 객실 사진용 `env`, `secretEnv`, `adminSecretName: seed-admin`)이 있어야 합니다 (gitops-seed 로 만든 레포에는 들어 있음, 기존 레포는 MR — `backend-deploy/gitops-seed/envs/dev/values.yaml.j2` 의 `seed:` 블록을 그대로 복사).
 - `seed` Job 로그: `kubectl -n backend logs -l app.kubernetes.io/name=seed --tail=50` (끝난 Job 은 하루 뒤 정리 — `ttlSecondsAfterFinished`). 실패해도 앱 배포는 되돌리지 않습니다.
 - **이 PC 의 소스로 직접 시딩**(seed Job 이 없는 이전 버전으로 롤백했을 때 등): `ansible-playbook db.yml -K --tags seed -e db_seed_mariadb=true`. 아래는 이 경우의 설명입니다.
 
@@ -1332,7 +1336,7 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `dynamodb` | endpoint | ESO |
 | `n8n` | init_owner_password | ESO |
 | `gcp-sa` | key_json_b64 (서비스 계정 키 JSON 의 base64 — ESO 가 풀어서 `GCP_SA_KEY_JSON`) | ESO |
-| `seed-admin` | email, password (`seed` Job 의 `SEED_ADMIN_*`, 7-5) | ESO, db.yml(`-e db_seed_mariadb=true`) |
+| `seed-admin` | 환경변수 이름 그대로 — SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD (+ 선택 SEED_ADMIN_NAME, 지점 계정 SEED_*_PASSWORD), 7-5 | ESO(`backend/seed-admin`, 속성 전체), db.yml(`-e db_seed_mariadb=true`) |
 | `main-db-root` · `minio-root` · `ci-smoke-db` | password (· user) | db.yml, gitlab.yml — **ESO 는 못 읽음** |
 | `ghcr-push` | username, token (GHCR 봇 classic PAT — 12-4) | gitlab.yml(bootstrap → CI 변수 `GHCR_USER` · `GHCR_TOKEN`) — **ESO 는 못 읽음** |
 | `payment-db` · `payment-db-root` · `toss-payments` | (운영과 같은 이름) | payment.yml |
@@ -1340,7 +1344,7 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `grafana` | admin_user, admin_password (없으면 monitoring.yml 이 생성, 17절) | ESO(`monitoring/grafana-admin`) |
 | `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
 
-- `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책은 이 목록과 `eso_extra_read_paths`(backend 밖에서 ESO 가 읽는 경로, 예: `grafana`)로 만듭니다.
+- `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책은 이 목록과 `eso_extra_read_paths`(backend-secrets 밖에서 ESO 가 읽는 경로 — `grafana`, `seed-admin`)로 만듭니다.
   - 경로를 추가하면 OpenBao 관리자가 `db.yml --tags openbao` 로 `eso-dev` 정책을 갱신해야 ESO 가 읽을 수 있습니다. 그다음 `db.yml --tags openbao_import`(값 이관), `k8s-cicd.yml --tags backend_secrets` 순서로 실행합니다.
 - 모든 playbook 은 `OPENBAO_ADDR` 이 비어 있으면 OpenBao 를 건너뛰고 예전처럼 `.env` · `backend/.env` · `.secrets/*.env` 를 읽습니다 (`k8s-cicd.yml` 은 ESO 때문에 OpenBao 필수).
 - OpenBao 호출은 Ansible 을 실행하는 PC 가 아니라 **play 대상 노드**에서 합니다 (PC 는 Tailnet 에 없을 수 있음). 그래서 1-1 의 `→ tag:db tcp:8200` grant 가 필요합니다.
