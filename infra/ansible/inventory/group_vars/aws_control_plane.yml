@@ -4,7 +4,7 @@
 # user-data 가 aws.yml 의 값 외에 넘기는 extra vars
 #   k8s_cp_role                 init (CP-a) | join (CP-b · c)
 #   nth_queue_url               NTH 가 받는 SQS 큐 URL (70 node-lifecycle.tf)
-#   k8s_service_account_issuer  kube-apiserver --service-account-issuer = 10-global OIDC 버킷 URL (IRSA, 70 irsa.tf)
+#   k8s_service_account_issuer  kube-apiserver --service-account-issuer = 10-global OIDC 버킷 URL (IRSA, 51-pod-roles)
 #   oidc_bucket_name            CP-a 가 init 후 keys.json 을 올리는 버킷
 
 # VPC 점보 프레임 MTU(9001) - VXLAN 오버헤드(50)
@@ -46,7 +46,7 @@ argocd_prod_cluster_values:
     awsAccountId: "{{ aws_account_id }}"
 
 # 배포 결과 알림 (Slack #deploy, root 차트의 hook Job). 이름은 Terraform 과 같아야 한다 —
-# 토픽 10-global deploy_topic_name, Role 70 irsa.tf deploy-notify
+# 토픽 10-global deploy_topic_name, Role 51-pod-roles deploy-notify
 argocd_prod_deploy_topic_name: team04-hotel-deploy
 argocd_prod_deploy_role_name: team04-hotel-deploy-notify
 

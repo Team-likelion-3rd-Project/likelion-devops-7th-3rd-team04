@@ -17,7 +17,7 @@
 # 이 스택은 값 등록 때만 직접 apply 한다 (run --all 대상 아님, terragrunt.hcl).
 #
 # 읽는 쪽은 10-global 의 릴리스 Role(var.release_role_name, github-app 만), 60-payment-app 의 결제 서버 Role(var.payment_app_role_name),
-# 70-main-cluster-kubeadm 의 ESO Role(var.external_secrets_role_name)이다.
+# 51-pod-roles 의 ESO Role(var.external_secrets_role_name)이다.
 # 고정 이름으로 ARN 을 만들므로 60 · 70 과 의존 관계가 없다.
 
 locals {

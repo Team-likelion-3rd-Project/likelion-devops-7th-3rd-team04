@@ -34,6 +34,12 @@ variable "enable_control_plane" {
   default     = true
 }
 
+variable "traefik_container_port" {
+  description = "Traefik web 엔트리포인트 컨테이너 포트 (차트 ports.web.port 기본값). 80-main-edge eks Target Group 포트와 같아야 함"
+  type        = number
+  default     = 8000
+}
+
 # ── 결제 서버 포트 (60-payment-app · 61-payment-mock 과 같은 값) ──
 
 variable "payment_grpc_port" {
