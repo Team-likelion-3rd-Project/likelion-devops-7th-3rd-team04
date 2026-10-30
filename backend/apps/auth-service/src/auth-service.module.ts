@@ -14,6 +14,8 @@ import { AuthServiceController } from './auth-service.controller';
 import { AuthServiceService } from './auth-service.service';
 import { Credential } from './entities/credential.entity';
 import { AdminCredential } from './entities/admin-credential.entity';
+import { SocialAccount } from './entities/social-account.entity';
+import { KakaoOAuthClient } from './kakao-oauth.client';
 
 @Module({
   imports: [
@@ -41,7 +43,8 @@ import { AdminCredential } from './entities/admin-credential.entity';
         // 🟢 nest-cli.json이 webpack: true로 번들링하므로, dist에는 개별 *.entity.js 파일이
         //    존재하지 않아 글롭(glob) 경로로는 엔티티를 찾지 못합니다. 클래스를 직접 등록합니다.
         // Credential은 고객 자격증명, AdminCredential은 관리자 자격증명 (완전히 분리된 테이블)
-        entities: [Credential, AdminCredential],
+        // SocialAccount는 카카오 등 소셜 로그인 연결 (LDP-194, V15)
+        entities: [Credential, AdminCredential, SocialAccount],
         // 테이블 구조는 Flyway(backend/migrations, V6)만 바꿉니다. true로 두면 Flyway보다 먼저 떠서
         // 테이블을 만들어 버려 Flyway가 "non-empty schema"로 멈춥니다(LDP-60).
         synchronize: false,
@@ -50,8 +53,8 @@ import { AdminCredential } from './entities/admin-credential.entity';
       }),
     }),
 
-    // 3. Credential/AdminCredential 엔티티 리포지토리 등록
-    TypeOrmModule.forFeature([Credential, AdminCredential]),
+    // 3. Credential/AdminCredential/SocialAccount 엔티티 리포지토리 등록
+    TypeOrmModule.forFeature([Credential, AdminCredential, SocialAccount]),
 
     // 4. JwtModule은 옵션 없이 등록하고, sign() 호출 시마다 access/refresh용 secret과
     //    expiresIn을 각각 지정합니다 (AuthServiceService 참고).
@@ -82,6 +85,6 @@ import { AdminCredential } from './entities/admin-credential.entity';
     RedisModule,
   ],
   controllers: [AuthServiceController],
-  providers: [AuthServiceService],
+  providers: [AuthServiceService, KakaoOAuthClient],
 })
 export class AuthServiceModule {}

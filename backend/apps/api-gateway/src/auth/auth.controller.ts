@@ -2,10 +2,12 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
   Inject,
   OnModuleInit,
   Patch,
   Post,
+  Query,
   Req,
   Res,
   UnauthorizedException,
@@ -36,6 +38,8 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { SocialLoginDto } from './dto/social-login.dto';
+import { SocialSignupDto } from './dto/social-signup.dto';
 
 interface AuthTokenResponse {
   accessToken: string;
@@ -44,6 +48,15 @@ interface AuthTokenResponse {
   email: string;
   name: string;
   role: string;
+  socialProvider: string; // 소셜 회원이면 'KAKAO', 아니면 '' (LDP-194)
+}
+
+interface SocialLoginResponse {
+  signupRequired: boolean;
+  signupToken: string;
+  email: string;
+  name: string;
+  auth?: AuthTokenResponse | null;
 }
 
 // 리프레시 토큰은 httpOnly 쿠키로만 전달하고, 응답 바디에는 액세스 토큰 + 사용자 정보만 내려줍니다.
@@ -65,6 +78,16 @@ interface AuthService {
     currentPassword: string;
     newPassword: string;
   }): Observable<{ success: boolean }>;
+  socialAuthorizeUrl(data: {
+    provider: string;
+    redirectUri: string;
+  }): Observable<{ url: string; state: string }>;
+  socialLogin(data: {
+    provider: string;
+    code: string;
+    state: string;
+  }): Observable<SocialLoginResponse>;
+  socialSignup(data: SocialSignupDto): Observable<AuthTokenResponse>;
 }
 
 // 리프레시 토큰 쿠키는 브라우저 JS가 절대 읽을 수 없도록 httpOnly로 발급합니다 (XSS로 인한 탈취 방지).
@@ -84,6 +107,21 @@ const COOKIE_BASE_OPTIONS = {
   sameSite: 'lax' as const,
   path: '/',
 };
+
+// 카카오 로그인 state를 이 브라우저에 묶어 두는 쿠키 (LDP-194). 인가 화면 주소를 받을 때 심고, 돌아와서 로그인할 때
+// 본문의 state와 같은지 본다 — 다른 사람이 만든 카카오 로그인 링크를 눌러 그 사람 계정으로 로그인되는 것을 막는다.
+const SOCIAL_STATE_COOKIE_NAME = 'socialState';
+const SOCIAL_STATE_MAX_AGE_MS = 10 * 60 * 1000; // auth-service의 state 보관 시간과 같음
+
+// gRPC로 받은 실패를 HTTP로 — { code, retryable }이 있는 실패는 그 형식 그대로, 나머지는 400
+function toSocialHttpError(err: unknown, fallbackMessage: string) {
+  const payload = parseApiRpcError(err);
+  if (payload) {
+    return toHttpException(payload);
+  }
+  const e = err as { details?: string; message?: string } | undefined;
+  return new BadRequestException(e?.details || e?.message || fallbackMessage);
+}
 
 @ApiTags('AuthService')
 @ApiCommonResponses()
@@ -125,8 +163,8 @@ export class AuthController implements OnModuleInit {
   // 액세스 토큰 + 사용자 정보만 응답 바디로 내려줍니다. 프론트엔드는 이 값을 localStorage가 아닌
   // 메모리(변수)에만 보관해야 합니다. 리프레시 토큰은 위 setRefreshCookie로 이미 쿠키에 담겼습니다.
   private toClientResponse(tokens: AuthTokenResponse): AuthClientResponse {
-    const { accessToken, userId, email, name, role } = tokens;
-    return { accessToken, userId, email, name, role };
+    const { accessToken, userId, email, name, role, socialProvider } = tokens;
+    return { accessToken, userId, email, name, role, socialProvider };
   }
 
   /**
@@ -400,6 +438,10 @@ export class AuthController implements OnModuleInit {
     status: 401,
     description: '현재 비밀번호가 일치하지 않음',
   })
+  @ApiResponse({
+    status: 400,
+    description: 'SOCIAL_ACCOUNT_NO_PASSWORD — 카카오로 가입한 계정은 비밀번호가 없음 (LDP-194)',
+  })
   async changePassword(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: ChangePasswordDto,
@@ -407,10 +449,150 @@ export class AuthController implements OnModuleInit {
     await firstValueFrom(
       this.authService.changePassword({ userId: user.userId, ...dto }),
     ).catch((err) => {
+      // 소셜 회원(SOCIAL_ACCOUNT_NO_PASSWORD)은 { code } 형식 400, 나머지는 기존대로 401
+      const payload = parseApiRpcError(err);
+      if (payload) {
+        throw toHttpException(payload);
+      }
       throw new UnauthorizedException(
         err?.details || err?.message || '비밀번호 변경에 실패했습니다.',
       );
     });
     return { message: '비밀번호가 변경되었습니다.' };
+  }
+
+  /**
+   * GET http://localhost:3000/api/auth/social/kakao/authorize-url?redirectUri=...
+   * 카카오 로그인 1단계 (LDP-194). 프론트는 받은 url로 이동하고, 카카오는 로그인 후 redirectUri?code=...&state=...로 돌려보냅니다.
+   */
+  @Get('social/kakao/authorize-url')
+  @ApiOperation({
+    summary: '카카오 로그인 — 인가 화면 주소',
+    description:
+      '카카오 인가 화면 주소를 돌려줍니다. redirectUri는 서버에 등록된 주소(KAKAO_REDIRECT_URIS)만 쓸 수 있습니다. ' +
+      'state는 10분 동안 한 번만 쓸 수 있고, 같은 값을 httpOnly 쿠키(socialState)에도 심어 이 브라우저에서 시작한 로그인인지 확인합니다.',
+  })
+  @ApiResponse({ status: 200, description: '{ url } — 이 주소로 이동' })
+  @ApiResponse({
+    status: 400,
+    description: 'SOCIAL_REDIRECT_URI_INVALID — 등록되지 않은 redirectUri',
+  })
+  @ApiResponse({
+    status: 503,
+    description: 'SOCIAL_LOGIN_DISABLED — 카카오 앱 키가 없는 환경 (소셜 로그인 꺼짐)',
+  })
+  async kakaoAuthorizeUrl(
+    @Query('redirectUri') redirectUri: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { url, state } = await firstValueFrom(
+      this.authService.socialAuthorizeUrl({
+        provider: 'KAKAO',
+        redirectUri: redirectUri ?? '',
+      }),
+    ).catch((err) => {
+      throw toSocialHttpError(err, '카카오 로그인을 시작하지 못했습니다.');
+    });
+    res.cookie(SOCIAL_STATE_COOKIE_NAME, state, {
+      ...COOKIE_BASE_OPTIONS,
+      maxAge: SOCIAL_STATE_MAX_AGE_MS,
+    });
+    return { url };
+  }
+
+  /**
+   * POST http://localhost:3000/api/auth/social/kakao
+   * 카카오 로그인 2단계. 연결된 회원이면 로그인과 같은 응답, 처음 온 회원이면 { signupRequired: true, signupToken, email, name }
+   */
+  @Post('social/kakao')
+  @ApiOperation({
+    summary: '카카오 로그인 — 인가 코드로 로그인',
+    description:
+      '돌아온 주소의 code·state를 보냅니다. 이미 연결된 회원이면 로그인과 같은 응답(액세스 토큰 + 리프레시 쿠키)에 signupRequired: false. ' +
+      '처음 온 회원이면 회원을 만들지 않고 signupRequired: true와 가입 대기 토큰(10분)·카카오 이메일·닉네임을 돌려주며, ' +
+      '이름·전화번호를 받아 POST /api/auth/social/signup으로 가입을 마칩니다.',
+  })
+  @ApiResponse({ status: 200, description: '로그인 완료 또는 추가 정보 입력 필요(signupRequired)' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'SOCIAL_STATE_INVALID — state 불일치·만료·재사용 / SOCIAL_EMAIL_REQUIRED — 카카오 이메일 미동의·미인증',
+  })
+  @ApiResponse({ status: 401, description: 'SOCIAL_LOGIN_FAILED — 인가 코드가 틀렸거나 이미 사용됨' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'SOCIAL_EMAIL_IN_USE — 같은 이메일의 이메일 가입 회원 있음 / SOCIAL_ACCOUNT_EXISTS — 다른 카카오 계정으로 가입된 이메일',
+  })
+  @ApiResponse({
+    status: 503,
+    description: 'SOCIAL_PROVIDER_UNAVAILABLE — 카카오 연결 실패 / SOCIAL_LOGIN_DISABLED',
+  })
+  async kakaoLogin(
+    @Body() dto: SocialLoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const cookieState = req.cookies?.[SOCIAL_STATE_COOKIE_NAME];
+    // state 쿠키는 한 번 쓰고 버린다 (성공·실패 모두)
+    res.clearCookie(SOCIAL_STATE_COOKIE_NAME, COOKIE_BASE_OPTIONS);
+    if (!cookieState || cookieState !== dto.state) {
+      throw toHttpException({
+        status: 400,
+        code: 'SOCIAL_STATE_INVALID',
+        message: '로그인 요청이 만료되었습니다. 다시 시도해 주세요.',
+        retryable: true,
+      });
+    }
+
+    const result = await firstValueFrom(
+      this.authService.socialLogin({ provider: 'KAKAO', ...dto }),
+    ).catch((err) => {
+      throw toSocialHttpError(err, '카카오 로그인에 실패했습니다.');
+    });
+
+    if (result.signupRequired || !result.auth) {
+      return {
+        signupRequired: true,
+        signupToken: result.signupToken,
+        email: result.email,
+        name: result.name,
+      };
+    }
+    this.setRefreshCookie(res, 'USER', result.auth.refreshToken);
+    return { signupRequired: false, ...this.toClientResponse(result.auth) };
+  }
+
+  /**
+   * POST http://localhost:3000/api/auth/social/signup
+   * 카카오 로그인 3단계(처음 온 회원만). 가입 대기 토큰 + 이름·전화번호로 가입을 마치고 로그인 응답을 돌려줍니다.
+   */
+  @Post('social/signup')
+  @ApiOperation({
+    summary: '카카오 회원 가입 — 추가 정보 입력',
+    description:
+      '카카오 로그인 응답의 signupToken과 이름·전화번호로 회원을 만들고 카카오 계정을 연결합니다. 이메일은 카카오 이메일을 씁니다. ' +
+      '비밀번호는 만들지 않습니다. 응답은 회원가입과 같습니다(액세스 토큰 + 리프레시 쿠키).',
+  })
+  @ApiResponse({ status: 201, description: '가입 완료 (socialProvider: "KAKAO")' })
+  @ApiResponse({
+    status: 400,
+    description: 'SOCIAL_SIGNUP_EXPIRED — 가입 대기 토큰 만료(10분)·이미 사용 → 카카오 로그인부터 다시',
+  })
+  @ApiResponse({
+    status: 503,
+    description: 'SIGNUP_FAILED / SIGNUP_COMPLETED_LOGIN_REQUIRED — 회원가입과 같음',
+  })
+  async socialSignup(
+    @Body() dto: SocialSignupDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const tokens = await firstValueFrom(this.authService.socialSignup(dto)).catch(
+      (err) => {
+        throw toSocialHttpError(err, '회원가입에 실패했습니다.');
+      },
+    );
+    this.setRefreshCookie(res, 'USER', tokens.refreshToken);
+    return this.toClientResponse(tokens);
   }
 }

@@ -27,6 +27,16 @@ service AuthService {
   // 회원 탈퇴: user-service에 프로필 삭제(백업 테이블 이관 포함)를 요청한 뒤, 자격증명(비밀번호 해시)을
   // 삭제하고 Redis에 저장된 리프레시 토큰도 삭제합니다.
   rpc Withdraw (WithdrawRequest) returns (WithdrawResponse);
+
+  // 소셜 로그인 인가 화면 주소 (LDP-194): state를 만들어 Valkey에 10분 보관하고, 카카오 인가 화면 주소를 돌려줍니다.
+  rpc SocialAuthorizeUrl (SocialAuthorizeUrlRequest) returns (SocialAuthorizeUrlResponse);
+
+  // 소셜 로그인: state 확인 → 인가 코드로 카카오 회원 정보 조회 → 연결된 회원이면 토큰 발급,
+  // 처음이면 회원을 만들지 않고 가입 대기 토큰(10분)만 돌려줍니다 (이름·전화번호를 받은 뒤 SocialSignup).
+  rpc SocialLogin (SocialLoginRequest) returns (SocialLoginResponse);
+
+  // 소셜 회원 가입: 가입 대기 토큰 + 이름·전화번호로 user-service에 프로필을 만들고 소셜 계정을 연결한 뒤 토큰을 발급합니다.
+  rpc SocialSignup (SocialSignupRequest) returns (AuthResponse);
 }
 
 message RegisterRequest {
@@ -81,4 +91,37 @@ message AuthResponse {
   string email = 4;
   string name = 5;
   string role = 6;
+  // 소셜로 가입한 회원이면 "KAKAO", 이메일 가입·관리자는 빈 문자열 (프론트가 비밀번호 변경 메뉴를 숨김, LDP-194)
+  string socialProvider = 7;
+}
+
+message SocialAuthorizeUrlRequest {
+  string provider = 1; // "KAKAO"
+  string redirectUri = 2; // 카카오 로그인 후 돌아올 프론트 주소 (KAKAO_REDIRECT_URIS에 있는 것만)
+}
+
+message SocialAuthorizeUrlResponse {
+  string url = 1;
+  string state = 2;
+}
+
+message SocialLoginRequest {
+  string provider = 1;
+  string code = 2; // 카카오 인가 코드
+  string state = 3;
+}
+
+message SocialLoginResponse {
+  // true면 아직 우리 회원이 아님 → signupToken·email·name으로 추가 정보 입력 화면, false면 auth로 로그인 완료
+  bool signupRequired = 1;
+  string signupToken = 2;
+  string email = 3;
+  string name = 4; // 카카오 닉네임 (이름 입력칸 기본값)
+  AuthResponse auth = 5;
+}
+
+message SocialSignupRequest {
+  string signupToken = 1;
+  string name = 2;
+  string phoneNumber = 3;
 }
