@@ -50,10 +50,22 @@ ci_smoke_db_user: ci_smoke
 ci_smoke_db_password: "{{ openbao_kv['ci-smoke-db'].password | default(lookup('env', 'CI_SMOKE_DB_PASSWORD'), true) }}"
 
 # ── dev DB 시딩 (db_seed role, db.yml --tags seed — README 7-5) ──────
-# backend/scripts/seed.ts 를 scripts/Dockerfile.seed 로 DB 노드에서 빌드해 실행. 관리자 계정 값은 backend/.env
-seed_admin_email: "{{ openbao_kv['seed-admin'].email | default(backend_env.SEED_ADMIN_EMAIL | default(''), true) }}"
-seed_admin_password: "{{ openbao_kv['seed-admin'].password | default(backend_env.SEED_ADMIN_PASSWORD | default(''), true) }}"
-seed_admin_name: "{{ backend_env.SEED_ADMIN_NAME | default('본사 관리자', true) }}"
+# backend/scripts/seed.ts 를 scripts/Dockerfile.seed 로 DB 노드에서 빌드해 실행.
+# 관리자 계정 값은 OpenBao seed-admin (속성 이름 = 환경변수 이름, 클러스터 seed Job 과 같은 값 — LDP-193), 없으면 backend/.env.
+# 소문자 email · password 는 LDP-193 이전 속성 이름 (전환 기간 호환)
+seed_admin_email: "{{ openbao_kv['seed-admin'].SEED_ADMIN_EMAIL | default(openbao_kv['seed-admin'].email | default(backend_env.SEED_ADMIN_EMAIL | default(''), true), true) }}"
+seed_admin_password: "{{ openbao_kv['seed-admin'].SEED_ADMIN_PASSWORD | default(openbao_kv['seed-admin'].password | default(backend_env.SEED_ADMIN_PASSWORD | default(''), true), true) }}"
+seed_admin_name: "{{ openbao_kv['seed-admin'].SEED_ADMIN_NAME | default(backend_env.SEED_ADMIN_NAME | default('본사 관리자', true), true) }}"
+# 지점 계정 등 나머지 계정 비밀번호 (SEED_*_PASSWORD, LDP-190) — backend/.env 값 위에 OpenBao 값을 덮어씀. 없는 계정은 seed.ts 가 본사 비밀번호로 만듦
+seed_account_passwords: >-
+  {%- set out = {} -%}
+  {%- for src in [backend_env, openbao_kv['seed-admin'] | default({}, true)] -%}
+    {%- for key, value in src.items()
+          if key is match('^SEED_.+_PASSWORD$') and key != 'SEED_ADMIN_PASSWORD' and value | string | length > 0 -%}
+      {%- set _ = out.update({key: value}) -%}
+    {%- endfor -%}
+  {%- endfor -%}
+  {{ out }}
 db_seed_backend_dir: "{{ backend_env_file | dirname }}"   # backend/.env 가 있는 backend 디렉토리
 db_seed_dir: "{{ db_base_dir }}/seed"                      # 빌드 소스 / seed.env (root 전용)
 db_seed_image_name: hotel-db-seed

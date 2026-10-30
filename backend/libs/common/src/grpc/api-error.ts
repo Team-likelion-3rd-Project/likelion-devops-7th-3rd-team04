@@ -97,3 +97,53 @@ export function toHttpException(payload: ApiErrorPayload): HttpException {
     payload.status,
   );
 }
+
+// gRPC 상태 → HTTP 상태. 요청 쪽 문제(값 오류·인증·권한·없음·거절)만 4xx로 옮긴다
+const HTTP_STATUS_BY_GRPC: Partial<Record<GrpcStatus, number>> = {
+  [GrpcStatus.INVALID_ARGUMENT]: 400,
+  [GrpcStatus.UNAUTHENTICATED]: 401,
+  [GrpcStatus.PERMISSION_DENIED]: 403,
+  [GrpcStatus.NOT_FOUND]: 404,
+  [GrpcStatus.ALREADY_EXISTS]: 409,
+  [GrpcStatus.FAILED_PRECONDITION]: 409,
+};
+
+// 4xx 응답의 기본 code (호출부가 codes로 바꿀 수 있다)
+const DEFAULT_CODE_BY_HTTP: Record<number, string> = {
+  400: 'INVALID_REQUEST',
+  401: 'UNAUTHENTICATED',
+  403: 'FORBIDDEN',
+  404: 'NOT_FOUND',
+  409: 'CONFLICT',
+};
+
+// api-gateway에서 gRPC 호출 실패를 HTTP 에러로 바꾼다 (LDP-198).
+// 실패 이유를 보지 않고 전부 404·401로 바꾸면 서비스 장애가 "없음"·"비밀번호 틀림"으로 보여
+// 부하 테스트·모니터링에서 5xx로 잡히지 않는다. 그래서
+//  - api-error 형식이면 그대로 (code·retryable 유지)
+//  - 요청 쪽 문제(NOT_FOUND 등)면 그에 맞는 4xx, 메시지는 서비스가 보낸 그대로
+//  - 그 밖(UNAVAILABLE·DEADLINE_EXCEEDED·UNKNOWN·INTERNAL 등 = 서버 쪽 문제)은 503 + unavailable
+export function grpcErrorToHttp(
+  err: unknown,
+  unavailable: { code: string; message: string },
+  codes: Partial<Record<number, string>> = {},
+): HttpException {
+  const payload = parseApiRpcError(err);
+  if (payload) {
+    return toHttpException(payload);
+  }
+  const status = HTTP_STATUS_BY_GRPC[grpcStatusOf(err)];
+  if (status) {
+    const details = (err as { details?: unknown })?.details;
+    return toHttpException({
+      status,
+      code: codes[status] ?? DEFAULT_CODE_BY_HTTP[status],
+      message:
+        typeof details === 'string' && details
+          ? details
+          : '요청을 처리할 수 없습니다.',
+      retryable: false,
+    });
+  }
+  return toHttpException({ status: 503, ...unavailable, retryable: true });
+}

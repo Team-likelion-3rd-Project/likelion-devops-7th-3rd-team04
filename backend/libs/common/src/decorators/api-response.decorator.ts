@@ -1,7 +1,7 @@
 import { applyDecorators } from '@nestjs/common';
 import { ApiResponse } from '@nestjs/swagger';
 
-// 🟢 400, 401, 500 에러 응답을 하나로 묶어주는 함수
+// 🟢 400, 401, 500, 503 에러 응답을 하나로 묶어주는 함수
 export function ApiCommonResponses() {
   return applyDecorators(
     ApiResponse({
@@ -14,7 +14,12 @@ export function ApiCommonResponses() {
     }),
     ApiResponse({
       status: 500,
-      description: '서버 내부 오류 (마이크로서비스 통신 장애)',
+      description: '서버 내부 오류',
+    }),
+    ApiResponse({
+      status: 503,
+      description:
+        '서비스 일시 장애 — 내부 서비스 연결 실패·시간 초과 (code: *_SERVICE_UNAVAILABLE, retryable: true)',
     }),
   );
 }

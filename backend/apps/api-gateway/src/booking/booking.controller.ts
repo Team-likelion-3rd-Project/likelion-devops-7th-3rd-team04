@@ -34,6 +34,7 @@ import {
   AuthenticatedUser,
   adminHotelScope,
   assertAdminHotel,
+  grpcErrorToHttp,
   parseApiRpcError,
   toHttpException,
 } from '@app/common';
@@ -161,6 +162,22 @@ function toPaymentHttpError(err: unknown, fallbackMessage: string): Error {
   });
 }
 
+// booking-service 호출 실패 → HTTP 에러 (LDP-198). 매진(409)·없는 객실(404) 등 요청 쪽 거절은 그 코드로,
+// 연결 실패·타임아웃 등 서버 쪽 문제는 503 (예전에는 전부 404라 장애가 "객실 없음"으로 보였다)
+function toBookingHttpError(
+  err: unknown,
+  codes: Partial<Record<number, string>> = {},
+): Error {
+  return grpcErrorToHttp(
+    err,
+    {
+      code: 'BOOKING_SERVICE_UNAVAILABLE',
+      message: '예약 서비스에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+    },
+    codes,
+  );
+}
+
 // gRPC는 "없음"을 0으로 보내므로 응답에서는 null로 바꿔 준다 (LDP-89 호실, LDP-90 직원·연장)
 export function toBooking(booking: BookingDto): BookingDto {
   return {
@@ -256,7 +273,9 @@ export class BookingController implements OnModuleInit {
     return toBookings(
       await firstValueFrom(
         this.bookingService.getBookingsByUserId({ userId: user.userId }),
-      ),
+      ).catch((err) => {
+        throw toBookingHttpError(err);
+      }),
     );
   }
 
@@ -399,10 +418,16 @@ export class BookingController implements OnModuleInit {
     status: 400,
     description: '체크아웃 날짜가 체크인 날짜보다 이르거나 같음',
   })
+  @ApiResponse({ status: 404, description: '존재하지 않는 객실' })
   @ApiResponse({
-    status: 404,
+    status: 409,
     description:
-      '예약 가능한 객실이 아니거나(날짜 누락/이미 예약됨) 존재하지 않는 객실',
+      '예약 가능한 객실이 아님 (날짜 누락/이미 예약됨) — ROOM_NOT_AVAILABLE',
+  })
+  @ApiResponse({
+    status: 503,
+    description:
+      'BOOKING_SERVICE_UNAVAILABLE — 예약·객실 서비스 장애나 시간 초과',
   })
   async createBooking(
     @CurrentUser() user: AuthenticatedUser,
@@ -416,9 +441,10 @@ export class BookingController implements OnModuleInit {
     const booking = await firstValueFrom(
       this.bookingService.createBooking({ userId: user.userId, ...dto }),
     ).catch((err) => {
-      throw new NotFoundException(
-        err?.details || err?.message || '예약 가능한 객실이 아닙니다.',
-      );
+      throw toBookingHttpError(err, {
+        404: 'ROOM_NOT_FOUND',
+        409: 'ROOM_NOT_AVAILABLE',
+      });
     });
     return toBooking(booking);
   }

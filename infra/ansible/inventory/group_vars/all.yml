@@ -94,14 +94,12 @@ backend_external_secret_data:
     N8N_INIT_OWNER_PASSWORD: init_owner_password
   gcp-sa:
     GCP_SA_KEY_JSON: key_json_b64
-  # 차트 seed Job 의 관리자 계정 (backend/scripts/seed.ts, gitops envs/dev 의 seed.secretEnv)
-  seed-admin:
-    SEED_ADMIN_EMAIL: email
-    SEED_ADMIN_PASSWORD: password
 # OpenBao 에 base64 로 둔 속성 (ESO 가 풀어서 Secret 에 넣음). JSON 문자열은 Ansible 이 dict 로 바꿔 버리므로 base64 로 저장
 backend_external_secret_base64_keys: [GCP_SA_KEY_JSON]
 # backend-secrets 밖에서 ESO 가 읽는 경로 (eso-dev 정책에 함께 들어감). grafana: monitoring/grafana-admin (17절)
-eso_extra_read_paths: [grafana]
+#   seed-admin: backend/seed-admin (차트 seed Job 의 관리자 계정, 7-5) — 경로의 속성을 모두 이름 그대로 가져옴(dataFrom.extract).
+#               속성 이름 = 환경변수 이름(SEED_ADMIN_EMAIL, SEED_SEOUL_MANAGER_PASSWORD …)이라 값 추가 · 변경은 OpenBao 만 (LDP-193)
+eso_extra_read_paths: [grafana, seed-admin]
 
 # ── 모니터링 (monitoring.yml · payment.yml · db.yml, README 17절) ──────
 # 메트릭 라벨 env 값 (운영은 prod). 클러스터 Prometheus scrape class · 결제 노드 Alloy 가 함께 씀

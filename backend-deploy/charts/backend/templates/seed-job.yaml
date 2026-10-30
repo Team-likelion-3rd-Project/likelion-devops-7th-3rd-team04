@@ -35,27 +35,20 @@ template:
                 name: {{ $.Values.global.secretName }}
                 key: {{ $key }}
           {{- end }}
-          {{- if $s.adminSecretName }}
-          # 관리자 계정 — 비밀번호가 backend-secrets 와 섞이지 않게 별도 Secret (prod: backend-secrets 앱의 ExternalSecret)
-          # 이름은 없으면 seed.ts 기본값('본사 관리자'). 지점 계정 비밀번호(LDP-190)는 없으면 본사 비밀번호를 쓴다
-          {{- $optional := list "SEED_ADMIN_NAME" "SEED_SEOUL_MANAGER_PASSWORD" "SEED_BUSAN_MANAGER_PASSWORD" "SEED_JEJU_MANAGER_PASSWORD" "SEED_SEOUL_STAFF_PASSWORD" }}
-          {{- range $key := concat (list "SEED_ADMIN_EMAIL" "SEED_ADMIN_PASSWORD") $optional }}
-          - name: {{ $key }}
-            valueFrom:
-              secretKeyRef:
-                name: {{ $s.adminSecretName }}
-                key: {{ $key }}
-                {{- if has $key $optional }}
-                optional: true
-                {{- end }}
-          {{- end }}
-          {{- end }}
           {{- if $s.db.caConfigMap }}
           - name: DB_SSL
             value: "true"
           - name: DB_SSL_CA_PATH
             value: /certs/{{ $s.db.caFile }}
           {{- end }}
+        {{- if $s.adminSecretName }}
+        # 관리자 계정 — 비밀번호가 backend-secrets 와 섞이지 않게 별도 Secret (prod: backend-secrets 앱, dev: Ansible 의 ExternalSecret)
+        # Secret 의 key 를 모두 같은 이름의 env 로 넣음 → seed.ts 가 새 SEED_* 를 읽게 돼도 차트는 그대로 (LDP-193).
+        # SEED_ADMIN_EMAIL · SEED_ADMIN_PASSWORD 가 없으면 관리자 계정만 건너뜀. 지점 계정 비밀번호(LDP-190)는 없으면 본사 비밀번호
+        envFrom:
+          - secretRef:
+              name: {{ $s.adminSecretName }}
+        {{- end }}
         resources:
           {{- toYaml $s.resources | nindent 10 }}
         {{- with .Values.containerSecurityContext }}
