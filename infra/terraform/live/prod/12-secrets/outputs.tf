@@ -7,6 +7,6 @@ output "toss_client_key_parameter_name" {
 }
 
 output "secret_names" {
-  description = "Secret 이름 (github_app, toss_payments, seed_admin, grafana_admin)"
+  description = "Secret 이름 (github_app, toss_payments, seed_admin, grafana_admin, kakao_login)"
   value       = { for k, s in aws_secretsmanager_secret.this : k => s.name }
 }

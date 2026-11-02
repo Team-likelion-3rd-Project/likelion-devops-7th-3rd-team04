@@ -54,6 +54,12 @@ variable "grafana_admin_secret_name" {
   default     = "team04-hotel/prod/grafana-admin"
 }
 
+variable "kakao_login_secret_name" {
+  description = "12-secrets 🔒 의 카카오 로그인 키 Secret 이름. ESO Role 이 읽는다 (gitops backend-secrets 앱 ExternalSecret)"
+  type        = string
+  default     = "team04-hotel/prod/kakao-login"
+}
+
 variable "queue_names" {
   description = "43-messaging 의 queue_names (payment_result, payment_result_dlq). booking-service Role 이 받는 큐"
   type        = map(string)
