@@ -45,3 +45,10 @@ VECTOR_OBJECT_REFRESH_SECONDS = int(os.getenv("VECTOR_OBJECT_REFRESH_SECONDS", "
 
 # 의도 분류(app/intent.py)에 넣을 최근 대화 이력 메시지 수.
 INTENT_HISTORY_MESSAGES = int(os.getenv("INTENT_HISTORY_MESSAGES", "10"))
+
+# 타임아웃 — 바깥(n8n·chat-bot-service 50초)보다 먼저 끊기도록 맞춥니다(../n8n/README.md 타임아웃 절).
+# LLM·임베딩 호출 1회의 타임아웃과, 429(용량 부족)·5xx·타임아웃 시 지수 백오프로 다시 시도할 횟수.
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "15"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+# POST /chat 한 턴(의도 분류 + RAG 검색 + 답변) 전체의 마감. 넘으면 504.
+CHAT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("CHAT_REQUEST_TIMEOUT_SECONDS", "40"))

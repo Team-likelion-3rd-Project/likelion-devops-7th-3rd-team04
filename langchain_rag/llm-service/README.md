@@ -48,7 +48,27 @@
 - `intent`: `BOOK | PAY | CANCEL | null`. 슬롯이 모자라도 의도만 있으면 채웁니다.
 - `action`: BOOK은 필수 슬롯(hotel·checkIn·checkOut)이 다 모였을 때만, PAY/CANCEL은 `{type}`만 담습니다. 비로그인이면 항상 `null`입니다. 아래 "예약·결제·취소 액션" 참고.
 
-`GET /health` — liveness 확인.
+`GET /health` — K8s probe용 상태 확인입니다. Vertex나 벡터 스토어 같은 외부는 호출하지 않습니다.
+
+```json
+{"status": "ok",
+ "llm": {"provider": "vertex", "lastSuccessAt": "2026-11-02T...", "lastFailureAt": null, "lastError": null},
+ "vectorStore": {"type": "object", "configured": true, "documents": 17}}
+```
+
+- `LLM_PROVIDER`·`VECTOR_STORE` 값이 잘못됐으면 `503 {"status": "error"}`를 반환합니다. 배포 직후 startup probe에서 걸립니다.
+- 그 밖에는 200입니다. 마지막 `/chat` 실패나 RAG 미설정은 파드를 재시작해도 낫지 않으므로 상태로만 보여 줍니다.
+- `documents`는 `object` 스토어만 표시합니다. 메모리에 올린 문서 수이며, 아직 읽지 않았으면 `null`, 모델·차원이 맞지 않아 거부했으면 `0`입니다.
+
+### 타임아웃·재시도
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `CHAT_REQUEST_TIMEOUT_SECONDS` | 40 | `/chat` 한 턴 전체 마감. 넘으면 504 |
+| `LLM_TIMEOUT_SECONDS` | 15 | LLM 호출 1회 타임아웃. RAG 검색(임베딩+조회)도 이 시간 안에 못 끝나면 근거 없이 진행 |
+| `LLM_MAX_RETRIES` | 2 | Vertex 429·5xx·타임아웃 시 지수 백오프(4→10초) 재시도 횟수. Ollama는 재시도하지 않음 |
+
+바깥 n8n·chat-bot-service(50초)보다 먼저 끊기도록 맞춘 값입니다. 전체 구간은 `../n8n/README.md`의 타임아웃 절을 참고하세요.
 
 ## 로컬 실행
 

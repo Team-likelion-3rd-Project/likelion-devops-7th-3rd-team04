@@ -53,12 +53,18 @@ def _relevant(hits: list[SearchHit], min_score: float) -> list[SearchHit]:
 
 async def query_context(message: str, top_k: int = config.RAG_TOP_K) -> str | None:
     """질문과 가까운 문서(최대 top_k개, RAG_MIN_SCORE 이상)의 원문을 하나의 context 문자열로 합칩니다.
-    예외를 던지지 않습니다."""
+    예외를 던지지 않습니다.
+
+    임베딩(재시도 포함)과 조회를 합쳐 LLM_TIMEOUT_SECONDS 안에 끝나지 않으면 근거 없이 진행합니다 —
+    Vertex 임베딩 SDK에는 호출 타임아웃이 없어 여기서 제한합니다.
+    """
     try:
         if not is_configured():
             return None
-        vector = await embed_query(message)
-        hits = await asyncio.to_thread(store().query, vector, top_k, detect_hotels(message))
+        async with asyncio.timeout(config.LLM_TIMEOUT_SECONDS):
+            vector = await embed_query(message)
+            hits = await asyncio.to_thread(store().query, vector, top_k, detect_hotels(message))
+
     except Exception:
         logger.exception("RAG 검색 실패 — context 없이 계속합니다")
         return None

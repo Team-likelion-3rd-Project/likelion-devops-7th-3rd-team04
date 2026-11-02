@@ -247,6 +247,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 | SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 릴리스 Role 이 시크릿 키까지 읽게 되므로 분리 | `10-global` 릴리스 Role (`release.yml` plan job 의 `VITE_TOSS_CLIENT_KEY`) |
 | `team04-hotel/prod/seed-admin` | `{email, password, name}` | 운영 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*`, 비밀번호 12자 이상). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | `70` ESO Role (`team04-hotel-external-secrets`) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
 | `team04-hotel/prod/grafana-admin` | `{admin_user, admin_password}` | 운영 Grafana admin 계정. 이름은 `admin` 고정, 비밀번호만 사람이 정함(`.env` 의 `GRAFANA_ADMIN_PASSWORD`, 16자 이상). **등록 전에는 운영 Grafana 가 뜨지 않습니다**(서비스 배포에는 영향 없음, [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측") | `70` ESO Role → Secret `grafana-admin` (gitops `monitoring` 앱) |
+| `team04-hotel/prod/kakao-login` | `{client_id, client_secret}` | 카카오 디벨로퍼스 앱 → 플랫폼 키 → REST API 키 상세(`.env` 의 `KAKAO_CLIENT_*`). 앱 하나를 온프레미스와 함께 쓰므로 재발급 금지. **등록 전에 gitops `backend-secrets` 에 매핑을 넣으면 backend 전체 Secret 동기화가 실패합니다** | ESO Role → Secret `backend-secrets` → auth-service 의 `KAKAO_CLIENT_*` |
 
 처음 등록 · 값 교체 (GitHub App 개인 키 교체 등):
 
@@ -256,7 +257,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 cd infra/terraform/live/prod/12-secrets
 cp .env.example .env   # 처음 한 번. 값을 채운다 (GitHub App 개인 키만 .pem 파일 경로)
 
-# 교체할 때는 variables.tf 의 해당 version(github_app_credentials_version · toss_credentials_version · seed_admin_credentials_version · grafana_admin_credentials_version)을 올린 뒤
+# 교체할 때는 variables.tf 의 해당 version(github_app_credentials_version · toss_credentials_version · seed_admin_credentials_version · grafana_admin_credentials_version · kakao_credentials_version)을 올린 뒤
 AWS_PROFILE=team04 terragrunt apply
 ```
 

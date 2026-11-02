@@ -7,6 +7,8 @@
 #                                           (ESO 가 읽어 Secret seed-admin 생성, gitops backend-secrets 앱)
 #   team04-hotel/prod/grafana-admin       : {admin_user, admin_password} 운영 Grafana admin 계정
 #                                           (ESO 가 읽어 Secret grafana-admin 생성, gitops monitoring 앱)
+#   team04-hotel/prod/kakao-login         : {client_id, client_secret} 카카오 REST API 키 · 클라이언트 시크릿 → KAKAO_CLIENT_*
+#                                           (ESO 가 읽어 Secret backend-secrets 에 넣음, gitops backend-secrets 앱)
 #
 #   SSM /team04-hotel/prod/frontend/toss-client-key (String)       토스 결제위젯 클라이언트 키 → VITE_TOSS_CLIENT_KEY
 #                                           release.yml 이 읽어 빌드에 넣는다 (아래 frontend.tf)
@@ -42,6 +44,11 @@ locals {
     grafana_admin = {
       name        = "${local.secret_prefix}/grafana-admin"
       description = "Grafana admin account for the main cluster kube-prometheus-stack"
+      readers     = [var.external_secrets_role_name]
+    }
+    kakao_login = {
+      name        = "${local.secret_prefix}/kakao-login"
+      description = "Kakao login REST API key and client secret (KAKAO_CLIENT_*) for auth-service"
       readers     = [var.external_secrets_role_name]
     }
   }
@@ -98,6 +105,16 @@ resource "aws_secretsmanager_secret_version" "grafana_admin" {
   secret_string_wo_version = var.grafana_admin_credentials_version
 }
 
+resource "aws_secretsmanager_secret_version" "kakao_login" {
+  secret_id = aws_secretsmanager_secret.this["kakao_login"].id
+
+  secret_string_wo = jsonencode({
+    client_id     = var.kakao_client_id
+    client_secret = var.kakao_client_secret
+  })
+  secret_string_wo_version = var.kakao_credentials_version
+}
+
 # 값 조회(GetSecretValue)는 Secret 별 읽는 Role(readers)과 관리자(이 스택을 apply 하는 주체)만 허용한다 (41-main-data 와 같은 방식).
 # 공유 계정이라 관리자 ARN 을 레포에 적지 않고 실행 주체에서 읽는다. 계정 자리를 * 로 두지 않는다 (최소 권한)
 data "aws_caller_identity" "current" {}
@@ -108,7 +125,7 @@ data "aws_iam_session_context" "current" {
   arn = data.aws_caller_identity.current.arn
 }
 
-# github-app 은 release.yml 릴리스 Role 만, 토스 시크릿 키는 결제 서버만, 시드 관리자 · Grafana admin 계정은 ESO 만 읽는다
+# github-app 은 release.yml 릴리스 Role 만, 토스 시크릿 키는 결제 서버만, 시드 관리자 · Grafana admin 계정 · 카카오 키는 ESO 만 읽는다
 data "aws_iam_policy_document" "secret" {
   for_each = local.secrets
 

@@ -9,7 +9,9 @@ import os
 from functools import cache
 
 from langchain_core.embeddings import Embeddings
-from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.language_models import LanguageModelInput
+from langchain_core.messages import BaseMessage
+from langchain_core.runnables import Runnable
 
 from . import config
 
@@ -77,8 +79,15 @@ def _vertex_credentials():
 
 
 @cache
-def chat_model(json_mode: bool = False) -> BaseChatModel:
-    """json_mode=True는 의도 분류용: JSON만 출력하고 temperature 0."""
+def chat_model(json_mode: bool = False) -> Runnable[LanguageModelInput, BaseMessage]:
+    """json_mode=True는 의도 분류용: JSON만 출력하고 temperature 0.
+
+    타임아웃·재시도(config.LLM_TIMEOUT_SECONDS / LLM_MAX_RETRIES):
+      - Vertex: 내장 재시도(tenacity)가 429(ResourceExhausted)·5xx·DeadlineExceeded를 지수 백오프(4→10초)로
+        다시 시도합니다. max_retries는 "총 시도 횟수"라 +1 합니다. 시도 1회의 타임아웃은 호출 인자 timeout으로만
+        받으므로 bind 합니다(gRPC 요청에 그대로 전달).
+      - Ollama(로컬): httpx 타임아웃만 겁니다.
+    """
     if provider() == "vertex":
         from langchain_google_vertexai import ChatVertexAI
 
@@ -90,13 +99,19 @@ def chat_model(json_mode: bool = False) -> BaseChatModel:
             credentials=_vertex_credentials(),
             # gemini-2.5는 기본으로 thinking 토큰을 씁니다. 짧은 상담 답변에는 필요 없어 꺼서 지연·비용을 줄입니다.
             thinking_budget=0,
+            max_retries=config.LLM_MAX_RETRIES + 1,
             **options,
-        )
+        ).bind(timeout=config.LLM_TIMEOUT_SECONDS)
 
     from langchain_ollama import ChatOllama
 
     options = {"format": "json", "temperature": 0} if json_mode else {}
-    return ChatOllama(base_url=config.OLLAMA_BASE_URL, model=config.OLLAMA_MODEL, **options)
+    return ChatOllama(
+        base_url=config.OLLAMA_BASE_URL,
+        model=config.OLLAMA_MODEL,
+        client_kwargs={"timeout": config.LLM_TIMEOUT_SECONDS},
+        **options,
+    )
 
 
 @cache
@@ -104,13 +119,19 @@ def embeddings() -> Embeddings:
     if provider() == "vertex":
         from langchain_google_vertexai import VertexAIEmbeddings
 
+        # Vertex 임베딩 SDK는 호출 타임아웃을 받지 않습니다 — 질문 임베딩은 retrieval.query_context가 시간 제한을 겁니다.
         return VertexAIEmbeddings(
             model_name=config.VERTEX_EMBED_MODEL,
             project=config.GCP_PROJECT_ID,
             location=config.GCP_LOCATION,
             credentials=_vertex_credentials(),
+            max_retries=config.LLM_MAX_RETRIES + 1,
         )
 
     from langchain_ollama import OllamaEmbeddings
 
-    return OllamaEmbeddings(base_url=config.OLLAMA_BASE_URL, model=config.OLLAMA_EMBED_MODEL)
+    return OllamaEmbeddings(
+        base_url=config.OLLAMA_BASE_URL,
+        model=config.OLLAMA_EMBED_MODEL,
+        client_kwargs={"timeout": config.LLM_TIMEOUT_SECONDS},
+    )

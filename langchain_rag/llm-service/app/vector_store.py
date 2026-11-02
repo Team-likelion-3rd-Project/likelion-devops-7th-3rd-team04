@@ -185,6 +185,11 @@ class ObjectJsonStore:
     def is_configured(self) -> bool:
         return bool(self.bucket)
 
+    def loaded_documents(self) -> int | None:
+        """/health용. 메모리에 올라간 문서 수 — 아직 한 번도 읽지 않았으면 None. 저장소를 조회하지 않습니다."""
+        with self._lock:
+            return None if self._etag is None else len(self._items)
+
     def _refresh(self) -> None:
         """refresh_seconds마다 ETag를 확인해 파일이 바뀌었을 때만 다시 읽습니다."""
         now = self._clock()
