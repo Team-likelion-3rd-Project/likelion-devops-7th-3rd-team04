@@ -18,7 +18,7 @@
   ansible.builtin.debug:
     msg: >-
       OpenBao {{ openbao_kv_prefix }}/aws-backup(access_key_id · secret_access_key) 도, 환경변수 AWS_BACKUP_ACCESS_KEY_ID 도 없어
-      etcd 백업 timer 를 설치하지 않습니다. Terraform 16-onprem-backup apply · access key 발급 후 다시 실행하세요 (README 18-1).
+      etcd 백업 timer 를 설치하지 않습니다. Terraform live/dev/10-onprem-backup apply · access key 발급 후 다시 실행하세요 (README 18-1).
   when: not (etcd_backup_enabled | bool)
 
 - name: etcd 백업 구성

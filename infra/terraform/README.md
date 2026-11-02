@@ -27,6 +27,9 @@ infra/terraform/
 │   └── vpc/                         # VPC, 계층별 서브넷, IGW, NAT, 라우트 테이블(선택: NFW 경유), 게이트웨이 엔드포인트, Flow Logs
 └── live/
     ├── bootstrap/                   🔒 state 버킷
+    ├── dev/                         # 온프레미스(dev 클러스터)가 쓰는 AWS 자원. prod run --all 과 별개
+    │   ├── root.hcl                 # dev 공통 설정 (state key dev/<스택>/...)
+    │   └── 10-onprem-backup/        🔒 온프레미스 etcd 백업 버킷 · 업로드 전용 IAM user
     └── prod/
         ├── root.hcl                 # 공통 설정 (backend · provider 생성, state key 계산)
         ├── 10-global/               🔒
@@ -35,7 +38,6 @@ infra/terraform/
         ├── 13-frontend/             🔒 프론트 · 객실 사진 (S3 · CloudFront · KeyValueStore)
         ├── 14-gcp-llm/              🔒 챗봇 Vertex AI 인증 (GCP Workload Identity Federation)
         ├── 15-chatbot-vectors/      🔒 챗봇 RAG 벡터 저장소 (S3 Vectors)
-        ├── 16-onprem-backup/        🔒 온프레미스 etcd 백업 버킷 · 업로드 전용 IAM user
         ├── 20-network/              🔁
         ├── 21-observability-base/   🔁 메인 클러스터 로그 그룹 (Fluent Bit)
         ├── 30-security/             🔁
@@ -77,6 +79,9 @@ state key 에는 **디렉터리 번호를 넣지 않습니다.** 번호가 바�
 |---|---|
 | `live/bootstrap` | `bootstrap/terraform.tfstate` |
 | `live/prod/<번호>-<스택>` | `prod/<스택>/terraform.tfstate` (예: `prod/network/terraform.tfstate`) |
+| `live/dev/<번호>-<스택>` | `dev/<스택>/terraform.tfstate` (예: `dev/onprem-backup/terraform.tfstate`) |
+
+`live/dev` 는 온프레미스(dev 클러스터)가 쓰는 AWS 자원이고 매일 재생성하지 않습니다. `live/dev/root.hcl` 은 prod 와 같은 버킷 · provider 규칙에 key prefix 만 `dev/` 입니다.
 
 `root.hcl` 이 디렉터리 이름에서 번호를 뗀 값(`20-network` → `network`)으로 state key 와 `Stack` 태그를 정하고, backend · provider 블록을 생성합니다.
 
@@ -133,6 +138,7 @@ terragrunt apply
 terragrunt output -raw api_url
 ```
 
+- `live/dev` 스택은 `live/prod` 의 `run --all` 에 포함되지 않습니다. `cd infra/terraform/live/dev` 에서 따로 실행합니다 (현재 `10-onprem-backup` 하나).
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
 - `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
 - `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.

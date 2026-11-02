@@ -1,4 +1,4 @@
-# 16-onprem-backup — 온프레미스 etcd 백업 버킷 (Terraform 담당자 전달 사항)
+# live/dev/10-onprem-backup — 온프레미스 etcd 백업 버킷 (Terraform 담당자 전달 사항)
 
 > **아직 apply 하지 않았습니다.** 코드는 작성자가 `terraform fmt` · `terraform validate`(backend 없이)까지만 확인했습니다. `plan` 결과 검토와 apply 는 Terraform 담당자가 진행해 주세요.
 
@@ -21,18 +21,19 @@
 
 - **`aws_iam_access_key` 는 만들지 않습니다.** secret 이 state 에 남기 때문입니다 (README 5절 규칙). 키는 apply 후 4절대로 CLI 로 발급합니다.
 - 온프레미스는 OIDC · 인스턴스 Role 을 쓸 수 없어 IAM user 를 둡니다. 다른 스택은 참조하지 않습니다 (dependency 없음).
-- state key: `prod/onprem-backup/terraform.tfstate`
+- `live/dev` 에 둡니다. 온프레미스(dev 클러스터)만 쓰는 자원이라 운영(`live/prod`)과 분리했습니다. 공통 설정은 [`live/dev/root.hcl`](../root.hcl) — prod 와 같은 state 버킷의 `dev/` prefix, provider · 태그 규칙은 prod 와 같습니다 (`Environment=dev`).
+- state key: `dev/onprem-backup/terraform.tfstate`
 - 비용: snapshot 수십 MB × 하루 1개 × 30일 수준이라 월 몇 센트입니다.
 
 ## 3. 적용
 
 ```bash
-cd infra/terraform/live/prod/16-onprem-backup
+cd infra/terraform/live/dev/10-onprem-backup
 AWS_PROFILE=team04 terragrunt plan     # 버킷 · 버전 관리 · 수명 주기 · 공개 차단 · 암호화 · 소유권 · 정책 · IAM user · user 정책
 AWS_PROFILE=team04 terragrunt apply
 ```
 
-`run --all apply` 에도 포함되고, `run --all destroy` 에서는 빠집니다 (`exclude`, 🔒 상시 스택).
+`live/prod` 의 `run --all` 에는 **포함되지 않습니다** (매일 재생성과 무관). `live/dev` 에서 `run --all` 을 실행하면 apply 에는 포함되고 destroy 에서는 빠집니다 (`exclude`, 🔒 상시 스택).
 
 ## 4. apply 후 할 일 (access key 발급 → OpenBao 담당자에게 전달)
 
@@ -63,7 +64,7 @@ mkdir -p .secrets/backup && age-keygen -o .secrets/backup/transfer.key   # "Publ
 **② Terraform 담당자 — 발급 + 암호화 (한 줄)**
 
 ```bash
-cd infra/terraform/live/prod/16-onprem-backup
+cd infra/terraform/live/dev/10-onprem-backup
 AWS_PROFILE=team04 terragrunt apply
 AWS_PROFILE=team04 aws iam create-access-key --user-name team04-hotel-onprem-backup \
   --query 'AccessKey.{access_key_id:AccessKeyId,secret_access_key:SecretAccessKey}' --output json \
@@ -101,6 +102,7 @@ rm -f aws-backup.json.age      # 비밀 채널에 올린 파일도 삭제
 
 ## 5. 담당자가 확인해 주실 것
 
+- [ ] **새로 만든 [`live/dev/root.hcl`](../root.hcl)**: `live/prod/root.hcl` 을 복사해 `source` 경로(`live/dev`) · state key(`dev/<스택>/...`) · `non_aws_stacks`(빈 목록)만 바꿨습니다
 - [ ] **`admin_role_names`**: 백업을 직접 지우거나 올려야 할 관리자 Role(SSO 등)이 있으면 넣어 주세요. 비워 두면 백업 user 와 apply 한 주체(Role)만 쓰기 · 삭제할 수 있습니다. 읽기(복구용 다운로드)는 막지 않습니다.
 - [ ] 버킷 이름 `team04-hotel-onprem-backup` 이 계정 · 전역에서 충돌하지 않는지
 - [ ] 보존 기간(30일 + 이전 버전 7일)이 괜찮은지

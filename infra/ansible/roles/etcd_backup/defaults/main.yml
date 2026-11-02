@@ -1,9 +1,9 @@
 ---
 # control plane 의 etcd snapshot + /etc/kubernetes/pki + admin.conf 를 age 로 암호화해 AWS S3 에 올림 (README 18절)
-# 버킷 · 업로드 전용 IAM user 는 Terraform live/prod/16-onprem-backup. DB 는 시딩, 로그는 Loki 가 맡으므로 대상이 아님
-etcd_backup_bucket: team04-hotel-onprem-backup     # Terraform 16 의 bucket_name
+# 버킷 · 업로드 전용 IAM user 는 Terraform live/dev/10-onprem-backup. DB 는 시딩, 로그는 Loki 가 맡으므로 대상이 아님
+etcd_backup_bucket: team04-hotel-onprem-backup     # Terraform live/dev/10-onprem-backup 의 bucket_name
 etcd_backup_region: us-east-1
-# 첫 구간(etcd)은 Terraform 16 의 backup_prefix 와 같아야 함 (IAM user 는 그 아래에만 PutObject)
+# 첫 구간(etcd)은 Terraform live/dev/10-onprem-backup 의 backup_prefix 와 같아야 함 (IAM user 는 그 아래에만 PutObject)
 etcd_backup_prefix: etcd/onprem-dev
 
 # 업로드 자격 증명 — OpenBao aws-backup(access_key_id · secret_access_key). 도입 전이면 환경변수.
