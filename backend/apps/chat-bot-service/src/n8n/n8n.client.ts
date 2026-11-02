@@ -20,7 +20,9 @@ export interface N8nChatResponse {
   action?: unknown;
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+// 타임아웃 예산(안쪽이 먼저 끊김): 앞단 ALB·ingress 60초 > 이 값 50초 = n8n의 llm-service 호출 50초
+// (chat-orchestration.json) > llm-service 요청 마감 40초(CHAT_REQUEST_TIMEOUT_SECONDS).
+const DEFAULT_TIMEOUT_MS = 50_000;
 
 // n8n workflow(AI 오케스트레이션)를 호출하는 유일한 진입점입니다. n8n은 RAG 조회, LLM Service
 // 호출 등 내부 구현을 이 계약 뒤로 숨기므로, chat-bot-service는 n8n의 워크플로 구성을 알 필요가 없습니다.

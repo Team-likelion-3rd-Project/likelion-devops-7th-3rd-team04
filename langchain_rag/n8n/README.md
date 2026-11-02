@@ -71,4 +71,16 @@ curl -X POST http://localhost:8001/chat -H 'Content-Type: application/json' \
 
 이 스택은 backend와 별개 Compose 프로젝트라 자동으로 연결되지 않습니다. backend의 `chat-bot-service`에서 호출하려면 `backend/.env`의 `N8N_WEBHOOK_URL`을 이 n8n으로 지정하세요(`backend/.env.example` 참고, 기본값 `http://host.docker.internal:5678/webhook/chat`).
 
-`N8N_TIMEOUT_MS`(기본 30초)가 워크플로의 llm-service 호출 타임아웃(120초)보다 짧습니다. CPU 전용 로컬 Ollama는 응답이 30초를 넘을 수 있으니, 그럴 때는 `N8N_TIMEOUT_MS`를 늘리세요.
+### 타임아웃
+
+안쪽이 먼저 끊기도록 맞춰 두었습니다. 그래서 사용자는 앞단의 504 대신 "AI 응답 생성에 실패했습니다" 응답을 받습니다.
+
+| 구간 | 값 | 설정 위치 |
+|---|---|---|
+| 앞단 ALB · ingress | 60초 | 기본값 |
+| chat-bot-service → n8n | 50초 | `N8N_TIMEOUT_MS` |
+| n8n → llm-service | 50초 | 워크플로 `Call llm-service` 노드 (`backend-deploy/charts/backend/files/n8n/` 사본도 같이 수정) |
+| llm-service 요청 전체 | 40초 | `CHAT_REQUEST_TIMEOUT_SECONDS` |
+| LLM 호출 1회 | 15초, 재시도 2회 | `LLM_TIMEOUT_SECONDS` · `LLM_MAX_RETRIES` |
+
+CPU 전용 로컬 Ollama는 한 턴이 40초를 넘을 수 있습니다. 그럴 때는 llm-service의 `CHAT_REQUEST_TIMEOUT_SECONDS`·`LLM_TIMEOUT_SECONDS`를 늘리세요. 앞단 값인 `N8N_TIMEOUT_MS`와 워크플로 타임아웃도 그보다 크게 맞춰야 합니다.
