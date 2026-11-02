@@ -14,6 +14,7 @@ const CONFIRM_TIMEOUT_MS = 10_000;
 interface TossPaymentResponse {
   paymentKey: string;
   orderId: string;
+  totalAmount?: number; // 총 결제 금액 (웹훅 재조회 때 우리 금액과 비교)
   status: string; // 승인 완료면 'DONE'
   method?: string; // '카드', '간편결제' 등
   approvedAt?: string;
