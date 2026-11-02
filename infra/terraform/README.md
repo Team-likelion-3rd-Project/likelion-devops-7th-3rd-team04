@@ -35,6 +35,7 @@ infra/terraform/
         ├── 13-frontend/             🔒 프론트 · 객실 사진 (S3 · CloudFront · KeyValueStore)
         ├── 14-gcp-llm/              🔒 챗봇 Vertex AI 인증 (GCP Workload Identity Federation)
         ├── 15-chatbot-vectors/      🔒 챗봇 RAG 벡터 저장소 (S3 Vectors)
+        ├── 16-onprem-backup/        🔒 온프레미스 etcd 백업 버킷 · 업로드 전용 IAM user
         ├── 20-network/              🔁
         ├── 21-observability-base/   🔁 메인 클러스터 로그 그룹 (Fluent Bit)
         ├── 30-security/             🔁
