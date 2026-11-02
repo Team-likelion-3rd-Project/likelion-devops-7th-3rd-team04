@@ -34,7 +34,7 @@ syncRetry:
 # 배포 결과 알림 (Slack #deploy). root PostSync(성공) · SyncFail(실패) hook Job 이 10-global 배포 토픽에 발행한다.
 # clusterValues.global.awsAccountId 가 없으면(로컬 렌더링) 만들지 않는다. 이름은 Terraform 과 같아야 한다
 deployNotify:
-  # 두 클러스터 병행 기간에는 한쪽(70)만 발행한다 — 72 enable_deploy_notify
+  # 두 클러스터 병행 기간에는 한쪽(70)만 발행한다 — 72 enable_singleton_workloads
   enabled: true
   region: us-east-1
   topicName: team04-hotel-deploy      # 10-global deploy_topic_name

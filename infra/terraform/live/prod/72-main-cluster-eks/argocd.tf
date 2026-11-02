@@ -3,6 +3,21 @@
 # 클러스터가 없는 매일 재생성에서 실패한다. helm_release 는 apply 때 렌더링한다.
 # root 앱의 첫 sync 는 기다리지 않는다. 결과는 ArgoCD 가 계속 재시도한다.
 
+locals {
+  # 병행 기간에 gitops values-eks.yaml 이 끄는 작업을 다시 켠다 (enable_singleton_workloads).
+  # 꺼져 있으면 키 자체를 넘기지 않아 values-eks.yaml 그대로 렌더링된다
+  singleton_app_values = {
+    backend = {
+      migrations = { main = { enabled = true } }
+      llmIngest  = { enabled = true }
+      seed       = { enabled = true }
+    }
+    kube-prometheus-stack = {
+      alertmanager = { config = { route = { receiver = "sns-alerts" } } }
+    }
+  }
+}
+
 resource "helm_release" "argocd" {
   name             = "argocd"
   repository       = "https://argoproj.github.io/argo-helm"
@@ -37,13 +52,16 @@ resource "helm_release" "argocd_bootstrap" {
     rootValues = {
       cluster = "eks"
       deployNotify = {
-        enabled = var.enable_deploy_notify
+        enabled = var.enable_singleton_workloads
       }
-      appValues = {
-        aws-load-balancer-controller = {
-          vpcId = var.vpc_id
-        }
-      }
+      appValues = merge(
+        {
+          aws-load-balancer-controller = {
+            vpcId = var.vpc_id
+          }
+        },
+        { for app, values in local.singleton_app_values : app => values if var.enable_singleton_workloads },
+      )
     }
   })]
 
