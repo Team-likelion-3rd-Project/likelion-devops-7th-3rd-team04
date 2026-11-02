@@ -5,6 +5,7 @@ import { SQSClient } from '@aws-sdk/client-sqs';
 //   SQS_ENDPOINT              로컬·온프레미스 dev: ElasticMQ 주소 / AWS prod: 비움 → AWS 기본 주소
 //   SQS_REGION                ap-northeast-2 (ElasticMQ) / 실제 리전 (prod)
 //   PAYMENT_RESULT_QUEUE_URL  payment-result.fifo 큐 URL (비어 있으면 발행·수신을 하지 않음)
+//   PAYMENT_WEBHOOK_QUEUE_URL payment-webhook 큐 URL (비어 있으면 토스 웹훅을 받지 않음)
 //   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  dev 는 더미, prod 는 넣지 않음 (IAM 역할)
 // ElasticMQ 는 SQS 와 같은 API 를 흉내내므로, 코드는 AWS SDK 하나로 두고 주소만 바꿔 끼웁니다.
 
@@ -41,6 +42,10 @@ export function createSqsClient(): SQSClient {
 
 export function paymentResultQueueUrl(): string {
   return process.env.PAYMENT_RESULT_QUEUE_URL || '';
+}
+
+export function paymentWebhookQueueUrl(): string {
+  return process.env.PAYMENT_WEBHOOK_QUEUE_URL || '';
 }
 
 // 결제 결과 이벤트 메시지 본문 (payment_outbox.payload, 위키 API 명세 6.6)

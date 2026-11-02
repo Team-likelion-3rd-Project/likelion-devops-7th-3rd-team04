@@ -412,6 +412,7 @@ services:
       - SQS_ENDPOINT=${SQS_ENDPOINT-http://elasticmq:9324}
       - SQS_REGION=${SQS_REGION:-ap-northeast-2}
       - PAYMENT_RESULT_QUEUE_URL=${PAYMENT_RESULT_QUEUE_URL:-http://elasticmq:9324/000000000000/payment-result.fifo}
+      - PAYMENT_WEBHOOK_QUEUE_URL=${PAYMENT_WEBHOOK_QUEUE_URL:-http://elasticmq:9324/000000000000/payment-webhook}
     # 결제 DB 접속 정보(PAYMENT_DB_*)는 .env(env_file)에서 옵니다.
     depends_on:
       pg-mock-service:
