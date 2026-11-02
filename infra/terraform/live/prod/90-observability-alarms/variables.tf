@@ -112,10 +112,13 @@ variable "db_free_storage_gib" {
   default     = 2
 }
 
-variable "db_connections_threshold" {
-  description = "RDS DatabaseConnections 임계값. db.t4g.micro max_connections 30(10-29 실측), 메인 평소 22(앱 20 + rdsadmin 2)"
-  type        = number
-  default     = 26
+variable "db_connections_thresholds" {
+  description = "RDS DatabaseConnections 임계값 (키 = db_instance_identifiers). 메인 db.t4g.small max_connections 68(11-02 실측)의 80%, 결제 db.t4g.micro 30(10-29 실측)"
+  type        = map(number)
+  default = {
+    main    = 54
+    payment = 26
+  }
 }
 
 variable "valkey_memory_percent_threshold" {

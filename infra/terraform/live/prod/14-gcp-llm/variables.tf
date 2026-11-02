@@ -56,6 +56,27 @@ variable "workload_identity_provider_id" {
   default     = "main-cluster"
 }
 
+variable "aws_workload_identity_provider_id" {
+  description = "Pool 안 AWS Provider ID (72 EKS 파드의 AWS 자격 증명). 삭제 후 30일 동안 같은 ID 를 쓸 수 없으므로 바꾸지 않는다"
+  type        = string
+  default     = "main-cluster-aws"
+}
+
+variable "aws_account_id" {
+  description = "AWS Provider 가 믿는 계정 ID. terragrunt.hcl 이 실행 자격 증명에서 넣는다 (plan 출력에 나오지 않게 sensitive)"
+  type        = string
+  sensitive   = true
+}
+
+variable "aws_role_names" {
+  description = "운영 GCP 서비스 계정을 쓸 수 있는 AWS Role 이름 (51-pod-roles). 다른 Role 은 Provider 단계에서 거부한다"
+  type        = set(string)
+  default = [
+    "team04-hotel-llm-service", # 챗봇 답변 · 질의 임베딩
+    "team04-hotel-llm-ingest",  # RAG 문서 적재 Job (문서 임베딩)
+  ]
+}
+
 variable "allowed_namespace" {
   description = "토큰 교환을 허용할 쿠버네티스 네임스페이스. 다른 네임스페이스 토큰은 Provider 단계에서 거부한다"
   type        = string

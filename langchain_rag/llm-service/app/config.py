@@ -16,6 +16,9 @@ GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 GCP_LOCATION = os.getenv("GCP_LOCATION", "asia-northeast3")
 VERTEX_CHAT_LOCATION = os.getenv("VERTEX_CHAT_LOCATION", "global")
 GCP_SA_KEY_JSON = os.getenv("GCP_SA_KEY_JSON")
+# EKS(운영): 파드의 AWS 자격 증명으로 Workload Identity Federation (Terraform 14-gcp-llm AWS Provider). 키가 없을 때만 씁니다.
+GCP_WIF_AWS_AUDIENCE = os.getenv("GCP_WIF_AWS_AUDIENCE")
+GCP_WIF_SERVICE_ACCOUNT_EMAIL = os.getenv("GCP_WIF_SERVICE_ACCOUNT_EMAIL")
 VERTEX_CHAT_MODEL = os.getenv("VERTEX_CHAT_MODEL", "gemini-2.5-flash")
 VERTEX_EMBED_MODEL = os.getenv("VERTEX_EMBED_MODEL", "text-multilingual-embedding-002")
 

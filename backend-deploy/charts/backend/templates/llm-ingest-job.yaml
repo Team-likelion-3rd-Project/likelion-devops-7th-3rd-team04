@@ -4,6 +4,7 @@
 {{- $svc := index .Values.services "llm-service" }}
 {{- $env := merge (dict) ($i.env | default dict) ($svc.env | default dict) .Values.global.env -}}
 {{- $gcpWif := and $svc.gcpWorkloadIdentity .Values.gcpWorkloadIdentity.enabled -}}
+{{- $gcpWifFile := and $gcpWif (ne .Values.gcpWorkloadIdentity.provider "aws") -}}
 backoffLimit: {{ $i.backoffLimit }}
 activeDeadlineSeconds: {{ $i.activeDeadlineSeconds }}
 ttlSecondsAfterFinished: {{ $i.ttlSecondsAfterFinished }}
@@ -21,7 +22,7 @@ template:
     securityContext:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-    {{- if $gcpWif }}
+    {{- if $gcpWifFile }}
     volumes:
       {{- include "backend.gcpWif.volume" . | nindent 6 }}
     {{- end }}
@@ -52,7 +53,7 @@ template:
         securityContext:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-        {{- if $gcpWif }}
+        {{- if $gcpWifFile }}
         volumeMounts:
           {{- include "backend.gcpWif.volumeMount" . | nindent 10 }}
         {{- end }}

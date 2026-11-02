@@ -49,6 +49,49 @@ def test_vertex_provider_uses_json_mode_and_disables_thinking(monkeypatch):
     assert llm.embedding_model_name() == f"vertex:{config.VERTEX_EMBED_MODEL}"
 
 
+def test_vertex_credentials_default_to_adc(monkeypatch):
+    monkeypatch.setattr(config, "GCP_SA_KEY_JSON", None)
+    monkeypatch.setattr(config, "GCP_WIF_AWS_AUDIENCE", None)
+
+    assert llm._vertex_credentials() is None
+
+
+def test_vertex_credentials_prefer_sa_key(monkeypatch):
+    from google.oauth2 import service_account
+
+    sentinel = object()
+    monkeypatch.setattr(config, "GCP_SA_KEY_JSON", '{"type": "service_account"}')
+    monkeypatch.setattr(config, "GCP_WIF_AWS_AUDIENCE", "//iam.googleapis.com/test")
+    monkeypatch.setattr(
+        service_account.Credentials, "from_service_account_info", lambda info, scopes: sentinel
+    )
+
+    assert llm._vertex_credentials() is sentinel
+
+
+def test_vertex_credentials_use_aws_supplier(monkeypatch):
+    from botocore.credentials import Credentials
+    from google.auth import aws
+
+    # 파드 환경과 같게 AWS_REGION 만 둡니다 (boto3 세션의 region_name 은 이 값을 읽지 않음).
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.setattr(config, "GCP_SA_KEY_JSON", None)
+    monkeypatch.setattr(config, "GCP_WIF_AWS_AUDIENCE", "//iam.googleapis.com/test")
+    monkeypatch.setattr(config, "GCP_WIF_SERVICE_ACCOUNT_EMAIL", "sa@example.iam.gserviceaccount.com")
+
+    creds = llm._vertex_credentials()
+    assert isinstance(creds, aws.Credentials)
+
+    supplier = creds._aws_security_credentials_supplier
+    monkeypatch.setattr(
+        supplier._session, "get_credentials", lambda: Credentials("key", "secret", "token")
+    )
+    got = supplier.get_aws_security_credentials(None, None)
+    assert (got.access_key_id, got.secret_access_key, got.session_token) == ("key", "secret", "token")
+    assert supplier.get_aws_region(None, None) == "us-east-1"
+
+
 def test_unknown_provider_is_rejected(monkeypatch):
     monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
     with pytest.raises(ValueError):
