@@ -1,4 +1,4 @@
-import { Inject, Module, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Module, OnApplicationShutdown } from '@nestjs/common';
 import Redis, { RedisOptions } from 'ioredis';
 import { REDIS_CLIENT } from './redis.constants';
 
@@ -27,11 +27,12 @@ export function redisOptionsFromEnv(): RedisOptions {
   ],
   exports: [REDIS_CLIENT],
 })
-export class RedisModule implements OnModuleDestroy {
+export class RedisModule implements OnApplicationShutdown {
   constructor(@Inject(REDIS_CLIENT) private readonly redisClient: Redis) {}
 
   // Nest 애플리케이션 종료 시 연결을 정리합니다.
-  async onModuleDestroy() {
+  // onModuleDestroy는 gRPC 서버를 닫기 전에 실행되어, 처리 중인 요청이 Redis를 쓰지 못합니다.
+  async onApplicationShutdown() {
     await this.redisClient.quit();
   }
 }
