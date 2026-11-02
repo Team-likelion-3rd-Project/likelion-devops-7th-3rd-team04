@@ -5,9 +5,9 @@ variable "project" {
 }
 
 variable "environment" {
-  description = "환경 이름"
+  description = "환경 이름 (온프레미스 dev 클러스터용 자원)"
   type        = string
-  default     = "prod"
+  default     = "dev"
 }
 
 variable "region" {
