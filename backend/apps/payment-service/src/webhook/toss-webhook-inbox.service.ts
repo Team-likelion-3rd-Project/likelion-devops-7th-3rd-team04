@@ -12,7 +12,7 @@ export interface TossWebhookMessage {
   headers?: Record<string, unknown>;
   body: {
     eventType?: string;
-    data?: { paymentKey?: string; status?: string };
+    data?: { paymentKey?: string; orderId?: string; status?: string };
   };
 }
 

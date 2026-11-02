@@ -11,6 +11,7 @@ import {
 import { PaymentServiceService } from '../payment-service.service';
 import { TossPaymentsClient } from '../pg/toss-payments.client';
 import { PgMockClient } from '../pg-mock/pg-mock.client';
+import { PgWebhookInbox } from '../entities/pg-webhook-inbox.entity';
 
 // LDP-97: 결제 대사 배치 — 결과 불명 확정·환불 재시도
 describe('PaymentReconciliationService.reconcile', () => {
@@ -36,6 +37,7 @@ describe('PaymentReconciliationService.reconcile', () => {
     orderBy: jest.Mock;
     take: jest.Mock;
     getMany: jest.Mock;
+    getCount: jest.Mock;
   }
   const queryBuilder = (): FakeQueryBuilder => {
     let statuses: string[] = [];
@@ -51,6 +53,7 @@ describe('PaymentReconciliationService.reconcile', () => {
       }),
       orderBy: jest.fn(() => qb),
       take: jest.fn(() => qb),
+      getCount: waitedCount,
       getMany: jest.fn(() => {
         if (!byCreatedAt) {
           qbStatuses.push(statuses);
@@ -62,6 +65,11 @@ describe('PaymentReconciliationService.reconcile', () => {
     return qb;
   };
   const repoUpdate = jest.fn();
+  const repoFindOne = jest.fn();
+  const inboxFind = jest.fn();
+  const inboxUpdate = jest.fn();
+  const inboxExpired = jest.fn();
+  const waitedCount = jest.fn();
   const query = jest.fn();
   const settleFromPgLookup = jest.fn();
   const retryRefund = jest.fn();
@@ -82,6 +90,11 @@ describe('PaymentReconciliationService.reconcile', () => {
       Promise.resolve(sql.includes('GET_LOCK') ? [{ ok: lockGranted }] : []),
     );
     repoUpdate.mockResolvedValue({ affected: 1 });
+    repoFindOne.mockResolvedValue(null);
+    inboxFind.mockResolvedValue([]);
+    inboxUpdate.mockResolvedValue({ affected: 1 });
+    inboxExpired.mockResolvedValue([]);
+    waitedCount.mockResolvedValue(1);
     tossGet.mockResolvedValue({ outcome: 'APPROVED', paymentKey: 'tgen_1' });
     mockGet.mockResolvedValue({ outcome: 'APPROVED', paymentKey: 'pgmock_1' });
     settleFromPgLookup.mockResolvedValue('APPROVED');
@@ -92,6 +105,7 @@ describe('PaymentReconciliationService.reconcile', () => {
       {
         createQueryBuilder: queryBuilder,
         update: repoUpdate,
+        findOne: repoFindOne,
       } as unknown as Repository<Payment>,
       {
         createQueryRunner: () => ({
@@ -108,7 +122,196 @@ describe('PaymentReconciliationService.reconcile', () => {
       } as unknown as PaymentServiceService,
       { getPayment: tossGet } as unknown as TossPaymentsClient,
       { getPayment: mockGet } as unknown as PgMockClient,
+      {
+        find: inboxFind,
+        update: inboxUpdate,
+        createQueryBuilder: () => {
+          const qb = {
+            where: () => qb,
+            andWhere: () => qb,
+            orderBy: () => qb,
+            take: () => qb,
+            getMany: inboxExpired,
+          };
+          return qb;
+        },
+      } as unknown as Repository<PgWebhookInbox>,
     );
+  });
+
+  describe('⓪ 토스 웹훅 처리', () => {
+    const webhook = (data: Record<string, unknown> = {}) =>
+      ({
+        inboxId: '7',
+        pgEventKey: 'toss:tgen_1:DONE',
+        body: {
+          eventType: 'PAYMENT_STATUS_CHANGED',
+          data: {
+            paymentKey: 'tgen_1',
+            orderId: 'rsv10-abc',
+            status: 'DONE',
+            ...data,
+          },
+        },
+      }) as unknown as PgWebhookInbox;
+    const webhookPayment = (overrides: Partial<Payment> = {}) =>
+      payment({ amount: 100000, ...overrides });
+    const lookup = (overrides: Record<string, unknown> = {}) => ({
+      outcome: 'APPROVED',
+      pgStatus: 'DONE',
+      paymentKey: 'tgen_1',
+      raw: { orderId: 'rsv10-abc', totalAmount: 100000 },
+      ...overrides,
+    });
+    const processed = () => inboxUpdate.mock.calls.length;
+
+    beforeEach(() => {
+      inboxFind.mockResolvedValue([webhook()]);
+      repoFindOne.mockResolvedValue(webhookPayment());
+      tossGet.mockResolvedValue(lookup());
+    });
+
+    it('UNKNOWN 결제는 재조회가 일치하면 확정하고 처리 완료로 표시한다', async () => {
+      const result = await service.reconcile();
+
+      expect(tossGet).toHaveBeenCalledWith('tgen_1');
+      expect(settleFromPgLookup).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentId: 1 }),
+        expect.objectContaining({ outcome: 'APPROVED' }),
+      );
+      expect(result).toMatchObject({ approved: 1 });
+      expect(processed()).toBe(1);
+    });
+
+    it('결제 번호가 없는 UNKNOWN 결제는 주문번호로 찾아 확정한다', async () => {
+      repoFindOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(webhookPayment({ paymentKey: null }));
+
+      await service.reconcile();
+
+      expect(repoFindOne).toHaveBeenLastCalledWith({
+        where: { pgOrderId: 'rsv10-abc' },
+      });
+      expect(settleFromPgLookup).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['주문번호', { raw: { orderId: 'rsv99-x', totalAmount: 100000 } }],
+      ['금액', { raw: { orderId: 'rsv10-abc', totalAmount: 1 } }],
+    ])('재조회 %s가 다르면 상태를 바꾸지 않는다', async (_, overrides) => {
+      tossGet.mockResolvedValue(lookup(overrides));
+
+      await service.reconcile();
+
+      expect(settleFromPgLookup).not.toHaveBeenCalled();
+      expect(processed()).toBe(1);
+    });
+
+    it('결제에 저장된 번호와 웹훅의 번호가 다르면 상태를 바꾸지 않는다', async () => {
+      inboxFind.mockResolvedValue([webhook({ paymentKey: 'attacker' })]);
+      repoFindOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(webhookPayment());
+
+      await service.reconcile();
+
+      expect(settleFromPgLookup).not.toHaveBeenCalled();
+    });
+
+    it('우리 DB에 없는 주문은 토스를 부르지 않고 기록만 남긴다', async () => {
+      repoFindOne.mockResolvedValue(null);
+
+      await service.reconcile();
+
+      expect(tossGet).not.toHaveBeenCalled();
+      expect(processed()).toBe(1);
+    });
+
+    it('토스가 아닌 결제는 건너뛴다', async () => {
+      repoFindOne.mockResolvedValue(
+        webhookPayment({ provider: PaymentProvider.MOCK }),
+      );
+
+      await service.reconcile();
+
+      expect(tossGet).not.toHaveBeenCalled();
+      expect(processed()).toBe(1);
+    });
+
+    it('승인 직후 PROCESSING은 조회하지 않고 승인 응답을 기다린다', async () => {
+      repoFindOne.mockResolvedValue(
+        webhookPayment({ status: PaymentStatus.PROCESSING }),
+      );
+      waitedCount.mockResolvedValue(0);
+
+      await service.reconcile();
+
+      expect(tossGet).not.toHaveBeenCalled();
+      expect(processed()).toBe(1);
+    });
+
+    it('2분이 지난 PROCESSING은 확정한다', async () => {
+      repoFindOne.mockResolvedValue(
+        webhookPayment({ status: PaymentStatus.PROCESSING }),
+      );
+
+      await service.reconcile();
+
+      expect(settleFromPgLookup).toHaveBeenCalledTimes(1);
+    });
+
+    it('토스 조회가 실패하면 처리 완료로 표시하지 않아 다음 실행에서 다시 본다', async () => {
+      tossGet.mockResolvedValue({ outcome: 'UNKNOWN' });
+
+      const result = await service.reconcile();
+
+      expect(settleFromPgLookup).not.toHaveBeenCalled();
+      expect(processed()).toBe(0);
+      expect(result.pending).toBe(1);
+    });
+
+    it('토스에 없는 결제 번호로 결제를 실패시키지 않는다', async () => {
+      tossGet.mockResolvedValue({ outcome: 'NOT_FOUND', raw: {} });
+
+      await service.reconcile();
+
+      expect(settleFromPgLookup).not.toHaveBeenCalled();
+      expect(processed()).toBe(1);
+    });
+
+    it('이미 승인된 결제가 토스에서 취소되면 자동 환불 없이 처리 완료로 표시한다', async () => {
+      repoFindOne.mockResolvedValue(
+        webhookPayment({ status: PaymentStatus.APPROVED }),
+      );
+      tossGet.mockResolvedValue(
+        lookup({ outcome: 'CANCELED', pgStatus: 'CANCELED' }),
+      );
+
+      await service.reconcile();
+
+      expect(settleFromPgLookup).not.toHaveBeenCalled();
+      expect(processed()).toBe(1);
+    });
+
+    it('처리하다 오류가 나면 다음 실행에서 다시 본다', async () => {
+      settleFromPgLookup.mockRejectedValue(new Error('db down'));
+
+      const result = await service.reconcile();
+
+      expect(result.errors).toBe(1);
+      expect(processed()).toBe(0);
+    });
+
+    it('24시간 넘게 처리하지 못한 웹훅은 재시도를 멈춘다', async () => {
+      inboxExpired.mockResolvedValue([webhook()]);
+      inboxFind.mockResolvedValue([]);
+
+      await service.reconcile();
+
+      expect(tossGet).not.toHaveBeenCalled();
+      expect(processed()).toBe(1);
+    });
   });
 
   describe('① 결과 불명 결제 확정', () => {
