@@ -20,8 +20,9 @@ def test_importing_main_does_not_create_clients(monkeypatch):
 
     from app.main import app
 
-    assert TestClient(app).get("/health").json() == {"status": "ok"}
+    assert TestClient(app).get("/health").json()["status"] == "ok"
     assert llm.chat_model.cache_info().currsize == 0
+    assert llm.embeddings.cache_info().currsize == 0
 
 
 def test_ollama_provider(monkeypatch):
@@ -31,7 +32,10 @@ def test_ollama_provider(monkeypatch):
     chat = llm.chat_model(json_mode=True)
     assert isinstance(chat, ChatOllama)
     assert chat.format == "json" and chat.temperature == 0
-    assert isinstance(llm.embeddings(), OllamaEmbeddings)
+    assert chat.client_kwargs == {"timeout": config.LLM_TIMEOUT_SECONDS}
+    embeddings = llm.embeddings()
+    assert isinstance(embeddings, OllamaEmbeddings)
+    assert embeddings.client_kwargs == {"timeout": config.LLM_TIMEOUT_SECONDS}
     assert llm.embedding_model_name() == f"ollama:{config.OLLAMA_EMBED_MODEL}"
 
 
@@ -41,12 +45,33 @@ def test_vertex_provider_uses_json_mode_and_disables_thinking(monkeypatch):
     monkeypatch.setattr(config, "GCP_SA_KEY_JSON", None)
     from langchain_google_vertexai import ChatVertexAI
 
-    chat = llm.chat_model(json_mode=True)
+    chat = llm.chat_model(json_mode=True).bound
     assert isinstance(chat, ChatVertexAI)
     assert chat.response_mime_type == "application/json"
     assert chat.thinking_budget == 0
     assert chat.location == config.VERTEX_CHAT_LOCATION
     assert llm.embedding_model_name() == f"vertex:{config.VERTEX_EMBED_MODEL}"
+
+
+def test_vertex_provider_sets_timeout_and_retries(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "vertex")
+    monkeypatch.setattr(config, "GCP_PROJECT_ID", "test-project")
+    monkeypatch.setattr(config, "GCP_SA_KEY_JSON", None)
+    monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 15.0)
+    monkeypatch.setattr(config, "LLM_MAX_RETRIES", 2)
+
+    chat = llm.chat_model()
+    # 시도 1회 타임아웃은 호출 인자로 gRPC 요청에 전달되고, max_retries 는 총 시도 횟수(재시도 2회 + 첫 시도)
+    assert chat.kwargs == {"timeout": 15.0}
+    assert chat.bound.max_retries == 3
+
+    # VertexAIEmbeddings 는 만들 때 모델을 조회(인증 필요)하므로 인자만 확인합니다.
+    import langchain_google_vertexai
+
+    captured = {}
+    monkeypatch.setattr(langchain_google_vertexai, "VertexAIEmbeddings", lambda **kwargs: captured.update(kwargs))
+    llm.embeddings()
+    assert captured["max_retries"] == 3
 
 
 def test_vertex_credentials_default_to_adc(monkeypatch):
