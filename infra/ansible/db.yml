@@ -65,6 +65,21 @@
           password: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
       tags: [always]
 
+    # Loki 의 MinIO 전용 계정 — 위와 같이 처음 한 번만 만듦 (README 17-8)
+    - name: OpenBao 저장 (minio-loki, 없을 때만)
+      ansible.builtin.include_role:
+        name: openbao_kv
+        tasks_from: write
+        apply:
+          tags: [always]
+      vars:
+        openbao_write_path: minio-loki
+        openbao_write_create_only: true
+        openbao_write_data:
+          access_key: loki
+          secret_key: "{{ lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}"
+      tags: [always]
+
     - name: OpenBao 값 읽기
       ansible.builtin.import_role:
         name: openbao_kv
@@ -134,13 +149,22 @@
       ansible.builtin.import_role:
         name: db_stack
 
-    # 호스트 · 컨테이너 + 메인 MariaDB · Valkey 서버 지표 → 클러스터 Prometheus (README 17-6). 단독: --tags collectors
+    # 클러스터 · 결제 · DB 노드 로그 저장소 (MinIO 버킷 loki). 단독: --tags loki (README 17-8)
+    - name: 로그 저장소 (Loki)
+      ansible.builtin.import_role:
+        name: loki
+      tags: [loki]
+
+    # 호스트 · 컨테이너 + 메인 MariaDB · Valkey 서버 지표 → 클러스터 Prometheus (README 17-6),
+    # 컨테이너 · journald · 슬로우 쿼리 로그 → Loki(같은 노드, README 17-8). 단독: --tags collectors
     - name: 모니터링 수집기
       ansible.builtin.import_role:
         name: node_collectors
       vars:
         collectors_cluster: db
         collectors_namespace: db
+        collectors_loki_url: "http://127.0.0.1:{{ loki_port }}/loki/api/v1/push"
+        collectors_slow_log: "{{ db_data_dir }}/mariadb/slow.log"
         collectors_mysql: "{{ {'port': db_port, 'user': db_exporter_user, 'password': db_exporter_password} if db_exporter_password | length > 0 else {} }}"
         collectors_redis:
           port: "{{ valkey_port }}"

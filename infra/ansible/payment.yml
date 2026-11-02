@@ -128,13 +128,17 @@
         name: payment_stack
       tags: [deploy]
 
-    # 호스트 · 컨테이너 + payment-service /metrics + 결제 MariaDB 서버 지표 → 클러스터 Prometheus (README 17절). 단독: --tags collectors
+    # 호스트 · 컨테이너 + payment-service /metrics + 결제 MariaDB 서버 지표 → 클러스터 Prometheus (README 17절),
+    # 컨테이너 · journald · 결제 DB 슬로우 쿼리 로그 → DB 노드 Loki (README 17-8). 단독: --tags collectors
     - name: 모니터링 수집기
       ansible.builtin.import_role:
         name: node_collectors
       vars:
         collectors_cluster: payment
         collectors_namespace: payment
+        collectors_loki_url: "{{ loki_push_url if loki_host | length > 0 else '' }}"
+        collectors_slow_log: "{{ payment_data_dir }}/mariadb/slow.log"
+        collectors_slow_log_container: payment-mariadb
         collectors_app_scrapes: "{{ [{'job': 'payment-service', 'port': payment_metrics_port}] if payment_metrics_enabled else [] }}"
         collectors_mysql: "{{ {'port': payment_db_port, 'user': payment_db_exporter_user, 'password': payment_db_exporter_password} if payment_db_exporter_password | length > 0 else {} }}"
       tags: [deploy, collectors]

@@ -1,0 +1,16 @@
+---
+# DB 노드의 로그 저장소: Grafana Loki (단일 바이너리) → MinIO 버킷 (README 17-8)
+# 클러스터 · 결제 · DB 노드의 Alloy 가 push 하고 Grafana 가 조회. 포트(loki_port)는 group_vars/all.yml
+loki_image: "grafana/loki:3.7.9"
+loki_uid: 10001                                  # 이미지의 실행 사용자 (distroless, USER 10001)
+
+loki_base_dir: "{{ db_base_dir }}/loki"          # compose / 설정 / MinIO 접속 비밀값 (0700)
+loki_data_dir: "{{ db_data_dir }}/loki"          # WAL · 인덱스 캐시 · compactor 작업 디렉토리 (청크 · 인덱스 원본은 MinIO)
+loki_grpc_port: 9096                             # 단일 프로세스 내부 통신 (127.0.0.1 만)
+
+# 보존 — Prometheus(prometheus_retention 7d)와 같게. 예약 · 결제 로그에 개인정보가 섞일 수 있어 짧게 둠
+loki_retention: 168h
+# 노드당 수집 한도 (dev 규모 기준). 넘으면 Alloy 가 재시도하며 기다림
+loki_ingestion_rate_mb: 4
+loki_ingestion_burst_mb: 8
+loki_memory_limit: 1g

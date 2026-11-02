@@ -109,3 +109,10 @@ prometheus_nodeport: 30909
 # control plane Tailscale IP (.env CLUSTER_ENTRY_IP) — 결제 노드의 NodePort 호출 · 결제/DB 노드 Alloy 의 remote_write 대상
 cluster_entry_ip: "{{ lookup('env', 'CLUSTER_ENTRY_IP') }}"
 collectors_remote_write_url: "http://{{ cluster_entry_ip }}:{{ prometheus_nodeport }}/api/v1/write"
+
+# ── 로그 (Loki · Alloy, README 17-8) ──────────────────────────
+# Loki 는 DB 노드(roles/loki). 클러스터 Alloy · 결제 노드 Alloy 의 push 대상, Grafana Loki 데이터소스
+# (ACL tag:k8s-node · tag:payment → tag:db tcp:3100). DB 노드 Tailscale IP 는 OpenBao main-db(host), 없으면 .env 의 DB_TS_IP
+loki_port: 3100
+loki_host: "{{ openbao_kv['main-db'].host | default(lookup('env', 'DB_TS_IP'), true) }}"
+loki_push_url: "http://{{ loki_host }}:{{ loki_port }}/loki/api/v1/push"

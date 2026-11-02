@@ -334,6 +334,87 @@
         "type": "prometheus",
         "uid": "${datasource}"
       }
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "로그 (Loki — infra/ansible README 17-8)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "logs",
+      "title": "결제 노드 컨테이너 로그 (에러 · 경고)",
+      "description": "payment-service · payment-mariadb · elasticmq 등 결제 노드 Docker 컨테이너의 stdout/stderr 중 error · warn 이 들어간 줄. 전체는 Explore 에서 {cluster=\"payment\", job=\"docker\"}",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{cluster=\"payment\", job=\"docker\"} |~ \"(?i)(error|warn|exception|fatal)\"",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "logs",
+      "title": "결제 DB 슬로우 쿼리",
+      "description": "결제 MariaDB 슬로우 쿼리 로그 (long_query_time 이상)",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{cluster=\"payment\", job=\"slowlog\"}",
+          "queryType": "range"
+        }
+      ]
     }
   ]
 }

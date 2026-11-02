@@ -83,6 +83,9 @@ kube_prometheus_stack_chart_version: "92.3.0"     # Prometheus Operator v0.94.1 
 kube_prometheus_stack_chart_repo: "https://prometheus-community.github.io/helm-charts"
 monitoring_namespace: monitoring
 monitoring_manifest_dir: /etc/kubernetes/monitoring
+# 클러스터 로그 수집 (roles/logging, README 17-8) — Alloy 버전은 결제 · DB 노드(roles/node_collectors alloy_image)와 같게, 같이 올림
+alloy_chart_version: "1.13.1"                      # Grafana Alloy v1.20.1
+alloy_chart_repo: "https://grafana.github.io/helm-charts"
 
 # Prometheus 저장소: control plane 로컬 PV (StorageClass 없음 → Ansible 이 정적 PV 를 만듦)
 prometheus_data_dir: /var/lib/monitoring/prometheus

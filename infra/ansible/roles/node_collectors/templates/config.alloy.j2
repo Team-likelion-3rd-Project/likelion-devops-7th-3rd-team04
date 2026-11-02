@@ -1,5 +1,5 @@
 // Ansible(node_collectors role)이 생성 — 직접 수정하지 마세요.
-// {{ collectors_cluster }} 노드 수집기: node-exporter · cAdvisor{{ ' · ' ~ (collectors_app_scrapes | map(attribute='job') | join(' · ')) if collectors_app_scrapes else '' }}{{ ' · MariaDB' if collectors_mysql else '' }}{{ ' · Valkey' if collectors_redis else '' }} → 클러스터 Prometheus(remote_write) (README 17절)
+// {{ collectors_cluster }} 노드 수집기: node-exporter · cAdvisor{{ ' · ' ~ (collectors_app_scrapes | map(attribute='job') | join(' · ')) if collectors_app_scrapes else '' }}{{ ' · MariaDB' if collectors_mysql else '' }}{{ ' · Valkey' if collectors_redis else '' }} → 클러스터 Prometheus(remote_write){{ " · 로그 → Loki" if collectors_loki_url else "" }} (README 17절)
 // 라벨은 클러스터와 맞춤: cluster · env · namespace 는 external_labels, 컨테이너 이름은 container (k8s cAdvisor 와 같은 이름)
 
 prometheus.scrape "node" {
@@ -119,3 +119,99 @@ prometheus.remote_write "main" {
     namespace = "{{ collectors_namespace }}",
   }
 }
+{% if collectors_loki_url %}
+
+// ── 로그 → Loki (README 17-8) ─────────────────────────────────
+// 라벨은 지표와 같게: cluster · env · namespace (external_labels), container, instance(노드), job(docker · journal · slowlog)
+
+// 모든 Docker 컨테이너의 stdout · stderr (일회성 컨테이너 포함)
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "docker_logs" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.docker_logs.rules
+  labels        = {job = "docker", instance = "{{ node_name }}"}
+  forward_to    = [loki.write.main.receiver]
+}
+
+// journald — {{ collectors_journal_units | join(' · ') }} + 커널 메시지(OOM killer 등)만 남김
+loki.relabel "journal" {
+  forward_to = []
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+
+  rule {
+    source_labels = ["__journal__transport"]
+    regex         = "kernel"
+    target_label  = "unit"
+    replacement   = "kernel"
+  }
+
+  rule {
+    source_labels = ["unit"]
+    regex         = "({{ (collectors_journal_units + ['kernel']) | join('|') }})"
+    action        = "keep"
+  }
+}
+
+loki.source.journal "host" {
+  max_age       = "12h"
+  relabel_rules = loki.relabel.journal.rules
+  labels        = {job = "journal", instance = "{{ node_name }}"}
+  forward_to    = [loki.write.main.receiver]
+}
+{% if collectors_slow_log %}
+
+// MariaDB 슬로우 쿼리 로그 — 항목 하나(# User@Host ~ 쿼리)를 한 줄로 묶음. "# Time:" 줄은 앞 항목 끝에 붙음
+local.file_match "slow_log" {
+  path_targets = [{
+    "__path__"  = "/var/log/mariadb-slow/{{ collectors_slow_log | basename }}",
+    "job"       = "slowlog",
+    "container" = "{{ collectors_slow_log_container }}",
+    "instance"  = "{{ node_name }}",
+  }]
+}
+
+loki.source.file "slow_log" {
+  targets    = local.file_match.slow_log.targets
+  forward_to = [loki.process.slow_log.receiver]
+}
+
+loki.process "slow_log" {
+  forward_to = [loki.write.main.receiver]
+
+  stage.multiline {
+    firstline     = "^# User@Host:"
+    max_wait_time = "3s"
+  }
+}
+{% endif %}
+
+loki.write "main" {
+  endpoint {
+    url = "{{ collectors_loki_url }}"
+  }
+
+  external_labels = {
+    cluster   = "{{ collectors_cluster }}",
+    env       = "{{ monitoring_env }}",
+    namespace = "{{ collectors_namespace }}",
+  }
+}
+{% endif %}

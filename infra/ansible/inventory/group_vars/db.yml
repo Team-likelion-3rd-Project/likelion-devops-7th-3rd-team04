@@ -35,7 +35,7 @@ openbao_policies: [eso-dev, ansible-dev]
 backend_env_file: "{{ (lookup('env', 'BACKEND_ENV_FILE') | default(playbook_dir ~ '/../../backend/.env', true)) | expanduser | realpath }}"
 backend_env: "{{ lookup('file', backend_env_file, errors='ignore') | default('', true) | parse_dotenv }}"
 # db.yml 이 읽는 OpenBao 경로 (openbao_kv_prefix 아래)
-db_openbao_paths: [main-db, main-db-root, main-db-exporter, main-valkey, minio-root, minio-app, minio-rag, ci-smoke-db, seed-admin]
+db_openbao_paths: [main-db, main-db-root, main-db-exporter, main-valkey, minio-root, minio-app, minio-rag, minio-loki, ci-smoke-db, seed-admin]
 
 db_port: "{{ openbao_kv['main-db'].port | default(backend_env.DB_PORT | default('3306', true), true) }}"
 db_database: "{{ openbao_kv['main-db'].dbname | default(backend_env.DB_DATABASE | default('hotel_service', true), true) }}"
@@ -113,6 +113,14 @@ dynamodb_uid: 1000        # 컨테이너 실행 사용자 = 데이터 디렉토�
 db_exporter_user: exporter
 db_exporter_password: "{{ openbao_kv['main-db-exporter'].password | default('') }}"
 
+# ── 로그 저장소: Loki (roles/loki, README 17-8) ────────────────
+# 클러스터 · 결제 · DB 노드의 Alloy 가 push, Grafana 가 조회. 저장은 MinIO 버킷 loki (전용 계정, 이 버킷에만 권한)
+# 계정은 OpenBao minio-loki (없으면 db.yml 이 생성). Loki 는 인증이 없으므로 ufw 로 tailscale0 에서만 허용
+minio_loki_bucket: loki
+minio_loki_policy: hotel-loki
+minio_loki_access_key: "{{ openbao_kv['minio-loki'].access_key | default('') }}"
+minio_loki_secret_key: "{{ openbao_kv['minio-loki'].secret_key | default('') }}"
+
 # ── 방화벽: tailscale0 에서만 허용할 포트 (firewall role) ─────
 firewall_tailnet_tcp_ports:
   - "{{ db_port }}"            # MariaDB
@@ -121,6 +129,7 @@ firewall_tailnet_tcp_ports:
   - "{{ minio_console_port }}" # MinIO Console (팀원 PC)
   - "{{ dynamodb_port }}"      # DynamoDB Local (chat-bot-service)
   - "{{ openbao_port }}"       # OpenBao (ESO · Ansible · 팀원 PC UI)
+  - "{{ loki_port }}"          # Loki (클러스터 · 결제 노드 Alloy push, Grafana 조회)
 
 # ── 튜닝 (k6 부하 테스트 대비) ─────────────────────────────
 # 커넥션: DB 사용 서비스 5개 × replica × TypeORM(mysql2) 기본 풀 10 → replica 3 기준 150, 여유 포함

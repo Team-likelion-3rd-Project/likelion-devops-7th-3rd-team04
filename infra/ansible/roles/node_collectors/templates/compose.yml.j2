@@ -53,8 +53,25 @@ services:
       - ./conf/config.alloy:/etc/alloy/config.alloy:ro
       # DB 접속 비밀값 (Alloy 실행 uid 만 읽음). local.file 이 바뀌면 다시 읽으므로 재시작 불필요
       - ./secrets:/etc/alloy/secrets:ro
-      # remote_write WAL — 클러스터에 닿지 않는 동안 쌓았다가 다시 보냄
+      # remote_write WAL — 클러스터에 닿지 않는 동안 쌓았다가 다시 보냄 (로그를 어디까지 읽었는지(positions)도 여기)
       - {{ collectors_data_dir }}/alloy:/var/lib/alloy/data
+{% if collectors_loki_url %}
+      # ── 로그 → Loki (README 17-8) ──
+      # 컨테이너 로그 · 메타데이터. docker.sock 은 :ro 여도 API 를 쓸 수 있어 사실상 root 권한 (cAdvisor 와 같은 수준)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # journald (영구 · 휘발 저장소 모두) — machine-id 로 저널 디렉토리를 찾음
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+{% if collectors_slow_log %}
+      # MariaDB 데이터 디렉토리 — Alloy uid 는 ACL 로 통과(x) · slow.log 읽기(r)만 됨 (tasks/main.yml)
+      - {{ collectors_slow_log | dirname }}:/var/log/mariadb-slow:ro
+{% endif %}
+    group_add:
+{% for gid in collectors_log_gids %}
+      - "{{ gid }}"
+{% endfor %}
+{% endif %}
     depends_on:
       - node-exporter
       - cadvisor
