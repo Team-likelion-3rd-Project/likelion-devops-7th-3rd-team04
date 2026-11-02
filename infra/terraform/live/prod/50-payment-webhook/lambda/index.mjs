@@ -1,5 +1,5 @@
-// 임시 구현 (LDP-206 인프라 검증용). 백엔드 구현으로 교체한다.
-// 토스 웹훅 원본 본문과 토스 헤더를 큐에 넣고, 전송에 성공한 뒤에만 200 을 응답한다.
+// 토스 웹훅 본문(JSON 객체)과 토스 헤더를 큐에 넣고, 전송에 성공한 뒤에만 200 을 응답한다.
+// 판단은 하지 않는다. payment-service 소비기가 메시지를 꺼내 저장하고 토스 재조회로 검증한다.
 // 전송 실패는 500 으로 응답해 토스 재전송에 맡긴다. 본문에는 결제 정보가 있어 로그에 남기지 않는다.
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 
@@ -16,12 +16,14 @@ const sqs = new SQSClient({
 const respond = (statusCode) => ({ statusCode, body: '' });
 
 export const handler = async (event) => {
-  const body = event.isBase64Encoded
+  const raw = event.isBase64Encoded
     ? Buffer.from(event.body ?? '', 'base64').toString('utf8')
     : (event.body ?? '');
 
+  // 소비기가 body.eventType 을 읽으므로 문자열이 아닌 객체로 보낸다
+  let body;
   try {
-    JSON.parse(body);
+    body = JSON.parse(raw);
   } catch {
     console.warn('JSON 이 아닌 웹훅 본문을 거부합니다');
     return respond(400);
