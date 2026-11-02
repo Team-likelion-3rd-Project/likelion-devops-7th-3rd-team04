@@ -148,8 +148,8 @@ variable "argocd_sync_timeout_seconds" {
   default     = 1800
 }
 
-variable "enable_deploy_notify" {
-  description = "이 클러스터에서 배포 결과 알림(deploy-notify)을 발행할지 여부. 병행 기간에는 70 만 발행하고, 가중치를 옮길 때(LDP-202) true"
+variable "enable_singleton_workloads" {
+  description = "한 클러스터에서만 돌아야 하는 작업(마이그레이션 · seed · llm-ingest · Alertmanager 발행 · 배포 알림)을 이 클러스터에서 켤지 여부. 병행 기간에는 70 만 실행하고, 트래픽을 0/100 으로 옮긴 뒤(LDP-202) true"
   type        = bool
   default     = false
 }

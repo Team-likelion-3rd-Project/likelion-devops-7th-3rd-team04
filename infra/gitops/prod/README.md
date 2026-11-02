@@ -60,7 +60,7 @@ public 레포에 둘 수 없는 클러스터 값(계정 ID 등)은 root 앱을 �
 |---|---|
 | `global.awsAccountId` | AWS 계정 ID (CP Role 로 STS 조회) |
 
-**클러스터별 차이** (70 kubeadm · 72 EKS 병행): root 값 `cluster`(기본 kubeadm, 72 Terraform 은 eks)로 나눈다. `chart.yaml` 의 `clusters: [kubeadm]` 은 앱을 고르고(없으면 모든 클러스터), `<앱>/values-<cluster>.yaml` 은 `values.yaml` 위에 더한다. 72 는 한 번만 돌아야 하는 작업(마이그레이션 · seed · llm-ingest · mysql-exporter 계정 Job · 배포 알림 · Alertmanager 발행)을 끈다 — 가중치를 옮길 때(LDP-202) 켠다. Git 에 둘 수 없는 앱 전용 값(VPC ID)은 root 값 `appValues.<앱>` 으로 받는다.
+**클러스터별 차이** (70 kubeadm · 72 EKS 병행): root 값 `cluster`(기본 kubeadm, 72 Terraform 은 eks)로 나눈다. `chart.yaml` 의 `clusters: [kubeadm]` 은 앱을 고르고(없으면 모든 클러스터), `<앱>/values-<cluster>.yaml` 은 `values.yaml` 위에 더한다. 72 는 한 번만 돌아야 하는 작업(마이그레이션 · seed · llm-ingest · mysql-exporter 계정 Job · 배포 알림 · Alertmanager 발행)을 끈다 — 트래픽을 옮긴 뒤(LDP-202) 72 Terraform `enable_singleton_workloads` 로 켠다 (릴리스 불필요, mysql-exporter 는 `chart.yaml` 의 `clusters` 로 따로 옮김). Git 에 둘 수 없는 앱 전용 값(VPC ID)과 이 토글 값은 root 값 `appValues.<앱>` 으로 받는다.
 
 values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.awsAccountId }}` 로 씁니다 (예: `pod-identity-webhook` 매핑의 `RoleARN`, backend 의 `global.imageRegistry` · `services.*.env`). gitops 레포 `validate.sh` 는 더미 값(`000000000000`)으로 렌더링합니다. 비밀값은 넣지 않습니다.
 
