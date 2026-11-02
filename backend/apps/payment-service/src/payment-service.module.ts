@@ -18,6 +18,8 @@ import { PgMockClient } from './pg-mock/pg-mock.client';
 import { TossPaymentsClient } from './pg/toss-payments.client';
 import { OutboxPublisherService } from './outbox/outbox-publisher.service';
 import { PaymentReconciliationService } from './reconciliation/payment-reconciliation.service';
+import { TossWebhookConsumer } from './webhook/toss-webhook.consumer';
+import { TossWebhookInboxService } from './webhook/toss-webhook-inbox.service';
 
 @Module({
   imports: [
@@ -75,6 +77,9 @@ import { PaymentReconciliationService } from './reconciliation/payment-reconcili
     OutboxPublisherService,
     // 결제 대사 배치 — 결과 불명 결제 확정·환불 실패 재시도 (LDP-97)
     PaymentReconciliationService,
+    // 토스 웹훅 수신 (SQS → pg_webhook_inbox)
+    TossWebhookInboxService,
+    TossWebhookConsumer,
     { provide: SQS_CLIENT, useFactory: createSqsClient },
   ],
 })

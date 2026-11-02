@@ -66,7 +66,10 @@ function statusIn(
 }
 
 // MariaDB UNIQUE 위반(ER_DUP_ENTRY)인지. constraint를 주면 그 제약 이름이 들어간 경우만 true
-function isDuplicateKeyError(error: unknown, constraint?: string): boolean {
+export function isDuplicateKeyError(
+  error: unknown,
+  constraint?: string,
+): boolean {
   if (!(error instanceof QueryFailedError)) {
     return false;
   }
