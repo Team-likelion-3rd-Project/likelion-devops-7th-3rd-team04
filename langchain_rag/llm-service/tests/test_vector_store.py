@@ -89,6 +89,26 @@ def test_object_store_rejects_index_built_with_other_embedding_model():
     assert object_store(s3).query([1.0, 0.0, 0.0], top_k=3) == []
 
 
+def test_object_store_loaded_documents_reports_memory_state_only():
+    s3 = FakeS3()
+    object_store(s3).replace_all(items())
+    reader = object_store(s3)
+
+    assert reader.loaded_documents() is None  # 아직 읽지 않음 — /health가 저장소를 조회하지 않음
+    assert s3.gets == 0
+    reader.query([1.0, 0.0, 0.0], top_k=1)
+    assert reader.loaded_documents() == 3
+
+
+def test_object_store_rejected_index_reports_zero_documents():
+    s3 = FakeS3()
+    object_store(s3, model="ollama:nomic-embed-text").replace_all(items())
+    reader = object_store(s3)
+    reader.query([1.0, 0.0, 0.0], top_k=1)
+
+    assert reader.loaded_documents() == 0
+
+
 def test_object_store_rejects_query_with_other_dimension():
     s3 = FakeS3()
     store = object_store(s3)
