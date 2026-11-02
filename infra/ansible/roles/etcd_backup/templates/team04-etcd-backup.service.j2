@@ -1,0 +1,11 @@
+# Ansible(roles/etcd_backup) 이 관리. etcd snapshot + PKI → S3 (README 18절)
+[Unit]
+Description=etcd snapshot + kubeadm PKI backup to S3
+Wants=network-online.target
+After=network-online.target kubelet.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/team04-etcd-backup
+Nice=10
+IOSchedulingClass=idle

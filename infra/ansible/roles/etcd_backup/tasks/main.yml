@@ -1,0 +1,159 @@
+---
+# etcd snapshot + kubeadm PKI → AWS S3 백업 timer (README 18절)
+# OpenBao 는 Tailnet 으로 읽으므로 tailscale role 뒤에서 (ACL: tag:k8s-node → tag:db tcp:8200)
+- name: OpenBao 값 읽기 (aws-backup)
+  ansible.builtin.import_role:
+    name: openbao_kv
+    tasks_from: read
+  vars:
+    openbao_read_paths: [aws-backup]
+
+- name: 백업 자격 증명 확인
+  ansible.builtin.set_fact:
+    etcd_backup_enabled: >-
+      {{ etcd_backup_aws_access_key_id | length > 0 and etcd_backup_aws_secret_access_key | length > 0 }}
+  no_log: true
+
+- name: etcd 백업 건너뜀 (자격 증명 없음)
+  ansible.builtin.debug:
+    msg: >-
+      OpenBao {{ openbao_kv_prefix }}/aws-backup(access_key_id · secret_access_key) 도, 환경변수 AWS_BACKUP_ACCESS_KEY_ID 도 없어
+      etcd 백업 timer 를 설치하지 않습니다. Terraform 16-onprem-backup apply · access key 발급 후 다시 실행하세요 (README 18-1).
+  when: not (etcd_backup_enabled | bool)
+
+- name: etcd 백업 구성
+  when: etcd_backup_enabled | bool
+  block:
+    - name: age 공개키 확인
+      ansible.builtin.assert:
+        that: etcd_backup_age_recipients | select('match', '^age1') | list | length > 0
+        fail_msg: >-
+          etcd_backup_age_recipients(group_vars/control_plane.yml) 에 age 공개키(age1...)가 없습니다.
+          age-keygen 으로 키를 만들고 공개키를 넣은 뒤 다시 실행하세요 (README 18-1).
+        quiet: true
+
+    - name: 패키지 설치 (age, awscli)
+      ansible.builtin.apt:
+        name: [age, awscli]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: etcd static pod manifest 읽기
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/manifests/etcd.yaml
+      register: etcd_manifest
+      when: etcd_backup_etcd_version | length == 0
+
+    # 클러스터 etcd 와 같은 버전의 etcdctl · etcdutl 을 쓴다 (예: registry.k8s.io/etcd:3.5.21-0 → 3.5.21)
+    - name: etcd 버전 결정
+      ansible.builtin.set_fact:
+        etcd_backup_resolved_version: >-
+          {{ etcd_backup_etcd_version if etcd_backup_etcd_version | length > 0
+             else (etcd_manifest.content | b64decode | regex_search('image:\s*\S*/etcd:v?([0-9]+\.[0-9]+\.[0-9]+)', '\1') | first) }}
+
+    - name: 설치된 etcdutl 버전 확인
+      ansible.builtin.command: /usr/local/bin/etcdutl version
+      register: etcdutl_installed
+      changed_when: false
+      failed_when: false
+
+    - name: etcdctl · etcdutl 설치
+      when: >-
+        etcdutl_installed.rc != 0 or
+        ('etcdutl version: ' ~ etcd_backup_resolved_version) not in etcdutl_installed.stdout
+      vars:
+        etcd_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] }}"
+        etcd_release: "etcd-v{{ etcd_backup_resolved_version }}-linux-{{ etcd_arch }}"
+        etcd_release_url: "https://github.com/etcd-io/etcd/releases/download/v{{ etcd_backup_resolved_version }}"
+      block:
+        - name: 작업 디렉토리
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: etcd
+          register: etcd_tmp
+
+        - name: etcd 릴리스 다운로드 (sha256 검증)
+          ansible.builtin.get_url:
+            url: "{{ etcd_release_url }}/{{ etcd_release }}.tar.gz"
+            dest: "{{ etcd_tmp.path }}/{{ etcd_release }}.tar.gz"
+            checksum: "sha256:{{ etcd_release_url }}/SHA256SUMS"
+            mode: "0644"
+
+        - name: 압축 해제
+          ansible.builtin.unarchive:
+            src: "{{ etcd_tmp.path }}/{{ etcd_release }}.tar.gz"
+            dest: "{{ etcd_tmp.path }}"
+            remote_src: true
+
+        - name: /usr/local/bin 설치
+          ansible.builtin.copy:
+            src: "{{ etcd_tmp.path }}/{{ etcd_release }}/{{ item }}"
+            dest: "/usr/local/bin/{{ item }}"
+            remote_src: true
+            owner: root
+            group: root
+            mode: "0755"
+          loop: [etcdctl, etcdutl]
+
+      always:
+        - name: 작업 디렉토리 정리
+          ansible.builtin.file:
+            path: "{{ etcd_tmp.path }}"
+            state: absent
+          when: etcd_tmp.path is defined
+
+    - name: 설정 디렉토리
+      ansible.builtin.file:
+        path: "{{ etcd_backup_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: S3 업로드 자격 증명
+      ansible.builtin.template:
+        src: aws-credentials.j2
+        dest: "{{ etcd_backup_config_dir }}/aws-credentials"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: age 공개키
+      ansible.builtin.template:
+        src: age-recipients.j2
+        dest: "{{ etcd_backup_config_dir }}/age-recipients"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: 백업 스크립트
+      ansible.builtin.template:
+        src: etcd-backup.sh.j2
+        dest: /usr/local/sbin/team04-etcd-backup
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: 백업 systemd unit
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: "0644"
+      loop:
+        - team04-etcd-backup.service
+        - team04-etcd-backup.timer
+
+    - name: 백업 timer 활성화
+      ansible.builtin.systemd_service:
+        name: team04-etcd-backup.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: 접속 정보
+      ansible.builtin.debug:
+        msg:
+          - "etcd 백업 → s3://{{ etcd_backup_bucket }}/{{ etcd_backup_prefix }}/ (etcd {{ etcd_backup_resolved_version }}, {{ etcd_backup_calendar }} · 부팅 15분 후)"
+          - "즉시 실행: sudo systemctl start team04-etcd-backup.service && journalctl -u team04-etcd-backup -n 30"

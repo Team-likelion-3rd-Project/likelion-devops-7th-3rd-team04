@@ -20,3 +20,7 @@
       tags: [addon_placement]
     - role: join_info
       tags: [join_info]
+    # etcd snapshot + PKI → S3 (README 18절). 자격 증명(OpenBao aws-backup)이 없으면 건너뜀
+    # 기존 클러스터에 timer 만 적용: --tags etcd_backup
+    - role: etcd_backup
+      tags: [etcd_backup]

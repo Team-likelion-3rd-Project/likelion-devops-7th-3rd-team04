@@ -4,7 +4,7 @@
 
 | Playbook | 대상 | 하는 일 |
 |---|---|---|
-| `control-plane.yml` | `[control_plane]` (1대) | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm init` → Calico(VXLAN) 설치 → worker용 `join.env` 생성 |
+| `control-plane.yml` | `[control_plane]` (1대) | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm init` → Calico(VXLAN) 설치 → worker용 `join.env` 생성 → etcd 백업 timer(S3, [18절](#18-etcd-백업-aws-s3)) |
 | `worker-join.yml` | `[workers]` | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm join` |
 | `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → OpenBao(dev 비밀값, [16절](#16-openbao--external-secrets-operator-dev-비밀값)) → MariaDB + Valkey + MinIO (Docker Compose) → 모니터링 수집기([17-6](#17-6-db-지표-db-노드--결제-db)) → dev 시딩(`--tags seed`, 스키마가 있을 때만) — [7절](#7-db-노드-구성-mariadb--valkey--minio) |
 | `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
@@ -60,7 +60,7 @@ infra/ansible/
 │                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle
 │                              # gitlab_bootstrap, backend_namespace, argocd, payment_stack,
 │                              # openbao, openbao_kv(OpenBao 읽기/쓰기 공용), external_secrets,
-│                              # metrics_server, monitoring
+│                              # metrics_server, monitoring, etcd_backup(etcd · PKI → S3)
 └── .secrets/                  # (자동 생성, gitignore) openbao.env, openbao/(static key · init.json),
                                # join.env, admin.conf, gitlab-runner.env, gitlab-k8s.env, github-mirror.env,
                                # payment-node.env, argocd.env — 16-7 참고
@@ -1730,3 +1730,71 @@ set -a; source .env; source .secrets/openbao.env; set +a
 | 슬로우 쿼리가 안 들어옴 | slow.log 가 없을 때 실행했으면 MariaDB 기동 후 `--tags collectors` 다시 (읽기 ACL 을 그때 줌). `getfacl <데이터 디렉토리>/slow.log` 에 Alloy uid 가 있는지 |
 | journald 로그가 없음 | 그 노드에 `/var/log/journal` 이 있는지(영구 저장) — 없으면 `/run/log/journal`(휘발)만 읽음 |
 | Loki 가 S3 오류로 재시작 | `docker logs loki` 의 `AccessDenied` → OpenBao `minio-loki` 를 바꿨다면 `docker exec minio mcli admin user remove local loki` 후 `db.yml --tags loki` |
+
+---
+
+## 18. etcd 백업 (AWS S3)
+
+control plane 의 **etcd snapshot + `/etc/kubernetes/pki` + `admin.conf`** 를 하루 한 번 AWS S3 전용 버킷에 올립니다 (`roles/etcd_backup`).
+
+- **대상이 아닌 것:** DB(MariaDB · Valkey · DynamoDB Local · ElasticMQ)는 시딩으로 다시 만들고(7-5), 로그는 Loki(17-8)가 맡습니다. OpenBao 는 16-5 의 수동 스냅샷을 그대로 씁니다.
+- **흐름:** `team04-etcd-backup.timer`(매일 12:00 · 부팅 15분 후, `Persistent=true`) → `etcdctl snapshot save` → `etcdutl snapshot status` 로 확인 → tar.gz → **age 로 암호화** → `s3://team04-hotel-onprem-backup/etcd/onprem-dev/YYYY/MM/DD/<노드>-<UTC 시각>.tar.gz.age`
+- **AWS 쪽:** 버킷 · 업로드 전용 IAM user 는 Terraform [`live/prod/16-onprem-backup`](../terraform/live/prod/16-onprem-backup/README.md). user 는 `etcd/*` 에 PutObject 만 할 수 있습니다 (읽기 · 목록 · 삭제 불가). 30일 뒤 만료, 덮어쓴 이전 버전은 7일 보관.
+- **암호화:** snapshot 에는 Kubernetes Secret 이 평문으로 들어 있고 공유 계정이라 버킷을 읽을 수 있는 주체가 많습니다. 그래서 노드에는 age **공개키**만 두고, 복호화 개인키는 팀 password manager 에만 둡니다 (OpenBao 에 두면 OpenBao 가 망가졌을 때 함께 잃음).
+- etcdctl · etcdutl 은 `/etc/kubernetes/manifests/etcd.yaml` 의 이미지 태그와 같은 버전을 GitHub 릴리스에서 받아 sha256 을 검증한 뒤 설치합니다 (`etcd_backup_etcd_version` 으로 고정 가능).
+
+### 18-1. 최초 구성 (CP 담당자 1회)
+
+1. Terraform 담당자가 `16-onprem-backup` 을 apply 하고 access key 를 발급해 OpenBao `aws-backup` 에 넣습니다 ([전달 문서](../terraform/live/prod/16-onprem-backup/README.md) 4절).
+2. age 키를 만들고 개인키를 팀 password manager 에 저장합니다.
+   ```bash
+   sudo apt install age
+   mkdir -p .secrets/backup && age-keygen -o .secrets/backup/age.key   # 출력의 "Public key: age1..." 이 공개키
+   ```
+3. 공개키를 `inventory/group_vars/control_plane.yml` 의 `etcd_backup_age_recipients` 에 넣고 커밋합니다 (여러 명이면 목록으로, 누구의 키로든 풀 수 있음).
+4. 실행합니다. OpenBao 도입 전이면 `AWS_BACKUP_ACCESS_KEY_ID` · `AWS_BACKUP_SECRET_ACCESS_KEY` 환경변수로도 됩니다.
+   ```bash
+   set -a; source .env; source .secrets/openbao.env; set +a
+   ansible-playbook control-plane.yml --tags etcd_backup -K
+   ```
+
+자격 증명이 없으면 role 은 경고만 남기고 건너뜁니다 (키 발급 전에 `control-plane.yml` 을 실행해도 실패하지 않음). 자격 증명은 있는데 age 공개키가 없으면 중단합니다.
+
+### 18-2. 확인 · 수동 실행
+
+```bash
+systemctl list-timers team04-etcd-backup.timer
+sudo systemctl start team04-etcd-backup.service       # 즉시 실행
+journalctl -u team04-etcd-backup -n 30                # snapshot status 표 · "uploaded s3://..." 줄
+```
+
+업로드 user 는 목록을 볼 수 없으므로 객체 확인은 관리자 계정(`AWS_PROFILE=team04`)으로 합니다.
+
+```bash
+aws s3 ls s3://team04-hotel-onprem-backup/etcd/onprem-dev/ --recursive --profile team04 | tail
+```
+
+### 18-3. 복구
+
+CP VM 을 새로 만들었거나 etcd 데이터가 깨졌을 때 (단일 CP 기준).
+
+```bash
+# 1) 로컬(관리자)에서 받아 풀기
+aws s3 cp s3://team04-hotel-onprem-backup/etcd/onprem-dev/<날짜>/<파일>.tar.gz.age . --profile team04
+age -d -i .secrets/backup/age.key -o backup.tar.gz <파일>.tar.gz.age
+mkdir restore && tar -xzf backup.tar.gz -C restore      # etcd.db, pki/, admin.conf
+etcdutl snapshot status restore/etcd.db -w table
+
+# 2) CP 노드로 복사한 뒤 (CP 에서)
+sudo mv /etc/kubernetes/manifests/etcd.yaml /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/   # etcd · apiserver 정지
+sudo cp -a restore/pki/. /etc/kubernetes/pki/ && sudo cp restore/admin.conf /etc/kubernetes/admin.conf
+sudo mv /var/lib/etcd /var/lib/etcd.broken
+sudo etcdutl snapshot restore restore/etcd.db --data-dir /var/lib/etcd   --name "$(hostname)" --initial-cluster "$(hostname)=https://<CP Tailscale IP>:2380"   --initial-advertise-peer-urls "https://<CP Tailscale IP>:2380"
+sudo mv /tmp/etcd.yaml /tmp/kube-apiserver.yaml /etc/kubernetes/manifests/
+kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes
+```
+
+- `--name` · peer URL 은 `/etc/kubernetes/manifests/etcd.yaml` 의 `--name` · `--initial-advertise-peer-urls` 와 같아야 합니다.
+- 새 VM 이면 `kubeadm init` 전에 `pki/` 를 먼저 넣어 두면 같은 CA 로 init 되어 워커의 join 정보(CA hash)가 바뀌지 않습니다. 그다음 위 순서로 etcd 를 교체합니다.
+- 복구 후 snapshot 이후에 생긴 리소스는 ArgoCD 가 gitops 레포 기준으로 다시 맞춥니다.
+
