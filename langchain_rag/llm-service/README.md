@@ -14,15 +14,17 @@
 | 파일 | 역할 |
 |---|---|
 | `app/main.py` | HTTP 엔드포인트 (`POST /chat`, `GET /health`) |
-| `app/chain.py` | 의도 분류 → 프롬프트 + 대화 이력 + LLM 호출 |
+| `app/chain.py` | 의도 분류와 RAG 검색(동시 실행) → 근거 기반 프롬프트 + 대화 이력 + LLM 호출 |
 | `app/llm.py` | LLM·임베딩 공급자 선택 (Ollama / Vertex AI). 클라이언트는 첫 호출 때 생성 |
 | `app/intent.py` | 예약·결제·취소 의도 분류와 예약 슬롯 추출·검증 |
-| `app/retrieval.py` | RAG 검색 (질문 임베딩 → 벡터 스토어 조회) |
+| `app/retrieval.py` | RAG 검색 (질문 임베딩 → 지점 필터 · 벡터 스토어 조회 → 유사도 임계값) |
 | `app/vector_store.py` | 벡터 스토어 구현 (S3 Vectors / S3 호환 저장소의 JSON / 없음) |
-| `app/corpus.py` | RAG 인덱스에 넣을 문서 (호텔·객실·부대시설·정책) |
+| `app/corpus.py` | RAG 인덱스에 넣을 문서 (호텔·객실·요금·부대시설·공지·브랜드·정책) |
+| `app/rag_catalog.json` | 호텔·객실·부대시설·공지 원본. `backend/scripts/seed-catalog.ts`에서 생성하는 파일이라 직접 고치지 않음 |
 | `app/config.py` | 환경변수 설정 (`.env.example` 참고) |
-| `scripts/ingest.py` | `corpus.py`를 임베딩해 벡터 스토어에 적재 |
-| `tests/` | 의도 검증 · 벡터 스토어 · 공급자 선택 테스트 (`pip install -r requirements-dev.txt && python -m pytest tests`). CI `test:llm-service` |
+| `scripts/ingest.py` | `corpus.py`를 임베딩해 벡터 스토어에 적재하고, corpus에 없는 문서는 인덱스에서 지움 |
+| `scripts/eval_retrieval.py` | 검색 품질(hit@k) 점검과 `RAG_MIN_SCORE` 보정 |
+| `tests/` | 의도 검증 · 코퍼스 · 검색 · 체인 · 벡터 스토어 · 공급자 선택 테스트 (`pip install -r requirements-dev.txt && python -m pytest tests`). CI `test:llm-service` |
 
 ## API
 
@@ -79,7 +81,15 @@ uvicorn app.main:app --env-file .env --reload
 
 ## RAG 검색
 
-`POST /chat`에 `context`가 없으면 `app/retrieval.py`가 질문을 임베딩해 벡터 스토어에서 가까운 문서 `RAG_TOP_K`개를 찾아 프롬프트에 붙입니다. 스토어가 설정되지 않았거나 조회가 실패하면(자격 증명 없음, 네트워크, 권한 등) 에러를 내지 않고 근거 없이 답변합니다.
+`POST /chat`에 `context`가 없으면 `app/retrieval.py`가 질문을 임베딩해 벡터 스토어에서 가까운 문서 `RAG_TOP_K`개를 찾습니다. 의도 분류(`app/intent.py`)와는 서로 결과가 필요 없어 `asyncio.gather`로 동시에 실행합니다. 스토어가 설정되지 않았거나 조회가 실패하면(자격 증명 없음, 네트워크, 권한 등) 에러를 내지 않고 근거 없이 답변합니다.
+
+- **지점 필터**: 질문에 지점 이름이나 별칭(`corpus.HOTEL_ALIASES` — 예: 해운대 → 부산점)이 나오면 그 지점 문서와 공통 문서(metadata `hotel: "all"`)에서만 찾습니다. LLM을 부르지 않는 키워드 매칭입니다.
+- **유사도 임계값**: 코사인 유사도가 `RAG_MIN_SCORE`(기본 0.62) 미만인 문서는 버립니다. 값은 `scripts/eval_retrieval.py`로 정했습니다(관련 질문 20개 hit@3 20/20, 기대 문서 최저 0.646, 무관 질문 0.53~0.68). 임베딩 모델이나 corpus를 크게 바꾸면 다시 돌리세요.
+- **근거 기반 답변**: 검색 결과는 시스템 프롬프트의 `<context>` 블록에 들어갑니다. 지점·객실·요금·정책·부대시설·공지에 대한 사실은 그 안의 내용으로만 답하고, 없으면 모른다고 하며 지점 연락처를 안내하도록 지시합니다. 검색 결과가 없으면 그 사실을 프롬프트에 명시합니다.
+
+```bash
+LLM_PROVIDER=vertex GCP_SA_KEY_JSON="$(cat ../../infra/ansible/.secrets/llm-service-dev-sa.json)" python -m scripts.eval_retrieval
+```
 
 | `VECTOR_STORE` | 동작 | 필요한 값 |
 |---|---|---|
@@ -109,7 +119,11 @@ uvicorn app.main:app --env-file .env --reload
 
 ### 인덱스 적재
 
-`scripts/ingest.py`가 `app/corpus.py`의 문서를 임베딩해 선택된 벡터 스토어에 씁니다. `s3vectors`는 key 단위로 덮어쓰고(`s3vectors:PutVectors` 권한 필요), `object`는 인덱스 파일 전체를 새로 씁니다(버킷 쓰기 권한 필요).
+`scripts/ingest.py`가 `app/corpus.py`의 문서를 임베딩해 선택된 벡터 스토어에 씁니다. 적재가 끝나면 인덱스는 corpus와 정확히 같아집니다.
+
+- `s3vectors`: key 단위로 덮어쓴 뒤, `list_vectors`로 corpus에 없는 key를 찾아 `delete_vectors`로 지웁니다. `s3vectors:PutVectors` · `ListVectors` · `DeleteVectors` 권한이 필요합니다(prod: Terraform `51-pod-roles`의 llm-ingest Role).
+- `object`: 인덱스 파일 전체를 새로 씁니다(버킷 쓰기 권한 필요).
+- 클러스터에서는 backend 차트의 `llm-ingest` Job이 llm-service 이미지가 바뀔 때마다 실행합니다(dev·prod 모두 gitops values `llmIngest.enabled`).
 
 ```bash
 # 로컬
@@ -118,8 +132,18 @@ python -m scripts.ingest
 # compose로 띄운 컨테이너 안에서
 docker compose -f ../docker-compose.yml exec llm-service python -m scripts.ingest
 
-# 온프레미스 dev 클러스터 (배포 후 1회, corpus 가 바뀔 때마다)
+# 클러스터에서 수동으로 다시 적재할 때
 kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
 ```
 
-`corpus.py`의 호텔·객실·부대시설 문서는 `backend/scripts/seed.ts`를 옮긴 것입니다. seed를 바꾸면 `corpus.py`도 함께 고치고 ingest를 다시 실행하세요.
+### 호텔 데이터 동기화 (rag catalog)
+
+호텔·객실·부대시설·공지 데이터의 원본은 DB 시딩과 같은 `backend/scripts/seed-catalog.ts` 하나입니다. llm-service 이미지는 backend 파일을 읽을 수 없어서, 그 데이터를 `app/rag_catalog.json`으로 내보내 커밋해 둡니다.
+
+```bash
+cd backend && npm run rag:export-catalog   # seed-catalog.ts 를 고친 뒤 실행해 JSON 을 함께 커밋
+```
+
+두 파일이 어긋나면 backend CI(`scripts/export-rag-catalog.spec.ts`)가 실패합니다. 브랜드 소개 문서는 `frontend/src/data/brandValues.ts`, 정책 문서는 `corpus.py`에 직접 적혀 있습니다.
+
+문서 metadata의 `hotel`이 지점 한글 이름에서 slug / `"all"`로 바뀌었습니다. 이전에 적재한 인덱스는 지점 필터에 걸리지 않으므로 이번 변경을 배포할 때 다시 적재해야 합니다(Job이 자동으로 처리).
