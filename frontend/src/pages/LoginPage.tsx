@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { login } from '../api/gateway'
+import KakaoLoginButton from '../components/KakaoLoginButton'
 import { loginRedirectPath, type LoginLocationState } from '../utils/loginRedirect'
 import './LoginPage.css'
 
@@ -75,6 +76,8 @@ function LoginPage() {
             {isLoading ? '로그인 중...' : '로그인'}
           </button>
         </form>
+
+        <KakaoLoginButton from={loginState?.from} />
 
         <p className="login-footer">
           계정이 없으신가요? <Link to="/signup" state={loginState?.from ? { from: loginState.from } : undefined}>

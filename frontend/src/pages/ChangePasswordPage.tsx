@@ -2,12 +2,15 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { changePassword, logout } from '../api/gateway'
+import { customerAuth } from '../api/tokenStore'
 import './MyPage.css'
 
 // 사이드바에서 "비밀번호 변경"을 누르면 곧장 이 폼이 보인다 (예전처럼 버튼을 한 번 더 눌러야
 // 폼이 펼쳐지는 중간 단계는 없앴다).
 function ChangePasswordPage() {
   const navigate = useNavigate()
+  // 카카오 회원이 주소로 직접 들어온 경우 — 메뉴에서는 숨겼고 서버도 400 SOCIAL_ACCOUNT_NO_PASSWORD로 막는다 (LDP-195)
+  const isSocialUser = !!customerAuth.useUser()?.socialProvider
 
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -41,6 +44,19 @@ function ChangePasswordPage() {
     } finally {
       setIsSubmitting(false)
     }
+  }
+
+  if (isSocialUser) {
+    return (
+      <section className="mypage-page">
+        <div className="mypage-content">
+          <div className="mypage-section">
+            <h1 className="mypage-title">비밀번호 변경</h1>
+            <p>카카오로 가입한 계정은 비밀번호가 없어 변경할 수 없어요. 카카오 로그인으로 이용해 주세요.</p>
+          </div>
+        </div>
+      </section>
+    )
   }
 
   return (
