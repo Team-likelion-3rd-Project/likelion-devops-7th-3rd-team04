@@ -29,7 +29,7 @@ syncRetry:
 deployNotify:
   region: us-east-1
   topicName: team04-hotel-deploy      # 10-global deploy_topic_name
-  roleName: team04-hotel-deploy-notify # 70 irsa.tf deploy-notify (신뢰 sub system:serviceaccount:argocd:deploy-notify)
+  roleName: team04-hotel-deploy-notify # 51-pod-roles deploy-notify (신뢰 sub system:serviceaccount:argocd:deploy-notify)
   # kubectl · jq · aws(v1) 포함. 태그 변조를 막으려고 digest(멀티 아키텍처 index)로 고정.
   # kubectl 은 클러스터 버전(1.35)과 마이너 ±1 안에서 맞춘다. 올릴 때: docker buildx imagetools inspect alpine/k8s:<버전>
   image: "docker.io/alpine/k8s:1.35.9@sha256:b9cb6db0091a2327c0a56ecda69d37fa830c7a96ea669e7382b3ee778aa07a24"

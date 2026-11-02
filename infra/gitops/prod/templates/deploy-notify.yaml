@@ -173,7 +173,7 @@ template:
       - name: tmp
         emptyDir:
           sizeLimit: 64Mi
-      # 70 irsa.tf deploy-notify Role 신뢰 정책(sub system:serviceaccount:argocd:deploy-notify, aud sts.amazonaws.com)
+      # 51-pod-roles deploy-notify Role 신뢰 정책(sub system:serviceaccount:argocd:deploy-notify, aud sts.amazonaws.com)
       - name: aws-token
         projected:
           defaultMode: 0444

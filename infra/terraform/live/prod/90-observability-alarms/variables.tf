@@ -53,9 +53,9 @@ variable "alb_arn_suffix" {
   type        = string
 }
 
-variable "alb_target_group_arn_suffix" {
-  description = "80-main-edge 의 target_group_arn_suffix (워커)"
-  type        = string
+variable "alb_target_group_arn_suffixes" {
+  description = "80-main-edge 의 target_group_arn_suffixes (kubeadm, eks → TG arn_suffix). TG 별 unhealthy 알람"
+  type        = map(string)
 }
 
 variable "db_instance_identifiers" {
@@ -86,6 +86,12 @@ variable "unhealthy_evaluation_minutes" {
   description = "Target Group unhealthy 가 이 시간(분) 동안 이어지면 알람. 노드 교체 · 결제 서버 부팅(약 2 – 5분)보다 길게 둔다"
   type        = number
   default     = 5
+}
+
+variable "ec2_cpu_surplus_charged_threshold" {
+  description = "계정 EC2 CPUSurplusCreditsCharged 5분 합 임계값(크레딧). 1 크레딧 = vCPU 1개 100% 1분, t3a 초과 1 vCPU 시간 0.05 USD. 0 이면 과금이 생기는 즉시 알림"
+  type        = number
+  default     = 0
 }
 
 variable "db_cpu_surplus_threshold" {

@@ -1,10 +1,15 @@
-# 파드용 IRSA Role. 10-global 의 OIDC 공급자(자체 IRSA)를 신뢰한다.
+# 메인 클러스터 파드용 Role (LDP-200). kubeadm(70) · EKS(72) 가 같은 Role 을 쓰도록 클러스터 스택 밖에 둔다.
+# Role 이 하나라 아래 리소스 정책(Role 이름으로 허용)은 클러스터가 바뀌어도 그대로다.
 #
-#   kube-apiserver --service-account-issuer = var.oidc_issuer_url  (CP extra vars, Ansible kubeadm 템플릿)
-#   keys.json(SA 서명 공개키)                CP-a 가 init 직후 OIDC 버킷에 올린다 (iam.tf PutOidcKeys)
-#   ns/SA → Role 매핑                        pod-identity-webhook ConfigMap (infra/gitops/prod/pod-identity-webhook)
+# 신뢰 정책 (Role 마다 같은 ns/SA 로 제한)
+#   IRSA          70 kubeadm. 10-global 의 OIDC 공급자(자체 발급자). sub(네임스페이스 · ServiceAccount) · aud 를 정확히 비교
+#                   kube-apiserver --service-account-issuer = var.oidc_issuer_url  (70 CP extra vars, Ansible kubeadm 템플릿)
+#                   keys.json(SA 서명 공개키)                CP-a 가 init 직후 OIDC 버킷에 올린다 (70 iam.tf PutOidcKeys)
+#                   ns/SA → Role 매핑                        pod-identity-webhook ConfigMap (infra/gitops/prod/pod-identity-webhook)
+#   Pod Identity  72 EKS (var.enable_pod_identity). 세션 태그 kubernetes-namespace · kubernetes-service-account 와
+#                 aws:SourceArn(클러스터 ARN)을 비교한다. ns/SA → Role 매핑은 72 의 Pod Identity Association
 #
-# 신뢰 정책은 sub(네임스페이스 · ServiceAccount) 와 aud 를 정확히 비교해 다른 SA 의 위임을 거부한다.
+# 70 을 정리할 때는 IRSA statement 만 지운다 (10-global 자체 OIDC 와 함께).
 # 리소스 정책이 Role 이름으로 허용하므로 이름(키)을 바꾸면 그쪽 변수도 바꾼다.
 #   external-secrets  41-main-data external_secrets_role_name (Secret 리소스 정책)
 #   booking-service   43-messaging booking_role_name (큐 정책)
@@ -22,7 +27,7 @@ locals {
   oidc_provider     = trimprefix(var.oidc_issuer_url, "https://")
   oidc_provider_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.oidc_provider}"
 
-  irsa_roles = {
+  pod_roles = {
     external-secrets = {
       description     = "External Secrets Operator (Secrets Manager read)"
       namespace       = "external-secrets"
@@ -94,10 +99,13 @@ locals {
 
   # 15-chatbot-vectors 인덱스 (s3vectors 리소스 ARN 형식 bucket/<버킷>/index/<인덱스>)
   vector_index_arn = "arn:${data.aws_partition.current.partition}:s3vectors:${var.region}:${data.aws_caller_identity.current.account_id}:bucket/${var.vector_bucket_name}/index/${var.vector_index_name}"
+
+  # 72 클러스터 ARN. 이름으로 만들어 72 에 의존하지 않는다 (클러스터가 없어도 Role 을 만들 수 있음)
+  eks_cluster_arn = "arn:${data.aws_partition.current.partition}:eks:${var.region}:${data.aws_caller_identity.current.account_id}:cluster/${var.eks_cluster_name}"
 }
 
-data "aws_iam_policy_document" "irsa_assume" {
-  for_each = local.irsa_roles
+data "aws_iam_policy_document" "pod_assume" {
+  for_each = local.pod_roles
 
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -119,14 +127,48 @@ data "aws_iam_policy_document" "irsa_assume" {
       values   = ["sts.amazonaws.com"]
     }
   }
+
+  # Pod Identity Agent 가 AssumeRole 하며 세션 태그를 붙인다 (TagSession 필요).
+  # Association 을 만들 때 세션 태그를 끄면(disable_session_tags) 아래 조건이 맞지 않아 거부된다
+  dynamic "statement" {
+    for_each = var.enable_pod_identity ? [1] : []
+
+    content {
+      sid     = "EksPodIdentity"
+      actions = ["sts:AssumeRole", "sts:TagSession"]
+
+      principals {
+        type        = "Service"
+        identifiers = ["pods.eks.amazonaws.com"]
+      }
+
+      condition {
+        test     = "ArnEquals"
+        variable = "aws:SourceArn"
+        values   = [local.eks_cluster_arn]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestTag/kubernetes-namespace"
+        values   = [each.value.namespace]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestTag/kubernetes-service-account"
+        values   = [each.value.service_account]
+      }
+    }
+  }
 }
 
-resource "aws_iam_role" "irsa" {
-  for_each = local.irsa_roles
+resource "aws_iam_role" "pod" {
+  for_each = local.pod_roles
 
   name               = "${var.project}-${each.key}"
   description        = each.value.description
-  assume_role_policy = data.aws_iam_policy_document.irsa_assume[each.key].json
+  assume_role_policy = data.aws_iam_policy_document.pod_assume[each.key].json
 }
 
 # ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키)과 12-secrets 의 시드 관리자 · Grafana admin 계정 값 조회만.
@@ -144,7 +186,7 @@ data "aws_iam_policy_document" "external_secrets" {
 
 resource "aws_iam_role_policy" "external_secrets" {
   name   = "secrets-read"
-  role   = aws_iam_role.irsa["external-secrets"].id
+  role   = aws_iam_role.pod["external-secrets"].id
   policy = data.aws_iam_policy_document.external_secrets.json
 }
 
@@ -159,7 +201,7 @@ data "aws_iam_policy_document" "booking_service" {
 
 resource "aws_iam_role_policy" "booking_service" {
   name   = "payment-result-consume"
-  role   = aws_iam_role.irsa["booking-service"].id
+  role   = aws_iam_role.pod["booking-service"].id
   policy = data.aws_iam_policy_document.booking_service.json
 }
 
@@ -177,7 +219,7 @@ data "aws_iam_policy_document" "hotel_service" {
 
 resource "aws_iam_role_policy" "hotel_service" {
   name   = "room-images"
-  role   = aws_iam_role.irsa["hotel-service"].id
+  role   = aws_iam_role.pod["hotel-service"].id
   policy = data.aws_iam_policy_document.hotel_service.json
 }
 
@@ -193,7 +235,7 @@ data "aws_iam_policy_document" "seed" {
 
 resource "aws_iam_role_policy" "seed" {
   name   = "seed-room-images"
-  role   = aws_iam_role.irsa["seed"].id
+  role   = aws_iam_role.pod["seed"].id
   policy = data.aws_iam_policy_document.seed.json
 }
 
@@ -214,7 +256,7 @@ data "aws_iam_policy_document" "chat_bot_service" {
 
 resource "aws_iam_role_policy" "chat_bot_service" {
   name   = "chat-tables"
-  role   = aws_iam_role.irsa["chat-bot-service"].id
+  role   = aws_iam_role.pod["chat-bot-service"].id
   policy = data.aws_iam_policy_document.chat_bot_service.json
 }
 
@@ -229,7 +271,7 @@ data "aws_iam_policy_document" "llm_service" {
 
 resource "aws_iam_role_policy" "llm_service" {
   name   = "rag-query"
-  role   = aws_iam_role.irsa["llm-service"].id
+  role   = aws_iam_role.pod["llm-service"].id
   policy = data.aws_iam_policy_document.llm_service.json
 }
 
@@ -244,7 +286,7 @@ data "aws_iam_policy_document" "llm_ingest" {
 
 resource "aws_iam_role_policy" "llm_ingest" {
   name   = "rag-put"
-  role   = aws_iam_role.irsa["llm-ingest"].id
+  role   = aws_iam_role.pod["llm-ingest"].id
   policy = data.aws_iam_policy_document.llm_ingest.json
 }
 
@@ -270,7 +312,7 @@ data "aws_iam_policy_document" "fluent_bit" {
 
 resource "aws_iam_role_policy" "fluent_bit" {
   name   = "cluster-logs"
-  role   = aws_iam_role.irsa["fluent-bit"].id
+  role   = aws_iam_role.pod["fluent-bit"].id
   policy = data.aws_iam_policy_document.fluent_bit.json
 }
 
@@ -291,7 +333,7 @@ data "aws_iam_policy_document" "deploy_notify" {
 
 resource "aws_iam_role_policy" "deploy_notify" {
   name   = "deploy-notify"
-  role   = aws_iam_role.irsa["deploy-notify"].id
+  role   = aws_iam_role.pod["deploy-notify"].id
   policy = data.aws_iam_policy_document.deploy_notify.json
 }
 
@@ -312,7 +354,7 @@ data "aws_iam_policy_document" "alertmanager" {
 
 resource "aws_iam_role_policy" "alertmanager" {
   name   = "alerts-publish"
-  role   = aws_iam_role.irsa["alertmanager"].id
+  role   = aws_iam_role.pod["alertmanager"].id
   policy = data.aws_iam_policy_document.alertmanager.json
 }
 
@@ -352,7 +394,7 @@ data "aws_iam_policy_document" "grafana" {
 
 resource "aws_iam_role_policy" "grafana" {
   name   = "cloudwatch-read"
-  role   = aws_iam_role.irsa["grafana"].id
+  role   = aws_iam_role.pod["grafana"].id
   policy = data.aws_iam_policy_document.grafana.json
 }
 
@@ -372,6 +414,6 @@ data "aws_iam_policy_document" "grafana_amp" {
 
 resource "aws_iam_role_policy" "grafana_amp" {
   name   = "amp-read"
-  role   = aws_iam_role.irsa["grafana"].id
+  role   = aws_iam_role.pod["grafana"].id
   policy = data.aws_iam_policy_document.grafana_amp.json
 }

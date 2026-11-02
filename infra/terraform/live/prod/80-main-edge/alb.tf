@@ -1,4 +1,10 @@
-# 퍼블릭 ALB → 워커 ASG NodePort 30080 (Traefik web 엔트리포인트).
+# 퍼블릭 ALB → Traefik web 엔트리포인트. 클러스터별 Target Group 에 가중치로 나눈다 (var.traffic_weights).
+#
+#   kubeadm  워커 ASG NodePort 30080 (instance 타입, 70)
+#   eks      Traefik 파드 IP:8000 (ip 타입, 72 의 AWS Load Balancer Controller TargetGroupBinding 이 등록)
+#
+# EKS 전환(블루/그린)은 가중치만 바꾼다: 100/0 → 90/10 → 0/100. 대상이 없는 TG 는 가중치를 0 으로 둔다
+# (가중치가 있는데 대상이 없으면 그 비율만큼 503).
 
 resource "aws_lb" "main" {
   name               = "${local.name}-alb"
@@ -53,21 +59,71 @@ resource "aws_lb_target_group" "worker" {
   }
 }
 
+# 72 EKS Traefik 파드. 대상 등록은 TargetGroupBinding(클러스터 안)이 하고 Terraform 은 TG 만 만든다.
+# 대상이 없으면 UnHealthyHostCount 지표도 없어 90 알람은 울리지 않는다
+resource "aws_lb_target_group" "eks" {
+  name        = "${local.name}-eks"
+  vpc_id      = local.network.vpc_id
+  port        = var.traefik_container_port
+  protocol    = "HTTP"
+  target_type = "ip"
+
+  deregistration_delay = 30
+
+  # worker TG 와 같은 Traefik /ping. ip 타입이라 traffic-port 가 파드의 web 포트다
+  health_check {
+    protocol            = "HTTP"
+    path                = "/ping"
+    port                = "traffic-port"
+    matcher             = "200"
+    interval            = 15
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  tags = {
+    Name = "${local.name}-eks"
+  }
+}
+
 # 연결 리소스는 사용하는 쪽 스택에 둔다. ASG 가 새로 띄운 워커도 자동 등록된다
 resource "aws_autoscaling_attachment" "worker" {
   autoscaling_group_name = var.worker_asg_name
   lb_target_group_arn    = aws_lb_target_group.worker.arn
 }
 
-# 인증서 없음: 80 → 워커. 인증서 있음: 80 → 443 리다이렉트
+# 리스너가 나눠 보낼 Target Group (키 = var.traffic_weights 키)
+locals {
+  target_groups = {
+    kubeadm = aws_lb_target_group.worker
+    eks     = aws_lb_target_group.eks
+  }
+}
+
+# 인증서 없음: 80 → Target Group (가중치). 인증서 있음: 80 → 443 리다이렉트
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
-    type             = local.https_enabled ? "redirect" : "forward"
-    target_group_arn = local.https_enabled ? null : aws_lb_target_group.worker.arn
+    type = local.https_enabled ? "redirect" : "forward"
+
+    dynamic "forward" {
+      for_each = local.https_enabled ? [] : [1]
+
+      content {
+        dynamic "target_group" {
+          for_each = local.target_groups
+
+          content {
+            arn    = target_group.value.arn
+            weight = var.traffic_weights[target_group.key]
+          }
+        }
+      }
+    }
 
     dynamic "redirect" {
       for_each = local.https_enabled ? [1] : []
@@ -91,8 +147,18 @@ resource "aws_lb_listener" "https" {
   certificate_arn   = local.certificate_arn
 
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.worker.arn
+    type = "forward"
+
+    forward {
+      dynamic "target_group" {
+        for_each = local.target_groups
+
+        content {
+          arn    = target_group.value.arn
+          weight = var.traffic_weights[target_group.key]
+        }
+      }
+    }
   }
 }
 

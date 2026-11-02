@@ -39,12 +39,12 @@ kubeadm 클러스터라 EKS 의 IRSA 를 직접 구성했습니다.
 ```
 Terraform 10-global  OIDC 버킷(발급자 문서) · IAM OIDC 공급자
 Ansible (CP-a init)  kube-apiserver --service-account-issuer = OIDC 버킷 URL, keys.json(SA 서명 공개키) 업로드
-Terraform 70         IRSA Role (irsa.tf, 신뢰 정책 sub · aud StringEquals)
+Terraform 51         IRSA Role (51-pod-roles, 신뢰 정책 sub · aud StringEquals)
 pod-identity-webhook ns/SA → Role 매핑(values.yaml) 의 파드에 AWS_ROLE_ARN · 웹 ID 토큰 주입
 ```
 
-- **IRSA 를 쓰는 앱을 추가할 때**: Terraform 70 `irsa.tf` 의 `irsa_roles` 에 Role(ns · SA) 을, `pod-identity-webhook/values.yaml` 에 같은 ns/SA 매핑을 추가합니다. SA 에 `eks.amazonaws.com/role-arn` annotation 은 달지 않습니다 (ARN 에 계정 ID 가 들어감).
-- **비밀값**: 앱은 `ExternalSecret` 에서 `ClusterSecretStore` `aws-secrets-manager` 를 참조해 Secrets Manager 값(`team04-hotel/prod/*`)을 받습니다. 읽을 수 있는 Secret 은 ESO Role 정책(70 `irsa.tf`)과 Secret 리소스 정책(41-main-data)이 제한합니다.
+- **IRSA 를 쓰는 앱을 추가할 때**: Terraform `51-pod-roles` 의 `pod_roles` 에 Role(ns · SA) 을, `pod-identity-webhook/values.yaml` 에 같은 ns/SA 매핑을 추가합니다. SA 에 `eks.amazonaws.com/role-arn` annotation 은 달지 않습니다 (ARN 에 계정 ID 가 들어감).
+- **비밀값**: 앱은 `ExternalSecret` 에서 `ClusterSecretStore` `aws-secrets-manager` 를 참조해 Secrets Manager 값(`team04-hotel/prod/*`)을 받습니다. 읽을 수 있는 Secret 은 ESO Role 정책(`51-pod-roles`)과 Secret 리소스 정책(41-main-data)이 제한합니다.
 - **backend Secret**: `backend-secrets` 앱이 Secret `backend-secrets` 를 만듭니다 (`chart/values.yaml` 의 `data` = Secret key ← Secrets Manager 이름 · 속성). backend 차트의 Flyway hook Job 은 차트의 일반 리소스보다 먼저 돌기 때문에 Secret 을 backend 릴리스 밖에 둡니다. 서비스가 새 `secretEnv` 를 쓰면 여기와 Terraform 41-main-data Secret 에 같이 추가합니다.
 - **backend IRSA**: backend 차트가 서비스마다 같은 이름의 ServiceAccount 를 만듭니다 (`serviceAccounts.create: true`). 매핑은 `backend/<서비스 이름>` 으로 추가합니다.
 - **시드 관리자 계정**: `backend-secrets` 앱이 별도 ExternalSecret 으로 Secret `seed-admin` 을 만듭니다 (`chart/values.yaml` 의 `seedAdmin`, 원본 Terraform 12-secrets `team04-hotel/prod/seed-admin`). `backend-secrets` 에 합치지 않아 이 값이 없어도 서비스 Secret 동기화는 영향을 받지 않습니다 (아래 "운영 시드").
@@ -151,7 +151,7 @@ node-exporter (모든 노드) · kube-state-metrics ┘                         
 | `monitoring` · `kube-prometheus-stack` | 55 · 60 | **backend 뒤** — 관측 스택이 Healthy 가 아니어도(Grafana Secret 없음 등) 서비스 배포는 먼저 끝나고, root sync 만 실패로 알림 |
 | `mysql-exporter-setup` · `mysql-exporter` | 62 · 65 | 메인 RDS exporter (**기본 `enabled: false`**, 아래 "DB · 캐시 지표"). 계정 생성 Job 이 실패해도 관측 스택은 먼저 뜸 |
 
-- **온프레미스와 values 를 공유하지 않습니다.** 운영은 Alertmanager · 저장소 · 노출 · 결제 지표가 달라 `kube-prometheus-stack/values.yaml` 하나에 둡니다. 다만 `team04.resources` · `team04.app` 규칙은 온프레미스 `infra/ansible/roles/monitoring/files/kube-prometheus-stack-values-common.yaml` 의 사본이라 규칙을 바꿀 때 양쪽을 같이 고칩니다 (`team04.payment-node` · `team04.db` 는 운영에 없음).
+- **온프레미스와 values 를 공유하지 않습니다.** 운영은 Alertmanager · 저장소 · 노출 · 결제 지표가 달라 `kube-prometheus-stack/values.yaml` 하나에 둡니다. 다만 `team04.resources` · `team04.app` 규칙은 온프레미스 `infra/ansible/roles/monitoring/files/kube-prometheus-stack-values-common.yaml` 의 사본이라 규칙을 바꿀 때 양쪽을 같이 고칩니다 (`team04.payment-node` · `team04.db` 는 운영에 없음). `team04.nodes` 는 운영에만 있습니다 (EKS 전환 준비, LDP-200).
 - **대시보드**는 온프레미스 `files/dashboards/*.json` 의 사본(`monitoring/chart/dashboards/`, `team04-payment-node` · `team04-db` 제외)입니다. 원본만 고치고 복사합니다 — GitHub CI `Monitoring Dashboard Copies` 가 다르면 실패합니다. 운영 전용 대시보드는 `monitoring/chart/dashboards-prod/` 에 둡니다 (사본 검사 대상 아님).
 - **수집 대상 · 라벨**: 모든 대상에 `cluster="main"` · `env="prod"` 를 붙입니다(온프레미스 대시보드 · 규칙 쿼리와 호환). kubeadm 제어부(etcd · scheduler · controller-manager · kube-proxy)는 127.0.0.1 바인딩이라 수집하지 않습니다. backend 는 `backend/values.yaml` `metrics.enabled`(llm-service 제외), 9464 는 Service · Ingress 에 없습니다. Prometheus(워커 파드) → 노드 kubelet 10250 · node-exporter 9100 은 Terraform `30-security` M8 입니다.
 - **Grafana**: `https://grafana.<도메인>` (ALB → Traefik Ingress). WAF 가 `grafana_allowed_cidrs`(Terraform `80-main-edge/terraform.tfvars`) 외 출발지를 403 으로 막습니다 ([Terraform README](../../terraform/README.md) 7절). 로그인은 `admin` / Secrets Manager `team04-hotel/prod/grafana-admin`(Terraform `12-secrets`, 등록 전에는 Grafana 파드가 Secret 을 기다림). 대시보드 · 데이터소스는 코드로만 관리하고 저장소가 없어, UI 에서 고친 것은 재생성 때 사라집니다.
@@ -174,7 +174,7 @@ CloudWatch Logs /aws/rds/instance/<식별자>/{error,slowquery} ─┴→ Grafan
 메인 RDS ← mysqld_exporter (mysql-exporter, 토글) ─────────────────→ Prometheus (쿼리 수 · 락 대기 · 슬로우 쿼리 수)
 ```
 
-- **CloudWatch 데이터 소스**: `kube-prometheus-stack/values.yaml` `grafana.additionalDataSources`. 자격 증명은 IRSA(`monitoring/kube-prometheus-stack-grafana` → `team04-hotel-grafana`, Terraform 70 `irsa.tf`) — 지표 읽기와 `/aws/rds/instance/team04-hotel-*` · `/team04-hotel/prod/*` 로그 그룹의 Logs Insights 조회만 됩니다. 알람(`#alerts`)은 Terraform `90` 이 만들고 [Terraform README](../../terraform/README.md) 14절에 있습니다.
+- **CloudWatch 데이터 소스**: `kube-prometheus-stack/values.yaml` `grafana.additionalDataSources`. 자격 증명은 IRSA(`monitoring/kube-prometheus-stack-grafana` → `team04-hotel-grafana`, Terraform `51-pod-roles`) — 지표 읽기와 `/aws/rds/instance/team04-hotel-*` · `/team04-hotel/prod/*` 로그 그룹의 Logs Insights 조회만 됩니다. 알람(`#alerts`)은 Terraform `90` 이 만들고 [Terraform README](../../terraform/README.md) 14절에 있습니다.
 - **대시보드 `team04 / DB (prod)`** (`monitoring/chart/dashboards-prod/team04-db-prod.json`): 온프레미스 `team04 / DB` 의 운영판입니다. 메인 DB 서버(exporter, 토글이 꺼져 있으면 No data) · RDS 인스턴스(CloudWatch, 메인 · 결제) · 메인 앱 커넥션 풀(backend db-metrics) · Valkey(CloudWatch — 운영엔 redis exporter 없음) · RDS 슬로우 쿼리 · 에러 로그. 결제 서버의 앱 커넥션 풀은 AMP 로 가서 이 Prometheus 에 없습니다.
 - **슬로우 · 에러 로그**: RDS 파라미터 그룹(41 · 42)의 `log_slow_query`(기준 `db_slow_query_seconds`, 기본 1초) · `innodb_print_all_deadlocks` 를 CloudWatch Logs 로 내보냅니다. Grafana Explore → CloudWatch → Logs 에서 그룹 `/aws/rds/instance/team04-hotel-main/slowquery` 를 고릅니다.
 - **mysqld_exporter (토글)**: `mysql-exporter-setup` · `mysql-exporter` 의 `chart.yaml` `enabled` 를 **같이** `true` 로 바꿉니다. 메인 RDS 만 수집합니다 (결제 RDS 는 Payment VPC 라 닿지 않음 — CloudWatch 만).
@@ -194,6 +194,7 @@ k -n monitoring get externalsecret mysql-exporter-setup mysql-exporter-config
 |---|---|---|
 | `ApiGateway5xxRateHigh` | api-gateway 5xx 비율 > 5% 5분 (0.1 rps 이상) | Grafana `team04-service-overview` · api-gateway 로그. ALB 5xx 알람과 같이 오면 워커 · Traefik 쪽 |
 | `NodeEventLoopLagHigh` | 이벤트 루프 지연 p99 > 0.5초 10분 | `team04-nodejs-runtime` 에서 그 파드의 CPU · GC. 동기 작업 · CPU limit |
+| `WorkerCpuAboveT3aBreakEven` (운영 전용 `team04.nodes`) | 워커 평균 CPU(3시간, CP 제외) > 41% 15분 | t3a unlimited 손익분기(m6a.large 대비, 근사치). 노드 대시보드 · Terraform 90 `ec2-cpu-surplus-charged`, 계속되면 워커 인스턴스 타입 검토 |
 | `PodRestartingFrequently` · `ContainerOOMKilled` · `ContainerMemoryNearLimit` | 재시작 · OOM · 메모리 limit 90% | `k -n <ns> describe pod`, 이전 컨테이너 로그(`--previous`), limit 조정 |
 | 기본 규칙 (`Kube*` · `Node*` · `Prometheus*` 등) | kube-prometheus-stack 기본 | 알림 description 의 runbook (`runbook_url` 라벨) |
 

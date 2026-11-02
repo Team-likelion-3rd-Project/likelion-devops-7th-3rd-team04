@@ -24,6 +24,10 @@ data "aws_ami" "ubuntu" {
   }
 }
 
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
+
 locals {
   name = "${var.project}-main"
 
@@ -38,7 +42,7 @@ locals {
     "kubernetes.io/cluster/${local.name}" = "owned"
   }
 
-  # IMDSv2 강제. hop limit 1 이라 파드(호스트 네트워크 제외) 는 노드 Role 자격 증명을 얻지 못한다 → 파드 권한은 IRSA
+  # IMDSv2 강제. hop limit 1 이라 파드(호스트 네트워크 제외) 는 노드 Role 자격 증명을 얻지 못한다 → 파드 권한은 IRSA (Role 은 51-pod-roles)
   metadata_options = {
     http_endpoint               = "enabled"
     http_tokens                 = "required"

@@ -43,6 +43,7 @@ infra/terraform/
         ├── 43-messaging/            🔁
         ├── 44-payment-endpoints/    🔁
         ├── 50-payment-webhook/      🔁
+        ├── 51-pod-roles/            🔁 메인 클러스터 파드 Role (IRSA · EKS Pod Identity 신뢰, 70 · 72 공용)
         ├── 60-payment-app/          🔁 결제 서버 · NLB · Endpoint Service
         ├── 61-payment-mock/         🔁 부하 테스트용 pg-mock 인스턴스
         ├── 70-main-cluster-kubeadm/ 🔁
@@ -150,7 +151,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 20-network   21-observability-base
 30-security
 41-main-data   42-payment-data   43-messaging   44-payment-endpoints
-50-payment-webhook
+50-payment-webhook   51-pod-roles
 60-payment-app   61-payment-mock
 70-main-cluster-kubeadm   71-payment-link
 80-main-edge
@@ -638,7 +639,7 @@ https://www.<도메인>/*         → 301 루트 (api-gateway CORS 출처가 루
 ```
 
 - 🔒 상시 유지라 매일 재생성과 무관하게 프론트 · 사진이 남습니다. Zone · 인증서는 같은 1x 단계인 `10-global` 을 dependency 대신 도메인 이름으로 조회합니다.
-- `70-main-cluster-kubeadm`(hotel-service IRSA) 이 `13` 의 output 을 mock 없이 읽으므로 **`13` 을 먼저 apply** 합니다 (`run --all apply` 는 순서대로 처리).
+- `51-pod-roles`(hotel-service IRSA) 가 `13` 의 output 을 mock 없이 읽으므로 **`13` 을 먼저 apply** 합니다 (`run --all apply` 는 순서대로 처리).
 - 버킷은 CloudFront(OAC, `aws:SourceArn` = 이 배포)만 읽습니다. 쓰기는 버킷 정책이 릴리스 Role(사이트 `releases/*`) · hotel-service(사진) · apply 주체 외에는 거부합니다.
 - 릴리스 · 롤백 절차는 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스" — 버전 전환은 gitops merge 후 GitHub Actions 만 합니다 (`release.tf`).
 
@@ -712,7 +713,7 @@ gcloud iam service-accounts keys list --managed-by=user \
 
 ---
 
-## 12. 챗봇 운영 구성 (`15-chatbot-vectors` · 70 IRSA)
+## 12. 챗봇 운영 구성 (`15-chatbot-vectors` · 51 IRSA)
 
 ```
 프론트 → api-gateway → chat-bot-service ──(IRSA)──→ DynamoDB 대화 테이블 (41, 매일 재생성)
@@ -721,7 +722,7 @@ gcloud iam service-accounts keys list --managed-by=user \
 릴리스마다 llm-ingest Job ──(IRSA)──→ S3 Vectors PutVectors   (문서 = llm-service 이미지의 app/corpus.py)
 ```
 
-| ServiceAccount (backend) | AWS 권한 (70 `irsa.tf`) | GCP |
+| ServiceAccount (backend) | AWS 권한 (`51-pod-roles`) | GCP |
 |---|---|---|
 | `chat-bot-service` | 대화 테이블 2개 `PutItem` · `Query` (GSI 포함) | – |
 | `llm-service` | 인덱스 `QueryVectors` · `GetVectors` | `llm-service-prod` impersonate |
@@ -757,7 +758,7 @@ kubectl -n backend logs job/<llm-ingest-...> --tail=3        # "20 documents ind
 - 레코드: `data`(JSON 로그를 펼친 값, JSON 이 아니면 `log` 원문) · `kubernetes`(네임스페이스 · 파드 · 컨테이너 · 노드, 라벨 · 어노테이션 없음) · `date` · `log_group_ns`.
 - S3 경로의 날짜 · 시각은 **UTC** 입니다 (한국 시간 오전 9시 전 로그는 전날 폴더).
 - **네임스페이스를 추가할 때**: `21` `cluster_log_namespaces` 와 gitops `fluent-bit/values.yaml` Lua 필터의 `known` 에 같이 추가합니다. Fluent Bit 은 그룹을 만들지 못하므로(권한 없음) 한쪽만 고치면 그 로그는 `other` 로 가거나(gitops 만 빠짐) 거부됩니다(21 만 빠짐).
-- Fluent Bit Role(`team04-hotel-fluent-bit`, 70 `irsa.tf`)은 위 그룹의 `CreateLogStream` · `PutLogEvents` 와 버킷 `app-logs/main-cluster/*` `PutObject` 만 가집니다.
+- Fluent Bit Role(`team04-hotel-fluent-bit`, `51-pod-roles`)은 위 그룹의 `CreateLogStream` · `PutLogEvents` 와 버킷 `app-logs/main-cluster/*` `PutObject` 만 가집니다.
 - 노드가 지워지면 아직 올리지 않은 마지막 5분 이내 로그는 S3 에 남지 않습니다 (CloudWatch 는 수 초 단위로 전송).
 
 ```bash
@@ -803,7 +804,9 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 |---|---|---|
 | `team04-hotel-payment-result-dlq` | 결제 결과 DLQ 메시지 > 0 | booking-service 로그(`/team04-hotel/prod/cluster/backend`)에서 처리 실패 원인 확인 → 원인 수정 후 DLQ 메시지를 원래 큐로 재처리(콘솔 "DLQ 재처리") |
 | `team04-hotel-main-alb-5xx-rate` | ALB 5xx 비율 > 5% (1분 3번 중 2번, 요청 20건 이상) | `kubectl -n backend get pods`, api-gateway 로그. ELB 5xx 만 늘면 대상 없음(워커 · Traefik) |
-| `team04-hotel-main-alb-unhealthy` | 워커 Target Group unhealthy 5분 | 7절 Target Group 상태, 워커 교체 중인지(6절) 확인 |
+| `team04-hotel-main-alb-kubeadm-unhealthy` | 워커(70 NodePort 30080) Target Group unhealthy 5분 | 7절 Target Group 상태, 워커 교체 중인지(6절) 확인 |
+| `team04-hotel-main-alb-eks-unhealthy` | EKS(72 Traefik 파드 8000) Target Group unhealthy 5분. 대상이 없으면 울리지 않음 | Traefik 파드 · TargetGroupBinding 상태 확인 |
+| `team04-hotel-ec2-cpu-surplus-charged` | 계정 EC2 `CPUSurplusCreditsCharged` 5분 합 > 0 (Metrics Insights) | t3a unlimited 초과 사용이 과금됨. Prometheus 노드 평균 CPU 알람 · 노드 대시보드 확인, 계속되면 고정 성능 타입(m6a) 검토 |
 | `team04-hotel-payment-nlb-unhealthy` | 결제 NLB unhealthy 5분 | 9절 결제 서버 SSM 접속 → `docker ps` · app 로그. ASG 가 교체 중일 수 있음 |
 | `team04-hotel-payment-deploy-failed` | 결제 agent `deploy_failed` · `invalid_release` · `rollback_failed` | `#deploy` 의 인스턴스별 결과 → 9절 배포 이벤트 조회. 없는 태그면 gitops payment values 수정 PR |
 | `team04-hotel-payment-mock-deployed` | 결제 agent `deploy_success` 이면서 `provider = MOCK` | 부하 테스트가 아니면 gitops payment values `PAYMENT_PROVIDER` 를 `TOSS` 로 되돌리는 PR |

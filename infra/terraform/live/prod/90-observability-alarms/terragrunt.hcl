@@ -56,8 +56,11 @@ dependency "main_edge" {
   config_path = "../80-main-edge"
 
   mock_outputs = {
-    alb_arn_suffix          = "app/team04-hotel-main-alb/0000000000000000"
-    target_group_arn_suffix = "targetgroup/team04-hotel-main-worker/0000000000000000"
+    alb_arn_suffix = "app/team04-hotel-main-alb/0000000000000000"
+    target_group_arn_suffixes = {
+      kubeadm = "targetgroup/team04-hotel-main-worker/0000000000000000"
+      eks     = "targetgroup/team04-hotel-main-eks/0000000000000000"
+    }
   }
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
@@ -79,6 +82,6 @@ inputs = {
   }
   valkey_member_clusters = dependency.main_data.outputs.valkey_member_clusters
 
-  alb_arn_suffix              = dependency.main_edge.outputs.alb_arn_suffix
-  alb_target_group_arn_suffix = dependency.main_edge.outputs.target_group_arn_suffix
+  alb_arn_suffix                = dependency.main_edge.outputs.alb_arn_suffix
+  alb_target_group_arn_suffixes = dependency.main_edge.outputs.target_group_arn_suffixes
 }

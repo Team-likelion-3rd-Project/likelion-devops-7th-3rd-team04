@@ -102,7 +102,7 @@ variable "deploy_publisher_role_names" {
   description = "배포 토픽에 발행하는 Role 이름 (매일 재생성 스택이 고정 이름으로 만든다). gitops_ssm_sync Role 은 자동 포함"
   type        = list(string)
   default = [
-    "team04-hotel-deploy-notify", # 70 irsa.tf — 메인 클러스터 ArgoCD 배포 결과 알림
+    "team04-hotel-deploy-notify", # 51-pod-roles — 메인 클러스터 ArgoCD 배포 결과 알림
     "team04-hotel-payment-app",   # 60 iam.tf — 결제 서버 pull agent
   ]
 }
@@ -111,7 +111,7 @@ variable "alert_publisher_role_names" {
   description = "알림 토픽에 발행하는 Role 이름 (CloudWatch 알람 · EventBridge 외, 매일 재생성 스택이 고정 이름으로 만든다)"
   type        = list(string)
   default = [
-    "team04-hotel-alertmanager", # 70 irsa.tf — 메인 클러스터 Prometheus 알림 (LDP-179)
+    "team04-hotel-alertmanager", # 51-pod-roles — 메인 클러스터 Prometheus 알림 (LDP-179)
   ]
 }
 

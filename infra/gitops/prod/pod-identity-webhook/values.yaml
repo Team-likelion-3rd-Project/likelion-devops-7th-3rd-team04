@@ -2,7 +2,7 @@
 #
 # ns/SA → Role 매핑은 SA annotation 대신 여기(ConfigMap pod-identity-webhook)에 모은다.
 # Role ARN 의 계정 ID 는 public 레포에 두지 않고 ArgoCD root 앱이 넘기는 global.awsAccountId 로 채운다.
-# 매핑을 추가할 때는 Terraform 70 irsa.tf 의 irsa_roles(신뢰 정책 sub) 에도 같은 ns/SA 를 추가한다
+# 매핑을 추가할 때는 Terraform 51-pod-roles 의 pod_roles(신뢰 정책 sub) 에도 같은 ns/SA 를 추가한다
 config:
   defaultAwsRegion: us-east-1
   podIdentityWebhookMap:
