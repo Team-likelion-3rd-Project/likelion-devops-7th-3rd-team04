@@ -34,22 +34,70 @@ AWS_PROFILE=team04 terragrunt apply
 
 `run --all apply` 에도 포함되고, `run --all destroy` 에서는 빠집니다 (`exclude`, 🔒 상시 스택).
 
-## 4. apply 후 할 일 (access key 발급 → OpenBao)
+## 4. apply 후 할 일 (access key 발급 → OpenBao 담당자에게 전달)
 
-키 값이 화면 · 셸 기록에 남지 않게 파이프로 바로 OpenBao 에 넣습니다. OpenBao 접근은 ansible README 16-4 와 같습니다 (`.secrets/openbao.env` 를 source 한 팀원 PC).
+Terraform 담당자 PC 는 OpenBao 에 접근할 수 없습니다. 그래서 키를 **OpenBao 담당자의 일회용 age 공개키로 암호화한 파일**로만 넘깁니다.
+
+- 평문 키는 화면 · 셸 기록 · 파일 · 메신저 어디에도 남지 않습니다.
+- 암호화 파일이 새어도 OpenBao 담당자의 일회용 개인키 없이는 풀 수 없습니다.
+- 양쪽 PC 에 `age` 가 필요합니다. Ubuntu/WSL 은 `sudo apt install age`, Windows 는 `winget install FiloSottile.age`, macOS 는 `brew install age`.
+
+| 단계 | 누가 | 할 일 | 넘기는 것 |
+|---|---|---|---|
+| ① | OpenBao 담당자 | 일회용 age 키 생성 | → Terraform 담당자: **공개키** `age1...` (비밀 아님) |
+| ② | Terraform 담당자 | apply 후 access key 발급과 동시에 그 공개키로 암호화 | → OpenBao 담당자: `aws-backup.json.age` (비밀 채널) |
+| ③ | OpenBao 담당자 | 복호화해 바로 OpenBao 에 저장, 일회용 키 삭제 | → Terraform 담당자: **access key ID** (비밀 아님) |
+| ④ | Terraform 담당자 | ID 대조, 암호화 파일 삭제 | → CP 담당자: "등록 완료" |
+| ⑤ | CP 담당자 | `control-plane.yml --tags etcd_backup` (ansible README 18-1) | → 둘에게: 첫 업로드 성공 |
+
+**① OpenBao 담당자 — 일회용 키 생성**
 
 ```bash
-export BAO_ADDR=$OPENBAO_ADDR BAO_TOKEN=$OPENBAO_TOKEN
-AWS_PROFILE=team04 aws iam create-access-key --user-name team04-hotel-onprem-backup \
-  --query 'AccessKey.{access_key_id:AccessKeyId,secret_access_key:SecretAccessKey}' --output json \
-  | bao kv put secret/team04-hotel/dev/aws-backup -
-bao kv get -field=access_key_id secret/team04-hotel/dev/aws-backup   # 들어갔는지 확인 (ID 만)
+cd infra/ansible
+mkdir -p .secrets/backup && age-keygen -o .secrets/backup/transfer.key   # "Public key: age1..." 를 Terraform 담당자에게
 ```
 
-그다음 CP 담당자가 `ansible-playbook control-plane.yml --tags etcd_backup` 을 실행합니다 (ansible README 18-1).
+- 이 키는 전달용입니다. etcd 백업 암호화 키(`.secrets/backup/age.key`, ansible README 18-1)와 따로 둡니다.
+- 공개키는 비밀이 아닙니다. 다만 중간에 바뀌면 다른 사람이 키를 받게 되므로, 받은 쪽은 음성 · 대면으로 앞 · 뒤 몇 글자를 맞춰 봅니다.
+
+**② Terraform 담당자 — 발급 + 암호화 (한 줄)**
+
+```bash
+cd infra/terraform/live/prod/16-onprem-backup
+AWS_PROFILE=team04 terragrunt apply
+AWS_PROFILE=team04 aws iam create-access-key --user-name team04-hotel-onprem-backup \
+  --query 'AccessKey.{access_key_id:AccessKeyId,secret_access_key:SecretAccessKey}' --output json \
+  | age -r age1<OpenBao 담당자 공개키> -o aws-backup.json.age
+```
+
+- `aws-backup.json.age` 를 팀 비밀 채널로 OpenBao 담당자에게 보냅니다 (password manager 첨부 · DM 등). 암호화돼 있어 채널이 새어도 내용은 보이지 않습니다.
+- 파이프가 실패하면(`age` 미설치 등) 키는 발급됐는데 파일이 없을 수 있습니다. 이때는 `aws iam list-access-keys --user-name team04-hotel-onprem-backup` 로 확인해 그 키를 지우고 다시 실행합니다. 이미 발급된 secret 은 다시 볼 수 없습니다.
+
+**③ OpenBao 담당자 — 복호화 → 저장**
+
+```bash
+cd infra/ansible
+set -a; source .secrets/openbao.env; set +a
+export BAO_ADDR=$OPENBAO_ADDR BAO_TOKEN=$OPENBAO_TOKEN
+bao status                                                     # Sealed false 인지
+age -d -i .secrets/backup/transfer.key aws-backup.json.age \
+  | bao kv put secret/team04-hotel/dev/aws-backup -
+bao kv get -field=access_key_id secret/team04-hotel/dev/aws-backup   # 이 ID 를 Terraform 담당자에게
+rm -f aws-backup.json.age .secrets/backup/transfer.key
+```
+
+**④ Terraform 담당자 — 확인 · 정리**
+
+```bash
+AWS_PROFILE=team04 aws iam list-access-keys --user-name team04-hotel-onprem-backup   # ③ 에서 받은 ID 와 같은지
+rm -f aws-backup.json.age      # 비밀 채널에 올린 파일도 삭제
+```
+
+그다음 CP 담당자가 ⑤ 를 진행합니다.
 
 - `aws-backup` 은 ESO 정책(`eso-dev`)에 넣지 않습니다. 클러스터는 이 키를 읽을 수 없습니다.
-- **키 교체:** 새 키를 같은 방법으로 발급해 OpenBao 를 덮어씀 → `control-plane.yml --tags etcd_backup` → 다음 백업 성공 확인 → `aws iam delete-access-key --user-name team04-hotel-onprem-backup --access-key-id <이전 ID>`. IAM user 는 키를 2개까지 가질 수 있습니다.
+- **키 교체:** 위 ①~⑤ 를 그대로 반복합니다 (OpenBao 값은 덮어씀). ⑤ 에서 새 키로 업로드가 성공했다는 연락을 받은 뒤 Terraform 담당자가 이전 키를 지웁니다: `aws iam delete-access-key --user-name team04-hotel-onprem-backup --access-key-id <이전 ID>`. IAM user 는 키를 2개까지 가질 수 있어 교체 중에도 백업이 끊기지 않습니다.
+- **키 유출 의심:** Terraform 담당자가 즉시 `aws iam update-access-key --status Inactive` 로 끈 뒤 교체합니다. 이 user 는 PutObject 만 할 수 있어 기존 백업을 읽거나 지울 수는 없습니다.
 
 ## 5. 담당자가 확인해 주실 것
 

@@ -1745,7 +1745,7 @@ control plane 의 **etcd snapshot + `/etc/kubernetes/pki` + `admin.conf`** 를 �
 
 ### 18-1. 최초 구성 (CP 담당자 1회)
 
-1. Terraform 담당자가 `16-onprem-backup` 을 apply 하고 access key 를 발급해 OpenBao `aws-backup` 에 넣습니다 ([전달 문서](../terraform/live/prod/16-onprem-backup/README.md) 4절).
+1. Terraform 담당자가 `16-onprem-backup` 을 apply 하고 access key 를 발급합니다. 키는 OpenBao 담당자의 일회용 age 공개키로 암호화한 파일로만 넘기고, OpenBao 담당자가 풀어 바로 OpenBao `aws-backup` 에 넣습니다 ([전달 문서](../terraform/live/prod/16-onprem-backup/README.md) 4절 ①~④). CP 담당자는 "등록 완료" 연락을 받은 뒤 아래를 진행합니다.
 2. age 키를 만들고 개인키를 팀 password manager 에 저장합니다.
    ```bash
    sudo apt install age
@@ -1789,7 +1789,9 @@ etcdutl snapshot status restore/etcd.db -w table
 sudo mv /etc/kubernetes/manifests/etcd.yaml /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/   # etcd · apiserver 정지
 sudo cp -a restore/pki/. /etc/kubernetes/pki/ && sudo cp restore/admin.conf /etc/kubernetes/admin.conf
 sudo mv /var/lib/etcd /var/lib/etcd.broken
-sudo etcdutl snapshot restore restore/etcd.db --data-dir /var/lib/etcd   --name "$(hostname)" --initial-cluster "$(hostname)=https://<CP Tailscale IP>:2380"   --initial-advertise-peer-urls "https://<CP Tailscale IP>:2380"
+sudo etcdutl snapshot restore restore/etcd.db --data-dir /var/lib/etcd \
+  --name "$(hostname)" --initial-cluster "$(hostname)=https://<CP Tailscale IP>:2380" \
+  --initial-advertise-peer-urls "https://<CP Tailscale IP>:2380"
 sudo mv /tmp/etcd.yaml /tmp/kube-apiserver.yaml /etc/kubernetes/manifests/
 kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes
 ```
