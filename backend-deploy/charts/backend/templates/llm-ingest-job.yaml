@@ -78,8 +78,8 @@ automountServiceAccountToken: false
 {{- end }}
 ---
 # RAG 문서 적재 (langchain_rag/llm-service/scripts/ingest.py — app/corpus.py 문서 임베딩 → 벡터 스토어)
-# 문서가 코드(corpus.py)라 릴리스마다 다시 적재해 이미지와 인덱스를 맞춘다. 문서 id 가 key 라 다시 넣어도 중복되지 않는다
-# (corpus 에서 지운 문서는 인덱스에 남는다 — 지울 때는 인덱스를 새 이름으로 만든다)
+# 문서가 코드(corpus.py · rag_catalog.json)라 릴리스마다 다시 적재해 이미지와 인덱스를 맞춘다. 문서 id 가 key 라
+# 다시 넣어도 중복되지 않고, corpus 에서 지운 문서는 적재 끝에 인덱스에서 지운다
 #
 # seed Job 과 같은 방식: hook 이 아닌 일반 Job, 실패해도 서비스 배포는 롤백되지 않는다.
 # 이름 = llm-ingest-<이미지 태그 8자>-<spec 해시 6자> (Job spec 은 바꿀 수 없어 바뀌면 새 이름으로 다시 만든다)

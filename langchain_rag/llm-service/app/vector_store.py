@@ -10,14 +10,20 @@ boto3 `s3vectors` 클라이언트 API (boto3==1.43.73 기준 확인 — AWS가 A
         {"key": str, "data": {"float32": [float, ...]}, "metadata": {...}},
     ])
   - query_vectors(vectorBucketName, indexName, topK, queryVector={"float32": [...]},
-        returnMetadata=True, returnDistance=True)
+        filter={"hotel": {"$in": [...]}}, returnMetadata=True, returnDistance=True)
     -> {"vectors": [{"key", "distance", "metadata"}], "distanceMetric", "nextToken"}
+    distance는 cosine distance(= 1 - 코사인 유사도)라 SearchHit.score = 1 - distance 로 바꿉니다.
+  - list_vectors(vectorBucketName, indexName, maxResults<=1000, nextToken) -> {"vectors": [{"key"}], "nextToken"}
+  - delete_vectors(vectorBucketName, indexName, keys=[...])   # put·delete 는 한 번에 최대 500개
 
 object 스토어의 파일 형식:
   {"embedding_model": "vertex:text-multilingual-embedding-002", "dimension": 768, "created_at": "...",
    "items": [{"key": str, "text": str, "metadata": {...}, "vector": [float, ...]}]}
 embedding_model·dimension이 현재 설정과 다르면 로드를 거부합니다 — 모델을 바꾸고 다시 ingest하지
 않았을 때 엉뚱한 문서가 검색되는 것을 막기 위함입니다.
+
+지점 필터: 문서 metadata `hotel`은 지점 slug 또는 "all"(공통 문서)입니다. query(hotels=[...])는 그 지점들과
+공통 문서만 검색합니다.
 """
 
 import json
@@ -26,13 +32,18 @@ import math
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Protocol, TypedDict
+from typing import NamedTuple, Protocol, TypedDict
 
 import boto3
 
 from . import config, llm
 
 logger = logging.getLogger(__name__)
+
+# 공통 문서의 metadata hotel 값 (app/corpus.py ALL_HOTELS 와 같음)
+ALL_HOTELS = "all"
+# S3 Vectors PutVectors · DeleteVectors 한 번에 넣을 수 있는 최대 개수
+S3VECTORS_BATCH_SIZE = 500
 
 
 class VectorItem(TypedDict):
@@ -42,16 +53,32 @@ class VectorItem(TypedDict):
     vector: list[float]
 
 
+class SearchHit(NamedTuple):
+    key: str
+    text: str
+    # 코사인 유사도. 클수록 가깝습니다(retrieval이 RAG_MIN_SCORE 미만을 버림).
+    score: float
+
+
 class VectorStore(Protocol):
     def is_configured(self) -> bool: ...
 
-    def query(self, vector: list[float], top_k: int) -> list[str]:
-        """가까운 순으로 top_k개 문서의 원문을 돌려줍니다."""
+    def query(self, vector: list[float], top_k: int, hotels: list[str] | None = None) -> list[SearchHit]:
+        """가까운 순으로 top_k개를 돌려줍니다. hotels가 있으면 그 지점과 공통("all") 문서만 검색합니다."""
         ...
 
     def replace_all(self, items: list[VectorItem]) -> None:
-        """ingest용. 인덱스를 items로 채웁니다(같은 key는 덮어씀)."""
+        """ingest용. 인덱스를 정확히 items로 맞춥니다(같은 key는 덮어쓰고, items에 없는 key는 지움)."""
         ...
+
+
+def _hotel_values(hotels: list[str]) -> list[str]:
+    return [*hotels, ALL_HOTELS]
+
+
+def _batches(values: list, size: int = S3VECTORS_BATCH_SIZE):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
 
 class S3VectorsStore:
@@ -64,7 +91,8 @@ class S3VectorsStore:
     def is_configured(self) -> bool:
         return self._client is not None and bool(self.bucket) and bool(self.index)
 
-    def query(self, vector: list[float], top_k: int) -> list[str]:
+    def query(self, vector: list[float], top_k: int, hotels: list[str] | None = None) -> list[SearchHit]:
+        options = {"filter": {"hotel": {"$in": _hotel_values(hotels)}}} if hotels else {}
         response = self._client.query_vectors(
             vectorBucketName=self.bucket,
             indexName=self.index,
@@ -72,24 +100,48 @@ class S3VectorsStore:
             queryVector={"float32": vector},
             returnMetadata=True,
             returnDistance=True,
+            **options,
         )
-        matches = response.get("vectors", [])
-        return [m["metadata"]["text"] for m in matches if m.get("metadata", {}).get("text")]
+        return [
+            SearchHit(m["key"], m["metadata"]["text"], 1.0 - m["distance"])
+            for m in response.get("vectors", [])
+            if m.get("metadata", {}).get("text")
+        ]
 
     def replace_all(self, items: list[VectorItem]) -> None:
-        self._client.put_vectors(
-            vectorBucketName=self.bucket,
-            indexName=self.index,
-            vectors=[
-                {
-                    "key": item["key"],
-                    "data": {"float32": item["vector"]},
-                    # 원문을 metadata에 같이 실어 query()가 추가 조회 없이 바로 돌려줄 수 있게 합니다.
-                    "metadata": {"text": item["text"], **item["metadata"]},
-                }
-                for item in items
-            ],
-        )
+        # 넣은 다음에 지웁니다 — 순서를 반대로 하면 적재 중에 검색 결과가 비는 순간이 생깁니다.
+        for batch in _batches(items):
+            self._client.put_vectors(
+                vectorBucketName=self.bucket,
+                indexName=self.index,
+                vectors=[
+                    {
+                        "key": item["key"],
+                        "data": {"float32": item["vector"]},
+                        # 원문을 metadata에 같이 실어 query()가 추가 조회 없이 바로 돌려줄 수 있게 합니다.
+                        "metadata": {"text": item["text"], **item["metadata"]},
+                    }
+                    for item in batch
+                ],
+            )
+        keep = {item["key"] for item in items}
+        stale = [key for key in self._list_keys() if key not in keep]
+        for batch in _batches(stale):
+            self._client.delete_vectors(vectorBucketName=self.bucket, indexName=self.index, keys=batch)
+        if stale:
+            logger.info("corpus에 없는 벡터 %d건을 지웠습니다: %s", len(stale), ", ".join(stale))
+
+    def _list_keys(self) -> list[str]:
+        keys: list[str] = []
+        options: dict[str, str] = {}
+        while True:
+            response = self._client.list_vectors(
+                vectorBucketName=self.bucket, indexName=self.index, maxResults=1000, **options
+            )
+            keys.extend(vector["key"] for vector in response.get("vectors", []))
+            if not response.get("nextToken"):
+                return keys
+            options = {"nextToken": response["nextToken"]}
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -165,17 +217,21 @@ class ObjectJsonStore:
         self._items, self._etag = items, etag
         logger.info("벡터 인덱스 로드: %d건 (%s/%s)", len(items), self.bucket, self.key)
 
-    def query(self, vector: list[float], top_k: int) -> list[str]:
+    def query(self, vector: list[float], top_k: int, hotels: list[str] | None = None) -> list[SearchHit]:
         with self._lock:
             self._refresh()
             items = self._items
         if items and len(vector) != len(items[0]["vector"]):
             logger.error("질문 벡터 차원(%d)이 인덱스와 달라 검색하지 않습니다", len(vector))
             return []
-        ranked = sorted(items, key=lambda item: _cosine(vector, item["vector"]), reverse=True)
-        return [item["text"] for item in ranked[:top_k]]
+        if hotels:
+            allowed = set(_hotel_values(hotels))
+            items = [item for item in items if item["metadata"].get("hotel") in allowed]
+        hits = [SearchHit(item["key"], item["text"], _cosine(vector, item["vector"])) for item in items]
+        return sorted(hits, key=lambda hit: hit.score, reverse=True)[:top_k]
 
     def replace_all(self, items: list[VectorItem]) -> None:
+        # 파일 전체를 새로 쓰므로 corpus에서 사라진 문서는 저절로 빠집니다.
         dimension = len(items[0]["vector"]) if items else 0
         body = {
             "embedding_model": self.embedding_model,
@@ -197,7 +253,7 @@ class NoVectorStore:
     def is_configured(self) -> bool:
         return False
 
-    def query(self, vector: list[float], top_k: int) -> list[str]:
+    def query(self, vector: list[float], top_k: int, hotels: list[str] | None = None) -> list[SearchHit]:
         return []
 
     def replace_all(self, items: list[VectorItem]) -> None:

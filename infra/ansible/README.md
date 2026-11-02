@@ -1260,7 +1260,7 @@ ansible-playbook db.yml -K
 set -a; source .env; source .secrets/openbao.env; set +a
 ansible-playbook k8s-cicd.yml -K --tags backend_secrets
 # 4) 배포 일정에: deploy-dev ▶ (llm-service · n8n 이 있는 차트 버전) → gitops values MR merge (15-3) → ArgoCD sync
-# 5) RAG 인덱스 1회 적재 (corpus 가 바뀔 때마다 다시)
+# 5) RAG 인덱스는 배포 때 llm-ingest Job 이 자동 적재 (gitops values llmIngest.enabled). 수동으로 다시 돌릴 때만:
 kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
 ```
 
@@ -1301,7 +1301,7 @@ n8n:
 ```bash
 kubectl -n backend get pods -l 'app.kubernetes.io/name in (llm-service,n8n,chat-bot-service)'   # 모두 Running / Ready
 kubectl -n backend logs deploy/n8n | grep -E 'activated|already active'                          # 워크플로 활성화
-kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest                            # 20 documents indexed ...
+kubectl -n backend logs job -l app.kubernetes.io/name=llm-ingest --tail=5                         # N documents indexed ...
 ```
 
 프론트(`VITE_DEV_API_PROXY` 를 클러스터로)에서 챗봇에 정책 질문 → RAG 근거 답변, 예약·결제·취소 의사 → 액션 카드, 로그인 후 대화가 이어지는지(새로고침·Pod 재시작 후에도) 확인합니다.

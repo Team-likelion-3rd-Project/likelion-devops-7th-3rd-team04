@@ -57,7 +57,7 @@ services:
   chat-bot-service:
     secretEnv: [DYNAMODB_ENDPOINT]
   # 챗봇 AI: Vertex AI(GCP 서비스 계정 키) + RAG 인덱스는 DB 노드 MinIO 의 rag-index 버킷 (infra/ansible README 15절)
-  # 인덱스는 배포 후 1회 적재: kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
+  # 인덱스는 아래 llmIngest Job 이 배포 때마다 적재 (수동: kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest)
   llm-service:
     enabled: true
     env:
@@ -70,6 +70,11 @@ services:
       - VECTOR_OBJECT_SECRET_KEY
 
 n8n:
+  enabled: true
+
+# RAG 문서 적재 Job (차트 templates/llm-ingest-job.yaml) — 운영처럼 llm-service 이미지가 바뀔 때마다 corpus 를 다시
+# 적재하고 corpus 에서 지운 문서는 인덱스에서 뺀다. env · Secret 은 위 llm-service 값(MinIO rag-index)을 그대로 씀
+llmIngest:
   enabled: true
 
 # 결제 DB 마이그레이션(Flyway)은 결제 노드가 payment-service 갱신 직전에 실행 — 결제 DB 를 클러스터에 노출하지 않음
