@@ -141,6 +141,7 @@ terragrunt output -raw api_url
 
 - `live/dev` 스택은 `live/prod` 의 `run --all` 에 포함되지 않습니다. `cd infra/terraform/live/dev` 에서 따로 실행합니다 (현재 `10-onprem-backup` 하나).
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
+- **destroy 전에 토스 웹훅 큐 `payment-webhook` · `payment-webhook-dlq` 가 비었는지 확인합니다.** 토스에 200 을 응답한 뒤 큐에 남은 메시지는 destroy 하면 사라지고 재전송도 없습니다. 스택이 내려가 있는 동안의 웹훅은 토스 재전송(최대 7회, 약 3일 19시간)으로 받습니다.
 - `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
 - `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
 - `10-global` 의 GitHub OIDC 공급자(`token.actions.githubusercontent.com`)는 URL 이 고정이라 **계정에 하나뿐인 공용 리소스**입니다 (공유 계정의 다른 팀도 같은 공급자를 씀). 지우거나 audience 를 바꾸지 않습니다 (`prevent_destroy`). 다른 팀이 먼저 만들었으면 `create_github_oidc_provider = false` 로 기존 공급자를 씁니다.
@@ -517,7 +518,7 @@ gitops envs/prod/payment/values.yaml merge (사람 승인)
 결제 서버 agent(`60-payment-app/templates/payment-deploy.sh`) 순서:
 
 1. release 가 현재 적용값과 같거나, 이미 실패한 값이면 아무것도 하지 않습니다.
-2. 검증: `image_tag` 는 커밋 SHA, `env` 는 한 줄 문자열 값만. 인프라가 넣는 키(`PAYMENT_DB_*` · `TOSS_SECRET_KEY` · `SQS_*` · `PAYMENT_RESULT_QUEUE_URL` · `PG_MOCK_SERVICE_URL` · `AWS_*` · `HEALTH_PORT` · `METRICS_PORT`)는 거부합니다 (gitops validate 도 같은 규칙).
+2. 검증: `image_tag` 는 커밋 SHA, `env` 는 한 줄 문자열 값만. 인프라가 넣는 키(`PAYMENT_DB_*` · `TOSS_SECRET_KEY` · `SQS_*` · `PAYMENT_RESULT_QUEUE_URL` · `PAYMENT_WEBHOOK_QUEUE_URL` · `PG_MOCK_SERVICE_URL` · `AWS_*` · `HEALTH_PORT` · `METRICS_PORT`)는 거부합니다 (gitops validate 도 같은 규칙).
 3. 순서 맞추기: 첫 AZ(a)가 먼저, 다음 AZ 는 release 를 처음 본 뒤 `deploy_stagger_seconds`(180초) 뒤에 합니다. 다른 서버가 InService 가 아니면(배포 · 부팅 중) 다음 주기로 미룹니다.
 4. ECR pull (`payment-service` · `payment-migrations`, 같은 태그) → 결제 DB · 토스 Secret 을 읽어 `/run`(tmpfs)의 0600 env 파일로
 5. Flyway migrate (`useSsl=true&serverSslCert=<RDS CA>` — 이미지의 드라이버가 Connector/J 2.x 라 3.x 옵션 `sslMode` 는 무시되고 평문 접속됨. 호스트 이름 검증은 기본 켜짐). 이전 버전이 아직 서비스 중이므로 마이그레이션은 추가만 합니다
@@ -811,6 +812,9 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 | 알람 | 조건 | 대응 |
 |---|---|---|
 | `team04-hotel-payment-result-dlq` | 결제 결과 DLQ 메시지 > 0 | booking-service 로그(`/team04-hotel/prod/cluster/backend`)에서 처리 실패 원인 확인 → 원인 수정 후 DLQ 메시지를 원래 큐로 재처리(콘솔 "DLQ 재처리") |
+| `team04-hotel-payment-webhook-dlq` | 토스 웹훅 DLQ 메시지 > 0 | 9절 결제 서버 app 로그에서 처리 실패 원인 확인 → 원인 수정 후 DLQ 메시지를 원래 큐로 재처리(콘솔 "DLQ 재처리") |
+| `team04-hotel-payment-webhook-lambda-errors` | 웹훅 Lambda `Errors` > 0 | 토스가 재전송하므로 웹훅은 유실되지 않음. Lambda 로그(`/aws/lambda/team04-hotel-payment-webhook`), 44 SQS 엔드포인트 · P6 규칙 확인 |
+| `team04-hotel-payment-webhook-api-5xx` | 웹훅 API Gateway `5xx` > 0 | 위와 같음. Lambda 호출 실패 · 비정상 응답 확인 |
 | `team04-hotel-main-alb-5xx-rate` | ALB 5xx 비율 > 5% (1분 3번 중 2번, 요청 20건 이상) | `kubectl -n backend get pods`, api-gateway 로그. ELB 5xx 만 늘면 대상 없음(워커 · Traefik) |
 | `team04-hotel-main-alb-kubeadm-unhealthy` | 워커(70 NodePort 30080) Target Group unhealthy 5분 | 7절 Target Group 상태, 워커 교체 중인지(6절) 확인 |
 | `team04-hotel-main-alb-eks-unhealthy` | EKS(72 Traefik 파드 8000) Target Group unhealthy 5분. 대상이 없으면 울리지 않음 | Traefik 파드 · TargetGroupBinding 상태 확인 |
