@@ -71,12 +71,18 @@ export function getGrpcServerOptions(
   protoFile: string,
   url: string,
 ): GrpcOptions {
-  return baseGrpcOptions(
+  const grpcOptions = baseGrpcOptions(
     packageName,
     protoFile,
     url,
     withMetrics(grpcServerMetricsInterceptor),
   );
+  // 없으면 Nest가 종료할 때 forceShutdown을 호출해 처리 중인 요청이 끊긴다.
+  // 켜면 새 요청을 막고 처리 중인 요청이 끝나길 기다린다 (최대 terminationGracePeriodSeconds)
+  return {
+    ...grpcOptions,
+    options: { ...grpcOptions.options, gracefulShutdown: true },
+  };
 }
 
 function baseGrpcOptions(

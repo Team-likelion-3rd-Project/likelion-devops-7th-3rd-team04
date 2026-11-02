@@ -1,4 +1,8 @@
-import { getGrpcOptions, grpcChannelOptions } from './grpc-options';
+import {
+  getGrpcOptions,
+  getGrpcServerOptions,
+  grpcChannelOptions,
+} from './grpc-options';
 
 // LDP-159: gRPC 로드 밸런싱 — 클라이언트 round_robin, 서버 연결 수명
 describe('getGrpcOptions', () => {
@@ -46,5 +50,15 @@ describe('getGrpcOptions', () => {
       'grpc.max_connection_age_ms': 60000,
       'grpc.max_connection_age_grace_ms': 30000,
     });
+  });
+
+  it('서버만 처리 중인 요청을 기다리며 종료한다 (graceful shutdown)', () => {
+    const server = getGrpcServerOptions('booking', 'booking.proto', ':3003')
+      .options as Record<string, unknown>;
+    const client = getGrpcOptions('booking', 'booking.proto', ':3003')
+      .options as Record<string, unknown>;
+
+    expect(server.gracefulShutdown).toBe(true);
+    expect(client.gracefulShutdown).toBeUndefined();
   });
 });
