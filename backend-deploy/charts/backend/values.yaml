@@ -391,7 +391,7 @@ gcpWorkloadIdentity:
   tokenExpirationSeconds: 3600
 
 # RAG 문서 적재 Job (templates/llm-ingest-job.yaml) — llm-service 이미지 · env 로 python -m scripts.ingest.
-# 운영은 릴리스마다 실행 (LDP-143). 온프레미스 dev 는 llm-service 파드에서 직접 실행하므로 기본 꺼 둠
+# 이미지가 바뀔 때마다 실행 (운영 LDP-143, dev 는 gitops envs/dev 에서 켬). corpus 에서 지운 문서는 인덱스에서도 지운다
 llmIngest:
   enabled: false
   # llm-service env 위에 덮어쓸 값

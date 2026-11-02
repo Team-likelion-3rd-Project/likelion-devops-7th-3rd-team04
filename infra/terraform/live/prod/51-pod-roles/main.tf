@@ -275,11 +275,12 @@ resource "aws_iam_role_policy" "llm_service" {
   policy = data.aws_iam_policy_document.llm_service.json
 }
 
-# llm-ingest: RAG 인덱스 쓰기만 (scripts/ingest.py put_vectors, 문서 id 가 key 라 덮어쓰기)
+# llm-ingest: RAG 인덱스를 corpus 와 같게 맞춤 (scripts/ingest.py — put_vectors 로 덮어쓰고,
+# list_vectors 로 corpus 에 없는 key 를 찾아 delete_vectors)
 data "aws_iam_policy_document" "llm_ingest" {
   statement {
-    sid       = "PutRagIndex"
-    actions   = ["s3vectors:PutVectors"]
+    sid       = "SyncRagIndex"
+    actions   = ["s3vectors:PutVectors", "s3vectors:ListVectors", "s3vectors:DeleteVectors"]
     resources = [local.vector_index_arn]
   }
 }
