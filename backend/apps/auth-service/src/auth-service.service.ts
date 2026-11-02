@@ -17,6 +17,7 @@ import {
   getRequiredEnv,
   errorTrace,
   grpcStatusOf,
+  parseApiRpcError,
   rpcError,
 } from '@app/common';
 import { Credential } from './entities/credential.entity';
@@ -73,6 +74,7 @@ interface PendingSocialSignup {
   provider: SocialProvider;
   providerUserId: string;
   email: string;
+  expiresAt: number; // 가입을 못 끝냈을 때 남은 시간만큼만 되돌려 두기 위해 (LDP-205)
 }
 
 // libs/common/src/proto/user.proto의 User 메시지와 1:1 대응
@@ -179,6 +181,17 @@ function socialAccountExists() {
     status: 409,
     code: 'SOCIAL_ACCOUNT_EXISTS',
     message: '카카오로 가입된 이메일입니다. 카카오 로그인을 이용해 주세요.',
+    retryable: false,
+  });
+}
+
+// 카카오 이메일이 이미 이메일 가입 회원의 것인 경우 — 자동으로 합치지 않는다 (LDP-194)
+function socialEmailInUse() {
+  return apiRpcException({
+    status: 409,
+    code: 'SOCIAL_EMAIL_IN_USE',
+    message:
+      '이미 이메일로 가입된 계정입니다. 이메일과 비밀번호로 로그인해 주세요.',
     retryable: false,
   });
 }
@@ -397,7 +410,8 @@ export class AuthServiceService implements OnModuleInit {
         status: 400,
         code: 'SOCIAL_STATE_INVALID',
         message: '로그인 요청이 만료되었습니다. 다시 시도해 주세요.',
-        retryable: true,
+        // 같은 요청을 다시 보내도 state는 이미 지워져 있다 — 카카오 로그인부터 새로 시작해야 한다
+        retryable: false,
       });
     }
 
@@ -433,6 +447,7 @@ export class AuthServiceService implements OnModuleInit {
       provider,
       providerUserId: profile.id,
       email: profile.email,
+      expiresAt: Date.now() + SOCIAL_SIGNUP_TTL_SECONDS * 1000,
     };
     await this.redis.set(
       socialSignupKey(signupToken),
@@ -455,7 +470,10 @@ export class AuthServiceService implements OnModuleInit {
     name: string;
     phoneNumber: string;
   }): Promise<AuthTokens> {
-    const raw = data.signupToken ? await this.redis.get(socialSignupKey(data.signupToken)) : null;
+    // getdel: 가입 요청이 동시에 두 번 와도 토큰을 먼저 꺼낸 한 요청만 가입을 진행한다 (LDP-205)
+    const raw = data.signupToken
+      ? await this.redis.getdel(socialSignupKey(data.signupToken))
+      : null;
     if (!raw) {
       throw apiRpcException({
         status: 400,
@@ -466,15 +484,55 @@ export class AuthServiceService implements OnModuleInit {
     }
     const pending = JSON.parse(raw) as PendingSocialSignup;
 
-    // 가입 버튼을 두 번 눌러 먼저 온 요청이 이미 연결까지 끝냈으면 그 회원으로 로그인시킨다
+    // 먼저 온 요청이 이미 연결까지 끝냈으면 그 회원으로 로그인시킨다
     const linked = await this.socialAccountRepository.findOne({
       where: { provider: pending.provider, providerUserId: pending.providerUserId },
     });
     if (linked) {
-      await this.redis.del(socialSignupKey(data.signupToken));
       return this.loginSocialAccount(linked);
     }
 
+    let user: UserGrpcResponse;
+    try {
+      user = await this.createSocialUser(pending, data);
+    } catch (error) {
+      // 다시 눌러 볼 수 있는 실패(일시 장애)면 꺼낸 토큰을 되돌려, 카카오 로그인부터 다시 하지 않아도 되게 한다
+      if (parseApiRpcError(error)?.retryable !== false) {
+        await this.restoreSignupToken(data.signupToken, pending);
+      }
+      throw error;
+    }
+
+    try {
+      return await this.issueTokens({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        type: 'USER',
+        socialProvider: pending.provider,
+      });
+    } catch (error) {
+      this.logger.error(
+        `소셜 회원가입 후 토큰 발급 실패 (userId=${user.id}) — 가입은 완료`,
+        errorTrace(error),
+      );
+      throw apiRpcException({
+        status: 503,
+        code: 'SIGNUP_COMPLETED_LOGIN_REQUIRED',
+        message: '회원가입은 완료되었습니다. 잠시 후 카카오로 로그인해 주세요.',
+        retryable: false,
+      });
+    }
+  }
+
+  // 가입 직전에 이메일을 다시 확인한 뒤 프로필 생성 → 소셜 계정 연결. 연결에 실패하면 만든 프로필을 되돌린다.
+  // 대기 10분 사이 같은 이메일로 이메일 가입이 끝났을 수 있어, 로그인 단계의 확인만 믿지 않는다 (LDP-205)
+  private async createSocialUser(
+    pending: PendingSocialSignup,
+    data: { name: string; phoneNumber: string },
+  ): Promise<UserGrpcResponse> {
+    await this.assertEmailAvailableForSocial(pending.email);
     await this.archiveOrphanProfile(pending.email);
 
     const user = await firstValueFrom(
@@ -484,6 +542,10 @@ export class AuthServiceService implements OnModuleInit {
         phoneNumber: data.phoneNumber,
       }),
     ).catch((err: { code?: number; details?: string; message?: string }) => {
+      // 확인과 생성 사이에 같은 이메일로 가입된 경우
+      if (grpcStatusOf(err) === GrpcStatus.ALREADY_EXISTS) {
+        throw socialEmailInUse();
+      }
       throw rpcError(
         grpcStatusOf(err),
         err?.details || err?.message || '회원가입에 실패했습니다.',
@@ -517,29 +579,23 @@ export class AuthServiceService implements OnModuleInit {
         retryable: true,
       });
     }
-    await this.redis.del(socialSignupKey(data.signupToken)).catch(() => undefined);
+    return user;
+  }
 
-    try {
-      return await this.issueTokens({
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        type: 'USER',
-        socialProvider: pending.provider,
-      });
-    } catch (error) {
-      this.logger.error(
-        `소셜 회원가입 후 토큰 발급 실패 (userId=${user.id}) — 가입은 완료`,
-        errorTrace(error),
-      );
-      throw apiRpcException({
-        status: 503,
-        code: 'SIGNUP_COMPLETED_LOGIN_REQUIRED',
-        message: '회원가입은 완료되었습니다. 잠시 후 카카오로 로그인해 주세요.',
-        retryable: false,
-      });
+  // 꺼낸 가입 대기 토큰을 처음 정한 만료 시각까지만 되돌려 둔다. 되돌리지 못해도 카카오 로그인부터 다시 하면 된다
+  private async restoreSignupToken(
+    token: string,
+    pending: PendingSocialSignup,
+  ): Promise<void> {
+    const ttlSeconds = Math.ceil((pending.expiresAt - Date.now()) / 1000);
+    if (!(ttlSeconds > 0)) {
+      return;
     }
+    await this.redis
+      .set(socialSignupKey(token), JSON.stringify(pending), 'EX', ttlSeconds)
+      .catch((error) =>
+        this.logger.warn('가입 대기 토큰 되돌리기 실패', errorTrace(error)),
+      );
   }
 
   // 지금은 카카오만. 앱 키(KAKAO_CLIENT_ID)가 없는 환경이면 소셜 로그인은 꺼져 있다
@@ -566,6 +622,19 @@ export class AuthServiceService implements OnModuleInit {
   // 이미 연결된 소셜 계정 → 그 회원으로 토큰 발급
   private async loginSocialAccount(social: SocialAccount): Promise<AuthTokens> {
     const user = await firstValueFrom(this.userService.getUserById({ id: social.userId })).catch((error) => {
+      // 카카오 연결은 남았는데 프로필이 없음 — 탈퇴가 중간에 멈춘 경우라 다시 시도해도 같다 (LDP-205)
+      if (grpcStatusOf(error) === GrpcStatus.NOT_FOUND) {
+        this.logger.error(
+          `[알람] 카카오 연결만 남고 프로필 없음 (userId=${social.userId}) — 수동 정리 필요`,
+          errorTrace(error),
+        );
+        throw apiRpcException({
+          status: 404,
+          code: 'SOCIAL_ACCOUNT_NOT_FOUND',
+          message: '회원 정보를 찾을 수 없습니다. 고객센터로 문의해 주세요.',
+          retryable: false,
+        });
+      }
       this.logger.error(`소셜 로그인 회원 조회 실패 (userId=${social.userId})`, errorTrace(error));
       throw apiRpcException({
         status: 503,
@@ -587,7 +656,21 @@ export class AuthServiceService implements OnModuleInit {
   // 카카오 이메일이 이미 우리 회원이면 자동으로 합치지 않고 거절한다 (10-30 좌형님 합의 — 남의 계정에 붙는 것 방지).
   // 비밀번호도 소셜 연결도 없는 프로필은 탈퇴가 멈춘 찌꺼기라 가입할 때 archiveOrphanProfile이 정리하므로 통과시킨다.
   private async assertEmailAvailableForSocial(email: string): Promise<void> {
-    const existing = await firstValueFrom(this.userService.getUserByEmail({ email })).catch(() => null);
+    // 없는 이메일(NOT_FOUND)만 통과. user-service 장애를 "가입 안 된 이메일"로 보면 기존 회원과 겹친 채 진행된다 (LDP-205)
+    const existing = await firstValueFrom(
+      this.userService.getUserByEmail({ email }),
+    ).catch((error) => {
+      if (grpcStatusOf(error) === GrpcStatus.NOT_FOUND) {
+        return null;
+      }
+      this.logger.error('카카오 가입 이메일 확인 실패', errorTrace(error));
+      throw apiRpcException({
+        status: 503,
+        code: 'SOCIAL_LOGIN_UNAVAILABLE',
+        message: '로그인을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+        retryable: true,
+      });
+    });
     if (!existing) {
       return;
     }
@@ -599,12 +682,7 @@ export class AuthServiceService implements OnModuleInit {
       throw socialAccountExists();
     }
     if (credential) {
-      throw apiRpcException({
-        status: 409,
-        code: 'SOCIAL_EMAIL_IN_USE',
-        message: '이미 이메일로 가입된 계정입니다. 이메일과 비밀번호로 로그인해 주세요.',
-        retryable: false,
-      });
+      throw socialEmailInUse();
     }
   }
 
