@@ -47,4 +47,7 @@ inputs = {
   seed_admin_name     = lookup(local.env, "SEED_ADMIN_NAME", "")
 
   grafana_admin_password = lookup(local.env, "GRAFANA_ADMIN_PASSWORD", "")
+
+  kakao_client_id     = lookup(local.env, "KAKAO_CLIENT_ID", "")
+  kakao_client_secret = lookup(local.env, "KAKAO_CLIENT_SECRET", "")
 }

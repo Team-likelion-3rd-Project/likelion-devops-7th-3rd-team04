@@ -171,14 +171,14 @@ resource "aws_iam_role" "pod" {
   assume_role_policy = data.aws_iam_policy_document.pod_assume[each.key].json
 }
 
-# ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키)과 12-secrets 의 시드 관리자 · Grafana admin 계정 값 조회만.
+# ESO: 41-main-data 의 Secret(접속 정보 · 앱 서명 키)과 12-secrets 의 시드 관리자 · Grafana admin 계정 · 카카오 키 값 조회만.
 # Secret ARN 끝의 무작위 6자는 ?????? 로 맞춘다
 data "aws_iam_policy_document" "external_secrets" {
   statement {
     sid     = "GetAppSecrets"
     actions = ["secretsmanager:GetSecretValue"]
     resources = [
-      for name in concat(values(var.secret_names), [var.seed_admin_secret_name, var.grafana_admin_secret_name]) :
+      for name in concat(values(var.secret_names), [var.seed_admin_secret_name, var.grafana_admin_secret_name, var.kakao_login_secret_name]) :
       "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${name}-??????"
     ]
   }

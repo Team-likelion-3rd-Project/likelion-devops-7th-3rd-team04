@@ -169,3 +169,35 @@ variable "grafana_admin_password" {
     error_message = "TF_VAR_grafana_admin_password 가 비었거나 16자보다 짧습니다."
   }
 }
+
+# ── 카카오 로그인 (auth-service KAKAO_CLIENT_*). 콘솔: 앱 → 플랫폼 키 → REST API 키 상세 ──
+
+variable "kakao_credentials_version" {
+  description = "카카오 Secret 값을 다시 넣을 때 올리는 번호 (키 재발급 등). 다음 클러스터 재생성(또는 ESO refresh 1시간 + auth-service 재시작)부터 반영"
+  type        = number
+  default     = 1
+}
+
+variable "kakao_client_id" {
+  description = "카카오 REST API 키. 12-secrets/.env 의 KAKAO_CLIENT_ID"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = length(trimspace(var.kakao_client_id)) > 0
+    error_message = "TF_VAR_kakao_client_id 가 비었습니다."
+  }
+}
+
+variable "kakao_client_secret" {
+  description = "카카오 클라이언트 시크릿. 12-secrets/.env 의 KAKAO_CLIENT_SECRET"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = length(trimspace(var.kakao_client_secret)) > 0
+    error_message = "TF_VAR_kakao_client_secret 이 비었습니다."
+  }
+}
