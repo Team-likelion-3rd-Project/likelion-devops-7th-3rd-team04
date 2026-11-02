@@ -1739,13 +1739,13 @@ control plane 의 **etcd snapshot + `/etc/kubernetes/pki` + `admin.conf`** 를 �
 
 - **대상이 아닌 것:** DB(MariaDB · Valkey · DynamoDB Local · ElasticMQ)는 시딩으로 다시 만들고(7-5), 로그는 Loki(17-8)가 맡습니다. OpenBao 는 16-5 의 수동 스냅샷을 그대로 씁니다.
 - **흐름:** `team04-etcd-backup.timer`(매일 12:00 · 부팅 15분 후, `Persistent=true`) → `etcdctl snapshot save` → `etcdutl snapshot status` 로 확인 → tar.gz → **age 로 암호화** → `s3://team04-hotel-onprem-backup/etcd/onprem-dev/YYYY/MM/DD/<노드>-<UTC 시각>.tar.gz.age`
-- **AWS 쪽:** 버킷 · 업로드 전용 IAM user 는 Terraform [`live/prod/16-onprem-backup`](../terraform/live/prod/16-onprem-backup/README.md). user 는 `etcd/*` 에 PutObject 만 할 수 있습니다 (읽기 · 목록 · 삭제 불가). 30일 뒤 만료, 덮어쓴 이전 버전은 7일 보관.
+- **AWS 쪽:** 버킷 · 업로드 전용 IAM user 는 Terraform [`live/dev/10-onprem-backup`](../terraform/live/dev/10-onprem-backup/README.md). user 는 `etcd/*` 에 PutObject 만 할 수 있습니다 (읽기 · 목록 · 삭제 불가). 30일 뒤 만료, 덮어쓴 이전 버전은 7일 보관.
 - **암호화:** snapshot 에는 Kubernetes Secret 이 평문으로 들어 있고 공유 계정이라 버킷을 읽을 수 있는 주체가 많습니다. 그래서 노드에는 age **공개키**만 두고, 복호화 개인키는 팀 password manager 에만 둡니다 (OpenBao 에 두면 OpenBao 가 망가졌을 때 함께 잃음).
 - etcdctl · etcdutl 은 `/etc/kubernetes/manifests/etcd.yaml` 의 이미지 태그와 같은 버전을 GitHub 릴리스에서 받아 sha256 을 검증한 뒤 설치합니다 (`etcd_backup_etcd_version` 으로 고정 가능).
 
 ### 18-1. 최초 구성 (CP 담당자 1회)
 
-1. Terraform 담당자가 `16-onprem-backup` 을 apply 하고 access key 를 발급합니다. 키는 OpenBao 담당자의 일회용 age 공개키로 암호화한 파일로만 넘기고, OpenBao 담당자가 풀어 바로 OpenBao `aws-backup` 에 넣습니다 ([전달 문서](../terraform/live/prod/16-onprem-backup/README.md) 4절 ①~④). CP 담당자는 "등록 완료" 연락을 받은 뒤 아래를 진행합니다.
+1. Terraform 담당자가 `live/dev/10-onprem-backup` 을 apply 하고 access key 를 발급합니다. 키는 OpenBao 담당자의 일회용 age 공개키로 암호화한 파일로만 넘기고, OpenBao 담당자가 풀어 바로 OpenBao `aws-backup` 에 넣습니다 ([전달 문서](../terraform/live/dev/10-onprem-backup/README.md) 4절 ①~④). CP 담당자는 "등록 완료" 연락을 받은 뒤 아래를 진행합니다.
 2. age 키를 만들고 개인키를 팀 password manager 에 저장합니다.
    ```bash
    sudo apt install age
