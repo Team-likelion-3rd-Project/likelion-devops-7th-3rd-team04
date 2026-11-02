@@ -7,6 +7,8 @@ import { REDIS_CLIENT } from '@app/common';
 import { AuthServiceService } from './auth-service.service';
 import { Credential } from './entities/credential.entity';
 import { AdminCredential } from './entities/admin-credential.entity';
+import { SocialAccount } from './entities/social-account.entity';
+import { KakaoOAuthClient } from './kakao-oauth.client';
 
 // #3 절대 만료: 로테이션(refresh)을 반복해도 최초 로그인으로부터 JWT_REFRESH_ABSOLUTE_MAX_DAYS가
 // 지나면 세션이 강제로 끊기는지 검증합니다. issueTokens()가 매번 now + JWT_REFRESH_EXPIRES_IN으로만
@@ -50,6 +52,11 @@ describe('AuthServiceService - 절대 만료', () => {
         JwtService,
         { provide: getRepositoryToken(Credential), useValue: {} },
         { provide: getRepositoryToken(AdminCredential), useValue: {} },
+        {
+          provide: getRepositoryToken(SocialAccount),
+          useValue: { findOne: jest.fn().mockResolvedValue(null) },
+        },
+        { provide: KakaoOAuthClient, useValue: {} },
         {
           provide: 'USER_SERVICE',
           useValue: {
@@ -151,4 +158,4 @@ describe('AuthServiceService - 절대 만료', () => {
     expect(result.accessToken).toBeDefined();
     expect(redisSet).toHaveBeenCalledWith(issuedAtKey, expect.any(String));
   });
-});
+});

@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -20,6 +21,8 @@ import {
 } from '@app/common';
 import { Credential } from './entities/credential.entity';
 import { AdminCredential } from './entities/admin-credential.entity';
+import { SocialAccount, SocialProvider } from './entities/social-account.entity';
+import { KakaoOAuthClient } from './kakao-oauth.client';
 
 const SALT_ROUNDS = 10;
 
@@ -56,6 +59,22 @@ const REFRESH_GRACE_TTL_SECONDS = 20;
 const refreshGraceKey = (type: PrincipalType, id: number) =>
   `refresh:grace:${type.toLowerCase()}:${id}`;
 
+// 소셜 로그인 (LDP-194) — 둘 다 10분 뒤 사라지고, 한 번 쓰면 지운다.
+//  - state: 카카오 인가 화면으로 보내기 전에 만들어 두고 돌아올 주소를 함께 저장. 돌아온 요청의 state가 여기 없으면 거절
+//    (우리가 시작하지 않은 로그인, 이미 쓴 요청, 10분 지난 요청)
+//  - 가입 대기: 처음 온 카카오 회원은 바로 회원을 만들지 않고 카카오 정보만 맡겨 둔다. 이름·전화번호를 받으면 그때 만든다
+//    — 추가 정보 입력 화면에서 나가 버려도 반쪽짜리 회원이 남지 않는다
+const SOCIAL_STATE_TTL_SECONDS = 600;
+const SOCIAL_SIGNUP_TTL_SECONDS = 600;
+const socialStateKey = (state: string) => `social:state:${state}`;
+const socialSignupKey = (token: string) => `social:signup:${token}`;
+
+interface PendingSocialSignup {
+  provider: SocialProvider;
+  providerUserId: string;
+  email: string;
+}
+
 // libs/common/src/proto/user.proto의 User 메시지와 1:1 대응
 interface UserGrpcResponse {
   id: number;
@@ -78,6 +97,7 @@ interface AdminGrpcResponse {
 interface UserGrpcService {
   createUser(data: { email: string; name: string; phoneNumber: string }): Observable<UserGrpcResponse>;
   getUserByEmail(data: { email: string }): Observable<UserGrpcResponse>;
+  getUserById(data: { id: number }): Observable<UserGrpcResponse>;
   deleteUser(data: { id: number }): Observable<{ success: boolean }>;
   cancelSignup(data: { id: number; email: string }): Observable<{ success: boolean }>;
   archiveOrphanProfile(data: { id: number; email: string }): Observable<{ success: boolean }>;
@@ -99,6 +119,15 @@ export interface AuthTokens {
   email: string;
   name: string;
   role: string;
+  socialProvider: string; // 소셜 회원이면 'KAKAO', 아니면 '' (LDP-194)
+}
+
+export interface SocialLoginResult {
+  signupRequired: boolean;
+  signupToken: string;
+  email: string;
+  name: string;
+  auth?: AuthTokens;
 }
 
 // 토큰 발급 대상(고객 또는 관리자)을 표현하는 공통 형태. issueTokens()가 principal 종류와 무관하게
@@ -112,6 +141,8 @@ interface Principal {
   // 관리자만 (LDP-176) — 토큰에 실어 api-gateway가 지점·직급 권한을 검사한다
   hotelId?: number | null;
   adminRole?: AdminRole;
+  // 고객만 — 소셜로 가입한 회원이면 'KAKAO' (토큰에는 싣지 않고 응답에만, LDP-194)
+  socialProvider?: string;
 }
 
 // 토큰 payload — 관리자면 소속 지점·직급도 싣는다 (고객 토큰은 그대로)
@@ -142,6 +173,16 @@ function adminPrincipal(admin: AdminGrpcResponse): Principal {
   };
 }
 
+// 카카오로 가입된 이메일로 이메일 가입·다른 카카오 계정 가입을 시도한 경우 (LDP-194)
+function socialAccountExists() {
+  return apiRpcException({
+    status: 409,
+    code: 'SOCIAL_ACCOUNT_EXISTS',
+    message: '카카오로 가입된 이메일입니다. 카카오 로그인을 이용해 주세요.',
+    retryable: false,
+  });
+}
+
 @Injectable()
 export class AuthServiceService implements OnModuleInit {
   private readonly logger = new Logger(AuthServiceService.name);
@@ -154,6 +195,9 @@ export class AuthServiceService implements OnModuleInit {
     private readonly credentialRepository: Repository<Credential>,
     @InjectRepository(AdminCredential)
     private readonly adminCredentialRepository: Repository<AdminCredential>,
+    @InjectRepository(SocialAccount)
+    private readonly socialAccountRepository: Repository<SocialAccount>,
+    private readonly kakaoClient: KakaoOAuthClient,
     private readonly jwtService: JwtService,
     @Inject('USER_SERVICE') private readonly userClient: ClientGrpc,
     @Inject('BOOKING_SERVICE') private readonly bookingClient: ClientGrpc,
@@ -249,14 +293,28 @@ export class AuthServiceService implements OnModuleInit {
   // 비밀번호가 없으면 로그인도 탈퇴 재시도도 할 수 없어, 정리하지 않으면 이 이메일로 다시 가입할 방법이 없습니다.
   // 만든 지 얼마 안 된 프로필(가입 진행 중)은 user-service가 건드리지 않습니다. 정리하지 못하면 아무것도 하지 않고,
   // 이어지는 createUser가 기존처럼 "이미 가입된 이메일입니다."로 응답합니다 — 이 단계 실패로 가입이 막히지는 않습니다.
+  // 소셜 회원(LDP-194)은 비밀번호 없이도 정상 회원이므로 정리하지 않고, 이 이메일로는 가입할 수 없다고 알려 줍니다.
   private async archiveOrphanProfile(email: string): Promise<void> {
+    const existing = await firstValueFrom(
+      this.userService.getUserByEmail({ email }),
+    ).catch(() => null);
+    if (!existing) {
+      return;
+    }
+    let social: SocialAccount | null;
     try {
-      const existing = await firstValueFrom(
-        this.userService.getUserByEmail({ email }),
-      ).catch(() => null);
-      if (!existing) {
-        return;
-      }
+      social = await this.socialAccountRepository.findOne({
+        where: { userId: existing.id },
+      });
+    } catch (error) {
+      // 소셜 회원인지 확인하지 못하면 정리하지 않는다 (소셜 회원 프로필을 지워 버리면 안 되므로)
+      this.logger.error('남은 프로필 정리 전 소셜 계정 확인 실패 — 정리 건너뜀', errorTrace(error));
+      return;
+    }
+    if (social) {
+      throw socialAccountExists();
+    }
+    try {
       const credential = await this.credentialRepository.findOne({
         where: { userId: existing.id },
       });
@@ -303,6 +361,251 @@ export class AuthServiceService implements OnModuleInit {
       role: user.role,
       type: 'USER',
     });
+  }
+
+  // 소셜 로그인 1단계 (LDP-194): state를 만들어 돌아올 주소와 함께 10분 보관하고, 카카오 인가 화면 주소를 돌려줍니다.
+  async socialAuthorizeUrl(data: {
+    provider: string;
+    redirectUri: string;
+  }): Promise<{ url: string; state: string }> {
+    this.assertSocialEnabled(data.provider);
+    if (!this.kakaoClient.isAllowedRedirectUri(data.redirectUri)) {
+      throw apiRpcException({
+        status: 400,
+        code: 'SOCIAL_REDIRECT_URI_INVALID',
+        message: '등록되지 않은 로그인 주소입니다.',
+        retryable: false,
+      });
+    }
+    const state = randomBytes(16).toString('hex');
+    await this.redis.set(socialStateKey(state), data.redirectUri, 'EX', SOCIAL_STATE_TTL_SECONDS);
+    return { url: this.kakaoClient.authorizeUrl(data.redirectUri, state), state };
+  }
+
+  // 소셜 로그인 2단계: state 확인(한 번만) → 카카오 회원 정보 조회 → 연결된 회원이면 토큰 발급.
+  // 처음 온 카카오 회원이면 회원을 만들지 않고 가입 대기 토큰만 돌려줍니다 (이름·전화번호를 받은 뒤 socialSignup).
+  async socialLogin(data: {
+    provider: string;
+    code: string;
+    state: string;
+  }): Promise<SocialLoginResult> {
+    const provider = this.assertSocialEnabled(data.provider);
+    // getdel: 같은 state로 두 번 들어오면 두 번째는 거절된다
+    const redirectUri = data.state ? await this.redis.getdel(socialStateKey(data.state)) : null;
+    if (!redirectUri) {
+      throw apiRpcException({
+        status: 400,
+        code: 'SOCIAL_STATE_INVALID',
+        message: '로그인 요청이 만료되었습니다. 다시 시도해 주세요.',
+        retryable: true,
+      });
+    }
+
+    const profile = await this.kakaoClient.getProfile(data.code, redirectUri);
+
+    const linked = await this.socialAccountRepository.findOne({
+      where: { provider, providerUserId: profile.id },
+    });
+    if (linked) {
+      return {
+        signupRequired: false,
+        signupToken: '',
+        email: '',
+        name: '',
+        auth: await this.loginSocialAccount(linked),
+      };
+    }
+
+    // users.email은 필수·중복 불가라 이메일 없이는 가입할 수 없다. 인증되지 않은 이메일도 받지 않는다 (남의 이메일로 가입 방지)
+    if (!profile.email) {
+      throw apiRpcException({
+        status: 400,
+        code: 'SOCIAL_EMAIL_REQUIRED',
+        message:
+          '카카오 계정의 인증된 이메일이 필요합니다. 이메일 제공에 동의한 뒤 다시 시도해 주세요.',
+        retryable: true,
+      });
+    }
+    await this.assertEmailAvailableForSocial(profile.email);
+
+    const signupToken = randomBytes(32).toString('base64url');
+    const pending: PendingSocialSignup = {
+      provider,
+      providerUserId: profile.id,
+      email: profile.email,
+    };
+    await this.redis.set(
+      socialSignupKey(signupToken),
+      JSON.stringify(pending),
+      'EX',
+      SOCIAL_SIGNUP_TTL_SECONDS,
+    );
+    return {
+      signupRequired: true,
+      signupToken,
+      email: profile.email,
+      name: profile.nickname ?? '',
+    };
+  }
+
+  // 소셜 로그인 3단계(처음 온 회원만): 가입 대기 토큰 + 이름·전화번호 → 프로필 생성 → 소셜 계정 연결 → 토큰 발급.
+  // 비밀번호(Credential)는 만들지 않습니다. 실패 시 되돌리는 방식은 register()와 같습니다 (LDP-96).
+  async socialSignup(data: {
+    signupToken: string;
+    name: string;
+    phoneNumber: string;
+  }): Promise<AuthTokens> {
+    const raw = data.signupToken ? await this.redis.get(socialSignupKey(data.signupToken)) : null;
+    if (!raw) {
+      throw apiRpcException({
+        status: 400,
+        code: 'SOCIAL_SIGNUP_EXPIRED',
+        message: '가입 시간이 지났습니다. 카카오 로그인부터 다시 진행해 주세요.',
+        retryable: false,
+      });
+    }
+    const pending = JSON.parse(raw) as PendingSocialSignup;
+
+    // 가입 버튼을 두 번 눌러 먼저 온 요청이 이미 연결까지 끝냈으면 그 회원으로 로그인시킨다
+    const linked = await this.socialAccountRepository.findOne({
+      where: { provider: pending.provider, providerUserId: pending.providerUserId },
+    });
+    if (linked) {
+      await this.redis.del(socialSignupKey(data.signupToken));
+      return this.loginSocialAccount(linked);
+    }
+
+    await this.archiveOrphanProfile(pending.email);
+
+    const user = await firstValueFrom(
+      this.userService.createUser({
+        email: pending.email,
+        name: data.name,
+        phoneNumber: data.phoneNumber,
+      }),
+    ).catch((err: { code?: number; details?: string; message?: string }) => {
+      throw rpcError(
+        grpcStatusOf(err),
+        err?.details || err?.message || '회원가입에 실패했습니다.',
+      );
+    });
+
+    try {
+      await this.socialAccountRepository.save(
+        this.socialAccountRepository.create({
+          userId: user.id,
+          provider: pending.provider,
+          providerUserId: pending.providerUserId,
+          email: pending.email,
+        }),
+      );
+    } catch (error) {
+      this.logger.error(
+        `소셜 회원가입 계정 연결 실패 (userId=${user.id}) — 프로필 되돌림`,
+        errorTrace(error),
+      );
+      await firstValueFrom(this.userService.cancelSignup({ id: user.id, email: user.email })).catch((cancelError) => {
+        this.logger.error(
+          `[알람] 소셜 회원가입 프로필 되돌리기 실패 (userId=${user.id}) — 수동 정리 필요`,
+          errorTrace(cancelError),
+        );
+      });
+      throw apiRpcException({
+        status: 503,
+        code: 'SIGNUP_FAILED',
+        message: '회원가입을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+        retryable: true,
+      });
+    }
+    await this.redis.del(socialSignupKey(data.signupToken)).catch(() => undefined);
+
+    try {
+      return await this.issueTokens({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        type: 'USER',
+        socialProvider: pending.provider,
+      });
+    } catch (error) {
+      this.logger.error(
+        `소셜 회원가입 후 토큰 발급 실패 (userId=${user.id}) — 가입은 완료`,
+        errorTrace(error),
+      );
+      throw apiRpcException({
+        status: 503,
+        code: 'SIGNUP_COMPLETED_LOGIN_REQUIRED',
+        message: '회원가입은 완료되었습니다. 잠시 후 카카오로 로그인해 주세요.',
+        retryable: false,
+      });
+    }
+  }
+
+  // 지금은 카카오만. 앱 키(KAKAO_CLIENT_ID)가 없는 환경이면 소셜 로그인은 꺼져 있다
+  private assertSocialEnabled(provider: string): SocialProvider {
+    if (provider !== 'KAKAO') {
+      throw apiRpcException({
+        status: 400,
+        code: 'SOCIAL_PROVIDER_UNSUPPORTED',
+        message: '지원하지 않는 로그인 방식입니다.',
+        retryable: false,
+      });
+    }
+    if (!this.kakaoClient.isEnabled()) {
+      throw apiRpcException({
+        status: 503,
+        code: 'SOCIAL_LOGIN_DISABLED',
+        message: '지금은 카카오 로그인을 사용할 수 없습니다. 이메일로 로그인해 주세요.',
+        retryable: false,
+      });
+    }
+    return provider;
+  }
+
+  // 이미 연결된 소셜 계정 → 그 회원으로 토큰 발급
+  private async loginSocialAccount(social: SocialAccount): Promise<AuthTokens> {
+    const user = await firstValueFrom(this.userService.getUserById({ id: social.userId })).catch((error) => {
+      this.logger.error(`소셜 로그인 회원 조회 실패 (userId=${social.userId})`, errorTrace(error));
+      throw apiRpcException({
+        status: 503,
+        code: 'SOCIAL_LOGIN_UNAVAILABLE',
+        message: '로그인을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+        retryable: true,
+      });
+    });
+    return this.issueTokens({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      type: 'USER',
+      socialProvider: social.provider,
+    });
+  }
+
+  // 카카오 이메일이 이미 우리 회원이면 자동으로 합치지 않고 거절한다 (10-30 좌형님 합의 — 남의 계정에 붙는 것 방지).
+  // 비밀번호도 소셜 연결도 없는 프로필은 탈퇴가 멈춘 찌꺼기라 가입할 때 archiveOrphanProfile이 정리하므로 통과시킨다.
+  private async assertEmailAvailableForSocial(email: string): Promise<void> {
+    const existing = await firstValueFrom(this.userService.getUserByEmail({ email })).catch(() => null);
+    if (!existing) {
+      return;
+    }
+    const [credential, social] = await Promise.all([
+      this.credentialRepository.findOne({ where: { userId: existing.id } }),
+      this.socialAccountRepository.findOne({ where: { userId: existing.id } }),
+    ]);
+    if (social) {
+      throw socialAccountExists();
+    }
+    if (credential) {
+      throw apiRpcException({
+        status: 409,
+        code: 'SOCIAL_EMAIL_IN_USE',
+        message: '이미 이메일로 가입된 계정입니다. 이메일과 비밀번호로 로그인해 주세요.',
+        retryable: false,
+      });
+    }
   }
 
   // 로그인(관리자): user-service의 AdminService에서 이메일로 관리자 계정 조회 → 비밀번호 해시 검증(AdminCredential)
@@ -365,6 +668,7 @@ export class AuthServiceService implements OnModuleInit {
           email: principal.email,
           name: principal.name,
           role: principal.role,
+          socialProvider: principal.socialProvider ?? '',
         };
       }
     }
@@ -422,7 +726,16 @@ export class AuthServiceService implements OnModuleInit {
     const user = await firstValueFrom(this.userService.getUserByEmail({ email: payload.email })).catch(() => {
       throw rpcError(GrpcStatus.UNAUTHENTICATED, INVALID_REFRESH_TOKEN_MESSAGE);
     });
-    return { id: user.id, email: user.email, name: user.name, role: user.role, type: 'USER' };
+    // 새로고침(재발급) 뒤에도 프론트가 소셜 회원인지 알 수 있게 응답에 같이 싣는다 (LDP-194)
+    const social = await this.socialAccountRepository.findOne({ where: { userId: user.id } });
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      type: 'USER',
+      socialProvider: social?.provider ?? '',
+    };
   }
 
   // 로그아웃: Redis에서 리프레시 토큰을 삭제합니다. JWT는 무상태이므로 이미 발급된 액세스 토큰은
@@ -447,6 +760,16 @@ export class AuthServiceService implements OnModuleInit {
   }): Promise<{ success: boolean }> {
     const credential = await this.credentialRepository.findOne({ where: { userId: data.userId } });
     if (!credential) {
+      // 소셜 회원은 비밀번호가 없다 — "현재 비밀번호가 틀림"이 아니라 바꿀 비밀번호가 없다고 알려 준다 (LDP-194)
+      const social = await this.socialAccountRepository.findOne({ where: { userId: data.userId } });
+      if (social) {
+        throw apiRpcException({
+          status: 400,
+          code: 'SOCIAL_ACCOUNT_NO_PASSWORD',
+          message: '카카오로 가입한 계정은 비밀번호가 없어 변경할 수 없습니다.',
+          retryable: false,
+        });
+      }
       throw rpcError(
         GrpcStatus.UNAUTHENTICATED,
         INVALID_CURRENT_PASSWORD_MESSAGE,
@@ -474,7 +797,7 @@ export class AuthServiceService implements OnModuleInit {
 
   // 회원 탈퇴(고객 전용). 이용 예정 예약이 있으면 아무것도 지우기 전에 거절합니다 (LDP-95, 10-19 결정) — 탈퇴해도
   // 예약이 남아 재고를 차지하고, 직원은 누구 예약인지 알 수 없게 되기 때문입니다.
-  // 지우는 순서 (LDP-96): 로그인 세션(Valkey) → 비밀번호 → 프로필(deleted_user로 이관)을 마지막에.
+  // 지우는 순서 (LDP-96): 로그인 세션(Valkey) → 비밀번호·소셜 연결(LDP-194) → 프로필(deleted_user로 이관)을 마지막에.
   //  - 서비스·저장소가 셋으로 나뉘어 한 번에 묶을 수 없으므로, 앞 단계부터 지우고 각 단계는 다시 실행해도 안전하게
   //    했습니다(이미 지워졌으면 그냥 넘어감). 중간에 실패해도 같은 요청을 다시 보내면 끝까지 처리됩니다.
   //  - 프로필을 마지막에 두는 이유: 프로필이 먼저 사라지면 남은 비밀번호·세션을 찾아 지울 근거가 없어집니다.
@@ -486,6 +809,8 @@ export class AuthServiceService implements OnModuleInit {
       await this.redis.del(refreshGraceKey('USER', data.userId));
       await this.redis.del(issuedAtKey('USER', data.userId));
       await this.credentialRepository.delete({ userId: data.userId });
+      // 소셜 연결도 지운다 — 남겨 두면 탈퇴한 뒤 같은 카카오 계정으로 다시 가입할 수 없다
+      await this.socialAccountRepository.delete({ userId: data.userId });
     } catch (error) {
       this.logger.error(
         `회원 탈퇴 중 세션·비밀번호 삭제 실패 (userId=${data.userId})`,
@@ -596,6 +921,7 @@ export class AuthServiceService implements OnModuleInit {
       email: principal.email,
       name: principal.name,
       role: principal.role,
+      socialProvider: principal.socialProvider ?? '',
     };
   }
 }

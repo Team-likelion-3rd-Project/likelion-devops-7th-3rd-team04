@@ -6,6 +6,8 @@ import { parseApiRpcError } from '@app/common';
 import { AuthServiceService } from './auth-service.service';
 import { Credential } from './entities/credential.entity';
 import { AdminCredential } from './entities/admin-credential.entity';
+import { SocialAccount } from './entities/social-account.entity';
+import { KakaoOAuthClient } from './kakao-oauth.client';
 
 // LDP-96: 회원가입·탈퇴가 중간에 실패해도 계정 데이터가 어긋나지 않게
 describe('AuthServiceService 가입·탈퇴 정합성', () => {
@@ -26,6 +28,8 @@ describe('AuthServiceService 가입·탈퇴 정합성', () => {
   const countUpcomingReservations = jest.fn();
   const credentialSave = jest.fn();
   const credentialDelete = jest.fn();
+  const socialFindOne = jest.fn();
+  const socialDelete = jest.fn();
   const redisSet = jest.fn();
   const redisDel = jest.fn();
   // 단계가 실행된 순서
@@ -64,6 +68,8 @@ describe('AuthServiceService 가입·탈퇴 정합성', () => {
     );
     archiveOrphanProfile.mockReturnValue(of({ success: true }));
     credentialFindOne.mockResolvedValue(null);
+    socialFindOne.mockResolvedValue(null);
+    socialDelete.mockResolvedValue({ affected: 0 });
     deleteUser.mockImplementation(() => {
       steps.push('profile');
       return of({ success: true });
@@ -87,6 +93,11 @@ describe('AuthServiceService 가입·탈퇴 정합성', () => {
         findOne: credentialFindOne,
       } as unknown as Repository<Credential>,
       {} as Repository<AdminCredential>,
+      {
+        findOne: socialFindOne,
+        delete: socialDelete,
+      } as unknown as Repository<SocialAccount>,
+      {} as KakaoOAuthClient,
       new JwtService({}),
       {
         getService: () => ({

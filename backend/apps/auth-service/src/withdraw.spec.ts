@@ -6,12 +6,15 @@ import { parseApiRpcError } from '@app/common';
 import { AuthServiceService } from './auth-service.service';
 import { Credential } from './entities/credential.entity';
 import { AdminCredential } from './entities/admin-credential.entity';
+import { SocialAccount } from './entities/social-account.entity';
+import { KakaoOAuthClient } from './kakao-oauth.client';
 
 // LDP-95: 이용 예정 예약이 있으면 회원 탈퇴 거절 — 아무것도 지우기 전에 확인한다
 describe('AuthServiceService 회원 탈퇴 (이용 예정 예약 확인)', () => {
   const deleteUser = jest.fn();
   const countUpcomingReservations = jest.fn();
   const credentialDelete = jest.fn();
+  const socialDelete = jest.fn();
   const redisDel = jest.fn();
   let service: AuthServiceService;
 
@@ -23,10 +26,13 @@ describe('AuthServiceService 회원 탈퇴 (이용 예정 예약 확인)', () =>
     deleteUser.mockReturnValue(of({ success: true }));
     countUpcomingReservations.mockReturnValue(of({ count: 0 }));
     credentialDelete.mockResolvedValue({ affected: 1 });
+    socialDelete.mockResolvedValue({ affected: 0 });
     redisDel.mockResolvedValue(1);
     service = new AuthServiceService(
       { delete: credentialDelete } as unknown as Repository<Credential>,
       {} as Repository<AdminCredential>,
+      { delete: socialDelete } as unknown as Repository<SocialAccount>,
+      {} as KakaoOAuthClient,
       new JwtService({}),
       { getService: () => ({ deleteUser }) } as never,
       { getService: () => ({ countUpcomingReservations }) } as never,
@@ -41,6 +47,7 @@ describe('AuthServiceService 회원 탈퇴 (이용 예정 예약 확인)', () =>
     expect(countUpcomingReservations).toHaveBeenCalledWith({ userId: 7 });
     expect(deleteUser).toHaveBeenCalledWith({ id: 7 });
     expect(credentialDelete).toHaveBeenCalledWith({ userId: 7 });
+    expect(socialDelete).toHaveBeenCalledWith({ userId: 7 });
     expect(redisDel).toHaveBeenCalled();
   });
 
@@ -56,6 +63,7 @@ describe('AuthServiceService 회원 탈퇴 (이용 예정 예약 확인)', () =>
     });
     expect(deleteUser).not.toHaveBeenCalled();
     expect(credentialDelete).not.toHaveBeenCalled();
+    expect(socialDelete).not.toHaveBeenCalled();
     expect(redisDel).not.toHaveBeenCalled();
   });
 
