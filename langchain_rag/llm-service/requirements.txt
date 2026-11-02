@@ -11,3 +11,5 @@ pydantic==2.9.2
 # s3vectors verified present in 1.43.73 - keep >= that.
 # Keep this file ASCII-only: pip reads it with the OS locale (cp949 on Korean Windows).
 boto3>=1.43.73
+# aws.AwsSecurityCredentialsSupplier (app/llm.py) needs >= 2.29.
+google-auth>=2.29.0

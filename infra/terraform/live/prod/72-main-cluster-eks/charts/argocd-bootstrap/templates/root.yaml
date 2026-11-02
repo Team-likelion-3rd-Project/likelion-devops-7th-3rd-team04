@@ -1,0 +1,61 @@
+# root(prod-apps) 는 gitops 레포 envs/prod 의 root 차트를 렌더링해 하위 Application · AppProject prod · 알림 hook Job 을 만든다.
+# 계정 ID 는 valuesObject 로 넘겨 Git 에 두지 않는다. root 의 AppProject 는 argocd 네임스페이스의 아래 리소스만 만들 수 있다.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: bootstrap
+  namespace: {{ .Release.Namespace }}
+spec:
+  description: root 앱(prod-apps) 전용 — gitops 레포 envs/prod root 차트
+  sourceRepos:
+    - {{ .Values.repoURL | quote }}
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: {{ .Release.Namespace }}
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      kind: Application
+    - group: argoproj.io
+      kind: AppProject
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: ConfigMap
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+    - group: batch
+      kind: Job
+    - group: batch
+      kind: CronJob
+---
+# 작업 브랜치 검증: kubectl -n argocd patch application prod-apps --type merge
+#   -p '{"spec":{"source":{"targetRevision":"<브랜치>"}}}'  → 끝나면 main 으로 되돌린다
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prod-apps
+  namespace: {{ .Release.Namespace }}
+spec:
+  project: bootstrap
+  source:
+    repoURL: {{ .Values.repoURL | quote }}
+    targetRevision: {{ .Values.targetRevision | quote }}
+    path: {{ .Values.path | quote }}
+    helm:
+      parameters:
+        # repo-server 가 이 sync 의 커밋 SHA 로 치환한다 → 하위 앱의 gitops 소스를 그 커밋에 고정
+        - name: gitopsRevision
+          value: $ARGOCD_APP_REVISION
+          forceString: true
+      # 숫자 문자열(계정 ID)이 숫자로 읽히지 않게 JSON 으로 쓴다
+      valuesObject: {{ merge (dict "clusterValues" (dict "global" (dict "awsAccountId" (toString .Values.awsAccountId)))) .Values.rootValues | toJson }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Release.Namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

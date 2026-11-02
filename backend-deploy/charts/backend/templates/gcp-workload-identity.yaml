@@ -1,4 +1,4 @@
-{{- if .Values.gcpWorkloadIdentity.enabled }}
+{{- if and .Values.gcpWorkloadIdentity.enabled (ne .Values.gcpWorkloadIdentity.provider "aws") }}
 {{- $w := .Values.gcpWorkloadIdentity }}
 {{- $email := required "gcpWorkloadIdentity.serviceAccountEmail 이 필요합니다 (Terraform 14-gcp-llm output llm_service_account_email)" $w.serviceAccountEmail }}
 ---

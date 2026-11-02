@@ -19,9 +19,9 @@ variable "region" {
 # ── 신뢰 정책 ──
 
 variable "enable_pod_identity" {
-  description = "Role 신뢰 정책에 EKS Pod Identity(pods.eks.amazonaws.com, var.eks_cluster_name 클러스터)를 추가할지 여부. 72-main-cluster-eks 를 올리기 전에 true"
+  description = "Role 신뢰 정책에 EKS Pod Identity(pods.eks.amazonaws.com, var.eks_cluster_name 클러스터)를 추가할지 여부. 72-main-cluster-eks 가 쓴다"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "eks_cluster_name" {

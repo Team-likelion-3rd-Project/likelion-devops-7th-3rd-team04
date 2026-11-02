@@ -380,6 +380,8 @@ migrations:
 # 파드 projected SA 토큰 → STS 교환 → GCP 서비스 계정 impersonate. 키가 없고 값은 모두 공개 값 (14 output)
 gcpWorkloadIdentity:
   enabled: false
+  # oidc: 파드 SA 토큰으로 교환 (kubeadm, 발급자 고정). aws: 파드의 AWS 자격 증명으로 교환 (EKS, 볼륨 · ConfigMap 없음)
+  provider: oidc
   # 14 output workload_identity_audience (//iam.googleapis.com/projects/<번호>/locations/global/workloadIdentityPools/<Pool>/providers/<Provider>)
   audience: ""
   # 14 output llm_service_account_email

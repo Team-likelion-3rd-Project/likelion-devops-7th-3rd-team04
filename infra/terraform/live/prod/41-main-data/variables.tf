@@ -51,9 +51,9 @@ variable "db_engine_version" {
 }
 
 variable "db_instance_class" {
-  description = "RDS 인스턴스 클래스"
+  description = "RDS 인스턴스 클래스. small 은 70 · 72 병행 기간 연결 수 기준 (클러스터당 풀 상한 50, 평소 20). max_connections 는 메모리에 비례 (micro 30)"
   type        = string
-  default     = "db.t4g.micro"
+  default     = "db.t4g.small"
 }
 
 variable "db_allocated_storage" {

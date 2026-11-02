@@ -1,0 +1,6 @@
+# 값은 72 argocd.tf 가 넘긴다
+repoURL: ""
+targetRevision: main
+path: envs/prod
+awsAccountId: ""
+rootValues: {}

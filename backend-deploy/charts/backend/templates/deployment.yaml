@@ -3,6 +3,7 @@
 {{- $ctx := dict "root" $ "name" $name }}
 {{- $env := merge (dict) ($svc.env | default dict) $.Values.global.env }}
 {{- $gcpWif := and $svc.gcpWorkloadIdentity $.Values.gcpWorkloadIdentity.enabled }}
+{{- $gcpWifFile := and $gcpWif (ne $.Values.gcpWorkloadIdentity.provider "aws") }}
 {{- /* services.<이름>.metrics: false 로 뺀 서비스 제외 (default 는 false 를 빈 값으로 보므로 문자열로 비교) */}}
 {{- $metrics := and $.Values.metrics.enabled (ne (toString $svc.metrics) "false") }}
 ---
@@ -47,7 +48,7 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if $gcpWif }}
+      {{- if $gcpWifFile }}
       volumes:
         {{- include "backend.gcpWif.volume" $ | nindent 8 }}
       {{- end }}
@@ -86,7 +87,7 @@ spec:
             {{- if $gcpWif }}
             {{- include "backend.gcpWif.env" $ | nindent 12 }}
             {{- end }}
-          {{- if $gcpWif }}
+          {{- if $gcpWifFile }}
           volumeMounts:
             {{- include "backend.gcpWif.volumeMount" $ | nindent 12 }}
           {{- end }}

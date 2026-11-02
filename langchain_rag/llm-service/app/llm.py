@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 from functools import cache
 
 from langchain_core.embeddings import Embeddings
@@ -28,15 +29,51 @@ def embedding_model_name() -> str:
     return f"ollama:{config.OLLAMA_EMBED_MODEL}"
 
 
-def _vertex_credentials():
-    if not config.GCP_SA_KEY_JSON:
-        return None  # ADC (로컬 gcloud auth application-default login 등)
-    from google.oauth2 import service_account
+def _aws_federated_credentials():
+    """파드의 AWS 자격 증명 → GCP STS → 서비스 계정 impersonate.
 
-    return service_account.Credentials.from_service_account_info(
-        json.loads(config.GCP_SA_KEY_JSON),
+    google-auth 기본 AWS 경로는 환경 변수와 IMDS만 읽어 EKS Pod Identity를 쓰지 못하므로 boto3로 읽어 넘깁니다.
+    """
+    import boto3
+    from google.auth import aws
+
+    class Boto3Supplier(aws.AwsSecurityCredentialsSupplier):
+        def __init__(self):
+            self._session = boto3.Session()
+
+        def get_aws_security_credentials(self, context, request):
+            # botocore가 만료 전에 갱신하므로 매번 읽습니다.
+            frozen = self._session.get_credentials().get_frozen_credentials()
+            return aws.AwsSecurityCredentials(frozen.access_key, frozen.secret_key, frozen.token)
+
+        def get_aws_region(self, context, request):
+            # boto3 세션은 AWS_REGION을 읽지 않습니다(AWS_DEFAULT_REGION · 설정 파일만). 파드에는 AWS_REGION이 있습니다.
+            return os.getenv("AWS_REGION") or self._session.region_name
+
+    return aws.Credentials(
+        audience=config.GCP_WIF_AWS_AUDIENCE,
+        subject_token_type="urn:ietf:params:aws:token-type:aws4_request",
+        token_url="https://sts.googleapis.com/v1/token",
+        service_account_impersonation_url=(
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"
+            f"{config.GCP_WIF_SERVICE_ACCOUNT_EMAIL}:generateAccessToken"
+        ),
+        aws_security_credentials_supplier=Boto3Supplier(),
         scopes=["https://www.googleapis.com/auth/cloud-platform"],
     )
+
+
+def _vertex_credentials():
+    if config.GCP_SA_KEY_JSON:
+        from google.oauth2 import service_account
+
+        return service_account.Credentials.from_service_account_info(
+            json.loads(config.GCP_SA_KEY_JSON),
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+    if config.GCP_WIF_AWS_AUDIENCE:
+        return _aws_federated_credentials()
+    return None  # ADC (로컬 gcloud auth application-default login, kubeadm 운영의 external_account 파일 등)
 
 
 @cache

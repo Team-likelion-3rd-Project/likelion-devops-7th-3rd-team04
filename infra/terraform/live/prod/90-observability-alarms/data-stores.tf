@@ -83,7 +83,7 @@ resource "aws_cloudwatch_metric_alarm" "db_connections" {
   for_each = var.db_instance_identifiers
 
   alarm_name        = "${local.name}-${each.key}-db-connections"
-  alarm_description = "${each.value} 접속 수(DatabaseConnections)가 ${var.db_connections_threshold} 이상입니다 (1분 5번 중 3번, max_connections 30). 앱 커넥션 풀 크기 · 파드 수 확인 — 넘으면 새 접속이 거부됩니다"
+  alarm_description = "${each.value} 접속 수(DatabaseConnections)가 ${var.db_connections_thresholds[each.key]} 이상입니다 (1분 5번 중 3번). 앱 커넥션 풀 크기 · 파드 수 확인 — 넘으면 새 접속이 거부됩니다"
 
   namespace   = "AWS/RDS"
   metric_name = "DatabaseConnections"
@@ -95,7 +95,7 @@ resource "aws_cloudwatch_metric_alarm" "db_connections" {
   evaluation_periods  = 5
   datapoints_to_alarm = 3
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  threshold           = var.db_connections_threshold
+  threshold           = var.db_connections_thresholds[each.key]
   treat_missing_data  = "notBreaching"
 
   alarm_actions = local.alarm_actions

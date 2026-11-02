@@ -34,3 +34,7 @@ generate "provider_google" {
     }
   EOF
 }
+
+inputs = {
+  aws_account_id = get_aws_account_id()
+}

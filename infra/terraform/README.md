@@ -47,6 +47,7 @@ infra/terraform/
         ├── 44-payment-endpoints/    🔁
         ├── 50-payment-webhook/      🔁
         ├── 51-pod-roles/            🔁 메인 클러스터 파드 Role (IRSA · EKS Pod Identity 신뢰, 70 · 72 공용)
+        ├── 72-main-cluster-eks/     🔁 EKS 클러스터 · 노드 · 애드온 · Pod Identity Association · ArgoCD root 앱. 병행 기간 트래픽 가중치 0
         ├── 60-payment-app/          🔁 결제 서버 · NLB · Endpoint Service
         ├── 61-payment-mock/         🔁 부하 테스트용 pg-mock 인스턴스
         ├── 70-main-cluster-kubeadm/ 🔁
@@ -160,7 +161,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 41-main-data   42-payment-data   43-messaging   44-payment-endpoints
 50-payment-webhook   51-pod-roles
 60-payment-app   61-payment-mock
-70-main-cluster-kubeadm   71-payment-link
+70-main-cluster-kubeadm   71-payment-link   72-main-cluster-eks
 80-main-edge
 90-observability-alarms
 ```
@@ -182,7 +183,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
 | `20-network` | `single_nat_gateway = false` (NAT 4개, Deployment VPC 포함 5개 · NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
 | `30-security` | `enable_control_plane = true` (SG 12개, 규칙 39개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
-| `41-main-data` | RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
+| `41-main-data` | (아래 실측은 db.t4g.micro. 기본값은 LDP-201 부터 db.t4g.small) RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
 | `42-payment-data` | 결제 RDS db.t4g.micro Single-AZ, Secret | 6분 37초 – 6분 39초 | 2분 13초 |
 | `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 38초 | 2분 10초 |
 | `44-payment-endpoints` | 인터페이스 엔드포인트 9종(AZ 2개, `autoscaling` 포함 — 시간은 8종 때 실측, 1종 추가 apply 55초), S3 게이트웨이 엔드포인트 정책 | 57초 – 1분 04초 | 2분 24초 |
