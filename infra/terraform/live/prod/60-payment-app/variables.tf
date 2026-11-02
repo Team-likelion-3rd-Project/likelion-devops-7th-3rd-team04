@@ -43,6 +43,11 @@ variable "queue_names" {
   type        = map(string)
 }
 
+variable "webhook_queue_name" {
+  description = "50-payment-webhook 의 queue_names.webhook. 토스 웹훅을 받는 큐"
+  type        = string
+}
+
 variable "payment_db_exporter_secret_name" {
   description = "42-payment-data 의 exporter_secret_name (결제 DB mysqld_exporter 계정 Secret)"
   type        = string

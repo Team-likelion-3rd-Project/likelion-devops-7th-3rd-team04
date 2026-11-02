@@ -17,22 +17,23 @@ locals {
 
   # /etc/payment-deploy/config.env (payment-deploy.sh 가 읽는다). 비밀값 · 계정 ID 는 넣지 않는다 (agent 가 IMDS · Secrets Manager 에서 읽음)
   deploy_config = {
-    REGION                    = var.region
-    RELEASE_PARAMETER         = local.release_parameter
-    ASG_NAME                  = local.asg_name
-    APP_REPOSITORY            = "${var.project}/payment-service"
-    MIGRATIONS_REPOSITORY     = "${var.project}/payment-migrations"
-    PAYMENT_DB_SECRET_ID      = var.payment_db_secret_name
-    TOSS_SECRET_ID            = local.toss_secret_name
-    PAYMENT_RESULT_QUEUE_NAME = var.queue_names.payment_result
-    PG_MOCK_SERVICE_URL       = "http://${cidrhost(local.network.app_static_cidr, var.pg_mock_private_ip_hostnum)}:${var.pg_mock_port}"
-    GRPC_PORT                 = var.grpc_port
-    HEALTH_PORT               = var.health_port
-    METRICS_PORT              = var.metrics_port
-    RDS_CA_PATH               = "/etc/payment-deploy/rds-ca-bundle.pem"
-    APP_LOG_GROUP             = aws_cloudwatch_log_group.app.name
-    DEPLOY_LOG_GROUP          = aws_cloudwatch_log_group.deploy.name
-    DEPLOY_TOPIC_NAME         = var.deploy_topic_name
+    REGION                     = var.region
+    RELEASE_PARAMETER          = local.release_parameter
+    ASG_NAME                   = local.asg_name
+    APP_REPOSITORY             = "${var.project}/payment-service"
+    MIGRATIONS_REPOSITORY      = "${var.project}/payment-migrations"
+    PAYMENT_DB_SECRET_ID       = var.payment_db_secret_name
+    TOSS_SECRET_ID             = local.toss_secret_name
+    PAYMENT_RESULT_QUEUE_NAME  = var.queue_names.payment_result
+    PAYMENT_WEBHOOK_QUEUE_NAME = var.webhook_queue_name
+    PG_MOCK_SERVICE_URL        = "http://${cidrhost(local.network.app_static_cidr, var.pg_mock_private_ip_hostnum)}:${var.pg_mock_port}"
+    GRPC_PORT                  = var.grpc_port
+    HEALTH_PORT                = var.health_port
+    METRICS_PORT               = var.metrics_port
+    RDS_CA_PATH                = "/etc/payment-deploy/rds-ca-bundle.pem"
+    APP_LOG_GROUP              = aws_cloudwatch_log_group.app.name
+    DEPLOY_LOG_GROUP           = aws_cloudwatch_log_group.deploy.name
+    DEPLOY_TOPIC_NAME          = var.deploy_topic_name
     # AZ 접미사 순서(a b). 앞선 AZ 가 먼저 배포한다
     AZ_ORDER        = join(" ", sort(keys(local.network.subnet_ids_by_az.app)))
     STAGGER_SECONDS = var.deploy_stagger_seconds

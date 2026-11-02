@@ -58,6 +58,7 @@ AZ=$(imds meta-data/placement/availability-zone)
 ACCOUNT_ID=$(imds dynamic/instance-identity/document | jq -r .accountId)
 REGISTRY="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 QUEUE_URL="https://sqs.$REGION.amazonaws.com/$ACCOUNT_ID/$PAYMENT_RESULT_QUEUE_NAME"
+WEBHOOK_QUEUE_URL="https://sqs.$REGION.amazonaws.com/$ACCOUNT_ID/$PAYMENT_WEBHOOK_QUEUE_NAME"
 DEPLOY_TOPIC_ARN="arn:aws:sns:$REGION:$ACCOUNT_ID:$DEPLOY_TOPIC_NAME"
 PROVIDER=""
 
@@ -115,7 +116,7 @@ sha() {
 
 # ── release 검증 ─────────────────────────────────────────
 # env 는 비밀이 아닌 설정만 받는다. 인프라가 넣는 값(DB · 비밀값 · 큐 · 자격 증명 · 포트)은 gitops 로 덮어쓸 수 없다
-RESERVED_ENV_REGEX='^(PAYMENT_DB_.*|TOSS_SECRET_KEY|SQS_.*|PAYMENT_RESULT_QUEUE_URL|PG_MOCK_SERVICE_URL|AWS_.*|HEALTH_PORT|METRICS_PORT)$'
+RESERVED_ENV_REGEX='^(PAYMENT_DB_.*|TOSS_SECRET_KEY|SQS_.*|PAYMENT_RESULT_QUEUE_URL|PAYMENT_WEBHOOK_QUEUE_URL|PG_MOCK_SERVICE_URL|AWS_.*|HEALTH_PORT|METRICS_PORT)$'
 
 validate_release() {
   jq -e --arg reserved "$RESERVED_ENV_REGEX" '
@@ -223,6 +224,7 @@ render_env() {
     echo "PAYMENT_DB_SSL_CA_PATH=$RDS_CA_PATH"
     echo "SQS_REGION=$REGION"
     echo "PAYMENT_RESULT_QUEUE_URL=$QUEUE_URL"
+    echo "PAYMENT_WEBHOOK_QUEUE_URL=$WEBHOOK_QUEUE_URL"
     echo "PG_MOCK_SERVICE_URL=$PG_MOCK_SERVICE_URL"
     echo "HEALTH_PORT=$HEALTH_PORT"
     # GET /metrics — 같은 서버의 Alloy(payment-metrics)가 127.0.0.1 로 읽는다 (LDP-181)

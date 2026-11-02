@@ -33,6 +33,21 @@ variable "queue_names" {
   type        = map(string)
 }
 
+variable "webhook_dlq_name" {
+  description = "50-payment-webhook 의 queue_names.webhook_dlq"
+  type        = string
+}
+
+variable "webhook_lambda_function_name" {
+  description = "50-payment-webhook 의 lambda_function_name"
+  type        = string
+}
+
+variable "webhook_api_id" {
+  description = "50-payment-webhook 의 api_id"
+  type        = string
+}
+
 variable "payment_nlb_arn_suffix" {
   description = "60-payment-app 의 nlb_arn_suffix"
   type        = string

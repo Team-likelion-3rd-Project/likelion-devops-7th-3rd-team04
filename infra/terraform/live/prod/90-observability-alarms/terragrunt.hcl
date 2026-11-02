@@ -41,6 +41,20 @@ dependency "payment_data" {
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
+dependency "payment_webhook" {
+  config_path = "../50-payment-webhook"
+
+  mock_outputs = {
+    queue_names = {
+      webhook     = "payment-webhook"
+      webhook_dlq = "payment-webhook-dlq"
+    }
+    lambda_function_name = "team04-hotel-payment-webhook"
+    api_id               = "0000000000"
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
+}
+
 dependency "payment_app" {
   config_path = "../60-payment-app"
 
@@ -71,6 +85,10 @@ inputs = {
   payment_metrics_workspace_id = dependency.global.outputs.payment_metrics_workspace_id
 
   queue_names = dependency.messaging.outputs.queue_names
+
+  webhook_dlq_name             = dependency.payment_webhook.outputs.queue_names.webhook_dlq
+  webhook_lambda_function_name = dependency.payment_webhook.outputs.lambda_function_name
+  webhook_api_id               = dependency.payment_webhook.outputs.api_id
 
   payment_nlb_arn_suffix          = dependency.payment_app.outputs.nlb_arn_suffix
   payment_target_group_arn_suffix = dependency.payment_app.outputs.target_group_arn_suffix

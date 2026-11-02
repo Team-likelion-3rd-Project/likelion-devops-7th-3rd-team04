@@ -3,6 +3,9 @@
 # 알람을 새로 만들 때의 "데이터 부족 → OK" 에도 실행되어 매일 재생성마다 OK 알림이 온다. 알람 이름은 var.project- 로 시작해야 한다
 #
 #   payment-result-dlq       결제 결과 DLQ 에 메시지 (43)                 booking-service 가 처리하지 못한 결제 결과
+#   payment-webhook-dlq      토스 웹훅 DLQ 에 메시지 (50)                 payment-service 가 처리하지 못한 웹훅
+#   payment-webhook-lambda-errors  웹훅 Lambda 오류 (50)                  큐 전송 실패 · 코드 오류 → 토스 재전송에 의존
+#   payment-webhook-api-5xx  웹훅 API Gateway 5xx (50)                    Lambda 호출 실패 · 비정상 응답
 #   main-alb-5xx-rate        ALB 5xx 비율 (80)                            api-gateway · 백엔드 오류, 워커 전부 다운
 #   main-alb-<클러스터>-unhealthy  Target Group unhealthy (80, kubeadm · eks)   워커 · Traefik 이상
 #   ec2-cpu-surplus-charged  계정 EC2 CPU 초과 크레딧 과금 (Metrics Insights)  t3a unlimited 초과 사용 → 인스턴스 타입 검토
@@ -42,6 +45,65 @@ resource "aws_cloudwatch_metric_alarm" "payment_result_dlq" {
     QueueName = var.queue_names.payment_result_dlq
   }
   statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = local.alarm_actions
+}
+
+# ── 토스 웹훅 ──
+
+resource "aws_cloudwatch_metric_alarm" "payment_webhook_dlq" {
+  alarm_name        = "${local.name}-payment-webhook-dlq"
+  alarm_description = "토스 웹훅 DLQ(${var.webhook_dlq_name})에 메시지가 있습니다. payment-service 가 처리하지 못한 웹훅 — 메시지 확인 후 재처리"
+
+  namespace   = "AWS/SQS"
+  metric_name = "ApproximateNumberOfMessagesVisible"
+  dimensions = {
+    QueueName = var.webhook_dlq_name
+  }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = local.alarm_actions
+}
+
+resource "aws_cloudwatch_metric_alarm" "payment_webhook_lambda_errors" {
+  alarm_name        = "${local.name}-payment-webhook-lambda-errors"
+  alarm_description = "토스 웹훅 Lambda 오류가 발생했습니다. 웹훅은 토스 재전송에 의존 — Lambda 로그 · SQS 엔드포인트 확인"
+
+  namespace   = "AWS/Lambda"
+  metric_name = "Errors"
+  dimensions = {
+    FunctionName = var.webhook_lambda_function_name
+  }
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = local.alarm_actions
+}
+
+resource "aws_cloudwatch_metric_alarm" "payment_webhook_api_5xx" {
+  alarm_name        = "${local.name}-payment-webhook-api-5xx"
+  alarm_description = "토스 웹훅 API Gateway 5xx 가 발생했습니다. 웹훅은 토스 재전송에 의존 — Lambda 로그 확인"
+
+  namespace   = "AWS/ApiGateway"
+  metric_name = "5xx"
+  dimensions = {
+    ApiId = var.webhook_api_id
+  }
+  statistic           = "Sum"
   period              = 60
   evaluation_periods  = 1
   comparison_operator = "GreaterThanThreshold"
