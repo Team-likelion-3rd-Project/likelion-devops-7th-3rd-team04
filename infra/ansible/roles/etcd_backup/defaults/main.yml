@@ -1,0 +1,23 @@
+---
+# control plane 의 etcd snapshot + /etc/kubernetes/pki + admin.conf 를 age 로 암호화해 AWS S3 에 올림 (README 18절)
+# 버킷 · 업로드 전용 IAM user 는 Terraform live/prod/16-onprem-backup. DB 는 시딩, 로그는 Loki 가 맡으므로 대상이 아님
+etcd_backup_bucket: team04-hotel-onprem-backup     # Terraform 16 의 bucket_name
+etcd_backup_region: us-east-1
+# 첫 구간(etcd)은 Terraform 16 의 backup_prefix 와 같아야 함 (IAM user 는 그 아래에만 PutObject)
+etcd_backup_prefix: etcd/onprem-dev
+
+# 업로드 자격 증명 — OpenBao aws-backup(access_key_id · secret_access_key). 도입 전이면 환경변수.
+# 둘 다 비어 있으면 이 role 은 경고만 남기고 건너뜀 (키 발급 전에도 control-plane.yml 이 깨지지 않게)
+etcd_backup_aws_access_key_id: "{{ openbao_kv['aws-backup'].access_key_id | default(lookup('env', 'AWS_BACKUP_ACCESS_KEY_ID'), true) }}"
+etcd_backup_aws_secret_access_key: "{{ openbao_kv['aws-backup'].secret_access_key | default(lookup('env', 'AWS_BACKUP_SECRET_ACCESS_KEY'), true) }}"
+
+# age 공개키(age1...) 목록 — 공개키라 커밋해도 됨. 개인키는 팀 password manager 에만 (OpenBao 와 함께 잃지 않게)
+# snapshot 에 Secret 이 평문으로 들어 있고 공유 계정이라 버킷을 읽을 수 있는 주체가 많아 업로드 전에 암호화함
+etcd_backup_age_recipients: []
+
+# etcdctl · etcdutl 버전. 비우면 /etc/kubernetes/manifests/etcd.yaml 의 이미지 태그를 따름
+etcd_backup_etcd_version: ""
+
+etcd_backup_config_dir: /etc/team04-backup
+# VM 을 일과 시간에만 켜므로 낮 시각 + Persistent (꺼져 있었으면 다음 부팅 때 실행)
+etcd_backup_calendar: "*-*-* 12:00"
