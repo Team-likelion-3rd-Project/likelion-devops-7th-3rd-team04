@@ -25,6 +25,9 @@ VERTEX_EMBED_MODEL = os.getenv("VERTEX_EMBED_MODEL", "text-multilingual-embeddin
 # RAG 벡터 스토어: s3vectors(prod, AWS S3 Vectors) | object(dev, MinIO 등 S3 호환 저장소의 JSON) | none
 VECTOR_STORE = os.getenv("VECTOR_STORE", "s3vectors")
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
+# 이 코사인 유사도 미만인 문서는 context에 넣지 않습니다. 임베딩 모델마다 분포가 달라 scripts.eval_retrieval로 정합니다
+# (text-multilingual-embedding-002 기준 관련 문서 최저 0.646 · 무관 질문 0.53~0.68 → 관련 문서를 놓치지 않는 0.62).
+RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.62"))
 
 # VECTOR_STORE=s3vectors — VECTOR_BUCKET_NAME이 비어 있으면 RAG 없이 동작합니다.
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
