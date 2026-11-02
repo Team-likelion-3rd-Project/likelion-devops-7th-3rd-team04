@@ -76,15 +76,22 @@ describe('ChatBotServiceController', () => {
       expect(result.action).toBeNull();
     });
 
-    it('persists both turns and forwards history for a logged-in user', async () => {
+    it('persists both turns and forwards prior history for a logged-in user', async () => {
       sessionService.getOrCreateSession.mockResolvedValue(session);
       messageService.getRecentMessages.mockResolvedValue([
         {
           sessionId: session.sessionId,
-          messageId: 'm1',
+          messageId: 'm0',
           role: 'USER',
-          content: '안녕',
-          createdAt: '2026-01-01T00:00:00.000Z',
+          content: '부산점 객실 뭐 있어?',
+          createdAt: '2025-12-31T23:59:00.000Z',
+        },
+        {
+          sessionId: session.sessionId,
+          messageId: 'm0b',
+          role: 'ASSISTANT',
+          content: '오션뷰 스위트룸이 있습니다.',
+          createdAt: '2025-12-31T23:59:01.000Z',
         },
       ]);
       messageService.appendMessage.mockResolvedValue({
@@ -111,8 +118,16 @@ describe('ChatBotServiceController', () => {
         sessionId: session.sessionId,
         userId: 1,
         message: '안녕',
-        history: [{ role: 'USER', content: '안녕' }],
+        // 현재 메시지는 message로만 가고 history에는 이전 대화만 담깁니다.
+        history: [
+          { role: 'USER', content: '부산점 객실 뭐 있어?' },
+          { role: 'ASSISTANT', content: '오션뷰 스위트룸이 있습니다.' },
+        ],
       });
+      // 이력 조회가 현재 메시지 저장보다 먼저여야 중복이 생기지 않습니다.
+      expect(
+        messageService.getRecentMessages.mock.invocationCallOrder[0],
+      ).toBeLessThan(messageService.appendMessage.mock.invocationCallOrder[0]);
       expect(messageService.appendMessage).toHaveBeenCalledWith(
         session.sessionId,
         'ASSISTANT',
