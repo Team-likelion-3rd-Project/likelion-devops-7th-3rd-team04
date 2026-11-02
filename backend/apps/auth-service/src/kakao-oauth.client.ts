@@ -53,12 +53,14 @@ export class KakaoOAuthClient {
       client_id: process.env.KAKAO_CLIENT_ID ?? '',
       redirect_uri: redirectUri,
       response_type: 'code',
+      // 카카오 콘솔 동의 항목(닉네임·이메일 필수)과 같게 명시 — 콘솔 설정이 바뀌어도 이메일 동의를 빠뜨리지 않는다
+      scope: 'profile_nickname,account_email',
       state,
     });
     return `${AUTHORIZE_URL}?${params.toString()}`;
   }
 
-  // 인가 코드 → 카카오 회원 정보. 코드가 틀리거나 만료되면 401, 카카오에 연결할 수 없으면 503
+  // 인가 코드 → 카카오 회원 정보. 코드가 틀리거나 만료되면 401, 카카오 장애·우리 쪽 설정 오류면 503
   async getProfile(code: string, redirectUri: string): Promise<KakaoProfile> {
     const accessToken = await this.exchangeCode(code, redirectUri);
     const me = await this.request<KakaoUserMeResponse>(USER_ME_URL, {
@@ -117,20 +119,40 @@ export class KakaoOAuthClient {
     if (res.ok) {
       return (await res.json()) as T;
     }
-    // 4xx = 인가 코드가 틀렸거나 이미 쓴 코드 (사용자가 다시 시도하면 됨), 5xx = 카카오 장애
     const detail = await res.text().catch(() => '');
-    this.logger.warn(
-      `카카오 응답 ${res.status} (${url}) ${detail.slice(0, 200)}`,
-    );
     if (res.status >= 500) {
+      this.logger.warn(
+        `카카오 응답 ${res.status} (${url}) ${detail.slice(0, 200)}`,
+      );
       throw kakaoUnavailable();
     }
-    throw apiRpcException({
-      status: 401,
-      code: 'SOCIAL_LOGIN_FAILED',
-      message: '카카오 로그인에 실패했습니다. 다시 시도해 주세요.',
-      retryable: true,
-    });
+    // 인가 코드가 틀렸거나 만료·재사용된 경우(invalid_grant)만 사용자 실패 — 카카오 로그인부터 다시 하면 된다
+    if (url === TOKEN_URL && isInvalidCode(detail)) {
+      this.logger.warn(`카카오 인가 코드 거절 ${detail.slice(0, 200)}`);
+      throw apiRpcException({
+        status: 401,
+        code: 'SOCIAL_LOGIN_FAILED',
+        message: '카카오 로그인에 실패했습니다. 다시 시도해 주세요.',
+        retryable: true,
+      });
+    }
+    // 그 밖의 4xx는 앱 키·시크릿·Redirect URI 설정 오류처럼 우리 쪽 문제다. 모든 사용자가 실패하므로
+    // 사용자 실패(401)로 숨기지 않고 503 + 에러 로그로 알람에 잡히게 한다 (LDP-205)
+    this.logger.error(
+      `[알람] 카카오 요청 거절 ${res.status} — 앱 키·시크릿·Redirect URI 설정 확인 필요 (${url}) ${detail.slice(0, 200)}`,
+    );
+    throw kakaoUnavailable();
+  }
+}
+
+// 카카오 토큰 오류 응답 {"error":"invalid_grant","error_code":"KOE320",...}.
+// Redirect URI 불일치(KOE303)도 invalid_grant로 오지만 콘솔 설정 문제라 사용자 실패로 보지 않는다
+function isInvalidCode(detail: string): boolean {
+  try {
+    const body = JSON.parse(detail) as { error?: string; error_code?: string };
+    return body.error === 'invalid_grant' && body.error_code !== 'KOE303';
+  } catch {
+    return false;
   }
 }
 

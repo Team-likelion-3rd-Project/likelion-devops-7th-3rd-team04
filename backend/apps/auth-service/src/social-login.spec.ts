@@ -125,6 +125,7 @@ describe('AuthServiceService 카카오 로그인', () => {
       expect(url).toContain('https://kauth.kakao.com/oauth/authorize?');
       expect(url).toContain(`state=${state}`);
       expect(url).toContain(`redirect_uri=${encodeURIComponent(REDIRECT_URI)}`);
+      expect(url).toContain('scope=profile_nickname%2Caccount_email');
       expect(redisSet).toHaveBeenCalledWith(
         `social:state:${state}`,
         REDIRECT_URI,
@@ -165,10 +166,14 @@ describe('AuthServiceService 카카오 로그인', () => {
         .socialLogin({ provider: 'KAKAO', code: 'code-1', state: 'state-1' })
         .catch((e: unknown) => e);
 
-    it('state가 없거나 이미 쓰였으면 400 SOCIAL_STATE_INVALID — 카카오를 부르지 않는다', async () => {
+    it('state가 없거나 이미 쓰였으면 400 SOCIAL_STATE_INVALID(재시도 불가) — 카카오를 부르지 않는다', async () => {
       redisGetdel.mockResolvedValue(null);
 
-      expect(codeOf(await login())).toBe('SOCIAL_STATE_INVALID');
+      expect(parseApiRpcError(await login())).toMatchObject({
+        status: 400,
+        code: 'SOCIAL_STATE_INVALID',
+        retryable: false,
+      });
       expect(getProfile).not.toHaveBeenCalled();
     });
 
@@ -196,14 +201,19 @@ describe('AuthServiceService 카카오 로그인', () => {
       const { signupToken } = result as { signupToken: string };
       expect(redisSet).toHaveBeenCalledWith(
         `social:signup:${signupToken}`,
-        JSON.stringify({
-          provider: 'KAKAO',
-          providerUserId: '12345',
-          email: user.email,
-        }),
+        expect.any(String),
         'EX',
         600,
       );
+      const [, saved] = redisSet.mock.calls[0] as [string, string];
+      expect(JSON.parse(saved)).toMatchObject({
+        provider: 'KAKAO',
+        providerUserId: '12345',
+        email: user.email,
+      });
+      expect(
+        typeof (JSON.parse(saved) as { expiresAt: unknown }).expiresAt,
+      ).toBe('number');
       expect(createUser).not.toHaveBeenCalled();
     });
 
@@ -225,6 +235,31 @@ describe('AuthServiceService 카카오 로그인', () => {
       expect(codeOf(await login())).toBe('SOCIAL_EMAIL_IN_USE');
       expect(redisSet).not.toHaveBeenCalled();
     });
+
+    it('이메일 확인 중 user-service 장애면 미가입으로 보지 않고 503 SOCIAL_LOGIN_UNAVAILABLE', async () => {
+      getUserByEmail.mockReturnValue(
+        throwError(() => ({ code: 14, details: 'connect ECONNREFUSED' })),
+      );
+
+      expect(parseApiRpcError(await login())).toMatchObject({
+        status: 503,
+        code: 'SOCIAL_LOGIN_UNAVAILABLE',
+      });
+      expect(redisSet).not.toHaveBeenCalled();
+    });
+
+    it('카카오 연결만 남고 프로필이 없으면 503 재시도 대신 404 SOCIAL_ACCOUNT_NOT_FOUND', async () => {
+      socialFindOne.mockResolvedValue(linked);
+      getUserById.mockReturnValue(
+        throwError(() => ({ code: 5, details: '존재하지 않는 유저입니다.' })),
+      );
+
+      expect(parseApiRpcError(await login())).toMatchObject({
+        status: 404,
+        code: 'SOCIAL_ACCOUNT_NOT_FOUND',
+        retryable: false,
+      });
+    });
   });
 
   describe('추가 정보 입력 후 가입', () => {
@@ -232,6 +267,7 @@ describe('AuthServiceService 카카오 로그인', () => {
       provider: 'KAKAO',
       providerUserId: '12345',
       email: user.email,
+      expiresAt: Date.now() + 300_000,
     });
     const signup = () =>
       service
@@ -243,7 +279,7 @@ describe('AuthServiceService 카카오 로그인', () => {
         .catch((e: unknown) => e);
 
     it('정상: 프로필 → 카카오 연결 → 토큰 발급 (비밀번호는 만들지 않음)', async () => {
-      redisGet.mockResolvedValue(pending);
+      redisGetdel.mockResolvedValue(pending);
 
       const result = await signup();
 
@@ -259,27 +295,79 @@ describe('AuthServiceService 카카오 로그인', () => {
         email: user.email,
       });
       expect(credentialSave).not.toHaveBeenCalled();
-      expect(redisDel).toHaveBeenCalledWith('social:signup:token-1');
+      // 토큰은 처음에 getdel로 꺼냈으므로 되돌리지 않는다
+      expect(redisGetdel).toHaveBeenCalledWith('social:signup:token-1');
+      expect(redisSet).not.toHaveBeenCalledWith(
+        'social:signup:token-1',
+        expect.anything(),
+        'EX',
+        expect.anything(),
+      );
       expect(result).toMatchObject({ userId: 7, socialProvider: 'KAKAO' });
     });
 
     it('가입 대기 토큰이 만료됐으면 400 SOCIAL_SIGNUP_EXPIRED', async () => {
-      redisGet.mockResolvedValue(null);
+      redisGetdel.mockResolvedValue(null);
 
       expect(codeOf(await signup())).toBe('SOCIAL_SIGNUP_EXPIRED');
       expect(createUser).not.toHaveBeenCalled();
     });
 
     it('카카오 연결 저장 실패 → 만든 프로필을 되돌리고 503 SIGNUP_FAILED', async () => {
-      redisGet.mockResolvedValue(pending);
+      redisGetdel.mockResolvedValue(pending);
       socialSave.mockRejectedValue(new Error('auth DB 연결 끊김'));
 
       expect(codeOf(await signup())).toBe('SIGNUP_FAILED');
       expect(cancelSignup).toHaveBeenCalledWith({ id: 7, email: user.email });
+      // 다시 눌러 볼 수 있게 가입 대기 토큰을 남은 시간만큼 되돌린다
+      expect(redisSet).toHaveBeenCalledWith(
+        'social:signup:token-1',
+        pending,
+        'EX',
+        expect.any(Number),
+      );
+      const [, , , ttl] = redisSet.mock.calls[0] as [
+        string,
+        string,
+        string,
+        number,
+      ];
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(300);
+    });
+
+    it('동시에 두 번 요청하면 토큰을 먼저 꺼낸 요청만 가입 — 나머지는 회원을 만들지 않는다', async () => {
+      redisGetdel.mockResolvedValueOnce(pending).mockResolvedValueOnce(null);
+
+      const [first, second] = await Promise.all([signup(), signup()]);
+
+      expect(createUser).toHaveBeenCalledTimes(1);
+      expect(first).toMatchObject({ userId: 7, socialProvider: 'KAKAO' });
+      expect(codeOf(second)).toBe('SOCIAL_SIGNUP_EXPIRED');
+    });
+
+    it('대기 중 같은 이메일로 이메일 가입이 끝났으면 409 SOCIAL_EMAIL_IN_USE — 토큰은 되돌리지 않음', async () => {
+      redisGetdel.mockResolvedValue(pending);
+      getUserByEmail.mockReturnValue(of({ ...user, id: 3 }));
+      credentialFindOne.mockResolvedValue({ userId: 3 });
+
+      expect(codeOf(await signup())).toBe('SOCIAL_EMAIL_IN_USE');
+      expect(createUser).not.toHaveBeenCalled();
+      expect(redisSet).not.toHaveBeenCalled();
+    });
+
+    it('확인과 생성 사이에 같은 이메일로 가입되면(ALREADY_EXISTS) 409 SOCIAL_EMAIL_IN_USE', async () => {
+      redisGetdel.mockResolvedValue(pending);
+      createUser.mockReturnValue(
+        throwError(() => ({ code: 6, details: '이미 가입된 이메일입니다.' })),
+      );
+
+      expect(codeOf(await signup())).toBe('SOCIAL_EMAIL_IN_USE');
+      expect(redisSet).not.toHaveBeenCalled();
     });
 
     it('가입 버튼을 두 번 눌러 이미 연결됐으면 새로 만들지 않고 그 회원으로 로그인', async () => {
-      redisGet.mockResolvedValue(pending);
+      redisGetdel.mockResolvedValue(pending);
       socialFindOne.mockResolvedValue(linked);
 
       const result = await signup();
@@ -365,21 +453,45 @@ describe('KakaoOAuthClient 회원 정보', () => {
     expect(profile).toEqual({ id: '12345', email: null, nickname: '닉' });
   });
 
-  it('인가 코드가 틀리면(카카오 4xx) 401 SOCIAL_LOGIN_FAILED, 카카오 장애(5xx)면 503', async () => {
-    fetchMock.mockReturnValueOnce(respond({ error: 'invalid_grant' }, 400));
-    const invalid = await new KakaoOAuthClient()
-      .getProfile('bad', 'x')
-      .catch((e: unknown) => e);
-    expect(parseApiRpcError(invalid)).toMatchObject({
+  const failure = (code: string) =>
+    new KakaoOAuthClient().getProfile(code, 'x').catch((e: unknown) => e);
+
+  it('인가 코드가 틀리거나 이미 쓴 코드(invalid_grant)면 401 SOCIAL_LOGIN_FAILED', async () => {
+    fetchMock.mockReturnValueOnce(
+      respond({ error: 'invalid_grant', error_code: 'KOE320' }, 400),
+    );
+
+    expect(parseApiRpcError(await failure('bad'))).toMatchObject({
       status: 401,
       code: 'SOCIAL_LOGIN_FAILED',
     });
+  });
 
+  it('앱 키·시크릿·Redirect URI 설정 오류(그 밖의 4xx)는 사용자 실패로 숨기지 않고 503', async () => {
+    fetchMock
+      .mockReturnValueOnce(
+        respond({ error: 'invalid_client', error_code: 'KOE010' }, 401),
+      )
+      .mockReturnValueOnce(
+        respond({ error: 'invalid_grant', error_code: 'KOE303' }, 400),
+      )
+      .mockReturnValueOnce(respond({ access_token: 'at' }))
+      .mockReturnValueOnce(
+        respond({ msg: 'this access token does not exist', code: -401 }, 401),
+      );
+
+    for (let i = 0; i < 3; i++) {
+      expect(parseApiRpcError(await failure('code'))).toMatchObject({
+        status: 503,
+        code: 'SOCIAL_PROVIDER_UNAVAILABLE',
+      });
+    }
+  });
+
+  it('카카오 장애(5xx)면 503 SOCIAL_PROVIDER_UNAVAILABLE', async () => {
     fetchMock.mockReturnValueOnce(respond({}, 502));
-    const down = await new KakaoOAuthClient()
-      .getProfile('code', 'x')
-      .catch((e: unknown) => e);
-    expect(parseApiRpcError(down)).toMatchObject({
+
+    expect(parseApiRpcError(await failure('code'))).toMatchObject({
       status: 503,
       code: 'SOCIAL_PROVIDER_UNAVAILABLE',
     });
