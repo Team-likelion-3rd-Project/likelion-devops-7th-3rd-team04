@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { ApiError, register } from '../api/gateway'
+import KakaoLoginButton from '../components/KakaoLoginButton'
+import { kakaoErrorMessage } from '../utils/kakaoLoginError'
 import { loginRedirectPath, type LoginLocationState } from '../utils/loginRedirect'
 import './SignupPage.css'
 
@@ -50,6 +52,11 @@ function SignupPage() {
       // SIGNUP_FAILED(503): 가입되지 않았고 남은 데이터도 없어 같은 이메일로 다시 가입할 수 있다.
       if (err instanceof ApiError && err.code === 'SIGNUP_FAILED') {
         setError('일시적인 오류로 가입하지 못했어요. 잠시 후 다시 시도해 주세요.')
+        return
+      }
+      // 카카오로 가입된 이메일(409) → 아래 카카오 버튼으로 안내 (LDP-195)
+      if (err instanceof ApiError && err.code === 'SOCIAL_ACCOUNT_EXISTS') {
+        setError(kakaoErrorMessage(err))
         return
       }
       setError(err instanceof Error ? err.message : '회원가입에 실패했습니다.')
@@ -132,6 +139,8 @@ function SignupPage() {
             {isLoading ? '가입 중...' : '회원가입'}
           </button>
         </form>
+
+        <KakaoLoginButton from={from} />
 
         <p className="signup-footer">
           이미 계정이 있으신가요? <Link to="/login" state={from ? { from } : undefined}>

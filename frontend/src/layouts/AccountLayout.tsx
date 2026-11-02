@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { fetchMyBookings, isUnauthorized, refreshAccessToken } from '../api/gateway'
+import { customerAuth } from '../api/tokenStore'
 import './AccountLayout.css'
 
 // 마이페이지/예약 내역/결제 내역처럼 "내 정보"에 속한 페이지들이 공유하는 좌측 사이드바.
@@ -29,6 +30,8 @@ const ACCOUNT_NAV_GROUPS = [
 
 function AccountLayout() {
   const location = useLocation()
+  // 카카오로 가입한 회원은 비밀번호가 없어 "비밀번호 변경" 메뉴를 숨긴다 (LDP-195)
+  const isSocialUser = !!customerAuth.useUser()?.socialProvider
 
   // 결제 대기(PENDING_PAYMENT) 예약 개수 — 사이드바의 "결제대기" 항목 옆 뱃지용.
   const [pendingCount, setPendingCount] = useState<number | null>(null)
@@ -80,7 +83,7 @@ function AccountLayout() {
             <div className="account-nav-group" key={group.label}>
               <h2 className="account-nav-group-label">{group.label}</h2>
               <ul>
-                {group.items.map((item) => (
+                {group.items.filter((item) => !(isSocialUser && item.to === '/mypage/password')).map((item) => (
                   <li key={item.to}>
                     {/* end를 반드시 줘야 한다: /mypage와 /mypage/password처럼 경로가 겹치는
                         항목들이 있어서, end 없이는 상위 경로(/mypage)가 하위 경로에서도 함께

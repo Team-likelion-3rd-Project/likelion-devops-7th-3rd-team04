@@ -111,6 +111,8 @@ export interface AuthResponse {
   email: string
   name: string
   role: string
+  /** 카카오로 가입한 회원이면 'KAKAO', 이메일 가입·관리자는 '' (LDP-194). 배포 전 서버에서는 오지 않을 수 있다 */
+  socialProvider?: string
 }
 
 // store 인자로 고객(customerAuth)/관리자(adminAuth) 중 어느 메모리 저장소에 반영할지 정한다.
@@ -123,13 +125,18 @@ async function parseAuthResponse(res: Response, store: AuthStore): Promise<AuthR
   }
 
   const data: AuthResponse = await res.json()
+  saveAuth(data, store)
+  return data
+}
+
+function saveAuth(data: AuthResponse, store: AuthStore): void {
   store.setAuth(data.accessToken, {
     userId: data.userId,
     email: data.email,
     name: data.name,
     role: data.role,
+    socialProvider: data.socialProvider ?? '',
   })
-  return data
 }
 
 // api-gateway(/api/auth/login) -> auth-service(gRPC)로 이메일/비밀번호를 검증하고 토큰을 발급받는다.
@@ -161,6 +168,83 @@ export async function register(payload: RegisterRequest): Promise<AuthResponse> 
     body: JSON.stringify(payload),
   })
 
+  return parseAuthResponse(res, customerAuth)
+}
+
+// ── 카카오 로그인 (LDP-195, 백엔드 API 명세 2.8~2.11) ──────────────────────────────
+// ① startKakaoLogin: 서버에서 카카오 인가 화면 주소를 받아 이동 (서버가 state를 httpOnly 쿠키로 심는다)
+// ② 카카오가 /auth/kakao/callback?code=...&state=... 로 돌려보냄 → kakaoLogin
+// ③ 처음 온 회원이면 추가 정보 입력 화면에서 kakaoSignup
+export const KAKAO_CALLBACK_PATH = '/auth/kakao/callback'
+
+// 카카오에 다녀오는 동안 페이지가 바뀌므로, 로그인 후 돌아갈 화면을 탭 단위 저장소에 잠깐 둔다
+const KAKAO_FROM_KEY = 'kakaoLoginFrom'
+
+export function takeKakaoLoginFrom(): string | undefined {
+  try {
+    const from = sessionStorage.getItem(KAKAO_FROM_KEY) ?? undefined
+    sessionStorage.removeItem(KAKAO_FROM_KEY)
+    return from
+  } catch {
+    return undefined
+  }
+}
+
+export async function startKakaoLogin(from?: string): Promise<void> {
+  const redirectUri = `${window.location.origin}${KAKAO_CALLBACK_PATH}`
+  const res = await fetchWithRateLimitRetry(
+    `${BASE_URL}/api/auth/social/kakao/authorize-url?redirectUri=${encodeURIComponent(redirectUri)}`,
+    { credentials: 'include' },
+  )
+  const { url } = await parseJsonResponse<{ url: string }>(res)
+  // 브라우저에 카카오 로그인이 남아 있으면 카카오가 화면 없이 바로 통과시켜, 우리 사이트에서 로그아웃해도
+  // 버튼만 누르면 같은 계정으로 다시 들어가진다(공용 PC 위험). prompt=login으로 매번 카카오 로그인을 다시 받는다
+  const kakaoUrl = new URL(url)
+  kakaoUrl.searchParams.set('prompt', 'login')
+  try {
+    if (from) sessionStorage.setItem(KAKAO_FROM_KEY, from)
+    else sessionStorage.removeItem(KAKAO_FROM_KEY)
+  } catch {
+    // 저장소를 못 쓰면 로그인 후 홈으로 간다
+  }
+  window.location.assign(kakaoUrl.toString())
+}
+
+// 처음 온 회원 — 아직 우리 회원이 아니라 추가 정보(이름·전화번호)를 받아야 한다
+export interface KakaoSignupRequired {
+  signupRequired: true
+  signupToken: string
+  email: string
+  name: string
+}
+
+export type KakaoLoginResult = KakaoSignupRequired | ({ signupRequired: false } & AuthResponse)
+
+export async function kakaoLogin(payload: { code: string; state: string }): Promise<KakaoLoginResult> {
+  const res = await fetchWithRateLimitRetry(`${BASE_URL}/api/auth/social/kakao`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(payload),
+  })
+  const data = await parseJsonResponse<KakaoLoginResult>(res)
+  if (!data.signupRequired) saveAuth(data, customerAuth)
+  return data
+}
+
+export interface KakaoSignupRequest {
+  signupToken: string
+  name: string
+  phoneNumber: string
+}
+
+export async function kakaoSignup(payload: KakaoSignupRequest): Promise<AuthResponse> {
+  const res = await fetchWithRateLimitRetry(`${BASE_URL}/api/auth/social/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(payload),
+  })
   return parseAuthResponse(res, customerAuth)
 }
 
@@ -237,7 +321,13 @@ export async function updateMe(payload: UpdateMeRequest): Promise<UserProfile> {
   })
   const profile = await parseJsonResponse<UserProfile>(res)
   // 헤더의 "OO님" 표시 등이 즉시 반영되도록 메모리에 캐시된 유저 정보도 함께 갱신한다.
-  customerAuth.setUser({ userId: profile.id, email: profile.email, name: profile.name, role: profile.role })
+  customerAuth.setUser({
+    userId: profile.id,
+    email: profile.email,
+    name: profile.name,
+    role: profile.role,
+    socialProvider: customerAuth.getUser()?.socialProvider ?? '',
+  })
   return profile
 }
 
