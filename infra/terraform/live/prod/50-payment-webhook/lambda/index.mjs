@@ -37,7 +37,7 @@ export const handler = async (event) => {
   try {
     await sqs.send(
       new SendMessageCommand({
-        QueueUrl: process.env.WEBHOOK_QUEUE_URL,
+        QueueUrl: process.env.PAYMENT_WEBHOOK_QUEUE_URL,
         MessageBody: JSON.stringify({ headers, body }),
       }),
     );

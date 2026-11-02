@@ -4,7 +4,7 @@
 #                                                                                                     │ Receive · Delete
 #                                                           payment-webhook-dlq ◀── 처리 실패 ──── payment-service(60)
 #
-# Lambda 코드는 백엔드가 lambda/index.mjs 로 관리하고, 이 스택은 패키징 · 배포와 큐 URL 주입(WEBHOOK_QUEUE_URL)만 한다.
+# Lambda 코드는 백엔드가 lambda/index.mjs 로 관리하고, 이 스택은 패키징 · 배포와 큐 URL 주입(PAYMENT_WEBHOOK_QUEUE_URL)만 한다.
 # 웹훅 내용은 믿지 않는다. payment-service 가 토스 조회 API 로 재확인한 뒤 처리하므로 위조 웹훅은 그 단계에서 걸러진다.
 #
 # 매일 재생성 스택이라 내려가 있는 동안의 웹훅은 토스 재전송(최대 7회, 약 3일 19시간)에 의존한다.

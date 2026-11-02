@@ -87,7 +87,7 @@ resource "aws_lambda_function" "webhook" {
 
   environment {
     variables = {
-      WEBHOOK_QUEUE_URL = aws_sqs_queue.webhook.url
+      PAYMENT_WEBHOOK_QUEUE_URL = aws_sqs_queue.webhook.url
     }
   }
 
