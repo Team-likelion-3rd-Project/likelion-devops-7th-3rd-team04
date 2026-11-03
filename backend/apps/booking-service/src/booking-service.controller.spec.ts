@@ -1,6 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BookingServiceController } from './booking-service.controller';
 import { BookingServiceService } from './booking-service.service';
+import { ReservationFacilityService } from './reservation-facility.service';
+import { RoomAssignmentService } from './room-assignment.service';
+import { AdminBookingService } from './admin-booking.service';
 
 describe('BookingServiceController', () => {
   let controller: BookingServiceController;
@@ -27,6 +30,10 @@ describe('BookingServiceController', () => {
             createBooking: createBookingMock,
           },
         },
+        // 이 테스트에서 부르지 않는 의존성 (컨트롤러 생성에만 필요)
+        { provide: ReservationFacilityService, useValue: {} },
+        { provide: RoomAssignmentService, useValue: {} },
+        { provide: AdminBookingService, useValue: {} },
       ],
     }).compile();
 

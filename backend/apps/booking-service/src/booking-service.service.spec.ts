@@ -1,119 +1,117 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
-import { of, throwError } from 'rxjs';
-import { RpcException } from '@nestjs/microservices';
+import { status as GrpcStatus } from '@grpc/grpc-js';
+import { DataSource, Repository } from 'typeorm';
 import { BookingServiceService } from './booking-service.service';
 import { Reservation, ReservationStatus } from './entities/reservation.entity';
+import { PaymentAttempt } from './entities/payment-attempt.entity';
+import { ReservationFacilityService } from './reservation-facility.service';
 
+// 손님 예약 취소(cancelBooking) — 진행 중인 예약을 취소하는 경로.
+// 취소 1건의 내부 처리(트랜잭션·환불 대기열)와 이미 끝난 예약 재취소(환불 상태 안내)는 refund-request.spec.ts에서 본다.
 describe('BookingServiceService', () => {
+  const reservationFindOne = jest.fn();
   let service: BookingServiceService;
+  let cancelReservation: jest.SpyInstance;
+  let cancelLinkedExtensions: jest.SpyInstance;
 
-  const setRoomAvailabilityMock = jest.fn();
-  const refundPaymentMock = jest.fn();
-  const findOneMock = jest.fn();
-  const saveMock = jest.fn();
+  const reservation = (overrides: Partial<Reservation> = {}) =>
+    ({
+      reservationId: 1,
+      userId: 10,
+      roomId: 2,
+      checkInDate: '2026-11-10',
+      checkOutDate: '2026-11-12',
+      status: ReservationStatus.PENDING_PAYMENT,
+      ...overrides,
+    }) as Reservation;
 
-  const pendingReservation: Partial<Reservation> = {
-    reservationId: 1,
-    userId: 10,
-    roomId: 1,
-    checkInDate: '2026-09-01',
-    checkOutDate: '2026-09-03',
-    status: ReservationStatus.PENDING_PAYMENT,
+  // gRPC 오류의 상태 코드
+  const grpcCodeOf = async (promise: Promise<unknown>) => {
+    const error = await promise.catch((e: unknown) => e);
+    return (error as { getError?: () => { code?: number } }).getError?.()?.code;
   };
 
-  beforeEach(async () => {
+  beforeEach(() => {
     jest.clearAllMocks();
-    setRoomAvailabilityMock.mockReturnValue(of({ success: true }));
-    refundPaymentMock.mockReturnValue(of({ refunded: false }));
-
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        BookingServiceService,
-        {
-          provide: getRepositoryToken(Reservation),
-          useValue: { findOne: findOneMock, save: saveMock },
-        },
-        {
-          provide: 'HOTEL_SERVICE',
-          useValue: {
-            getService: () => ({
-              setRoomAvailability: setRoomAvailabilityMock,
-              reserveRoomAvailability: jest.fn(),
-            }),
-          },
-        },
-        {
-          provide: 'PAYMENT_SERVICE',
-          useValue: {
-            getService: () => ({ refundPayment: refundPaymentMock }),
-          },
-        },
-      ],
-    }).compile();
-
-    service = module.get<BookingServiceService>(BookingServiceService);
+    service = new BookingServiceService(
+      { findOne: reservationFindOne } as unknown as Repository<Reservation>,
+      {} as Repository<PaymentAttempt>,
+      {} as DataSource,
+      {} as ReservationFacilityService,
+      { getService: () => ({}) } as never,
+      { getService: () => ({}) } as never,
+    );
     service.onModuleInit();
+    cancelReservation = jest
+      .spyOn(service, 'cancelReservation')
+      .mockImplementation((target: Reservation) => {
+        target.status = ReservationStatus.CANCELLED;
+        return Promise.resolve(true);
+      });
+    cancelLinkedExtensions = jest
+      .spyOn(service, 'cancelLinkedExtensions')
+      .mockResolvedValue(undefined);
   });
 
   describe('cancelBooking', () => {
-    it('PENDING_PAYMENT 상태도 취소할 수 있고, 환불 RPC를 항상 호출한다', async () => {
-      findOneMock.mockResolvedValue({ ...pendingReservation });
-      saveMock.mockResolvedValue({
-        ...pendingReservation,
-        status: ReservationStatus.CANCELLED,
-      });
+    it.each([ReservationStatus.PENDING_PAYMENT, ReservationStatus.RESERVED])(
+      '%s 예약은 취소하고 취소된 예약을 돌려준다',
+      async (status) => {
+        reservationFindOne.mockResolvedValue(reservation({ status }));
 
-      const result = await service.cancelBooking(1, 10);
+        const result = await service.cancelBooking(1, 10);
 
-      expect(result.status).toBe(ReservationStatus.CANCELLED);
-      expect(refundPaymentMock).toHaveBeenCalledWith({ reservationId: 1 });
+        expect(cancelReservation).toHaveBeenCalledTimes(1);
+        expect(result).toMatchObject({
+          reservationId: 1,
+          status: ReservationStatus.CANCELLED,
+        });
+      },
+    );
+
+    it('원래 예약을 취소하면 연결된 연장 예약도 함께 취소한다', async () => {
+      reservationFindOne.mockResolvedValue(reservation());
+
+      await service.cancelBooking(1, 10);
+
+      expect(cancelLinkedExtensions).toHaveBeenCalledWith(1);
     });
 
-    it('RESERVED 상태도 취소할 수 있다', async () => {
-      findOneMock.mockResolvedValue({
-        ...pendingReservation,
-        status: ReservationStatus.RESERVED,
-      });
-      saveMock.mockResolvedValue({
-        ...pendingReservation,
-        status: ReservationStatus.CANCELLED,
-      });
-
-      const result = await service.cancelBooking(1, 10);
-
-      expect(result.status).toBe(ReservationStatus.CANCELLED);
-      expect(refundPaymentMock).toHaveBeenCalledWith({ reservationId: 1 });
-    });
-
-    it('이미 취소된 예약이면 RpcException을 던진다', async () => {
-      findOneMock.mockResolvedValue({
-        ...pendingReservation,
-        status: ReservationStatus.CANCELLED,
-      });
-
-      await expect(service.cancelBooking(1, 10)).rejects.toThrow(RpcException);
-    });
-
-    it('본인의 예약이 아니면 RpcException을 던진다', async () => {
-      findOneMock.mockResolvedValue({ ...pendingReservation, userId: 999 });
-
-      await expect(service.cancelBooking(1, 10)).rejects.toThrow(RpcException);
-    });
-
-    it('환불 RPC가 실패해도 예약취소 자체는 성공 처리한다', async () => {
-      findOneMock.mockResolvedValue({ ...pendingReservation });
-      saveMock.mockResolvedValue({
-        ...pendingReservation,
-        status: ReservationStatus.CANCELLED,
-      });
-      refundPaymentMock.mockReturnValue(
-        throwError(() => new RpcException('환불 실패')),
+    it('연장 예약만 취소하면 원래 예약은 건드리지 않는다', async () => {
+      reservationFindOne.mockResolvedValue(
+        reservation({ linkedReservationId: 7 }),
       );
 
-      const result = await service.cancelBooking(1, 10);
+      await service.cancelBooking(1, 10);
 
-      expect(result.status).toBe(ReservationStatus.CANCELLED);
+      expect(cancelLinkedExtensions).not.toHaveBeenCalled();
+    });
+
+    it('없는 예약이면 NOT_FOUND', async () => {
+      reservationFindOne.mockResolvedValue(null);
+
+      expect(await grpcCodeOf(service.cancelBooking(1, 10))).toBe(
+        GrpcStatus.NOT_FOUND,
+      );
+      expect(cancelReservation).not.toHaveBeenCalled();
+    });
+
+    it('본인의 예약이 아니면 PERMISSION_DENIED', async () => {
+      reservationFindOne.mockResolvedValue(reservation({ userId: 999 }));
+
+      expect(await grpcCodeOf(service.cancelBooking(1, 10))).toBe(
+        GrpcStatus.PERMISSION_DENIED,
+      );
+      expect(cancelReservation).not.toHaveBeenCalled();
+    });
+
+    it('확인한 뒤 그 사이 상태가 바뀌어 취소하지 못했으면 FAILED_PRECONDITION', async () => {
+      reservationFindOne.mockResolvedValue(reservation());
+      cancelReservation.mockResolvedValue(false);
+
+      expect(await grpcCodeOf(service.cancelBooking(1, 10))).toBe(
+        GrpcStatus.FAILED_PRECONDITION,
+      );
+      expect(cancelLinkedExtensions).not.toHaveBeenCalled();
     });
   });
 });
