@@ -1,4 +1,4 @@
-# Main VPC SG 와 규칙 (설계 문서 4-1절 M1 – M15)
+# Main VPC SG 와 규칙 (설계 문서 4-1절 M1 – M15, M16 은 EKS 전환 LDP-200)
 #
 # 노드(워커 · CP) 는 아웃바운드 전체 허용(M14) 이라 노드에서 출발하는 흐름은 대상 SG 인바운드만 만든다.
 # 아웃바운드가 제한된 LB(ALB, 내부 NLB) 에서 출발하는 흐름은 인바운드 · 아웃바운드 양쪽을 만든다.
@@ -30,6 +30,10 @@ locals {
 
       # M2 api-gateway NodePort, Target Group 헬스체크
       m2_worker_nodeport = { sg = "main_worker", source = "main_alb", port = 30080, description = "M2 api-gateway NodePort from ALB" }
+
+      # M16 EKS(72) Traefik 파드 IP 직접 (80 ip 타입 Target Group, TargetGroupBinding). VPC CNI 파드는 노드 ENI 의 SG(main_worker)를 쓴다.
+      # kubeadm 병행 기간에는 M2 와 함께 둔다. 가중치 0 이면 트래픽은 없고 헬스체크만 (대상이 등록됐을 때)
+      m16_worker_traefik_from_alb = { sg = "main_worker", source = "main_alb", port = var.traefik_container_port, description = "M16 Traefik pod port from ALB (EKS ip target)" }
 
       # M8 metrics-server · Prometheus(워커 파드) → kubelet, node-exporter(hostNetwork). 파드 출처는 Calico natOutgoing 으로 워커 노드 IP
       m8_worker_kubelet_from_worker       = { sg = "main_worker", source = "main_worker", port = 10250, description = "M8 kubelet from workers" }
@@ -84,6 +88,7 @@ locals {
     {
       # M2 ALB 는 대상 포트만
       m2_alb_to_worker_nodeport = { sg = "main_alb", source = "main_worker", port = 30080, description = "M2 api-gateway NodePort to workers" }
+      m16_alb_to_worker_traefik = { sg = "main_alb", source = "main_worker", port = var.traefik_container_port, description = "M16 Traefik pod port to workers (EKS ip target)" }
 
       # M14 NAT 경유 외부 · AWS API, 위 인바운드 규칙의 출발 쪽
       m14_worker_all = { sg = "main_worker", cidr = "0.0.0.0/0", protocol = "-1", description = "M14 all outbound" }

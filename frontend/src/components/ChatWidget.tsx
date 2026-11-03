@@ -49,6 +49,11 @@ const FAQ_TOPICS: { id: string; label: string; answer: string }[] = [
   },
 ]
 
+// 챗봇 메시지 최대 길이 — 백엔드 api-gateway SendMessageDto의 @MaxLength(500)와 같은 값 (LDP-212).
+// 남은 글자 수는 80%를 넘었을 때부터 보여준다.
+const MAX_MESSAGE_LENGTH = 500
+const COUNT_VISIBLE_FROM = MAX_MESSAGE_LENGTH * 0.8
+
 const INITIAL_MESSAGES: ChatMessage[] = [
   { id: 0, role: 'bot', text: '안녕하세요! 궁금하신 내용을 자유롭게 입력해주세요.', time: formatTime() },
 ]
@@ -94,7 +99,7 @@ function ChatWidget() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const text = draft.trim()
-    if (!text || isTyping) return
+    if (!text || text.length > MAX_MESSAGE_LENGTH || isTyping) return
 
     appendMessage({ role: 'user', text })
     setDraft('')
@@ -219,6 +224,8 @@ function ChatWidget() {
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder="궁금하신 점을 자유롭게 입력해주세요"
                 aria-label="채팅 메시지 입력"
+                maxLength={MAX_MESSAGE_LENGTH}
+                aria-describedby="chat-widget-count"
               />
               <button
                 type="submit"
@@ -231,6 +238,13 @@ function ChatWidget() {
                 </svg>
               </button>
             </form>
+            {/* 붙여넣기도 maxLength에서 잘리므로, 제한에 닿으면 잘린 이유를 알려준다 */}
+            <p id="chat-widget-count" className="chat-widget-count" aria-live="polite">
+              {draft.length >= COUNT_VISIBLE_FROM &&
+                (draft.length >= MAX_MESSAGE_LENGTH
+                  ? `최대 ${MAX_MESSAGE_LENGTH}자까지 입력할 수 있어요`
+                  : `${draft.length}/${MAX_MESSAGE_LENGTH}`)}
+            </p>
           </div>
         )}
       </div>

@@ -49,6 +49,9 @@
 .admin-login-field input {
   padding: 10px 12px;
   border: 1px solid #e2e5ea;
+  /* OS 다크 모드에서 브라우저 기본 입력칸이 진회색이 되지 않도록 밝은 색으로 고정 (LDP-184) */
+  background: #fff;
+  color: #1f2430;
   border-radius: 8px;
   font-size: 14px;
 }

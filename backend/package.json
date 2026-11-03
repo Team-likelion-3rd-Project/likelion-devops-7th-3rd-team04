@@ -17,6 +17,7 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "rag:export-catalog": "ts-node --transpile-only scripts/export-rag-catalog.ts",
     "test:e2e": "jest --config ./apps/backend/apps/booking/backend/test/jest-e2e.json"
   },
   "dependencies": {
@@ -100,7 +101,8 @@
     "testEnvironment": "node",
     "roots": [
       "<rootDir>/apps/",
-      "<rootDir>/libs/"
+      "<rootDir>/libs/",
+      "<rootDir>/scripts/"
     ],
     "moduleNameMapper": {
       "^@app/common(|/.*)$": "<rootDir>/libs/common/src/$1"

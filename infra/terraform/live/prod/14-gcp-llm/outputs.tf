@@ -20,6 +20,11 @@ output "workload_identity_audience" {
   value       = "//iam.googleapis.com/${google_iam_workload_identity_pool_provider.main_cluster.name}"
 }
 
+output "aws_workload_identity_audience" {
+  description = "AWS Provider audience (72 EKS, gitops backend/values-eks.yaml gcpWorkloadIdentity.audience)"
+  value       = "//iam.googleapis.com/${google_iam_workload_identity_pool_provider.main_cluster_aws.name}"
+}
+
 output "llm_service_account_email" {
   description = "파드가 impersonate 하는 운영 서비스 계정"
   value       = google_service_account.llm_service.email

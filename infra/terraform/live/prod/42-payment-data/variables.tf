@@ -42,6 +42,12 @@ variable "payment_app_role_name" {
   default     = "team04-hotel-payment-app"
 }
 
+variable "db_exporter_username" {
+  description = "mysqld_exporter 계정 이름. 결제 서버가 부팅 때 이 이름으로 만든다 (60 payment-metrics-setup)"
+  type        = string
+  default     = "exporter"
+}
+
 # ── RDS MariaDB ──
 
 variable "db_engine_version" {
@@ -90,4 +96,16 @@ variable "db_require_secure_transport" {
   description = "MariaDB require_secure_transport. true 면 TLS 가 아닌 접속을 거부한다 (payment-service 는 PAYMENT_DB_SSL=true 로 접속). 떠 있는 인스턴스에서 바꾸면 재부팅 후 반영"
   type        = bool
   default     = true
+}
+
+variable "db_slow_query_seconds" {
+  description = "슬로우 쿼리 로그 기준(초, log_slow_query_time). 이보다 오래 걸린 쿼리를 CloudWatch Logs slowquery 로 남긴다"
+  type        = number
+  default     = 1
+}
+
+variable "db_log_retention_days" {
+  description = "RDS 에러 · 슬로우 쿼리 로그 그룹 보관 기간(일)"
+  type        = number
+  default     = 7
 }

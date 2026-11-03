@@ -3,7 +3,7 @@
 #   llm-ingest Job (릴리스마다)  app/corpus.py 문서 임베딩 → PutVectors (문서 id 가 key 라 다시 넣어도 중복 없음)
 #   llm-service                  질문 임베딩 → QueryVectors (원문은 metadata.text)
 #
-# 권한은 이 버킷의 정책이 아니라 70 IRSA Role(llm-service 조회 · llm-ingest 쓰기)에 둔다.
+# 권한은 이 버킷의 정책이 아니라 51 IRSA Role(llm-service 조회 · llm-ingest 쓰기)에 둔다.
 # 인덱스 설정(차원 · 거리 · metadata 설정)은 만든 뒤 바꿀 수 없다 — 바꾸면 교체되므로 prevent_destroy 로 막고 이름을 바꿔 새로 만든다.
 
 resource "aws_s3vectors_vector_bucket" "main" {

@@ -1,0 +1,133 @@
+// 결제 서버 지표 수집기 (LDP-181). Terraform 60-payment-app 이 user-data 로 넣는다 — 바꾸려면 Terraform 을 고치고 인스턴스를 교체한다.
+// 온프레미스 결제 노드(infra/ansible/roles/node_collectors config.alloy.j2)와 같은 대상 · 라벨, 전송 대상만 AMP.
+//   node-exporter · cadvisor 는 Alloy 내장 exporter(unix · cadvisor)로 대신한다 (결제 VPC 는 외부 레지스트리에 갈 수 없어 미러 이미지 1개만)
+//   instance = EC2 인스턴스 ID, az = 가용 영역 (payment-metrics 가 IMDS 에서 읽어 환경 변수로 넘김)
+
+prometheus.exporter.unix "node" {
+  procfs_path = "/rootfs/proc"
+  sysfs_path  = "/sys"
+  rootfs_path = "/rootfs"
+}
+
+// 내장 exporter 의 job(integrations/unix) · instance 를 온프레미스 node-exporter 와 같게
+discovery.relabel "node" {
+  targets = prometheus.exporter.unix.node.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "node-exporter"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = sys.env("INSTANCE_ID")
+  }
+}
+
+prometheus.scrape "node" {
+  targets         = discovery.relabel.node.output
+  scrape_interval = "${scrape_interval}"
+  forward_to      = [prometheus.remote_write.amp.receiver]
+}
+
+// 컨테이너별 CPU · 메모리 (온프레미스 cadvisor 와 같은 옵션, housekeeping 간격은 Alloy 에 없어 기본값). 쓰지 않는 지표는 끔
+prometheus.exporter.cadvisor "docker" {
+  docker_host            = "unix:///var/run/docker.sock"
+  docker_only            = true
+  store_container_labels = false
+  disabled_metrics       = ["advtcp", "cpu_topology", "cpuset", "hugetlb", "memory_numa", "percpu", "perf_event", "process", "referenced_memory", "resctrl", "sched", "tcp", "udp"]
+}
+
+discovery.relabel "cadvisor" {
+  targets = prometheus.exporter.cadvisor.docker.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "cadvisor"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = sys.env("INSTANCE_ID")
+  }
+}
+
+prometheus.scrape "cadvisor" {
+  targets         = discovery.relabel.cadvisor.output
+  scrape_interval = "${scrape_interval}"
+  forward_to      = [prometheus.relabel.cadvisor.receiver]
+}
+
+// Docker 컨테이너 이름(name) → container. id(cgroup 경로)는 컨테이너를 다시 만들 때마다 바뀌어 지움
+prometheus.relabel "cadvisor" {
+  forward_to = [prometheus.remote_write.amp.receiver]
+
+  rule {
+    source_labels = ["name"]
+    target_label  = "container"
+  }
+
+  rule {
+    action = "labeldrop"
+    regex  = "name|id"
+  }
+}
+
+// payment-service /metrics (METRICS_PORT). 앱이 service 라벨을 직접 붙임 — 앱 값을 그대로 씀
+prometheus.scrape "payment_service" {
+  job_name        = "payment-service"
+  targets         = [{"__address__" = "127.0.0.1:${metrics_port}", "instance" = sys.env("INSTANCE_ID")}]
+  scrape_interval = "${scrape_interval}"
+  honor_labels    = true
+  forward_to      = [prometheus.remote_write.amp.receiver]
+}
+
+// 결제 RDS 지표 (내장 mysqld_exporter, 기본 collector). 두 결제 서버가 각자 수집한다 (instance 로 구분).
+// 접속 정보는 secrets/mysql.dsn (exporter 전용 계정, tls=true). RDS CA 는 SSL_CERT_DIR 로 신뢰 목록에 더한다
+local.file "mysql_dsn" {
+  filename  = "/etc/alloy/secrets/mysql.dsn"
+  is_secret = true
+}
+
+prometheus.exporter.mysql "payment" {
+  data_source_name = local.file.mysql_dsn.content
+}
+
+discovery.relabel "mysql" {
+  targets = prometheus.exporter.mysql.payment.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "mysql"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = sys.env("INSTANCE_ID")
+  }
+}
+
+prometheus.scrape "mysql" {
+  targets         = discovery.relabel.mysql.output
+  scrape_interval = "${scrape_interval}"
+  forward_to      = [prometheus.remote_write.amp.receiver]
+}
+
+// AMP (44 aps-workspaces 엔드포인트, 인스턴스 Role 의 aps:RemoteWrite). 닿지 않는 동안은 WAL 에 쌓았다가 다시 보낸다.
+// AMP 는 너무 오래된 샘플을 거부한다 — 90 DiscardedSamples 알람
+prometheus.remote_write "amp" {
+  endpoint {
+    url = "${remote_write_url}"
+
+    sigv4 {
+      region = "${region}"
+    }
+  }
+
+  external_labels = {
+    cluster   = "payment",
+    env       = "${environment}",
+    namespace = "payment",
+    az        = sys.env("AZ"),
+  }
+}

@@ -5,6 +5,8 @@
 #   team04-hotel/prod/main-valkey : {host, port, password}                            → REDIS_HOST · REDIS_PORT · REDIS_PASSWORD
 #   team04-hotel/prod/backend-app : {jwt_access_secret, jwt_refresh_secret, mock_pg_secret, n8n_owner_password}
 #                                   → JWT_ACCESS_SECRET · JWT_REFRESH_SECRET · MOCK_PG_SECRET · N8N_INIT_OWNER_PASSWORD
+#   team04-hotel/prod/main-db-exporter : {host, port, username, password}
+#                                   → gitops mysql-exporter-setup (계정 생성 Job · my.cnf). 계정은 DB 에 없고 Job 이 만든다
 #
 # backend-app 은 DB · Valkey 와 상관없는 앱 서명 키다. 매일 재생성 때 새로 만들어지므로 그날 발급한 토큰은 다음 재생성 후 무효가 된다.
 # MOCK_PG_SECRET 은 prod 에서 쓰지 않는 pg-mock 웹훅(api-gateway /api/payments/webhook)의 HMAC 키다.
@@ -27,6 +29,10 @@ locals {
     backend_app = {
       name        = "${local.secret_prefix}/backend-app"
       description = "Backend app signing keys (JWT, mock PG webhook HMAC), n8n owner password"
+    }
+    main_db_exporter = {
+      name        = "${local.secret_prefix}/main-db-exporter"
+      description = "Main RDS MariaDB mysqld_exporter account"
     }
   }
 }
@@ -87,6 +93,20 @@ resource "aws_secretsmanager_secret_version" "main_valkey" {
   lifecycle {
     replace_triggered_by = [aws_elasticache_replication_group.main.id]
   }
+}
+
+# 계정 생성 Job 이 실행마다 ALTER USER 로 이 비밀번호를 다시 넣으므로, DB 가 교체되어도 Secret 을 다시 쓸 필요가 없다
+# (주소는 식별자가 고정이라 같다)
+resource "aws_secretsmanager_secret_version" "main_db_exporter" {
+  secret_id = aws_secretsmanager_secret.this["main_db_exporter"].id
+
+  secret_string_wo = jsonencode({
+    host     = aws_db_instance.main.address
+    port     = aws_db_instance.main.port
+    username = var.db_exporter_username
+    password = ephemeral.aws_secretsmanager_random_password.db_exporter.random_password
+  })
+  secret_string_wo_version = var.credentials_version
 }
 
 resource "aws_secretsmanager_secret_version" "backend_app" {

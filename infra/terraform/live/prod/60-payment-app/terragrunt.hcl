@@ -7,7 +7,7 @@ dependencies {
   paths = ["../44-payment-endpoints"]
 }
 
-# 🔒 10-global 은 destroy 하지 않으므로 mock 없이 실제 output 을 읽는다 (배포 결과 토픽 · 암호화 키)
+# 🔒 10-global 은 destroy 하지 않으므로 mock 없이 실제 output 을 읽는다 (배포 결과 토픽 · 암호화 키 · 결제 지표 AMP)
 dependency "global" {
   config_path = "../10-global"
 }
@@ -50,7 +50,8 @@ dependency "payment_data" {
   config_path = "../42-payment-data"
 
   mock_outputs = {
-    secret_name = "team04-hotel/prod/payment-db"
+    secret_name          = "team04-hotel/prod/payment-db"
+    exporter_secret_name = "team04-hotel/prod/payment-db-exporter"
   }
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
@@ -67,12 +68,30 @@ dependency "messaging" {
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
+dependency "payment_webhook" {
+  config_path = "../50-payment-webhook"
+
+  mock_outputs = {
+    queue_names = {
+      webhook     = "payment-webhook"
+      webhook_dlq = "payment-webhook-dlq"
+    }
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
+}
+
 inputs = {
   deploy_topic_name        = dependency.global.outputs.deploy_topic_name
   notifications_kms_key_id = dependency.global.outputs.notifications_kms_key_id
 
+  payment_metrics_workspace_id = dependency.global.outputs.payment_metrics_workspace_id
+  payment_metrics_endpoint     = dependency.global.outputs.payment_metrics_endpoint
+
   payment_network        = dependency.network.outputs.payment
   sg_ids                 = dependency.security.outputs.sg_ids
   payment_db_secret_name = dependency.payment_data.outputs.secret_name
-  queue_names            = dependency.messaging.outputs.queue_names
+
+  payment_db_exporter_secret_name = dependency.payment_data.outputs.exporter_secret_name
+  queue_names                     = dependency.messaging.outputs.queue_names
+  webhook_queue_name              = dependency.payment_webhook.outputs.queue_names.webhook
 }

@@ -51,9 +51,9 @@ variable "db_engine_version" {
 }
 
 variable "db_instance_class" {
-  description = "RDS 인스턴스 클래스"
+  description = "RDS 인스턴스 클래스. small 은 70 · 72 병행 기간 연결 수 기준 (클러스터당 풀 상한 50, 평소 20). max_connections 는 메모리에 비례 (micro 30)"
   type        = string
-  default     = "db.t4g.micro"
+  default     = "db.t4g.small"
 }
 
 variable "db_allocated_storage" {
@@ -90,6 +90,24 @@ variable "db_require_secure_transport" {
   description = "MariaDB require_secure_transport. true 면 TLS 가 아닌 접속을 거부한다 (앱 · Flyway 가 TLS 로 접속해야 함). 떠 있는 인스턴스에서 바꾸면 재부팅 후 반영"
   type        = bool
   default     = true
+}
+
+variable "db_slow_query_seconds" {
+  description = "슬로우 쿼리 로그 기준(초, log_slow_query_time). 이보다 오래 걸린 쿼리를 CloudWatch Logs slowquery 로 남긴다"
+  type        = number
+  default     = 1
+}
+
+variable "db_log_retention_days" {
+  description = "RDS 에러 · 슬로우 쿼리 로그 그룹 보관 기간(일)"
+  type        = number
+  default     = 7
+}
+
+variable "db_exporter_username" {
+  description = "mysqld_exporter 계정 이름. gitops mysql-exporter-setup Job 이 이 이름으로 만든다"
+  type        = string
+  default     = "exporter"
 }
 
 # ── ElastiCache Valkey ──

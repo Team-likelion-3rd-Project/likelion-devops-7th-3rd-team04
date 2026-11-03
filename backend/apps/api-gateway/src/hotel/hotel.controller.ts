@@ -24,7 +24,13 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { ApiCommonResponses } from '@app/common/decorators/api-response.decorator';
-import { AdminRoles, JwtAuthGuard, RolesGuard, Roles } from '@app/common';
+import {
+  AdminRoles,
+  grpcErrorToHttp,
+  JwtAuthGuard,
+  RolesGuard,
+  Roles,
+} from '@app/common';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateRoomImageUploadUrlDto } from './dto/create-room-image-upload-url.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
@@ -148,6 +154,18 @@ interface HotelService {
   }): Observable<RoomAvailabilityDto>;
 }
 
+// hotel-service 호출 실패 → HTTP 에러 (LDP-198). 없는 호텔·객실(NOT_FOUND)은 404, 연결 실패·타임아웃 등 서버 쪽 문제는 503
+function toHotelHttpError(err: unknown, notFoundCode?: string): Error {
+  return grpcErrorToHttp(
+    err,
+    {
+      code: 'HOTEL_SERVICE_UNAVAILABLE',
+      message: '호텔 정보를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.',
+    },
+    notFoundCode ? { 404: notFoundCode } : {},
+  );
+}
+
 @ApiTags('HotelService')
 @ApiCommonResponses()
 @Controller('api/hotels')
@@ -190,8 +208,10 @@ export class HotelController implements OnModuleInit {
       'gRPC를 통해 hotel-service에서 등록된 모든 호텔 목록을 조회합니다.',
   })
   @ApiResponse({ status: 200, description: '호텔 목록 조회 성공' })
-  getHotels(): Observable<{ hotels: HotelDto[] }> {
-    return this.hotelService.getHotels({});
+  async getHotels(): Promise<{ hotels: HotelDto[] }> {
+    return firstValueFrom(this.hotelService.getHotels({})).catch((err) => {
+      throw toHotelHttpError(err);
+    });
   }
 
   /**
@@ -211,9 +231,7 @@ export class HotelController implements OnModuleInit {
     return firstValueFrom(
       this.hotelService.getHotel({ hotelId: Number(hotelId) }),
     ).catch((err) => {
-      throw new NotFoundException(
-        err?.details || err?.message || '존재하지 않는 호텔입니다.',
-      );
+      throw toHotelHttpError(err, 'HOTEL_NOT_FOUND');
     });
   }
 
@@ -247,9 +265,7 @@ export class HotelController implements OnModuleInit {
     return firstValueFrom(
       this.hotelService.updateHotel({ hotelId, ...dto }),
     ).catch((err) => {
-      throw new NotFoundException(
-        err?.details || err?.message || '존재하지 않는 호텔입니다.',
-      );
+      throw toHotelHttpError(err, 'HOTEL_NOT_FOUND');
     });
   }
 
@@ -276,9 +292,7 @@ export class HotelController implements OnModuleInit {
   ): Promise<{ rooms: RoomDto[] }> {
     return firstValueFrom(this.hotelService.getRooms({ hotelId })).catch(
       (err) => {
-        throw new NotFoundException(
-          err?.details || err?.message || '존재하지 않는 호텔입니다.',
-        );
+        throw toHotelHttpError(err, 'HOTEL_NOT_FOUND');
       },
     );
   }
@@ -320,9 +334,7 @@ export class HotelController implements OnModuleInit {
     return firstValueFrom(
       this.hotelService.searchRooms({ hotelId, ...query }),
     ).catch((err) => {
-      throw new NotFoundException(
-        err?.details || err?.message || '존재하지 않는 호텔입니다.',
-      );
+      throw toHotelHttpError(err, 'HOTEL_NOT_FOUND');
     });
   }
 
@@ -356,9 +368,7 @@ export class HotelController implements OnModuleInit {
   ): Promise<RoomDto> {
     return firstValueFrom(this.hotelService.getRoom({ hotelId, roomId })).catch(
       (err) => {
-        throw new NotFoundException(
-          err?.details || err?.message || '존재하지 않는 객실입니다.',
-        );
+        throw toHotelHttpError(err, 'ROOM_NOT_FOUND');
       },
     );
   }
@@ -401,9 +411,7 @@ export class HotelController implements OnModuleInit {
     return firstValueFrom(
       this.hotelService.getRoomAvailability({ hotelId, roomId, ...query }),
     ).catch((err) => {
-      throw new NotFoundException(
-        err?.details || err?.message || '존재하지 않는 객실입니다.',
-      );
+      throw toHotelHttpError(err, 'ROOM_NOT_FOUND');
     });
   }
 
@@ -438,9 +446,7 @@ export class HotelController implements OnModuleInit {
     return firstValueFrom(
       this.hotelService.createRoom({ hotelId, ...dto }),
     ).catch((err) => {
-      throw new NotFoundException(
-        err?.details || err?.message || '존재하지 않는 호텔입니다.',
-      );
+      throw toHotelHttpError(err, 'HOTEL_NOT_FOUND');
     });
   }
 
@@ -585,9 +591,7 @@ export class HotelController implements OnModuleInit {
     await firstValueFrom(
       this.hotelService.deleteRoom({ hotelId, roomId }),
     ).catch((err) => {
-      throw new NotFoundException(
-        err?.details || err?.message || '존재하지 않는 객실입니다.',
-      );
+      throw toHotelHttpError(err, 'ROOM_NOT_FOUND');
     });
     return { message: '객실이 삭제되었습니다.' };
   }

@@ -420,6 +420,18 @@
   }
 }
 
+.chat-widget-count {
+  margin: 0;
+  padding: 0 24px 10px;
+  font-size: 12px;
+  color: var(--text);
+  text-align: right;
+
+  &:empty {
+    display: none;
+  }
+}
+
 .chat-widget-send {
   flex-shrink: 0;
   display: flex;

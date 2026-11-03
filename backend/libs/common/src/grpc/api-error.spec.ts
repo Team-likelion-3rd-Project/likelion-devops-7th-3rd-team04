@@ -1,6 +1,7 @@
 import { status as GrpcStatus } from '@grpc/grpc-js';
 import {
   apiRpcException,
+  grpcErrorToHttp,
   grpcStatusForHttp,
   grpcStatusOf,
   parseApiRpcError,
@@ -83,5 +84,95 @@ describe('apiRpcException', () => {
         message: `9 FAILED_PRECONDITION: ${details}`,
       }),
     ).toEqual(payload);
+  });
+});
+
+// LDP-198: gateway가 실패 이유를 보고 HTTP 상태를 고른다 — 서비스 장애가 404·401로 보이지 않게
+describe('grpcErrorToHttp', () => {
+  const unavailable = {
+    code: 'HOTEL_SERVICE_UNAVAILABLE',
+    message: '잠시 후 다시 시도해 주세요.',
+  };
+  const responseOf = (err: unknown, codes = {}) => {
+    const exception = grpcErrorToHttp(err, unavailable, codes);
+    return { status: exception.getStatus(), body: exception.getResponse() };
+  };
+
+  it.each([
+    [GrpcStatus.INVALID_ARGUMENT, 400, 'INVALID_REQUEST'],
+    [GrpcStatus.UNAUTHENTICATED, 401, 'UNAUTHENTICATED'],
+    [GrpcStatus.PERMISSION_DENIED, 403, 'FORBIDDEN'],
+    [GrpcStatus.NOT_FOUND, 404, 'NOT_FOUND'],
+    [GrpcStatus.FAILED_PRECONDITION, 409, 'CONFLICT'],
+  ])(
+    '요청 쪽 거절(gRPC %s)은 %s, 메시지는 서비스가 보낸 그대로',
+    (code, status, errorCode) => {
+      expect(responseOf({ code, details: '거절 이유' })).toMatchObject({
+        status,
+        body: {
+          statusCode: status,
+          code: errorCode,
+          message: '거절 이유',
+          retryable: false,
+        },
+      });
+    },
+  );
+
+  it('codes로 4xx의 code를 바꾼다', () => {
+    expect(
+      responseOf(
+        { code: GrpcStatus.NOT_FOUND, details: '존재하지 않는 호텔입니다.' },
+        { 404: 'HOTEL_NOT_FOUND' },
+      ).body,
+    ).toMatchObject({ code: 'HOTEL_NOT_FOUND' });
+  });
+
+  it.each([
+    ['연결 실패', GrpcStatus.UNAVAILABLE],
+    ['시간 초과', GrpcStatus.DEADLINE_EXCEEDED],
+    ['알 수 없는 오류', GrpcStatus.UNKNOWN],
+    ['내부 오류', GrpcStatus.INTERNAL],
+  ])('%s는 503 + 다시 시도 가능 (서비스 메시지는 숨김)', (_, code) => {
+    expect(responseOf({ code, details: 'connect ECONNREFUSED' })).toMatchObject(
+      {
+        status: 503,
+        body: {
+          statusCode: 503,
+          error: 'Service Unavailable',
+          ...unavailable,
+          retryable: true,
+        },
+      },
+    );
+  });
+
+  it('상태 코드가 없는 오류도 503', () => {
+    expect(responseOf(new Error('boom')).status).toBe(503);
+  });
+
+  it('api-error 형식이면 서비스가 정한 상태·code를 그대로 쓴다', () => {
+    const payload = {
+      status: 409,
+      code: 'ROOM_NOT_AVAILABLE',
+      message: '매진입니다.',
+      retryable: false,
+    };
+    const err = apiRpcException(payload).getError() as { message: string };
+
+    expect(
+      responseOf({
+        code: GrpcStatus.FAILED_PRECONDITION,
+        details: err.message,
+      }),
+    ).toMatchObject({
+      status: 409,
+      body: {
+        statusCode: 409,
+        code: 'ROOM_NOT_AVAILABLE',
+        message: '매진입니다.',
+        retryable: false,
+      },
+    });
   });
 });

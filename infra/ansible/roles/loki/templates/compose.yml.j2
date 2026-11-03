@@ -1,0 +1,22 @@
+# Ansible(roles/loki)이 생성 — 직접 수정하지 마세요.
+# hotel-db 와 같은 방식(network_mode: host + ufw 로 tailscale0 에서만 접근). 저장소는 같은 노드의 MinIO (README 17-8)
+name: hotel-loki
+
+services:
+  loki:
+    image: {{ loki_image }}
+    container_name: loki
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - -config.file=/etc/loki/loki.yaml
+      # MinIO 계정은 env_file 에서 (설정 파일에 비밀값을 두지 않음)
+      - -config.expand-env=true
+    env_file: [loki.env]
+    labels:
+      hotel-loki.config-checksum: "{{ loki_conf.checksum }}"
+    volumes:
+      - ./conf/loki.yaml:/etc/loki/loki.yaml:ro
+      - {{ loki_data_dir }}:/loki
+    mem_limit: {{ loki_memory_limit }}
+    # distroless 이미지라 healthcheck 명령이 없음 — 준비 상태는 roles/loki 가 /ready 로 확인

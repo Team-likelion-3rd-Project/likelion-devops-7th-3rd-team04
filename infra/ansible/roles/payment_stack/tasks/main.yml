@@ -164,30 +164,6 @@
     owner: "{{ pay_elasticmq_uid.stdout | trim }}"
     mode: "0750"
 
-# Alloy 이미지의 실행 uid 로 WAL 디렉토리 소유자를 맞춤 (ElasticMQ 와 같은 방식)
-- name: Alloy 이미지 pull
-  ansible.builtin.command: docker pull --quiet {{ alloy_image }}
-  changed_when: false
-
-- name: Alloy 실행 uid 조회
-  ansible.builtin.command: docker run --rm --entrypoint id {{ alloy_image }} -u
-  register: pay_alloy_uid
-  changed_when: false
-
-- name: Alloy 데이터 디렉토리 (remote_write WAL)
-  ansible.builtin.file:
-    path: "{{ payment_data_dir }}/alloy"
-    state: directory
-    owner: "{{ pay_alloy_uid.stdout | trim }}"
-    mode: "0750"
-
-- name: Alloy 설정 (수집 대상 · remote_write)
-  ansible.builtin.template:
-    src: config.alloy.j2
-    dest: "{{ payment_base_dir }}/conf/config.alloy"
-    mode: "0644"
-  register: pay_alloy_conf
-
 - name: MariaDB 설정
   ansible.builtin.template:
     src: mariadb.cnf.j2
@@ -276,6 +252,42 @@
   changed_when: false
   when: pay_app_login.rc != 0
 
+# ── 결제 DB 서버 지표용 exporter 계정 (OpenBao payment-db-exporter 가 있을 때만, README 17-6) ──
+# Alloy(node_collectors)가 127.0.0.1 로 접속. 서버 상태만 읽고 앱 데이터는 읽지 못하게 최소 권한
+- name: exporter 계정 client 자격증명
+  ansible.builtin.template:
+    src: exporter.cnf.j2
+    dest: "{{ payment_base_dir }}/mysql/exporter.cnf"
+    mode: "0600"
+  when: payment_db_exporter_password | length > 0
+  no_log: true
+
+- name: exporter 계정 권한 검사
+  # 접속이 되고 권한이 맞으면 통과 (매 실행 재설정하지 않음)
+  ansible.builtin.command: >-
+    docker exec payment-mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/exporter.cnf
+    -N -e "SHOW GRANTS FOR CURRENT_USER()"
+  register: pay_exporter_grants
+  changed_when: false
+  failed_when: false
+  when: payment_db_exporter_password | length > 0
+
+- name: exporter 계정 재설정
+  ansible.builtin.command:
+    cmd: docker exec -i payment-mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf
+    stdin: |
+      CREATE USER IF NOT EXISTS '{{ payment_db_exporter_user }}'@'127.0.0.1' IDENTIFIED BY '{{ payment_db_exporter_password }}' WITH MAX_USER_CONNECTIONS 3;
+      ALTER USER '{{ payment_db_exporter_user }}'@'127.0.0.1' IDENTIFIED BY '{{ payment_db_exporter_password }}' WITH MAX_USER_CONNECTIONS 3;
+      GRANT PROCESS, REPLICATION CLIENT, REPLICA MONITOR ON *.* TO '{{ payment_db_exporter_user }}'@'127.0.0.1';
+      GRANT SELECT ON performance_schema.* TO '{{ payment_db_exporter_user }}'@'127.0.0.1';
+  when: >-
+    payment_db_exporter_password | length > 0 and
+    (pay_exporter_grants.rc != 0
+     or 'REPLICA MONITOR' not in pay_exporter_grants.stdout
+     or 'performance_schema' not in pay_exporter_grants.stdout)
+  changed_when: true
+  no_log: true
+
 - name: ElasticMQ 큐 확인
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ elasticmq_port }}/?Action=GetQueueUrl&QueueName={{ item }}"
@@ -328,27 +340,6 @@
           - "payment-service 가 healthy 가 되지 않았습니다 ({{ payment_service_image }})."
           - "{{ (pay_app_logs.stdout_lines | default([])) + (pay_app_logs.stderr_lines | default([])) }}"
 
-# ── 4) 모니터링 수집기 (README 17절) ─────────────────────
-# 결제 서비스와 무관하게 실패해도 앞 단계는 이미 반영됨. remote_write 가 막혀도 Alloy 는 뜨고 WAL 에 쌓음
-- name: 수집기 기동 (node-exporter · cAdvisor · Alloy)
-  ansible.builtin.command: docker compose up -d --wait --wait-timeout 120 node-exporter cadvisor alloy
-  args:
-    chdir: "{{ payment_base_dir }}"
-  register: pay_monitoring_up
-  changed_when: >-
-    'Started' in pay_monitoring_up.stderr or
-    'Recreated' in pay_monitoring_up.stderr or
-    'Created' in pay_monitoring_up.stderr
-
-- name: Alloy 준비 확인
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ alloy_port }}/-/ready"
-    status_code: 200
-  register: pay_alloy_ready
-  until: pay_alloy_ready.status == 200
-  retries: 12
-  delay: 5
-
 # CI 가 빌드한 이미지(org.opencontainers.image.source label) 중 컨테이너가 쓰지 않고 7일 지난 것만 삭제.
 # 현재 태그의 payment-migrations 가 지워지면 다음 실행 때 다시 pull 함
 - name: 이전 태그 이미지 정리
@@ -374,7 +365,7 @@
       - "payment    : {{ ts_ip }}:{{ payment_service_port }} (gRPC)"
       - "결제 PG     : {{ payment_provider }}{{ ' (' ~ (toss_api_base_url or 'https://api.tosspayments.com') ~ ')' if payment_provider == 'TOSS' else '' }}"
       - "ElasticMQ  : {{ payment_result_queue_url }}  (DLQ {{ payment_result_dlq }})"
-      - "메트릭     : Alloy → {{ payment_remote_write_url }} (Grafana 결제 노드 대시보드, payment-service /metrics 수집 {{ 'ON' if payment_metrics_enabled else 'OFF' }})"
+      - "메트릭     : node_collectors role (payment-service /metrics 수집 {{ 'ON' if payment_metrics_enabled else 'OFF' }}, 결제 DB 서버 지표 {{ 'ON' if payment_db_exporter_password | length > 0 else 'OFF — OpenBao payment-db-exporter 없음' }})"
       - "── gitops {{ payment_gitops_repo }} {{ payment_gitops_values }} 에 아래 값이 있어야 합니다 (README 14-4) ──"
       - "services.api-gateway.env.PAYMENT_SERVICE_HOST: \"{{ ts_ip }}:{{ payment_service_port }}\""
       - "services.booking-service.nodePort: {{ booking_nodeport }}"

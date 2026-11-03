@@ -8,6 +8,11 @@ output "db_endpoint" {
   value       = aws_db_instance.payment.address
 }
 
+output "db_instance_identifier" {
+  description = "RDS 식별자. CloudWatch 지표 차원 DBInstanceIdentifier · 로그 그룹 /aws/rds/instance/<식별자>/* (90 알람)"
+  value       = aws_db_instance.payment.identifier
+}
+
 output "db_port" {
   description = "결제 RDS MariaDB 포트 (PAYMENT_DB_PORT)"
   value       = aws_db_instance.payment.port
@@ -21,4 +26,9 @@ output "db_name" {
 output "secret_name" {
   description = "결제 DB 접속 정보 Secret 이름"
   value       = aws_secretsmanager_secret.payment_db.name
+}
+
+output "exporter_secret_name" {
+  description = "결제 DB mysqld_exporter 계정 Secret 이름 (60 결제 서버 Alloy)"
+  value       = aws_secretsmanager_secret.payment_db_exporter.name
 }

@@ -27,6 +27,9 @@ infra/terraform/
 │   └── vpc/                         # VPC, 계층별 서브넷, IGW, NAT, 라우트 테이블(선택: NFW 경유), 게이트웨이 엔드포인트, Flow Logs
 └── live/
     ├── bootstrap/                   🔒 state 버킷
+    ├── dev/                         # 온프레미스(dev 클러스터)가 쓰는 AWS 자원. prod run --all 과 별개
+    │   ├── root.hcl                 # dev 공통 설정 (state key dev/<스택>/...)
+    │   └── 10-onprem-backup/        🔒 온프레미스 etcd 백업 버킷 · 업로드 전용 IAM user
     └── prod/
         ├── root.hcl                 # 공통 설정 (backend · provider 생성, state key 계산)
         ├── 10-global/               🔒
@@ -38,12 +41,13 @@ infra/terraform/
         ├── 20-network/              🔁
         ├── 21-observability-base/   🔁 메인 클러스터 로그 그룹 (Fluent Bit)
         ├── 30-security/             🔁
-        ├── 40-cicd/                 🔁
         ├── 41-main-data/            🔁
         ├── 42-payment-data/         🔁
         ├── 43-messaging/            🔁
         ├── 44-payment-endpoints/    🔁
         ├── 50-payment-webhook/      🔁
+        ├── 51-pod-roles/            🔁 메인 클러스터 파드 Role (IRSA · EKS Pod Identity 신뢰, 70 · 72 공용)
+        ├── 72-main-cluster-eks/     🔁 EKS 클러스터 · 노드 · 애드온 · Pod Identity Association · ArgoCD root 앱. 병행 기간 트래픽 가중치 0
         ├── 60-payment-app/          🔁 결제 서버 · NLB · Endpoint Service
         ├── 61-payment-mock/         🔁 부하 테스트용 pg-mock 인스턴스
         ├── 70-main-cluster-kubeadm/ 🔁
@@ -76,6 +80,9 @@ state key 에는 **디렉터리 번호를 넣지 않습니다.** 번호가 바�
 |---|---|
 | `live/bootstrap` | `bootstrap/terraform.tfstate` |
 | `live/prod/<번호>-<스택>` | `prod/<스택>/terraform.tfstate` (예: `prod/network/terraform.tfstate`) |
+| `live/dev/<번호>-<스택>` | `dev/<스택>/terraform.tfstate` (예: `dev/onprem-backup/terraform.tfstate`) |
+
+`live/dev` 는 온프레미스(dev 클러스터)가 쓰는 AWS 자원이고 매일 재생성하지 않습니다. `live/dev/root.hcl` 은 prod 와 같은 버킷 · provider 규칙에 key prefix 만 `dev/` 입니다.
 
 `root.hcl` 이 디렉터리 이름에서 번호를 뗀 값(`20-network` → `network`)으로 state key 와 `Stack` 태그를 정하고, backend · provider 블록을 생성합니다.
 
@@ -132,7 +139,9 @@ terragrunt apply
 terragrunt output -raw api_url
 ```
 
+- `live/dev` 스택은 `live/prod` 의 `run --all` 에 포함되지 않습니다. `cd infra/terraform/live/dev` 에서 따로 실행합니다 (현재 `10-onprem-backup` 하나).
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
+- **destroy 전에 토스 웹훅 큐 `payment-webhook` · `payment-webhook-dlq` 가 비었는지 확인합니다.** 토스에 200 을 응답한 뒤 큐에 남은 메시지는 destroy 하면 사라지고 재전송도 없습니다. 스택이 내려가 있는 동안의 웹훅은 토스 재전송(최대 7회, 약 3일 19시간)으로 받습니다.
 - `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
 - `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
 - `10-global` 의 GitHub OIDC 공급자(`token.actions.githubusercontent.com`)는 URL 이 고정이라 **계정에 하나뿐인 공용 리소스**입니다 (공유 계정의 다른 팀도 같은 공급자를 씀). 지우거나 audience 를 바꾸지 않습니다 (`prevent_destroy`). 다른 팀이 먼저 만들었으면 `create_github_oidc_provider = false` 로 기존 공급자를 씁니다.
@@ -150,10 +159,10 @@ bootstrap                                  🔒 최초 1회 (terraform)
 ─────────────────────── 매일 재생성 ───────────────────────
 20-network   21-observability-base
 30-security
-40-cicd   41-main-data   42-payment-data   43-messaging   44-payment-endpoints
-50-payment-webhook
+41-main-data   42-payment-data   43-messaging   44-payment-endpoints
+50-payment-webhook   51-pod-roles
 60-payment-app   61-payment-mock
-70-main-cluster-kubeadm   71-payment-link
+70-main-cluster-kubeadm   71-payment-link   72-main-cluster-eks
 80-main-edge
 90-observability-alarms
 ```
@@ -171,12 +180,11 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `13-frontend` 🔒 | 최초 1회. 버킷 2개 · CloudFront(2분 49초) · KeyValueStore(1분 24초) · Function · 레코드 4개 (2026-10-22) | 5분 07초 | (destroy 안 함) |
 | `14-gcp-llm` 🔒 | 최초 1회. API 4개(STS 25초) · 서비스 계정 · Pool · Provider · IAM 3개, 사전 작업 때문에 2번 나눠 apply (2026-10-23) | 52초 + 37초 | (destroy 안 함) |
 | `15-chatbot-vectors` 🔒 | 최초 1회. 벡터 버킷 · 인덱스 (각 1초, 2026-10-23) | 약 4초 | (destroy 안 함) |
-| `20-network` | `single_nat_gateway = true` (NAT 3개, 기본값), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
+| `20-network` | `single_nat_gateway = true` (NAT 2개, 기본값. 시간은 Deployment VPC 포함 3개 때 실측), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
-| `20-network` | `single_nat_gateway = false` (NAT 5개, NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
-| `30-security` | `enable_control_plane = true` (SG 13개, 규칙 43개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
-| `40-cicd` | GitLab Runner 1대 + Ansible 묶음 업로드 (t4g.medium 기준 실측, 2026-10-21 m7g.large 로 변경. 부트스트랩 별도: 시작부터 GitLab 등록까지 약 3분 30초 – 4분) | 54초 – 58초 | 1분 25초 |
-| `41-main-data` | RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
+| `20-network` | `single_nat_gateway = false` (NAT 4개, Deployment VPC 포함 5개 · NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
+| `30-security` | `enable_control_plane = true` (SG 12개, 규칙 39개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
+| `41-main-data` | (아래 실측은 db.t4g.micro. 기본값은 LDP-201 부터 db.t4g.small) RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
 | `42-payment-data` | 결제 RDS db.t4g.micro Single-AZ, Secret | 6분 37초 – 6분 39초 | 2분 13초 |
 | `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 38초 | 2분 10초 |
 | `44-payment-endpoints` | 인터페이스 엔드포인트 9종(AZ 2개, `autoscaling` 포함 — 시간은 8종 때 실측, 1종 추가 apply 55초), S3 게이트웨이 엔드포인트 정책 | 57초 – 1분 04초 | 2분 24초 |
@@ -195,7 +203,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 결제 쪽(`42` → `60` → `71`)이 메인 쪽(`41` → `70`)과 병렬이라 `60` · `61` · `71` 을 넣어도 전체 시간은 거의 늘지 않습니다. 가장 긴 경로는 `42` RDS(6분 40초 – 10분)에 따라 정해지고, `70` 은 `60` · `71` 을 기다리지 않습니다. 필요한 스택만 올릴 때는 `--filter '<스택>...'`(그 스택과 의존 스택)로 고릅니다.
 
 ```bash
-# 결제 서버 · PrivateLink 검증 범위 (40 Runner · 80 ALB 제외). NFW 를 켤 때는 20 만 받는 변수를 환경변수로 넘긴다 (다른 스택은 무시)
+# 결제 서버 · PrivateLink 검증 범위 (80 ALB 제외). NFW 를 켤 때는 20 만 받는 변수를 환경변수로 넘긴다 (다른 스택은 무시)
 TF_VAR_enable_payment_network_firewall=true terragrunt run --all apply \
   --filter './71-payment-link...' --filter './61-payment-mock...' --filter './70-main-cluster-kubeadm...'
 ```
@@ -230,19 +238,18 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 
 ### 외부에서 발급한 비밀값 (`12-secrets`)
 
-사람이 외부 서비스에서 발급하는 값(Tailscale OAuth client, GitLab Runner 토큰 등)은 🔒 `12-secrets` 에 고정 이름 Secret 으로 둡니다. 값은 **ephemeral 변수 → `secret_string_wo`** 로 넣어 state · plan 에 남지 않습니다.
+사람이 외부 서비스에서 발급하는 값(GitHub App 개인 키, 토스 키 등)은 🔒 `12-secrets` 에 고정 이름 Secret 으로 둡니다. 값은 **ephemeral 변수 → `secret_string_wo`** 로 넣어 state · plan 에 남지 않습니다.
 
 | Secret | 값 | 출처 | 읽는 쪽 |
 |---|---|---|---|
-| `team04-hotel/prod/ci-runner-tailscale` | `{oauth_client_secret}` | Tailscale 콘솔 OAuth client (`tag:ci-runner`, `infra/ansible/.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET` 과 같은 값) | `40-cicd` Runner Role |
-| `team04-hotel/prod/ci-runner-gitlab` | `{url, token}` | `gitlab.yml --tags runner_token` 이 만든 `infra/ansible/.secrets/aws-ci-runner.env` ([Ansible README](../ansible/README.md) 13절) | `40-cicd` Runner Role |
 | `team04-hotel/prod/toss-payments` | `{secret_key}` | 토스페이먼츠 개발자센터 API 키 → 결제위젯 연동 키의 **시크릿 키**(테스트 `test_gsk_*`, 지금은 로컬 `backend/.env` 의 `TOSS_SECRET_KEY` 와 같은 값). 프론트 클라이언트 키(`test_gck_*`)와 같은 줄의 한 쌍 | `60-payment-app` 결제 서버 Role (`TOSS_SECRET_KEY`) |
-| `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `40-cicd` Runner Role (`release:gitops-pr` job) · `10-global` 릴리스 Role `team04-hotel-release` (`release.yml` gitops-pr job) |
-| SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 Runner 가 시크릿 키까지 읽게 되므로 분리 | `40-cicd` Runner Role (`release:prepare` → `release:frontend-build` 의 `VITE_TOSS_CLIENT_KEY`) · `10-global` 릴리스 Role (`release.yml` plan job) |
+| `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `10-global` 릴리스 Role `team04-hotel-release` (`release.yml` gitops-pr job) |
+| SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 릴리스 Role 이 시크릿 키까지 읽게 되므로 분리 | `10-global` 릴리스 Role (`release.yml` plan job 의 `VITE_TOSS_CLIENT_KEY`) |
 | `team04-hotel/prod/seed-admin` | `{email, password, name}` | 운영 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*`, 비밀번호 12자 이상). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | `70` ESO Role (`team04-hotel-external-secrets`) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
 | `team04-hotel/prod/grafana-admin` | `{admin_user, admin_password}` | 운영 Grafana admin 계정. 이름은 `admin` 고정, 비밀번호만 사람이 정함(`.env` 의 `GRAFANA_ADMIN_PASSWORD`, 16자 이상). **등록 전에는 운영 Grafana 가 뜨지 않습니다**(서비스 배포에는 영향 없음, [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측") | `70` ESO Role → Secret `grafana-admin` (gitops `monitoring` 앱) |
+| `team04-hotel/prod/kakao-login` | `{client_id, client_secret}` | 카카오 디벨로퍼스 앱 → 플랫폼 키 → REST API 키 상세(`.env` 의 `KAKAO_CLIENT_*`). 앱 하나를 온프레미스와 함께 쓰므로 재발급 금지. **등록 전에 gitops `backend-secrets` 에 매핑을 넣으면 backend 전체 Secret 동기화가 실패합니다** | ESO Role → Secret `backend-secrets` → auth-service 의 `KAKAO_CLIENT_*` |
 
-처음 등록 · 값 교체 (온프레미스 GitLab 재생성으로 토큰이 바뀐 경우 등):
+처음 등록 · 값 교체 (GitHub App 개인 키 교체 등):
 
 값을 export 하지 않습니다. `terragrunt.hcl` 이 이 디렉터리의 `.env`(gitignore)를 읽어 넘깁니다. 운영 값은 이 파일에만 두고 `backend/.env` · `infra/ansible/.env` 같은 개발 설정을 읽지 않습니다 (개발 설정을 바꿔도 운영 값이 따라가지 않게). 같은 값이라도 여기에 따로 적습니다.
 
@@ -250,20 +257,19 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 cd infra/terraform/live/prod/12-secrets
 cp .env.example .env   # 처음 한 번. 값을 채운다 (GitHub App 개인 키만 .pem 파일 경로)
 
-# 교체할 때는 variables.tf 의 해당 version(ci_runner_credentials_version · github_app_credentials_version · toss_credentials_version · seed_admin_credentials_version)을 올린 뒤
+# 교체할 때는 variables.tf 의 해당 version(github_app_credentials_version · toss_credentials_version · seed_admin_credentials_version · grafana_admin_credentials_version · kakao_credentials_version)을 올린 뒤
 AWS_PROFILE=team04 terragrunt apply
 ```
 
 - 값은 모두 필요합니다 (값을 바꾸지 않는 Secret 도 plan 에 값이 있어야 함). 실제로 다시 보내는 것은 version 이 바뀐 Secret 만입니다.
 - `.env` 가 없거나 항목이 비면 값이 빈 문자열로 넘어가 변수 검증에서 막힙니다. 어떤 값이 비었는지는 검증 오류 메시지의 변수 이름으로 확인합니다.
 - `--inputs-debug` 는 값을 `terragrunt-debug.tfvars.json` 파일로 쓰므로 쓰지 않습니다. `terragrunt render` 도 값을 화면에 출력합니다.
-- 값이 바뀌면 `.env` 를 고치고 해당 version 을 올립니다. 예: 온프레미스 GitLab 재생성으로 `aws-ci-runner.env` 의 토큰이 바뀜 → `GITLAB_RUNNER_TOKEN` 수정 + `ci_runner_credentials_version` 증가.
-- 값이 비었거나 형식(`tskey-client-` · `https://` · `glrt-` · `test_gsk_` 등 시크릿 키 · `test_gck_` 클라이언트 키)이 다르면 변수 검증에서 막힙니다.
+- 값이 바뀌면 `.env` 를 고치고 해당 version 을 올립니다. 예: 토스 테스트 키 → 라이브 키 전환 → `TOSS_SECRET_KEY` · `TOSS_CLIENT_KEY` 수정 + `toss_credentials_version` 증가.
+- 값이 비었거나 형식(`test_gsk_` 등 시크릿 키 · `test_gck_` 클라이언트 키)이 다르면 변수 검증에서 막힙니다.
 - 토스 시크릿 키와 클라이언트 키는 한 쌍이라 `toss_credentials_version` 하나로 함께 다시 넣습니다. 클라이언트 키는 다음 릴리스 빌드부터 반영됩니다 (변경 이력: `aws ssm get-parameter-history`).
-- Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(Runner Secret 은 `team04-hotel-ci-runner`, 토스는 `team04-hotel-payment-app`, 시드 관리자 계정은 `team04-hotel-external-secrets`)과 apply 한 주체만 허용합니다.
+- Secret 리소스 정책은 `GetSecretValue` 를 읽는 Role(GitHub App 은 `team04-hotel-release`, 토스는 `team04-hotel-payment-app`, 시드 관리자 계정은 `team04-hotel-external-secrets`)과 apply 한 주체만 허용합니다.
 - 시드 관리자 비밀번호를 바꾸면 다음 DB 재생성부터 새 값으로 만들어집니다. 이미 떠 있는 DB 의 계정은 그대로입니다 (시드는 이미 있는 계정을 건너뜀).
 - GitHub App 개인 키(`.pem`)는 GitHub 에서 다시 받을 수 없습니다. 분실하면 새 키를 만들고 `github_app_credentials_version` 을 올려 다시 등록합니다.
-- 이미 떠 있는 Runner 는 부팅 때 값을 읽었으므로, 교체 후에는 Runner 를 다시 만듭니다 (`40-cicd` apply 또는 ASG 인스턴스 종료).
 
 ```bash
 # 값 확인 (관리자만 가능)
@@ -417,7 +423,7 @@ NAT 응답  ─ public RT <app · lb 서브넷 CIDR> ─▶ 같은 NFW 엔드포
   AWS_PROFILE=team04 terragrunt apply     # NFW 삭제 약 3분 30초 (firewall 2분 18초 + 정책 · rule group)
   ```
 - 엔드포인트 수는 NAT 와 맞춥니다. `single_nat_gateway = true` 면 a 하나, `false` 면 a · b.
-- Main · Deployment VPC 는 검사하지 않습니다 (`modules/vpc` 의 `firewall_endpoint_ids` 기본값 `{}`).
+- Main VPC 는 검사하지 않습니다 (`modules/vpc` 의 `firewall_endpoint_ids` 기본값 `{}`).
 
 | 계층 | 막는 것 |
 |---|---|
@@ -501,7 +507,7 @@ kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/pl-test --timeout=60
 
 ### 결제 서버 배포 (pull agent)
 
-결제 서버는 GitHub · Runner 가 명령을 보낼 수 없습니다. 서버가 Parameter Store 를 읽어 스스로 바꿉니다.
+결제 서버는 GitHub Actions 가 명령을 보낼 수 없습니다. 서버가 Parameter Store 를 읽어 스스로 바꿉니다.
 
 ```
 gitops envs/prod/payment/values.yaml merge (사람 승인)
@@ -513,7 +519,7 @@ gitops envs/prod/payment/values.yaml merge (사람 승인)
 결제 서버 agent(`60-payment-app/templates/payment-deploy.sh`) 순서:
 
 1. release 가 현재 적용값과 같거나, 이미 실패한 값이면 아무것도 하지 않습니다.
-2. 검증: `image_tag` 는 커밋 SHA, `env` 는 한 줄 문자열 값만. 인프라가 넣는 키(`PAYMENT_DB_*` · `TOSS_SECRET_KEY` · `SQS_*` · `PAYMENT_RESULT_QUEUE_URL` · `PG_MOCK_SERVICE_URL` · `AWS_*` · `HEALTH_PORT`)는 거부합니다 (gitops validate 도 같은 규칙).
+2. 검증: `image_tag` 는 커밋 SHA, `env` 는 한 줄 문자열 값만. 인프라가 넣는 키(`PAYMENT_DB_*` · `TOSS_SECRET_KEY` · `SQS_*` · `PAYMENT_RESULT_QUEUE_URL` · `PAYMENT_WEBHOOK_QUEUE_URL` · `PG_MOCK_SERVICE_URL` · `AWS_*` · `HEALTH_PORT` · `METRICS_PORT`)는 거부합니다 (gitops validate 도 같은 규칙).
 3. 순서 맞추기: 첫 AZ(a)가 먼저, 다음 AZ 는 release 를 처음 본 뒤 `deploy_stagger_seconds`(180초) 뒤에 합니다. 다른 서버가 InService 가 아니면(배포 · 부팅 중) 다음 주기로 미룹니다.
 4. ECR pull (`payment-service` · `payment-migrations`, 같은 태그) → 결제 DB · 토스 Secret 을 읽어 `/run`(tmpfs)의 0600 env 파일로
 5. Flyway migrate (`useSsl=true&serverSslCert=<RDS CA>` — 이미지의 드라이버가 Connector/J 2.x 라 3.x 옵션 `sslMode` 는 무시되고 평문 접속됨. 호스트 이름 검증은 기본 켜짐). 이전 버전이 아직 서비스 중이므로 마이그레이션은 추가만 합니다
@@ -576,6 +582,62 @@ AWS_PROFILE=team04 aws ssm get-parameter --name /team04-hotel/prod/payment/relea
 | gitops PR merge → 자동 교체 (MOCK → TOSS) | sync-payment-tag 가 OIDC 로 release 갱신 → 50초 뒤 a 시작, b 까지 5분 39초에 완료. 사람 개입 없음. 호출 830회 실패 0 |
 | 로그 · 이벤트 | 비밀값 없음, 이벤트의 이미지 이름에 레지스트리(계정 ID) 없음 |
 
+### 결제 서버 지표 (Alloy → AMP)
+
+메인 Prometheus 는 결제 VPC 를 scrape 할 수 없습니다 (PrivateLink 단방향). 결제 서버가 AWS API 로 밀어 넣고 메인 Grafana 가 AWS API 로 읽습니다. VPC 간 경로는 늘지 않습니다.
+
+```
+결제 서버 payment-metrics.service (Alloy, host 네트워크)
+  ├ 내장 unix(node-exporter) · cadvisor · 127.0.0.1:9464 payment-service /metrics · 내장 mysqld_exporter(결제 RDS, TLS)
+  └▶ sigv4 remote_write ─ 44 aps-workspaces 엔드포인트 ─▶ AMP 워크스페이스 team04-hotel-payment (10-global 🔒)
+                                                         ├▶ 규칙 → AMP Alertmanager → SNS team04-hotel-alerts → #alerts
+메인 Grafana (IRSA team04-hotel-grafana, amp-read) ◀─────┘   데이터 소스 "AMP (payment)", 대시보드 team04 / 결제 (prod)
+```
+
+- 수집 대상 · 라벨은 온프레미스 결제 노드(`ansible/roles/node_collectors`)와 같습니다 (`job` = `node-exporter` · `cadvisor` · `payment-service` · `mysql`, `cluster="payment"`). `instance` 는 EC2 인스턴스 ID, `az` 라벨이 더 붙습니다. node-exporter · cAdvisor 이미지를 따로 미러하지 않으려고 Alloy 내장 exporter 를 씁니다.
+- 결제 DB 는 두 결제 서버가 각자 수집합니다 (`instance` = 수집한 서버). 전역 카운터를 서버끼리 더하면 2배가 되므로 대시보드는 `max` 로 봅니다. exporter 계정은 부팅 때 `payment-metrics` 가 master 로 만들고(메인 `mysql-exporter-setup` 과 같은 권한, `MAX_USER_CONNECTIONS 3`), 실패해도 Alloy 는 뜹니다 (`mysql_up 0` → `PaymentDbExporterDown`).
+- RDS CA: Alloy mysqld_exporter 에는 CA 옵션이 없어 `SSL_CERT_DIR` 에 CA 디렉터리를 더하고 DSN 은 `tls=true`(호스트 이름 검증)입니다.
+- AMP 워크스페이스는 🔒 라 ID 가 고정입니다 (gitops `kube-prometheus-stack` values 의 데이터 소스 URL). 지표는 AMP 기본 보관 기간(150일) 동안 남습니다. 결제 지표는 AMP 에만 있어 메인 지표와 한 쿼리 · 한 규칙으로 묶을 수 없습니다.
+- 비용: 워크스페이스 시간 과금은 없고 수집 샘플 수 · 조회량만 과금됩니다. `metrics_scrape_interval`(30초)을 늘리면 수집 비용이 줄어듭니다. `aps-workspaces` 엔드포인트는 다른 인터페이스 엔드포인트처럼 AZ 2개 시간 과금입니다.
+
+**Alloy 이미지 미러 (버전당 1회)**: 결제 VPC 는 Docker Hub 에 갈 수 없어 `11-registry` 미러 저장소 `team04-hotel/alloy`(IMMUTABLE)에서 받습니다. `60` 은 `data "aws_ecr_image"` 로 digest 를 읽으므로 **미러가 없으면 `60` plan 이 실패합니다**. 버전(`60` `alloy_version`)은 온프레미스 `node_collectors` `alloy_image` 와 맞춥니다.
+
+```bash
+# apply 주체로 (저장소 정책이 push 를 릴리스 Role · apply 주체로 제한). 결제 서버는 amd64
+ver=v1.20.1
+reg=$(AWS_PROFILE=team04 aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com
+AWS_PROFILE=team04 aws ecr get-login-password | crane auth login "$reg" -u AWS --password-stdin
+crane copy "docker.io/grafana/alloy:$ver" "$reg/team04-hotel/alloy:$ver" --platform linux/amd64
+```
+
+```bash
+# 결제 서버 안에서 (SSM 접속 후)
+sudo journalctl -u payment-metrics --since -30min --no-pager      # 이미지 · exporter 계정 · Alloy 시작
+curl -s 127.0.0.1:12345/-/ready                                  # Alloy 준비 (UI 는 SSM 포트 포워딩 12345)
+curl -s 127.0.0.1:9464/metrics | head                            # payment-service 메트릭
+
+# 로컬에서
+AWS_PROFILE=team04 aws logs tail /team04-hotel/prod/payment/app --since 10m --log-stream-name-prefix i-   # <인스턴스>/alloy 스트림
+ws=$(cd live/prod/10-global && terragrunt output -raw payment_metrics_workspace_id)
+AWS_PROFILE=team04 aws amp describe-alert-manager-definition --workspace-id "$ws" --query 'alertManagerDefinition.status.statusCode'   # ACTIVE
+AWS_PROFILE=team04 aws amp describe-rule-groups-namespace --workspace-id "$ws" --name payment --query 'ruleGroupsNamespace.status.statusCode'
+```
+
+- 설정 변경(Alloy 설정 · 버전 · 수집 간격)은 다른 user-data 처럼 새로 뜨는 서버부터 반영됩니다 (매일 재생성 · instance refresh).
+- AMP 는 1시간 넘은 샘플을 버립니다. 엔드포인트 · 권한이 막혀 WAL 에 1시간 넘게 쌓였다가 보내면 `team04-hotel-payment-metrics-discarded` 알람이 옵니다.
+
+검증 결과 (2026-10-29, 결제 서버 2대 instance refresh 후, gitops 작업 브랜치로 Grafana 확인):
+
+| 확인 | 결과 |
+|---|---|
+| 부팅 | dnf(`mariadb105` 포함) → exporter 계정 생성 → Alloy 시작까지 부팅 약 2분, NLB healthy. 1대씩 교체하는 동안 다른 1대가 healthy 유지 |
+| AMP 수집 | 2대 × `up` 4개(node-exporter · cadvisor · payment-service · mysql) 모두 1, `mysql_up 1`(RDS TLS, `SSL_CERT_DIR`), 서버당 시계열 약 2,530개 |
+| 라벨 | `cluster=payment` · `env=prod` · `namespace=payment` · `az`, `instance` = 인스턴스 ID, 컨테이너 `alloy` · `payment-service`, 디스크 `mountpoint="/"` |
+| 메인 Grafana | AMP 플러그인 3.3.2 설치, 데이터 소스 쿼리 `status=ok`(40 – 200ms), `team04 / 결제 (prod)` 36 패널 |
+| gRPC | 메인 테스트 파드 → `GetHello` 60회 실패 0 · 없는 ID `GetPaymentById` 10회 NOT_FOUND. 두 서버에 고르게 분산(32 · 30), p95 약 24ms |
+| 알림 | AMP Alertmanager 시험 알림 → #alerts 발생 · 해소 수신, `AlertManagerNotificationsFailed` 0, 규칙 평가 실패 0 |
+| NFW | 그날 꺼져 있어 미확인 (AMP 는 인터페이스 엔드포인트라 NFW 를 지나지 않음) |
+
 ---
 
 ## 10. 프론트 · 객실 사진 (`13-frontend`)
@@ -587,8 +649,8 @@ https://www.<도메인>/*         → 301 루트 (api-gateway CORS 출처가 루
 ```
 
 - 🔒 상시 유지라 매일 재생성과 무관하게 프론트 · 사진이 남습니다. Zone · 인증서는 같은 1x 단계인 `10-global` 을 dependency 대신 도메인 이름으로 조회합니다.
-- `40-cicd`(Runner 업로드 권한) · `70-main-cluster-kubeadm`(hotel-service IRSA) 이 `13` 의 output 을 mock 없이 읽으므로 **`13` 을 먼저 apply** 합니다 (`run --all apply` 는 순서대로 처리).
-- 버킷은 CloudFront(OAC, `aws:SourceArn` = 이 배포)만 읽습니다. 쓰기는 버킷 정책이 Runner(사이트 `releases/*`) · hotel-service(사진) · apply 주체 외에는 거부합니다.
+- `51-pod-roles`(hotel-service IRSA) 가 `13` 의 output 을 mock 없이 읽으므로 **`13` 을 먼저 apply** 합니다 (`run --all apply` 는 순서대로 처리).
+- 버킷은 CloudFront(OAC, `aws:SourceArn` = 이 배포)만 읽습니다. 쓰기는 버킷 정책이 릴리스 Role(사이트 `releases/*`) · hotel-service(사진) · apply 주체 외에는 거부합니다.
 - 릴리스 · 롤백 절차는 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스" — 버전 전환은 gitops merge 후 GitHub Actions 만 합니다 (`release.tf`).
 
 처음 apply 한 뒤 한 번만:
@@ -661,7 +723,7 @@ gcloud iam service-accounts keys list --managed-by=user \
 
 ---
 
-## 12. 챗봇 운영 구성 (`15-chatbot-vectors` · 70 IRSA)
+## 12. 챗봇 운영 구성 (`15-chatbot-vectors` · 51 IRSA)
 
 ```
 프론트 → api-gateway → chat-bot-service ──(IRSA)──→ DynamoDB 대화 테이블 (41, 매일 재생성)
@@ -670,7 +732,7 @@ gcloud iam service-accounts keys list --managed-by=user \
 릴리스마다 llm-ingest Job ──(IRSA)──→ S3 Vectors PutVectors   (문서 = llm-service 이미지의 app/corpus.py)
 ```
 
-| ServiceAccount (backend) | AWS 권한 (70 `irsa.tf`) | GCP |
+| ServiceAccount (backend) | AWS 권한 (`51-pod-roles`) | GCP |
 |---|---|---|
 | `chat-bot-service` | 대화 테이블 2개 `PutItem` · `Query` (GSI 포함) | – |
 | `llm-service` | 인덱스 `QueryVectors` · `GetVectors` | `llm-service-prod` impersonate |
@@ -706,7 +768,7 @@ kubectl -n backend logs job/<llm-ingest-...> --tail=3        # "20 documents ind
 - 레코드: `data`(JSON 로그를 펼친 값, JSON 이 아니면 `log` 원문) · `kubernetes`(네임스페이스 · 파드 · 컨테이너 · 노드, 라벨 · 어노테이션 없음) · `date` · `log_group_ns`.
 - S3 경로의 날짜 · 시각은 **UTC** 입니다 (한국 시간 오전 9시 전 로그는 전날 폴더).
 - **네임스페이스를 추가할 때**: `21` `cluster_log_namespaces` 와 gitops `fluent-bit/values.yaml` Lua 필터의 `known` 에 같이 추가합니다. Fluent Bit 은 그룹을 만들지 못하므로(권한 없음) 한쪽만 고치면 그 로그는 `other` 로 가거나(gitops 만 빠짐) 거부됩니다(21 만 빠짐).
-- Fluent Bit Role(`team04-hotel-fluent-bit`, 70 `irsa.tf`)은 위 그룹의 `CreateLogStream` · `PutLogEvents` 와 버킷 `app-logs/main-cluster/*` `PutObject` 만 가집니다.
+- Fluent Bit Role(`team04-hotel-fluent-bit`, `51-pod-roles`)은 위 그룹의 `CreateLogStream` · `PutLogEvents` 와 버킷 `app-logs/main-cluster/*` `PutObject` 만 가집니다.
 - 노드가 지워지면 아직 올리지 않은 마지막 5분 이내 로그는 S3 에 남지 않습니다 (CloudWatch 는 수 초 단위로 전송).
 
 ```bash
@@ -729,7 +791,8 @@ kubectl -n fluent-bit logs ds/fluent-bit --tail=50 | grep -iE 'error|warn'
 ```
 CloudWatch 알람 ALARM (90) ─────────────────────┬→ SNS team04-hotel-alerts ─┐
 EventBridge 규칙 ALARM → OK 전환만 (10-global) ──┤                           │
-메인 Alertmanager (alertmanager, IRSA) ─────────┘                           │
+메인 Alertmanager (alertmanager, IRSA) ─────────┤                           │
+결제 지표 AMP Alertmanager (10-global, aps) ────┘                           │
 메인 ArgoCD 알림 hook (deploy-notify, IRSA) ────┐                            ├→ AWS Chatbot (us-east-2) → Slack #alerts · #deploy
 결제 pull agent (60 Role, 44 sns 엔드포인트) ────┼→ SNS team04-hotel-deploy ──┘
 gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 · Chatbot 은 10-global 🔒, KMS 암호화)
@@ -738,7 +801,7 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 - SNS 토픽 · KMS 키 · Chatbot 채널 설정은 `10-global` 🔒 이라 매일 재생성과 상관없이 유지됩니다. Chatbot 이 구독을 직접 관리하므로 구독 확인 · Slack 재연결이 없습니다.
 - 해소(OK) 알림은 알람의 `ok_actions` 가 아니라 `10-global` EventBridge 규칙 `team04-hotel-alarm-recovered` 가 보냅니다. `ok_actions` 는 알람을 새로 만들 때의 "데이터 부족 → OK" 에도 실행되어 매일 재생성마다 OK 가 오기 때문에, 이름이 `team04-hotel-` 로 시작하는 알람의 **ALARM → OK 전환만** 보냅니다. 새 알람도 이 접두사를 쓰고 `ok_actions` 는 넣지 않습니다.
 - Chatbot 은 EventBridge 의 알람 상태 변경 이벤트 원본을 지원하지 않아(`/aws/chatbot/team04-hotel-alerts` 로그: `Event received is not supported`), 규칙 대상의 입력 변환으로 사용자 정의 알림 형식(`✅ CloudWatch Alarm 해소 | <알람>`)으로 바꿔 보냅니다. Slack 에 메시지가 안 오면 이 로그 그룹(us-east-1)을 먼저 봅니다.
-- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람 · 위 EventBridge 규칙 · Role `team04-hotel-alertmanager`(`alert_publisher_role_names`)만, 배포 토픽은 Role 3개(`team04-hotel-deploy-notify` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
+- 토픽 정책이 발행 주체를 제한합니다. 알람 토픽은 이 계정 CloudWatch 알람 · 위 EventBridge 규칙 · 결제 지표 AMP 워크스페이스(서비스 주체 `aps`, `aws:SourceArn`) · Role `team04-hotel-alertmanager`(`alert_publisher_role_names`)만, 배포 토픽은 Role 3개(`team04-hotel-deploy-notify` · `team04-hotel-payment-app` · `team04-hotel-gitops-ssm-sync`)만 발행할 수 있습니다 (관리자도 직접 발행 불가). 각 Role 은 자기 토픽 `Publish` 와 키 `GenerateDataKey` · `Decrypt` 만 가집니다.
 - Chatbot 채널 Role 에는 정책이 없고 guardrail 이 `AWSDenyAll` 이라 Slack 에서 AWS 명령을 실행할 수 없습니다.
 - 결제 VPC 는 Slack 으로 나가지 않습니다 (SNS 인터페이스 엔드포인트, NFW 허용 목록은 토스 API 만).
 - Slack 워크스페이스 · 채널 ID 는 `10-global/terraform.tfvars`(gitignore)에 둡니다 (`terraform.tfvars.example`). 기본값이 없어 파일이 없으면 `10-global` plan 이 멈춥니다. 비공개 채널이면 채널에서 `/invite @Amazon Q` 를 먼저 합니다.
@@ -750,15 +813,32 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 | 알람 | 조건 | 대응 |
 |---|---|---|
 | `team04-hotel-payment-result-dlq` | 결제 결과 DLQ 메시지 > 0 | booking-service 로그(`/team04-hotel/prod/cluster/backend`)에서 처리 실패 원인 확인 → 원인 수정 후 DLQ 메시지를 원래 큐로 재처리(콘솔 "DLQ 재처리") |
+| `team04-hotel-payment-webhook-dlq` | 토스 웹훅 DLQ 메시지 > 0 | 9절 결제 서버 app 로그에서 처리 실패 원인 확인 → 원인 수정 후 DLQ 메시지를 원래 큐로 재처리(콘솔 "DLQ 재처리") |
+| `team04-hotel-payment-webhook-lambda-errors` | 웹훅 Lambda `Errors` > 0 | 토스가 재전송하므로 웹훅은 유실되지 않음. Lambda 로그(`/aws/lambda/team04-hotel-payment-webhook`), 44 SQS 엔드포인트 · P6 규칙 확인 |
+| `team04-hotel-payment-webhook-api-5xx` | 웹훅 API Gateway `5xx` > 0 | 위와 같음. Lambda 호출 실패 · 비정상 응답 확인 |
 | `team04-hotel-main-alb-5xx-rate` | ALB 5xx 비율 > 5% (1분 3번 중 2번, 요청 20건 이상) | `kubectl -n backend get pods`, api-gateway 로그. ELB 5xx 만 늘면 대상 없음(워커 · Traefik) |
-| `team04-hotel-main-alb-unhealthy` | 워커 Target Group unhealthy 5분 | 7절 Target Group 상태, 워커 교체 중인지(6절) 확인 |
+| `team04-hotel-main-alb-kubeadm-unhealthy` | 워커(70 NodePort 30080) Target Group unhealthy 5분 | 7절 Target Group 상태, 워커 교체 중인지(6절) 확인 |
+| `team04-hotel-main-alb-eks-unhealthy` | EKS(72 Traefik 파드 8000) Target Group unhealthy 5분. 대상이 없으면 울리지 않음 | Traefik 파드 · TargetGroupBinding 상태 확인 |
+| `team04-hotel-ec2-cpu-surplus-charged` | 계정 EC2 `CPUSurplusCreditsCharged` 5분 합 > 0 (Metrics Insights) | t3a unlimited 초과 사용이 과금됨. Prometheus 노드 평균 CPU 알람 · 노드 대시보드 확인, 계속되면 고정 성능 타입(m6a) 검토 |
 | `team04-hotel-payment-nlb-unhealthy` | 결제 NLB unhealthy 5분 | 9절 결제 서버 SSM 접속 → `docker ps` · app 로그. ASG 가 교체 중일 수 있음 |
 | `team04-hotel-payment-deploy-failed` | 결제 agent `deploy_failed` · `invalid_release` · `rollback_failed` | `#deploy` 의 인스턴스별 결과 → 9절 배포 이벤트 조회. 없는 태그면 gitops payment values 수정 PR |
 | `team04-hotel-payment-mock-deployed` | 결제 agent `deploy_success` 이면서 `provider = MOCK` | 부하 테스트가 아니면 gitops payment values `PAYMENT_PROVIDER` 를 `TOSS` 로 되돌리는 PR |
+| `team04-hotel-{main,payment}-db-cpu-surplus` | RDS `CPUSurplusCreditBalance` ≥ 10 (5분 3번) | 기준 성능(t4g)을 넘겨 크레딧을 빚지는 중(추가 요금). 슬로우 쿼리 로그 · 접속 수 확인, 계속되면 `db_instance_class` 상향 |
+| `team04-hotel-{main,payment}-db-low-memory` | RDS `FreeableMemory` < 64 MiB (5분 3번) | 접속 수 · 슬로우 쿼리 확인. 평소 110 – 140 MiB (버퍼 풀 421 MiB) |
+| `team04-hotel-{main,payment}-db-low-storage` | RDS `FreeStorageSpace` < 2 GiB | 테이블 · 로그 크기 확인, `db_allocated_storage` 상향 |
+| `team04-hotel-{main,payment}-db-connections` | RDS `DatabaseConnections` ≥ 26 (1분 5번 중 3번) | `max_connections` 30 에 가까움 — 넘으면 새 접속 거부. backend 파드 수 · 커넥션 풀 크기 확인 |
+| `team04-hotel-valkey-main-<노드>-memory` | Valkey `DatabaseMemoryUsagePercentage` > 80% (5분 3번) | 키 수 · TTL 확인, `valkey_node_type` 상향 |
+| `team04-hotel-valkey-main-<노드>-evictions` | Valkey `Evictions` > 0 | 리프레시 토큰이 축출되어 재로그인이 생김 — 메모리 알람과 같이 확인 |
+| `team04-hotel-valkey-main-<노드>-connections` | Valkey `CurrConnections` > 200 (5분 3번) | 평소 10 미만. auth-service 연결 누수 · 파드 수 확인 |
+| `team04-hotel-payment-metrics-discarded` | AMP `DiscardedSamples` > 0 (5분, 모든 Reason) | `Reason` 차원 확인. `greater_than_max_sample_age` 면 결제 서버 Alloy 가 1시간 넘게 못 보냈던 것 — 9절 결제 서버 지표 · Alloy 로그 |
+| `team04-hotel-payment-metrics-notify-failed` | AMP `AlertManagerNotificationsFailed` > 0 (5분) | 결제 지표 알림이 Slack 에 안 옴 — `10-global` 토픽 정책(`aps`) · KMS 키 정책 · `metrics.tf` 메시지 템플릿 |
 
 - **Prometheus 알림**(메인 클러스터 Alertmanager, LDP-179)도 같은 `#alerts` 로 옵니다. 제목은 `🚨 Prometheus 알림 | <규칙>` · `✅ Prometheus 해소 | <규칙>` 이고, 규칙 · 대응은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측" 에 있습니다. `severity` 가 `warning` · `critical` 인 것만 보냅니다.
+- **결제 지표 Prometheus 알림**(AMP, LDP-181)도 같은 형식으로 `#alerts` 에 옵니다 (`*클러스터* payment (prod, AMP)`). 규칙은 `10-global/metrics.tf`: `PaymentTargetDown`(`up == 0` 5분) · `PaymentDbExporterDown`(`mysql_up == 0` 5분, critical) · `PaymentHostDiskAlmostFull`(< 15%) · `PaymentHostMemoryLow`(< 10%). `absent()` 규칙은 매일 destroy 로 울려서 두지 않습니다 — 결제 서버 자체 장애는 `payment-nlb-unhealthy` 알람이 알립니다.
 - 결제 배포 · MOCK 알람은 이벤트가 생긴 1분만 ALARM 이고 다음 1분에 OK 로 돌아옵니다 ("발생 알림"). 이벤트가 있을 때만 생기는 지표라 `FILL(m, 0)` 수식으로 빈 분을 0 으로 채웁니다 — 채우지 않으면 평가 범위에 남은 마지막 1 때문에 ALARM 이 약 8분 이어집니다 (2026-10-24 실측). ALARM 중에 같은 이벤트가 또 생기면 새 메시지는 없습니다.
 - 매일 재생성 직후 결제 서버 · 워커가 부팅 중이면 unhealthy 알람이 한 번 올 수 있습니다 (5분 넘게 이어질 때만).
+- **DB · 캐시 알람 기준값**(LDP-180, 2026-10-29 db.t4g.micro 실측): `max_connections` 30 (`LEAST({DBInstanceClassMemory/25165760},12000)`), 메인 평소 22. 임계값은 `90-observability-alarms/variables.tf`. `CPUCreditBalance`(잔액 낮음)는 쓰지 않습니다 — 생성 직후 0 에서 시간당 약 6 씩 쌓여 매일 재생성 후 몇 시간 동안 울리고, t4g 는 Unlimited 라 잔액 0 이어도 느려지지 않습니다.
+- RDS 에러 · 슬로우 쿼리 로그는 `/aws/rds/instance/team04-hotel-{main,payment}/{error,slowquery}` (41 · 42 가 먼저 만들어 보관 7일, destroy 때 삭제). 조회는 Grafana CloudWatch 데이터 소스 또는 Logs Insights ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "DB · 캐시 지표").
 
 ### `#deploy` 배포 결과
 

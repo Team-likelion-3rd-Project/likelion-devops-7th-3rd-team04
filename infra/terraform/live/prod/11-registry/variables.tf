@@ -40,22 +40,22 @@ variable "services" {
   ]
 }
 
+variable "mirror_images" {
+  description = "외부 이미지 미러 저장소 (<project>/<이름>, 태그 = 원본 버전). alloy = Docker Hub grafana/alloy (60 결제 서버 지표 수집기)"
+  type        = set(string)
+  default     = ["alloy"]
+}
+
+variable "mirror_keep_count" {
+  description = "미러 저장소마다 남겨 둘 최근 버전 개수 (이전 버전으로 되돌릴 여유)"
+  type        = number
+  default     = 3
+}
+
 variable "image_keep_count" {
   description = "리포지토리마다 남겨 둘 최근 이미지 개수"
   type        = number
   default     = 10
-}
-
-variable "build_cache_expire_days" {
-  description = "빌드 캐시 저장소(<project>/cache)에서 캐시를 지우기까지의 일수. .gitlab-ci.yml release:build 의 --cache-ttl 과 같게"
-  type        = number
-  default     = 14
-}
-
-variable "ci_runner_role_name" {
-  description = "이미지를 push 하는 40-cicd Runner IAM Role 이름. 저장소 정책이 이 Role 과 관리자만 push 를 허용한다"
-  type        = string
-  default     = "team04-hotel-ci-runner"
 }
 
 variable "release_role_name" {

@@ -7,6 +7,9 @@
 #
 # 발급자는 IRSA 와 같은 공개 버킷(10-global irsa.tf)이다. keys.json 은 매일 재생성 때 클러스터가 새 서명키로 다시 올린다.
 # 온프레미스 dev 는 infra/gcp-terraform/dev (SA 키 방식) 그대로다.
+#
+# 72 EKS 는 발급자를 고정할 수 없어 AWS Provider 를 쓴다 (파드 Pod Identity 자격 증명 → STS → impersonate, llm-service app/llm.py).
+# OIDC Provider 는 70 을 제거할 때까지 유지한다 (LDP-202).
 
 locals {
   oidc_issuer_url = "https://${var.oidc_bucket_name}.s3.${var.region}.amazonaws.com"
@@ -64,6 +67,29 @@ resource "google_iam_workload_identity_pool_provider" "main_cluster" {
   }
 }
 
+resource "google_iam_workload_identity_pool_provider" "main_cluster_aws" {
+  workload_identity_pool_id          = google_iam_workload_identity_pool.main.workload_identity_pool_id
+  workload_identity_pool_provider_id = var.aws_workload_identity_provider_id
+  display_name                       = "main cluster AWS"
+  description                        = "72 EKS 파드의 AWS Role (Pod Identity)"
+
+  # arn = arn:aws:sts::<계정>:assumed-role/<Role>/<세션>
+  attribute_mapping = {
+    "google.subject"     = "assertion.arn"
+    "attribute.aws_role" = "assertion.arn.extract('assumed-role/{role}/')"
+  }
+
+  attribute_condition = "attribute.aws_role in ${jsonencode(tolist(var.aws_role_names))}"
+
+  aws {
+    account_id = var.aws_account_id
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 resource "google_service_account" "llm_service" {
   account_id   = var.llm_service_account_id
   display_name = "llm-service (AWS prod)"
@@ -88,4 +114,13 @@ resource "google_service_account_iam_member" "workload_identity_user" {
   service_account_id = google_service_account.llm_service.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.main.name}/subject/system:serviceaccount:${var.allowed_namespace}:${each.value}"
+}
+
+# 지정한 AWS Role 만 이 서비스 계정을 impersonate 한다 (세션 이름은 파드마다 달라 Role 단위로 묶는다)
+resource "google_service_account_iam_member" "workload_identity_user_aws" {
+  for_each = var.aws_role_names
+
+  service_account_id = google_service_account.llm_service.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.main.name}/attribute.aws_role/${each.value}"
 }

@@ -1,5 +1,5 @@
 import { Route, Routes } from 'react-router-dom'
-import AdminGuard from './AdminGuard'
+import AdminGuard, { AdminAreaRoute } from './AdminGuard'
 import AdminLayout from './layouts/AdminLayout'
 import AdminLoginPage from './pages/AdminLoginPage'
 import AdminDashboardPage from './pages/AdminDashboardPage'
@@ -22,14 +22,21 @@ function AdminApp() {
       <Route element={<AdminGuard />}>
         <Route element={<AdminLayout />}>
           <Route index element={<AdminDashboardPage />} />
-          <Route path="users" element={<AdminUsersPage />} />
-          <Route path="users/:userId" element={<AdminUserDetailPage />} />
-          <Route path="hotels" element={<AdminHotelsPage />} />
-          <Route path="hotels/:hotelId" element={<AdminHotelDetailPage />} />
-          <Route path="hotels/:hotelId/rooms/:roomId" element={<AdminRoomDetailPage />} />
+          {/* 직급별 메뉴 (LDP-184) — 회원은 본사만, 호텔·객실·공지는 본사·지점 관리자 */}
+          <Route element={<AdminAreaRoute area="users" />}>
+            <Route path="users" element={<AdminUsersPage />} />
+            <Route path="users/:userId" element={<AdminUserDetailPage />} />
+          </Route>
+          <Route element={<AdminAreaRoute area="hotels" />}>
+            <Route path="hotels" element={<AdminHotelsPage />} />
+            <Route path="hotels/:hotelId" element={<AdminHotelDetailPage />} />
+            <Route path="hotels/:hotelId/rooms/:roomId" element={<AdminRoomDetailPage />} />
+          </Route>
           <Route path="room-assignments" element={<AdminRoomAssignmentsPage />} />
           <Route path="reservations" element={<AdminReservationsPage />} />
-          <Route path="notices" element={<AdminNoticesPage />} />
+          <Route element={<AdminAreaRoute area="notices" />}>
+            <Route path="notices" element={<AdminNoticesPage />} />
+          </Route>
           <Route path="*" element={<AdminNotFound />} />
         </Route>
       </Route>

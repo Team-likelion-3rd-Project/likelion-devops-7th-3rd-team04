@@ -29,6 +29,8 @@ import PaymentsPendingPage from './pages/PaymentsPendingPage'
 import PaymentDetailPage from './pages/PaymentDetailPage'
 import LoginPage from './pages/LoginPage'
 import SignupPage from './pages/SignupPage'
+import KakaoCallbackPage from './pages/KakaoCallbackPage'
+import KakaoSignupPage from './pages/KakaoSignupPage'
 import NotFoundPage from './pages/NotFoundPage'
 import ErrorPage from './pages/ErrorPage'
 import { refreshAccessToken } from './api/gateway'
@@ -84,6 +86,9 @@ function App() {
           </Route>
           <Route path="login" element={<LoginPage />} />
           <Route path="signup" element={<SignupPage />} />
+          {/* 카카오 로그인 (LDP-195) — callback 주소는 카카오 콘솔·서버 KAKAO_REDIRECT_URIS와 같아야 한다 */}
+          <Route path="auth/kakao/callback" element={<KakaoCallbackPage />} />
+          <Route path="auth/kakao/signup" element={<KakaoSignupPage />} />
           {/* 위에 없는 주소는 모두 404 안내 (LDP-158) */}
           <Route path="*" element={<NotFoundPage />} />
         </Route>

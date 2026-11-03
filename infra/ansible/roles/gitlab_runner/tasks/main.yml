@@ -51,14 +51,10 @@
     state: started
 
 - name: GitLab 등록 확인
-  # gitlab_runner_verify_required: false 면 실패해도 진행 (AWS Runner — GitLab 이 꺼져 있어도 부트스트랩을 실패시키지 않고,
-  # gitlab-runner 가 GitLab 이 켜지면 다시 연결한다)
   ansible.builtin.command: gitlab-runner verify
   register: runner_verify
   changed_when: false
-  failed_when: >-
-    gitlab_runner_verify_required | default(true) | bool and
-    (runner_verify.rc != 0 or 'is valid' not in (runner_verify.stdout ~ runner_verify.stderr))
+  failed_when: runner_verify.rc != 0 or 'is valid' not in (runner_verify.stdout ~ runner_verify.stderr)
   until: runner_verify is not failed
   retries: 3
   delay: 5

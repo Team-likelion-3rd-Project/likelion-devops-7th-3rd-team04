@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { fetchNotices, formatNoticeDate, NOTICE_CATEGORY_LABEL } from '../../api/notices'
+import { fetchAdminHotels } from '../../api/adminApi'
+import type { AdminHotel } from '../../api/adminApi'
+import { fetchNotices, formatNoticeDate, NOTICE_CATEGORY_LABEL, noticeBranchName } from '../../api/notices'
 import type { Notice, NoticeCategory } from '../../api/notices'
 import {
   createNotice,
@@ -11,12 +13,16 @@ import {
   updateNotice,
 } from '../../api/adminNotices'
 import type { NoticeInput } from '../../api/adminNotices'
+import { useAdminScope } from '../adminScope'
 import './AdminPages.css'
 
-const EMPTY_FORM: NoticeInput = { title: '', body: '', category: 'NOTICE', isPinned: false }
-
 // 공지 관리 (LDP-149 #295, API: LDP-147 #293). 고객 공지사항·메인 "새로운 소식"에 바로 반영된다.
+// 지점별 공지 (LDP-188): 본사는 전체 공지 또는 지점 공지를 고르고, 지점 관리자는 자기 지점 공지만 쓴다.
+// 지점 관리자 목록에는 자기 지점 공지 + 전체 공지가 보이고, 전체 공지는 고칠 수 없다(서버도 403).
 function AdminNoticesPage() {
+  const scope = useAdminScope()
+  const emptyForm: NoticeInput = { title: '', body: '', category: 'NOTICE', isPinned: false, hotelId: scope.hotelId }
+  const [hotels, setHotels] = useState<AdminHotel[]>([])
   const [notices, setNotices] = useState<Notice[] | null>(null)
   const [loadError, setLoadError] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
@@ -24,13 +30,26 @@ function AdminNoticesPage() {
 
   // 작성·수정 폼: editing이 null이면 닫힘, 'new'면 새 공지, 숫자면 그 공지 수정
   const [editing, setEditing] = useState<'new' | number | null>(null)
-  const [form, setForm] = useState<NoticeInput>(EMPTY_FORM)
+  const [form, setForm] = useState<NoticeInput>(emptyForm)
   const [formError, setFormError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
 
+  // 지점 이름·대상 선택용 (지점 계정은 자기 지점만 받는다)
   useEffect(() => {
     let ignore = false
-    fetchNotices()
+    fetchAdminHotels()
+      .then((list) => {
+        if (!ignore) setHotels(list)
+      })
+      .catch(() => {})
+    return () => {
+      ignore = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let ignore = false
+    fetchNotices(undefined, undefined, scope.hotelId ?? undefined)
       .then(({ notices: list }) => {
         if (ignore) return
         setNotices(list)
@@ -42,17 +61,28 @@ function AdminNoticesPage() {
     return () => {
       ignore = true
     }
-  }, [reloadKey])
+  }, [reloadKey, scope.hotelId])
+
+  const branchLabel = (n: Notice) => noticeBranchName(n, hotels) ?? '전체 공지'
+  // 지점 관리자는 자기 지점 공지만 고치고 지운다
+  const canEdit = (n: Notice) => scope.hotelId === null || n.hotelId === scope.hotelId
+  const ownBranchName = hotels.find((h) => h.hotelId === scope.hotelId)?.name ?? `지점 ${scope.hotelId}`
 
   const openForm = (target: 'new' | Notice) => {
     setNotice('')
     setFormError('')
     if (target === 'new') {
       setEditing('new')
-      setForm(EMPTY_FORM)
+      setForm(emptyForm)
     } else {
       setEditing(target.noticeId)
-      setForm({ title: target.title, body: target.body, category: target.category, isPinned: target.isPinned })
+      setForm({
+        title: target.title,
+        body: target.body,
+        category: target.category,
+        isPinned: target.isPinned,
+        hotelId: target.hotelId,
+      })
     }
   }
 
@@ -78,7 +108,8 @@ function AdminNoticesPage() {
     try {
       if (editing === 'new') {
         const created = await createNotice(input)
-        finish(`공지 "${created.title}"을(를) 올렸습니다. 고객 공지사항에 바로 보입니다.`)
+        const where = created.hotelId === null ? '모든 지점' : `${branchLabel(created)} 화면`
+        finish(`공지 "${created.title}"을(를) 올렸습니다. ${where}에 바로 보입니다.`)
       } else if (editing !== null) {
         await updateNotice(editing, input)
         finish(`공지 "${input.title}"을(를) 수정했습니다.`)
@@ -113,6 +144,9 @@ function AdminNoticesPage() {
       </div>
       <p className="admin-stat-note">
         올리거나 고친 공지는 고객 공지사항과 메인 "새로운 소식"에 바로 보입니다. 중요 공지는 목록 맨 위에 고정됩니다.
+        {scope.hotelId === null
+          ? ' 전체 공지는 모든 지점에, 지점 공지는 그 지점 호텔 화면에만 보입니다.'
+          : ` ${ownBranchName} 공지만 작성·수정할 수 있고, 본사 전체 공지는 볼 수만 있습니다.`}
       </p>
 
       {notice && <p className="admin-state is-success">{notice}</p>}
@@ -129,6 +163,26 @@ function AdminNoticesPage() {
           </div>
           <div className="admin-form">
             <div className="admin-assign-filters">
+              <label className="admin-form-row">
+                <span>대상</span>
+                {scope.hotelId === null ? (
+                  <select
+                    value={form.hotelId ?? ''}
+                    onChange={(e) => setForm({ ...form, hotelId: e.target.value === '' ? null : Number(e.target.value) })}
+                  >
+                    <option value="">전체 공지 (모든 지점)</option>
+                    {hotels.map((h) => (
+                      <option key={h.hotelId} value={h.hotelId}>
+                        {h.name} 공지
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select value={scope.hotelId} disabled>
+                    <option value={scope.hotelId}>{ownBranchName} 공지</option>
+                  </select>
+                )}
+              </label>
               <label className="admin-form-row">
                 <span>분류</span>
                 <select
@@ -194,6 +248,7 @@ function AdminNoticesPage() {
             <thead>
               <tr>
                 <th>번호</th>
+                <th>대상</th>
                 <th>분류</th>
                 <th>제목</th>
                 <th>작성일</th>
@@ -206,6 +261,9 @@ function AdminNoticesPage() {
                 <tr key={n.noticeId} className={editing === n.noticeId ? 'is-selected' : undefined}>
                   <td>#{n.noticeId}</td>
                   <td>
+                    <span className={`admin-badge${n.hotelId === null ? '' : ' is-info'}`}>{branchLabel(n)}</span>
+                  </td>
+                  <td>
                     {n.isPinned && <span className="admin-badge is-warn">중요</span>}{' '}
                     {NOTICE_CATEGORY_LABEL[n.category] ?? n.category}
                   </td>
@@ -213,14 +271,18 @@ function AdminNoticesPage() {
                   <td>{formatNoticeDate(n.createdAt)}</td>
                   <td>{n.updatedAt && n.updatedAt !== n.createdAt ? formatNoticeDate(n.updatedAt) : '-'}</td>
                   <td>
-                    <div className="admin-reservation-actions">
-                      <button type="button" className="admin-btn" onClick={() => openForm(n)}>
-                        수정
-                      </button>
-                      <button type="button" className="admin-btn is-danger" onClick={() => handleDelete(n)}>
-                        삭제
-                      </button>
-                    </div>
+                    {canEdit(n) ? (
+                      <div className="admin-reservation-actions">
+                        <button type="button" className="admin-btn" onClick={() => openForm(n)}>
+                          수정
+                        </button>
+                        <button type="button" className="admin-btn is-danger" onClick={() => handleDelete(n)}>
+                          삭제
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="admin-stat-note">본사 공지</span>
+                    )}
                   </td>
                 </tr>
               ))}

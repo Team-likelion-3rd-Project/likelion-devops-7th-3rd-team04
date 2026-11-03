@@ -128,3 +128,74 @@
   font-size: 13px;
   opacity: 0.85;
 }
+
+/* 이 지점 소식 — 지점 공지 + 전체 공지 최신 3개 (LDP-188) */
+.hotel-detail-news {
+  margin-top: 48px;
+  text-align: left;
+
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-top: 1px solid var(--text-h);
+  }
+
+  li a {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 4px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-h);
+    text-decoration: none;
+
+    &:hover .hotel-detail-news-title {
+      color: var(--accent);
+    }
+  }
+
+  time {
+    flex: 0 0 auto;
+    font-size: 13px;
+    color: var(--text);
+  }
+}
+
+.hotel-detail-news-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+
+  h2 {
+    margin: 0;
+    font-size: 20px;
+  }
+
+  a {
+    font-size: 14px;
+    color: var(--accent);
+    text-decoration: none;
+  }
+}
+
+.hotel-detail-news-category {
+  flex: 0 0 auto;
+  min-width: 48px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text);
+}
+
+.hotel-detail-news-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

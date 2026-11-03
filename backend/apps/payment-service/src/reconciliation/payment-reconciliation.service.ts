@@ -5,12 +5,14 @@ import {
   OnApplicationShutdown,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
+import { DataSource, IsNull, Repository, SelectQueryBuilder } from 'typeorm';
 import {
   Payment,
   PaymentProvider,
   PaymentStatus,
 } from '../entities/payment.entity';
+import { PgWebhookInbox } from '../entities/pg-webhook-inbox.entity';
+import { TossWebhookMessage } from '../webhook/toss-webhook-inbox.service';
 import { PaymentServiceService } from '../payment-service.service';
 import { TossPaymentsClient } from '../pg/toss-payments.client';
 import { PgMockClient } from '../pg-mock/pg-mock.client';
@@ -25,6 +27,8 @@ const SETTLE_AFTER_SECONDS = 120;
 // 결과 불명 결제를 이만큼 지나도 확정하지 못하면 자동 조회를 멈추고 수동 확인(UNKNOWN_MANUAL_REQUIRED)으로 옮긴다.
 // 토스는 승인되지 않은 결제를 이보다 훨씬 빨리 만료(EXPIRED)시키므로, 여기까지 오는 건 조회 자체가 계속 실패한 경우다.
 const SETTLE_GIVE_UP_HOURS = 24;
+// 토스 웹훅을 이만큼 지나도 처리하지 못하면(조회 실패가 계속됨) 알람을 남기고 재시도를 멈춘다
+const WEBHOOK_GIVE_UP_HOURS = 24;
 // 환불 실패 재시도 간격 (첫 재시도)
 const REFUND_RETRY_AFTER_SECONDS = 120;
 // REFUND_REQUESTED가 이만큼 그대로면 환불 도중 서버가 죽은 것으로 보고 다시 시도한다 (PG 취소는 10초 안에 끝남)
@@ -103,6 +107,7 @@ export function backoffSeconds(attempts: number): number {
 //  ① 결과를 모르는 결제(UNKNOWN, 오래된 PROCESSING)를 PG에 결제 번호로 조회해 승인·실패로 확정하고,
 //     결과 이벤트(Outbox → SQS)로 예약에 알린다. 승인이 늦게 확정돼 예약이 이미 만료됐으면 예약 쪽이 자동 환불한다(LDP-92).
 //     확정하지 못하면 간격을 늘려 다시 조회하고, SETTLE_GIVE_UP_HOURS가 지나면 UNKNOWN_MANUAL_REQUIRED로 옮긴다.
+//  ⓪ pg_webhook_inbox의 토스 웹훅을 토스 재조회로 검증해 결제 상태에 반영한다. 웹훅 본문은 위조될 수 있어 판단에 쓰지 않는다.
 //  ② 환불 실패(REFUND_FAILED)와 오래 멈춘 환불(REFUND_REQUESTED)을 처음 정한 환불 키 그대로 다시 요청한다.
 //     MAX_REFUND_ATTEMPTS번 실패하면 REFUND_MANUAL_REQUIRED로 옮겨 자동 재시도를 멈추고 알람·이벤트 — 운영자가 PG 콘솔에서 처리한다.
 //  - 1분마다 (RECONCILIATION_INTERVAL_SECONDS, 0이면 끔). (status, updatedAt)·(status, next_reconcile_at) Index로 대상을 찾는다.
@@ -125,6 +130,8 @@ export class PaymentReconciliationService
     private readonly paymentService: PaymentServiceService,
     private readonly tossPaymentsClient: TossPaymentsClient,
     private readonly pgMockClient: PgMockClient,
+    @InjectRepository(PgWebhookInbox)
+    private readonly inboxRepository: Repository<PgWebhookInbox>,
   ) {}
 
   onApplicationBootstrap() {
@@ -211,6 +218,7 @@ export class PaymentReconciliationService
       }
       try {
         const guard = new RunGuard(result);
+        await this.processWebhookInbox(result, guard);
         await this.settleUnknownPayments(result, guard);
         await this.retryFailedRefunds(result, guard);
         return result;
@@ -222,6 +230,176 @@ export class PaymentReconciliationService
     } finally {
       await runner.release();
     }
+  }
+
+  // ⓪ 토스 웹훅 처리
+  private async processWebhookInbox(
+    result: ReconciliationResult,
+    guard: RunGuard,
+  ) {
+    for (const row of await this.findExpiredWebhooks()) {
+      this.logger.error(
+        `[알람] 토스 웹훅을 ${WEBHOOK_GIVE_UP_HOURS}시간 안에 처리하지 못했습니다 — PG 콘솔에서 확인 (inboxId=${row.inboxId}, key=${row.pgEventKey})`,
+      );
+      await this.markWebhookProcessed(row);
+    }
+
+    const rows = await this.inboxRepository.find({
+      where: { processedAt: IsNull() },
+      order: { inboxId: 'ASC' },
+      take: BATCH_SIZE,
+    });
+    await this.runLimited(rows, guard, result, (row) =>
+      this.processWebhook(row, result, guard),
+    );
+  }
+
+  private async processWebhook(
+    row: PgWebhookInbox,
+    result: ReconciliationResult,
+    guard: RunGuard,
+  ) {
+    const { paymentKey, orderId } =
+      (row.body as TossWebhookMessage['body']).data ?? {};
+    const payment = await this.findWebhookPayment(paymentKey, orderId);
+    // 우리 DB에 없는 주문(가짜 포함)과 토스가 아닌 결제는 기록만 남긴다
+    if (!paymentKey || payment?.provider !== PaymentProvider.TOSS) {
+      await this.markWebhookProcessed(row);
+      return;
+    }
+    // 승인 직후 온 정상 웹훅. 승인 응답을 기다리고, 끝내 안 오면 ①이 결제 번호로 확정한다
+    if (await this.isApprovalInProgress(payment)) {
+      await this.markWebhookProcessed(row);
+      return;
+    }
+
+    const lookup = await this.tossPaymentsClient.getPayment(paymentKey);
+    guard.recordPg(lookup.outcome !== 'UNKNOWN');
+    if (lookup.outcome === 'UNKNOWN') {
+      result.pending++; // 다음 실행에서 다시 조회
+      return;
+    }
+    if (lookup.outcome === 'NOT_FOUND') {
+      // settleFromPgLookup은 NOT_FOUND를 실패로 확정하므로 부르지 않는다 — 가짜 paymentKey로 결제를 실패시킬 수 있다
+      this.logger.error(
+        `[알람] 토스 웹훅의 결제 번호를 토스에서 찾을 수 없습니다 (inboxId=${row.inboxId}, paymentId=${payment.paymentId})`,
+      );
+    } else if (this.matchesPayment(payment, paymentKey, lookup)) {
+      await this.applyWebhookLookup(payment, lookup, result);
+    } else {
+      this.logger.error(
+        `[알람] 토스 웹훅 재조회 결과가 결제와 다릅니다 — 상태를 바꾸지 않습니다 (inboxId=${row.inboxId}, paymentId=${payment.paymentId})`,
+      );
+    }
+    await this.markWebhookProcessed(row);
+  }
+
+  private async findWebhookPayment(
+    paymentKey?: string,
+    orderId?: string,
+  ): Promise<Payment | null> {
+    const byKey = paymentKey
+      ? await this.paymentRepository.findOne({ where: { paymentKey } })
+      : null;
+    return (
+      byKey ??
+      (orderId
+        ? this.paymentRepository.findOne({ where: { pgOrderId: orderId } })
+        : null)
+    );
+  }
+
+  // 시간 비교는 DB 시계로
+  private async isApprovalInProgress(payment: Payment): Promise<boolean> {
+    if (payment.status !== PaymentStatus.PROCESSING) {
+      return false;
+    }
+    const waited = await this.stale(
+      [PaymentStatus.PROCESSING],
+      SETTLE_AFTER_SECONDS,
+    )
+      .andWhere('payment.paymentId = :paymentId', {
+        paymentId: payment.paymentId,
+      })
+      .getCount();
+    return waited === 0;
+  }
+
+  // 자기 결제의 paymentKey에 남의 orderId를 붙인 웹훅이면 조회 결과는 "승인"이다.
+  // 주문번호·금액을 비교하지 않으면 남의 예약이 확정되므로 우리 기록과 모두 같을 때만 반영한다.
+  private matchesPayment(
+    payment: Payment,
+    paymentKey: string,
+    lookup: PgLookupResult,
+  ): boolean {
+    const raw = lookup.raw as { orderId?: string; totalAmount?: number };
+    return (
+      raw?.orderId === payment.pgOrderId &&
+      raw?.totalAmount === payment.amount &&
+      (!payment.paymentKey || payment.paymentKey === paymentKey)
+    );
+  }
+
+  private async applyWebhookLookup(
+    payment: Payment,
+    lookup: PgLookupResult,
+    result: ReconciliationResult,
+  ) {
+    if (
+      payment.status === PaymentStatus.UNKNOWN ||
+      payment.status === PaymentStatus.PROCESSING
+    ) {
+      const settled = await this.paymentService.settleFromPgLookup(
+        payment,
+        lookup,
+      );
+      if (settled === 'APPROVED') {
+        result.approved++;
+      } else if (settled === 'FAILED') {
+        result.failed++;
+      } else {
+        result.pending++; // 다음 상태 웹훅이 오거나 ①이 다시 조회한다
+      }
+      return;
+    }
+    // 토스에서 직접 취소됨 — 자동 환불은 예약 취소·재고 복구와 함께 설계해야 해서 알람까지만
+    if (payment.status === PaymentStatus.APPROVED) {
+      if (lookup.outcome === 'CANCELED') {
+        this.logger.error(
+          `[알람] 승인된 결제가 토스에서 취소되었습니다 — 수동 확인 필요 (paymentId=${payment.paymentId}, pgStatus=${lookup.pgStatus})`,
+        );
+      }
+      return;
+    }
+    // 돈이 빠져나갔는데 우리는 실패로 알고 있는 경우
+    if (
+      lookup.outcome === 'APPROVED' &&
+      (payment.status === PaymentStatus.FAILED ||
+        payment.status === PaymentStatus.UNKNOWN_MANUAL_REQUIRED)
+    ) {
+      this.logger.error(
+        `[알람] 토스에서는 승인인데 결제가 ${payment.status}입니다 — 수동 확인 필요 (paymentId=${payment.paymentId})`,
+      );
+    }
+  }
+
+  private findExpiredWebhooks(): Promise<PgWebhookInbox[]> {
+    return this.inboxRepository
+      .createQueryBuilder('inbox')
+      .where('inbox.processedAt IS NULL')
+      .andWhere('inbox.receivedAt < NOW(6) - INTERVAL :hours HOUR', {
+        hours: WEBHOOK_GIVE_UP_HOURS,
+      })
+      .orderBy('inbox.inboxId', 'ASC')
+      .take(BATCH_SIZE)
+      .getMany();
+  }
+
+  private async markWebhookProcessed(row: PgWebhookInbox) {
+    await this.inboxRepository.update(
+      { inboxId: row.inboxId },
+      { processedAt: () => 'NOW(6)' },
+    );
   }
 
   // ① 결과 불명 결제 확정
@@ -343,29 +521,33 @@ export class PaymentReconciliationService
 
   // 대상을 PG_CONCURRENCY개씩 동시에 처리한다. 멈출 때가 되면 새 건은 시작하지 않는다.
   // 한 건에서 난 예외는 그 건만 건너뛴다 (다음 실행에서 다시).
-  private async runLimited(
-    payments: Payment[],
+  private async runLimited<T extends Payment | PgWebhookInbox>(
+    items: T[],
     guard: RunGuard,
     result: ReconciliationResult,
-    work: (payment: Payment) => Promise<void>,
+    work: (item: T) => Promise<void>,
   ) {
     let next = 0;
     const worker = async () => {
-      while (next < payments.length && !guard.shouldStop()) {
-        const payment = payments[next++];
+      while (next < items.length && !guard.shouldStop()) {
+        const item = items[next++];
         try {
-          await work(payment);
+          await work(item);
         } catch (error) {
           result.errors++;
+          const id =
+            'inboxId' in item
+              ? `inboxId=${item.inboxId}`
+              : `paymentId=${item.paymentId}`;
           this.logger.error(
-            `결제 대사 중 오류 — 다음 실행에서 다시 (paymentId=${payment.paymentId})`,
+            `결제 대사 중 오류 — 다음 실행에서 다시 (${id})`,
             errorTrace(error),
           );
         }
       }
     };
     await Promise.all(
-      Array.from({ length: Math.min(PG_CONCURRENCY, payments.length) }, worker),
+      Array.from({ length: Math.min(PG_CONCURRENCY, items.length) }, worker),
     );
   }
 

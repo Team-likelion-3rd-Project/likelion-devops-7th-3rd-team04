@@ -1,0 +1,13 @@
+# Ansible(roles/etcd_backup) 이 관리. 예정 시각에 꺼져 있었으면 다음 부팅 때 실행(Persistent)
+[Unit]
+Description=Daily etcd backup to S3
+
+[Timer]
+Unit=team04-etcd-backup.service
+OnBootSec=15min
+OnCalendar={{ etcd_backup_calendar }}
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

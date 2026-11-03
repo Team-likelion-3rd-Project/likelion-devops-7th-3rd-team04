@@ -25,7 +25,7 @@ variable "domain_name" {
 # ── 버킷 (전역 고유, 공개 저장소이므로 계정 ID 는 넣지 않는다) ──
 
 variable "site_bucket_name" {
-  description = "프론트 빌드 버킷 이름. releases/<main 커밋 SHA>/ 아래에 버전별로 둔다 (40-cicd 가 output 으로 받아 Runner 업로드 권한을 만든다)"
+  description = "프론트 빌드 버킷 이름. releases/<main 커밋 SHA>/ 아래에 버전별로 둔다 (10-global 릴리스 Role 이 같은 이름으로 업로드 권한을 만든다)"
   type        = string
   default     = "team04-hotel-frontend"
 }
@@ -44,14 +44,8 @@ variable "release_retention_days" {
 
 # ── 쓰기 주체 (버킷 정책이 이 Role 과 관리자만 쓰기를 허용, Role 이름은 다른 스택이 만든다) ──
 
-variable "ci_runner_role_name" {
-  description = "프론트 빌드를 올리는 40-cicd Runner IAM Role 이름"
-  type        = string
-  default     = "team04-hotel-ci-runner"
-}
-
 variable "release_role_name" {
-  description = "프론트 빌드를 올리는 모노레포 release.yml Role 이름 (10-global monorepo_release_role_name). Runner Role 과 병행"
+  description = "프론트 빌드를 올리는 모노레포 release.yml Role 이름 (10-global monorepo_release_role_name)"
   type        = string
   default     = "team04-hotel-release"
 }

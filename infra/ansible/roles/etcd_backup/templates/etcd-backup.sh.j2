@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Ansible(roles/etcd_backup) 이 관리. 직접 수정하지 마세요 (README 18절)
+# etcd snapshot + /etc/kubernetes/pki + admin.conf → tar.gz → age 암호화 → s3://{{ etcd_backup_bucket }}/{{ etcd_backup_prefix }}/
+set -euo pipefail
+umask 077
+
+export AWS_SHARED_CREDENTIALS_FILE={{ etcd_backup_config_dir }}/aws-credentials
+export AWS_CONFIG_FILE=/dev/null
+export AWS_DEFAULT_REGION={{ etcd_backup_region }}
+
+pki=/etc/kubernetes/pki
+ts=$(date -u +%Y%m%dT%H%M%SZ)
+key="{{ etcd_backup_prefix }}/$(date -u +%Y/%m/%d)/{{ node_name | default(inventory_hostname) }}-${ts}.tar.gz.age"
+
+work=$(mktemp -d /var/tmp/team04-etcd-backup.XXXXXX)
+trap 'rm -rf "$work"' EXIT
+
+etcdctl --endpoints=https://127.0.0.1:2379 \
+  --cacert="$pki/etcd/ca.crt" \
+  --cert="$pki/etcd/healthcheck-client.crt" \
+  --key="$pki/etcd/healthcheck-client.key" \
+  snapshot save "$work/etcd.db"
+# 복구 가능한 snapshot 인지 (해시 · revision 확인)
+etcdutl snapshot status "$work/etcd.db" -w table
+
+tar -czf "$work/backup.tar.gz" -C "$work" etcd.db -C /etc/kubernetes pki admin.conf
+age -R {{ etcd_backup_config_dir }}/age-recipients -o "$work/backup.tar.gz.age" "$work/backup.tar.gz"
+
+aws s3 cp --only-show-errors --sse AES256 "$work/backup.tar.gz.age" "s3://{{ etcd_backup_bucket }}/${key}"
+echo "uploaded s3://{{ etcd_backup_bucket }}/${key} ($(stat -c %s "$work/backup.tar.gz.age") bytes)"

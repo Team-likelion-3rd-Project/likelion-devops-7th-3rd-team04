@@ -53,6 +53,15 @@ export class NoticeBodyDto {
   @IsOptional()
   @IsBoolean()
   isPinned?: boolean;
+
+  /**
+   * 대상 지점 (LDP-188). 생략·null = 전체 공지(본사만). 지점 관리자는 생략하면 자기 지점
+   * @example 1
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  hotelId?: number | null;
 }
 
 // GET /api/notices — 생략하면 전체
@@ -77,4 +86,14 @@ export class NoticeListQueryDto {
   @Min(1)
   @Max(100)
   size?: number;
+
+  /**
+   * 지점 필터 (LDP-188). 주면 그 지점 공지 + 전체 공지만, 생략하면 모든 공지
+   * @example 1
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  hotelId?: number;
 }

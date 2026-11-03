@@ -1,0 +1,94 @@
+# 부하 테스트 데이터 시드 Job (LDP-196) — 운영 클러스터에서 loadtest-seed.sql 을 메인 DB 에 1회 실행
+#
+# ArgoCD 가 관리하지 않는 일회성 리소스. 실행 전 같은 네임스페이스에 아래 둘을 만든다 (load-test/README.md)
+#   ConfigMap loadtest-seed-sql : loadtest-seed.sql
+#   Secret    loadtest-seed     : LT_PASSWORD_HASH (테스트 사용자 비밀번호 bcrypt 해시, 레포에 두지 않음)
+# DB 접속 정보는 backend 차트와 같은 backend-secrets, RDS 서버 인증서 검증은 rds-ca-bundle (backend-secrets 앱)
+# Job spec 은 바꿀 수 없으므로 다시 실행할 때는 Job 을 지우고 다시 apply 한다 (SQL 이 멱등이라 안전)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadtest-seed
+  namespace: backend
+  labels:
+    app.kubernetes.io/name: loadtest-seed
+    app.kubernetes.io/part-of: loadtest
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loadtest-seed
+        app.kubernetes.io/part-of: loadtest
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999   # 이미지의 mysql 사용자
+        runAsGroup: 999
+      containers:
+        - name: seed
+          image: mariadb:11.8   # 클라이언트만 사용. 운영 RDS 와 같은 메이저 · 마이너
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              {
+                echo "SET @lt_password_hash = '${LT_PASSWORD_HASH}';"
+                echo "SET @lt_units = ${LT_UNITS};"
+                echo "SET @lt_days = ${LT_DAYS};"
+                echo "SET @lt_users = ${LT_USERS};"
+                cat /sql/loadtest-seed.sql
+              } | mariadb \
+                --host="${DB_HOST}" --user="${DB_USERNAME}" \
+                --ssl-ca=/certs/us-east-1-bundle.pem --ssl-verify-server-cert \
+                --connect-timeout=10 --table \
+                "${DB_DATABASE}"
+          env:
+            # 위키 「성능 테스트」 테스트 데이터 규모
+            - name: LT_UNITS
+              value: "300"
+            - name: LT_DAYS
+              value: "365"
+            - name: LT_USERS
+              value: "500"
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: DB_HOST }
+            - name: DB_DATABASE
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: DB_DATABASE }
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: DB_USERNAME }
+            # 명령줄 인자 대신 환경 변수로 넘겨 프로세스 목록에 비밀번호가 보이지 않게 한다
+            - name: MYSQL_PWD
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: DB_PASSWORD }
+            - name: LT_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef: { name: loadtest-seed, key: LT_PASSWORD_HASH }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+              readOnly: true
+            - name: rds-ca
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: sql
+          configMap:
+            name: loadtest-seed-sql
+        - name: rds-ca
+          configMap:
+            name: rds-ca-bundle

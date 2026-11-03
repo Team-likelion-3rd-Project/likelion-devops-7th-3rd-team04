@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { HOTELS } from '../data/hotels'
 import { BRAND_VALUES } from '../data/brandValues'
-import { fetchNotices, formatNoticeDate, NOTICE_CATEGORY_LABEL } from '../api/notices'
+import { fetchNotices, formatNoticeDate, NOTICE_CATEGORY_LABEL, noticeBranchName } from '../api/notices'
 import type { Notice } from '../api/notices'
 import { useHotels } from '../data/hotelStore'
 import HotelCard from '../components/HotelCard'
@@ -125,11 +125,17 @@ function MainPage() {
           <ul className="main-news-list">
             {latestNotices.map((notice) => (
               <li key={notice.noticeId}>
-                <Link to="/notices">
+                <Link to={notice.hotelId ? `/notices?hotel=${notice.hotelId}` : '/notices'}>
                   <span className="main-news-category">
                     {notice.isPinned ? '중요' : (NOTICE_CATEGORY_LABEL[notice.category] ?? notice.category)}
                   </span>
-                  <span className="main-news-title">{notice.title}</span>
+                  <span className="main-news-title">
+                    {/* 지점 공지는 지점 이름을 붙인다 (LDP-188) */}
+                    {noticeBranchName(notice, hotels) && (
+                      <span className="main-news-branch">{noticeBranchName(notice, hotels)}</span>
+                    )}
+                    {notice.title}
+                  </span>
                   <time dateTime={notice.createdAt}>{formatNoticeDate(notice.createdAt)}</time>
                 </Link>
               </li>

@@ -23,9 +23,29 @@ variable "alerts_topic_name" {
   type        = string
 }
 
+variable "payment_metrics_workspace_id" {
+  description = "10-global 의 payment_metrics_workspace_id. 결제 지표 AMP 알람(payment-metrics.tf) 차원"
+  type        = string
+}
+
 variable "queue_names" {
   description = "43-messaging 의 queue_names (payment_result_dlq 를 본다)"
   type        = map(string)
+}
+
+variable "webhook_dlq_name" {
+  description = "50-payment-webhook 의 queue_names.webhook_dlq"
+  type        = string
+}
+
+variable "webhook_lambda_function_name" {
+  description = "50-payment-webhook 의 lambda_function_name"
+  type        = string
+}
+
+variable "webhook_api_id" {
+  description = "50-payment-webhook 의 api_id"
+  type        = string
 }
 
 variable "payment_nlb_arn_suffix" {
@@ -48,9 +68,19 @@ variable "alb_arn_suffix" {
   type        = string
 }
 
-variable "alb_target_group_arn_suffix" {
-  description = "80-main-edge 의 target_group_arn_suffix (워커)"
-  type        = string
+variable "alb_target_group_arn_suffixes" {
+  description = "80-main-edge 의 target_group_arn_suffixes (kubeadm, eks → TG arn_suffix). TG 별 unhealthy 알람"
+  type        = map(string)
+}
+
+variable "db_instance_identifiers" {
+  description = "RDS 식별자 (main: 41-main-data, payment: 42-payment-data 의 db_instance_identifier). 키는 알람 이름에 들어간다"
+  type        = map(string)
+}
+
+variable "valkey_member_clusters" {
+  description = "41-main-data 의 valkey_member_clusters (Valkey 노드 ID, 노드별 알람)"
+  type        = list(string)
 }
 
 # ── 임계값 ──
@@ -71,4 +101,49 @@ variable "unhealthy_evaluation_minutes" {
   description = "Target Group unhealthy 가 이 시간(분) 동안 이어지면 알람. 노드 교체 · 결제 서버 부팅(약 2 – 5분)보다 길게 둔다"
   type        = number
   default     = 5
+}
+
+variable "ec2_cpu_surplus_charged_threshold" {
+  description = "계정 EC2 CPUSurplusCreditsCharged 5분 합 임계값(크레딧). 1 크레딧 = vCPU 1개 100% 1분, t3a 초과 1 vCPU 시간 0.05 USD. 0 이면 과금이 생기는 즉시 알림"
+  type        = number
+  default     = 0
+}
+
+variable "db_cpu_surplus_threshold" {
+  description = "RDS CPUSurplusCreditBalance 임계값(크레딧). 1 크레딧 = vCPU 1개 100% 1분. 부팅 때 1 – 2 는 정상"
+  type        = number
+  default     = 10
+}
+
+variable "db_freeable_memory_mib" {
+  description = "RDS FreeableMemory 하한(MiB). db.t4g.micro(1 GiB)는 버퍼 풀 421 MiB 를 쓰고 평소 110 – 140 MiB 가 남는다 (10-29)"
+  type        = number
+  default     = 64
+}
+
+variable "db_free_storage_gib" {
+  description = "RDS FreeStorageSpace 하한(GiB). allocated_storage 20 GiB 기준 10%"
+  type        = number
+  default     = 2
+}
+
+variable "db_connections_thresholds" {
+  description = "RDS DatabaseConnections 임계값 (키 = db_instance_identifiers). 메인 db.t4g.small max_connections 68(11-02 실측)의 80%, 결제 db.t4g.micro 30(10-29 실측)"
+  type        = map(number)
+  default = {
+    main    = 54
+    payment = 26
+  }
+}
+
+variable "valkey_memory_percent_threshold" {
+  description = "Valkey DatabaseMemoryUsagePercentage 임계값(%)"
+  type        = number
+  default     = 80
+}
+
+variable "valkey_connections_threshold" {
+  description = "Valkey CurrConnections 임계값. 평소 10 미만 (10-29)"
+  type        = number
+  default     = 200
 }

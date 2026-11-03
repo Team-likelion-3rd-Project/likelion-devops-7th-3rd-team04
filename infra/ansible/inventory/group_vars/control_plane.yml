@@ -37,6 +37,8 @@ backend_external_secret_refs: >-
     {%- endfor -%}
   {%- endfor -%}
   {{ out }}
+# seed Job 의 관리자 계정 Secret (gitops envs/dev 의 seed.adminSecretName). ESO 가 OpenBao seed-admin 의 속성을 모두 가져옴 (LDP-193)
+seed_admin_secret_name: seed-admin
 # k8s-cicd.yml 이 읽는 OpenBao 경로 — GitLab 토큰 + backend-secrets 원본 (값 확인용)
 k8s_cicd_openbao_paths: "{{ ['gitlab-k8s'] + (backend_external_secret_data.keys() | list) }}"
 
@@ -81,6 +83,9 @@ kube_prometheus_stack_chart_version: "92.3.0"     # Prometheus Operator v0.94.1 
 kube_prometheus_stack_chart_repo: "https://prometheus-community.github.io/helm-charts"
 monitoring_namespace: monitoring
 monitoring_manifest_dir: /etc/kubernetes/monitoring
+# 클러스터 로그 수집 (roles/logging, README 17-8) — Alloy 버전은 결제 · DB 노드(roles/node_collectors alloy_image)와 같게, 같이 올림
+alloy_chart_version: "1.13.1"                      # Grafana Alloy v1.20.1
+alloy_chart_repo: "https://grafana.github.io/helm-charts"
 
 # Prometheus 저장소: control plane 로컬 PV (StorageClass 없음 → Ansible 이 정적 PV 를 만듦)
 prometheus_data_dir: /var/lib/monitoring/prometheus
@@ -99,3 +104,8 @@ grafana_nodeport: 30300
 grafana_serve_https_port: 9443
 # admin 계정: OpenBao grafana(admin_user · admin_password) → ESO → Secret (없으면 monitoring role 이 생성)
 grafana_admin_secret_name: grafana-admin
+
+# ── etcd 백업 → AWS S3 (control-plane.yml --tags etcd_backup, README 18절) ──
+# 나머지 값(버킷 · 경로 · 주기)은 roles/etcd_backup/defaults/main.yml. 자격 증명은 OpenBao aws-backup
+# age 공개키(age1...) — 공개키라 커밋해도 됨. 복호화 개인키는 팀 password manager 에만 보관
+etcd_backup_age_recipients: []

@@ -50,6 +50,7 @@ variable "interface_endpoints" {
       logs                            CloudWatch Logs
       autoscaling                     배포 중 결제 서버 Standby 진입 · 해제 (60 pull agent)
       sns                             배포 결과 알림 (60 pull agent → 10-global 배포 토픽. Slack 으로 직접 나가지 않아 NFW 허용 목록 유지)
+      aps-workspaces                  결제 지표 remote_write (60 Alloy → 10-global AMP 워크스페이스)
   EOT
   type        = set(string)
   default = [
@@ -63,5 +64,6 @@ variable "interface_endpoints" {
     "logs",
     "autoscaling",
     "sns",
+    "aps-workspaces",
   ]
 }

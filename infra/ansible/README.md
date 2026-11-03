@@ -4,12 +4,12 @@
 
 | Playbook | 대상 | 하는 일 |
 |---|---|---|
-| `control-plane.yml` | `[control_plane]` (1대) | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm init` → Calico(VXLAN) 설치 → worker용 `join.env` 생성 |
+| `control-plane.yml` | `[control_plane]` (1대) | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm init` → Calico(VXLAN) 설치 → worker용 `join.env` 생성 → etcd 백업 timer(S3, [18절](#18-etcd-백업-aws-s3)) |
 | `worker-join.yml` | `[workers]` | Tailscale 등록 → containerd/kubeadm 설치 → `kubeadm join` |
-| `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → OpenBao(dev 비밀값, [16절](#16-openbao--external-secrets-operator-dev-비밀값)) → MariaDB + Valkey + MinIO (Docker Compose) → dev 시딩(`--tags seed`, 스키마가 있을 때만) — [7절](#7-db-노드-구성-mariadb--valkey--minio) |
+| `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → OpenBao(dev 비밀값, [16절](#16-openbao--external-secrets-operator-dev-비밀값)) → MariaDB + Valkey + MinIO (Docker Compose) → 모니터링 수집기([17-6](#17-6-db-지표-db-노드--결제-db)) → dev 시딩(`--tags seed`, 스키마가 있을 때만) — [7절](#7-db-노드-구성-mariadb--valkey--minio) |
 | `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
-| `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
+| `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) → 모니터링 수집기(17절) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) — [11절](#11-ingress-controller-traefik) |
 | `k8s-cicd.yml` | `[control_plane]` (1대) | External Secrets Operator(OpenBao 연결) → `backend` 네임스페이스 · 레지스트리 pull Secret · `backend-secrets`(ExternalSecret) → ArgoCD (backend 배포) — [12절](#12-cicd-registry--파이프라인--argocd), [16절](#16-openbao--external-secrets-operator-dev-비밀값) |
 | `monitoring.yml` | `[control_plane]` (1대) | metrics-server → kube-prometheus-stack(Prometheus · Grafana · node-exporter) → 대시보드 → `tailscale serve` HTTPS(Grafana) — [17절](#17-모니터링-prometheus--grafana) |
@@ -60,7 +60,7 @@ infra/ansible/
 │                              # helm, traefik, api_gateway_ingress, aws_control_plane, aws_worker, aws_node_lifecycle
 │                              # gitlab_bootstrap, backend_namespace, argocd, payment_stack,
 │                              # openbao, openbao_kv(OpenBao 읽기/쓰기 공용), external_secrets,
-│                              # metrics_server, monitoring
+│                              # metrics_server, monitoring, etcd_backup(etcd · PKI → S3)
 └── .secrets/                  # (자동 생성, gitignore) openbao.env, openbao/(static key · init.json),
                                # join.env, admin.conf, gitlab-runner.env, gitlab-k8s.env, github-mirror.env,
                                # payment-node.env, argocd.env — 16-7 참고
@@ -82,7 +82,6 @@ infra/ansible/
 | `tag:gitlab-runner` | GitLab Runner 노드 | `gitlab-runner.yml` |
 | `tag:payment` | 결제 서버 노드 (결제 DB + payment-service + ElasticMQ) | `payment.yml` |
 | `tag:ci` | GitHub Actions runner (ephemeral, 미러링 workflow) | `.github/workflows/mirror-gitlab.yml` |
-| `tag:ci-runner` | AWS GitLab Runner (ephemeral, Terraform `40-cicd`) | `aws-runner.yml` (user-data, 13절 "AWS GitLab Runner") |
 
 ```jsonc
 {
@@ -93,8 +92,7 @@ infra/ansible/
     "tag:gitlab":        ["autogroup:admin"],
     "tag:gitlab-runner": ["autogroup:admin"],
     "tag:payment":       ["autogroup:admin"],
-    "tag:ci":            ["autogroup:admin"],
-    "tag:ci-runner":     ["autogroup:admin"]
+    "tag:ci":            ["autogroup:admin"]
   },
   "grants": [
     // ── k8s ──────────────────────────────────────────────
@@ -110,10 +108,12 @@ infra/ansible/
     // ── DB ───────────────────────────────────────────────
     // k8s Pod → DB · MinIO(S3 API 9000) · DynamoDB Local(8000, chat-bot-service). Pod 트래픽은 Calico natOutgoing 으로 노드 IP(100.x)로 SNAT 되어 도착
     { "src": ["tag:k8s-node"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379", "tcp:9000", "tcp:8000"] },
+    // 로그 → DB 노드 Loki(3100, 17-8) : 클러스터 Alloy · 결제 노드 Alloy push, Grafana(CP) 조회
+    { "src": ["tag:k8s-node", "tag:payment"], "dst": ["tag:db"], "ip": ["tcp:3100"] },
     // OpenBao(8200, 16절) — 각 노드에서 실행하는 playbook 이 값을 읽고 씀, k8s 는 ESO 도 (Ansible 을 실행하는 PC 는 Tailnet 에 없을 수 있어 노드에서 호출)
     { "src": ["tag:k8s-node", "tag:payment", "tag:gitlab", "tag:gitlab-runner"], "dst": ["tag:db"], "ip": ["tcp:8200"] },
-    // OpenBao → k8s API : ESO 로그인 토큰 검증(TokenReview, 16절)
-    { "src": ["tag:db"], "dst": ["tag:k8s-node"], "ip": ["tcp:6443"] },
+    // OpenBao → k8s API : ESO 로그인 토큰 검증(TokenReview, 16절) / DB 노드 Alloy → Prometheus remote_write(30909, 17절)
+    { "src": ["tag:db"], "dst": ["tag:k8s-node"], "ip": ["tcp:6443", "tcp:30909"] },
     // GitLab CI 이미지 smoke test → dev DB 서버 (파이프라인 전용 database ci_<id> 만 사용, 12절)
     { "src": ["tag:gitlab-runner"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379"] },
     // 팀원 PC → DB : SSH, DBeaver 등 DB 클라이언트, valkey-cli 디버깅, 브라우저 → MinIO presigned URL(9000) / Console(9001), OpenBao UI · CLI(8200)
@@ -126,8 +126,6 @@ infra/ansible/
     { "src": ["tag:k8s-node"], "dst": ["tag:gitlab"], "ip": ["tcp:443", "tcp:5050"] },
     // GitHub Actions runner → GitLab : 코드 미러링 push (HTTPS, .github/workflows/mirror-gitlab.yml)
     { "src": ["tag:ci"], "dst": ["tag:gitlab"], "ip": ["tcp:443"] },
-    // AWS Runner → GitLab : job 수신, git clone (HTTPS) 만. 이미지는 ECR 로 push 하므로 Registry · dev DB 는 열지 않음 (13절 "AWS GitLab Runner")
-    { "src": ["tag:ci-runner"], "dst": ["tag:gitlab"], "ip": ["tcp:443"] },
     // 팀원 PC → GitLab : SSH(VM 관리), 웹 UI / git (HTTPS, SSH 2222), Registry(5050)
     { "src": ["autogroup:member"], "dst": ["tag:gitlab"], "ip": ["tcp:22", "tcp:443", "tcp:2222", "tcp:5050"] },
     // 팀원 PC → Runner : SSH(VM 관리)
@@ -156,7 +154,6 @@ infra/ansible/
 | GitLab Runner 용 | `tag:gitlab-runner` | `TS_GITLAB_RUNNER_OAUTH_CLIENT_SECRET` | Runner 담당자 |
 | 결제 노드 용 | `tag:payment` | `TS_PAYMENT_OAUTH_CLIENT_SECRET` | 결제 노드 담당자 |
 | GitHub Actions 용 | `tag:ci` | GitHub Repository Secret `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` | 레포 관리자 ([12절](#12-cicd-registry--파이프라인--argocd)) |
-| AWS Runner 용 | `tag:ci-runner` | `TS_CI_RUNNER_OAUTH_CLIENT_SECRET` → Terraform `12-secrets` 로 Secrets Manager 등록 | AWS 담당자 (13절 "AWS GitLab Runner") |
 
 1. [Admin console → Settings → Trust credentials (OAuth clients)](https://login.tailscale.com/admin/settings/trust-credentials) → **새 credential (OAuth)** 생성
 2. Scope: **Keys → Auth Keys : Write** (Write 를 체크해야 아래에 태그 선택칸이 나타남)
@@ -166,7 +163,7 @@ infra/ansible/
 
 > **용도별로 나누는 이유**: secret 을 가진 사람은 그 태그(= ACL 상의 신원)로 기기를 Tailnet 에 추가할 수 있습니다. 팀원 전체가 가진 k8s 용 secret 으로 `tag:db` 까지 만들 수 없게 분리해 두면, 한쪽이 유출돼도 다른 쪽 신원은 안전하고 교체도 독립적으로 할 수 있습니다.
 
-> Playbook은 이 secret을 `tailscale up --auth-key=<secret>?ephemeral=<ts_ephemeral>&preauthorized=true --advertise-tags=<태그>` 형태로 직접 사용합니다 (`ts_ephemeral` 기본 false, 매일 재생성되는 AWS Runner 만 true — 꺼지면 Tailnet 에서 자동 삭제). 태그가 붙은 디바이스는 사용자 소유가 아니며 key expiry도 기본 비활성입니다.
+> Playbook은 이 secret을 `tailscale up --auth-key=<secret>?ephemeral=<ts_ephemeral>&preauthorized=true --advertise-tags=<태그>` 형태로 직접 사용합니다 (`ts_ephemeral` 기본 false, true 면 꺼질 때 Tailnet 에서 자동 삭제). 태그가 붙은 디바이스는 사용자 소유가 아니며 key expiry도 기본 비활성입니다.
 
 ### 1-3. MagicDNS / HTTPS Certificates 활성화 (GitLab HTTPS 용)
 
@@ -327,6 +324,7 @@ backend 서비스가 사용할 MariaDB와, 향후 Redis를 대체할 Valkey, 객
 | MariaDB | `mariadb:11.4.13` (LTS) | `DB_PORT` (3306) | backend `DB_*` 와 동일한 계정/DB |
 | Valkey | `valkey/valkey:9.1.2` | 6379 | 기동만 — backend `REDIS_*` 연동은 추후 |
 | MinIO | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` | 9000 (S3 API) / 9001 (Console) | dev 용 S3 — 객실 이미지 버킷 (hotel-service, [7-6](#7-6-minio-dev-용-s3)) |
+| Loki | `grafana/loki:3.7.9` | 3100 | 클러스터 · 결제 · DB 노드 로그 저장소, 저장은 MinIO 버킷 `loki` ([17-8](#17-8-로그-loki--alloy)) |
 
 - 모든 컨테이너가 `network_mode: host` 로 뜨고, **ufw 가 `tailscale0` 으로 들어오는 3306/6379/9000/9001 만 허용**합니다. (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음)
 - 데이터: `/var/lib/hotel-db/{mariadb,valkey,minio}`, 설정·자격증명: `/opt/hotel-db` (root 전용 0700)
@@ -361,6 +359,7 @@ OpenBao 도입 전에는 DB 계정 정보를 **`backend/.env` 에서 직접 읽�
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | `infra/ansible/.env` | MinIO 관리자 (Console 로그인). 최초 기동 때만 반영 |
 | `MINIO_APP_ACCESS_KEY`, `MINIO_APP_SECRET_KEY` | `infra/ansible/.env` | 앱 전용 계정 (객실 이미지 버킷만). `k8s-cicd.yml` 이 `backend-secrets` 의 `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` 로 넣음 (7-6) |
 | `BACKEND_ENV_FILE` (선택) | `infra/ansible/.env` | backend/.env 대신 다른 파일을 쓸 때 |
+| `CLUSTER_ENTRY_IP` | `infra/ansible/.env` | control plane Tailscale IP — 모니터링 수집기(Alloy)가 Prometheus 로 보낼 주소 (14-2 와 같은 값, 17-6) |
 
 - 비밀번호에는 공백, 따옴표, 역슬래시, `$`, `#`, `` ` `` 를 쓸 수 없습니다. (설정 파일에 그대로 들어가기 때문)
 - `MINIO_*` 는 URL 에 들어가므로 영문, 숫자, `.` `_` `~` `-` 만 씁니다. USER / ACCESS_KEY 는 3자 이상, PASSWORD / SECRET_KEY 는 8자 이상이고, 앱 계정은 root 와 달라야 합니다.
@@ -414,8 +413,12 @@ kubectl run vktest --rm -it --image=valkey/valkey:9.1 --restart=Never --   valke
 | 초기 데이터 | 클러스터 — 차트의 `seed` Job (운영과 같은 템플릿) | ArgoCD sync 때 마이그레이션 hook 뒤에 `seed:<tag>`(배포 버전과 같은 `scripts/seed.ts`) 실행 — 관리자 계정, 호텔 3 · 객실 · 사진, 편의시설, 객실 재고. Job 이름이 `seed-<태그 8자>-<spec 해시>` 라 새 버전마다 다시 돌고, 멱등이라 이미 있는 데이터는 건너뜀 |
 | DynamoDB 테이블 | DB 노드 — `db.yml --tags seed` (`db_seed` role) | `scripts/dynamodb-init.ts` (스키마 버전과 무관) |
 
-- 관리자 계정은 OpenBao `seed-admin`(`email`, `password`, 이관 원본: `backend/.env` 의 `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`) → `backend-secrets` → `seed` Job 으로 들어갑니다 (gitops `seed.secretEnv`).
-- gitops `envs/dev/values.yaml` 에 `seed` 설정(`enabled: true`, 객실 사진용 `env`, `secretEnv`)이 있어야 합니다 (gitops-seed 로 만든 레포에는 들어 있음, 기존 레포는 MR — `backend-deploy/gitops-seed/envs/dev/values.yaml.j2` 의 `seed:` 블록을 그대로 복사).
+- 관리자 계정은 OpenBao `seed-admin` → ESO 가 Secret `backend/seed-admin` 으로 **속성 전체를 이름 그대로** 동기화(`dataFrom.extract`, `k8s-cicd.yml --tags backend_secrets`) → `seed` Job 이 그 Secret 을 통째로 env 로 받음 (gitops `seed.adminSecretName: seed-admin`, 차트 `envFrom`). 운영의 Secret `seed-admin` 과 같은 역할입니다 (LDP-193).
+  - 속성 이름 = 환경변수 이름: `SEED_ADMIN_EMAIL` · `SEED_ADMIN_PASSWORD` (필수), `SEED_ADMIN_NAME`, 지점 계정 `SEED_SEOUL_MANAGER_PASSWORD` · `SEED_BUSAN_MANAGER_PASSWORD` · `SEED_JEJU_MANAGER_PASSWORD` · `SEED_SEOUL_STAFF_PASSWORD` (선택 — 없으면 본사 비밀번호, LDP-190). 이관 원본은 `backend/.env` 의 같은 이름.
+  - **값 추가 · 변경은 OpenBao 만** — UI 에서 `seed-admin` → *Create new version* (*Create secret* 은 기존 경로라 거부됨) 또는 `bao kv patch secret/team04-hotel/dev/seed-admin SEED_…=<값>`. ESO 가 1시간 안에 반영(바로: `kubectl -n backend annotate externalsecret seed-admin force-sync=$(date +%s) --overwrite`), 다음 `seed` Job 부터 적용. seed.ts 가 새 `SEED_*` 를 읽게 돼도 Ansible · gitops · 차트는 고치지 않습니다.
+  - seed.ts 는 **이미 있는 계정을 건너뜁니다** — 이미 만들어진 계정의 비밀번호는 OpenBao 값을 바꿔도 그대로입니다 (관리자 화면에서 바꾸거나 계정을 지운 뒤 다시 시딩).
+  - `seed-admin` 이 없거나 동기화에 실패해도 서비스용 `backend-secrets` 는 영향 없고 `seed` Job 만 Secret 을 기다립니다.
+- gitops `envs/dev/values.yaml` 에 `seed` 설정(`enabled: true`, 객실 사진용 `env`, `secretEnv`, `adminSecretName: seed-admin`)이 있어야 합니다 (gitops-seed 로 만든 레포에는 들어 있음, 기존 레포는 MR — `backend-deploy/gitops-seed/envs/dev/values.yaml.j2` 의 `seed:` 블록을 그대로 복사).
 - `seed` Job 로그: `kubectl -n backend logs -l app.kubernetes.io/name=seed --tail=50` (끝난 Job 은 하루 뒤 정리 — `ttlSecondsAfterFinished`). 실패해도 앱 배포는 되돌리지 않습니다.
 - **이 PC 의 소스로 직접 시딩**(seed Job 이 없는 이전 버전으로 롤백했을 때 등): `ansible-playbook db.yml -K --tags seed -e db_seed_mariadb=true`. 아래는 이 경우의 설명입니다.
 
@@ -561,7 +564,6 @@ ansible-playbook gitlab.yml -K
 | 파일 | Runner (description) | 설정 | 용도 |
 |---|---|---|---|
 | `.secrets/gitlab-runner.env` | `gitlab-runner` | tags `docker`, untagged 실행, 모든 브랜치 | 온프레미스 Runner 노드 (9절) — 담당자에게 **비밀 채널로** 전달 |
-| `.secrets/aws-ci-runner.env` | `aws-ci-runner` | tags `aws` · `ecr`, untagged 안 받음, **보호 브랜치만**(`ref_protected`) | AWS Runner — Terraform `12-secrets` 로 등록 (13절 "AWS GitLab Runner") |
 
 - 각 Runner 는 description 이름의 **instance runner** 로 생성되며, 재실행 시 같은 runner 를 재사용합니다 (설정은 처음 만들 때만 반영 — 바꾸려면 GitLab 에서 runner 를 삭제 후 재실행). 토큰만 다시 뽑으려면:
   ```bash
@@ -758,6 +760,7 @@ GitLab 파이프라인 (.gitlab-ci.yml)
                frontend:build — 프론트 변경 시 운영 빌드 값(결제만 MOCK)으로 lint · vite build (배포 없음)
   build      : kaniko → <registry>/team04/hotel/<svc>:ci-<sha>             (develop 만 push)
   image-test : ci_<id>(결제) · ci_main_<id>(메인) DB 생성 → flyway(main, payment) → 후보 이미지 기동 → GET /health
+               scan:image — 후보 이미지 Trivy 취약점 · 비밀값 검사 (1단계: 보고만, artifact trivy/<svc>.json)
   push       : crane tag ci-<sha> → <sha>                                  (레이어 재업로드 없음)
                push:ghcr → ghcr.io/team-likelion-3rd-project/team04-hotel/<svc>:<full sha>  (운영 릴리스 원본, 12-4)
                (프론트만 바뀐 커밋: ghcr:reuse-resolve · push:ghcr-reuse — 직전 이미지에 이 SHA 태그 추가)
@@ -906,6 +909,10 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
   docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf -N \
     -e "SHOW DATABASES LIKE 'ci%'"
   ```
+- **이미지 취약점 검사(`scan:image`)**: develop 파이프라인에서 후보 이미지 12개를 Trivy 로 검사합니다 (취약점 + 이미지에 들어간 비밀값).
+  - 지금은 **1단계(보고만)** 입니다. 탐지가 있어도, 스캐너가 실패해도(`allow_failure`) 승격 · GHCR · 배포를 막지 않습니다.
+  - 결과는 job 로그의 이미지별 HIGH · CRITICAL 표와, job artifacts 의 `trivy/<svc>.json`(전체 심각도, 30일 보관)입니다. n8n 은 외부 이미지라 CRITICAL 만 참고로 출력합니다.
+  - 2단계(예정): 기준선을 보고 베이스 이미지를 정리한 뒤, 고칠 수 있는 CRITICAL 이 있으면 승격을 막고(`--exit-code 1`, `allow_failure` 제거) 받아들인 위험은 `.trivyignore` 에 사유 · 만료일과 함께 둡니다.
 - prod: 이 파이프라인의 main 분기는 릴리스(ECR push · prod gitops 릴리스 PR)만 합니다 (`infra/gitops/prod/README.md` "릴리스").
 
 ### 12-6. ArgoCD 전환 기록 (2026-10-21)
@@ -926,7 +933,7 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
 | 대상 | 적용 | playbook |
 |---|---|---|
 | ArgoCD repo-server | `configs.tls.certificates.<gitlab fqdn>` | `k8s-cicd.yml` |
-| CI job | Runner `/etc/gitlab-runner/certs/<fqdn>.crt` → job 에 `CI_SERVER_TLS_CA_FILE` 로 전달 (kaniko 는 이 파일을 CA 번들에 추가) | `gitlab-runner.yml` |
+| CI job | Runner `/etc/gitlab-runner/certs/<fqdn>.crt` → job 에 `CI_SERVER_TLS_CA_FILE` 로 전달 (kaniko 는 이 파일을 CA 번들에 추가. `scan:image` 의 Trivy 는 지금 처리하지 않으므로 `SSL_CERT_FILE: $CI_SERVER_TLS_CA_FILE` 을 추가해야 함) | `gitlab-runner.yml` |
 | 모든 노드 containerd | `/etc/containerd/certs.d/<registry>/hosts.toml` + `ca.crt` | `registry-trust.yml -l <노드>` (워커는 각자) |
 
 - Runner 의 docker.sock 바인드: backend 파이프라인은 kaniko 라 필요 없습니다. 다른 프로젝트가 docker CLI 를 쓰지 않으면 `group_vars/gitlab_runner.yml` 의 `gitlab_runner_mount_docker_sock: false` 로 바꿔 job 이 호스트 root 권한을 갖지 않게 합니다.
@@ -938,6 +945,7 @@ develop 에 merge → 미러 → 파이프라인 자동 실행(test → build �
 - **`push:ghcr` 실패**: `GHCR_USER · GHCR_TOKEN 이 없습니다` 면 12-4 GHCR 설정 3. `crane auth login ghcr.io` 의 401/403 이면 봇 PAT 만료 · scope(`write:packages`) · org 멤버 여부 → 토큰 교체(12-4). `denied: permission_denied` 로 push 가 거부되면 패키지 Settings 에서 봇 계정에 Write 권한이 있는지 확인합니다.
 - **`GHCR retention` workflow 의 버전 조회 · 삭제 실패**: 패키지 Manage Actions access 에 모노레포가 Admin 인지 확인합니다 (12-4).
 - **ImagePullBackOff**: `kubectl -n backend describe pod` → 401 이면 `gitlab-registry` Secret(Deploy Token), `no such host` 면 노드의 MagicDNS, timeout 이면 ACL `tag:k8s-node → tag:gitlab tcp:5050` 입니다.
+- **`scan:image` 실패(주황 경고)**: 1단계라 승격에는 영향이 없습니다. DB 다운로드 실패(`TOOMANYREQUESTS` · timeout)면 job 을 다시 실행합니다(두 번째부터 cache 사용). `검사하지 못한 이미지` 에 이름이 있고 로그가 401 이면 레지스트리 인증, `MANIFEST_UNKNOWN` 이면 그 이미지의 build job 을 확인합니다.
 - **smoke test 에서 DB 접속 실패**: ACL `tag:gitlab-runner → tag:db tcp:3306,6379`, CI 변수 `SMOKE_DB_HOST`(Tailscale IP), `db.yml` 로 `ci_smoke` 계정을 만들었는지 확인합니다.
 - ArgoCD 쪽(sync 실패 · OutOfSync · 레포 접근)은 12-9 "트러블슈팅".
 
@@ -1001,11 +1009,11 @@ kubectl -n argocd get application backend -o jsonpath='{range .status.resources[
 
 ## 13. AWS Main 클러스터 (user-data 전용)
 
-`aws-control-plane.yml`, `aws-worker.yml`, `aws-runner.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대와 워커 ASG 인스턴스의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
+`aws-control-plane.yml`, `aws-worker.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대와 워커 ASG 인스턴스의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
 
 - **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/argocd` 의 `tasks/aws.yml` · `*-aws.yaml.j2` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다.
 - **Ansible 은 노드 작업 · Calico · CCM · NTH · ArgoCD 설치까지만 합니다.** 클러스터 서비스(Traefik · whoami · backend 등)는 CP-a 가 설치하는 ArgoCD root 앱(`prod-apps`)이 gitops 레포 `envs/prod`(원본: 모노레포 [`infra/gitops/prod`](../gitops/prod/README.md))에서 설치합니다. user-data 는 첫 부팅 때만 돌아서, Ansible 이 설치하면 변경이 다음 재생성까지 반영되지 않기 때문입니다. NTH 는 CCM 과 같은 role · post-renderer 를 써서 ArgoCD 전환 때 함께 옮깁니다.
-- `inventory/aws.ini` 는 CP · 워커 group_vars 가 섞이지 않게 `localhost` 대신 별칭(`aws-cp`, `aws-worker`)을 쓰고, `aws-cp` 를 `control_plane` 그룹에도 넣어 helm 버전을 온프레미스와 같이 씁니다. AWS Runner(`aws-runner`)는 쿠버네티스 노드가 아니라 `[aws]` 대신 `gitlab_runner` 의 자식 그룹으로 둡니다 (아래 "AWS GitLab Runner").
+- `inventory/aws.ini` 는 CP · 워커 group_vars 가 섞이지 않게 `localhost` 대신 별칭(`aws-cp`, `aws-worker`)을 쓰고, `aws-cp` 를 `control_plane` 그룹에도 넣어 helm 버전을 온프레미스와 같이 씁니다.
 - S3 에는 커밋 대상 파일만 올라갑니다. `.env`, `.secrets/`, `inventory/hosts.ini` 는 올라가지 않습니다.
 
 | 항목 | 온프레미스 (`control-plane.yml`) | AWS (`aws-control-plane.yml`) |
@@ -1044,46 +1052,9 @@ CP-a 는 init 후 10-global OIDC 버킷의 `keys.json` 도 덮어씁니다 (CP R
 - **워커 교체 · 스케일 인:** 종료 전 drain 은 aws-node-termination-handler(NTH), 종료된 워커의 Node 삭제는 aws-cloud-controller-manager(CCM) 가 합니다. 둘 다 CP-a 부트스트랩의 `aws_node_lifecycle` role 이 CP 에 hostNetwork 로 설치합니다 (차트에 hostNetwork 값이 없어 Helm post-renderer 로 추가). 동작 · 확인 방법은 [Terraform README](../terraform/README.md) 6절.
 - **배포 (ArgoCD):** CP-a 가 ArgoCD(차트 버전은 온프레미스와 같음, 전 컴포넌트 CP 고정)를 설치하고 AppProject `bootstrap` · root 앱 `prod-apps` 를 만듭니다. root 는 gitops 레포 대상 브랜치(`argocd_prod_branch`, 기본 `main`)의 `envs/prod` root 차트를 렌더링해 앱마다 Application 을 만들고, `order` 순(sync-wave)으로 Healthy 를 기다립니다. root 첫 sync 를 최대 15분(`argocd_prod_bootstrap_wait_retries`) 기다리되 실패해도 CP 부트스트랩은 실패시키지 않습니다(CP 교체 방지). 결과는 `cloud-init-output.log` 의 "첫 sync 결과". 동작 · 운영 · 작업 브랜치 검증은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md).
 - **클러스터 값:** public gitops 레포에 둘 수 없는 값(계정 ID)은 CP-a 가 STS 로 조회해 root 앱의 `valuesObject.clusterValues` 로 넘깁니다 (`argocd_prod_cluster_values`). root 차트는 `chart.yaml` 에 `clusterValues: true` 인 앱(pod-identity-webhook 의 IRSA Role ARN, backend 의 ECR 주소 · 큐 URL)에만 넘깁니다.
-- **IRSA:** kube-apiserver 발급자를 10-global OIDC 버킷 URL 로 두고(join CP 는 `kubeadm-config` 에서 같은 값을 받음), CP-a 가 init 직후 발급자 문서의 issuer 를 확인한 뒤 `/openid/v1/jwks` 를 `keys.json` 으로 올립니다. 업로드는 `ca-cert-hash` 기록 전이라, 실패하면 교체된 CP-a 가 다시 init 합니다. webhook · ESO 는 gitops 앱, Role 은 Terraform 70 `irsa.tf` ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "IRSA · 비밀값").
+- **IRSA:** kube-apiserver 발급자를 10-global OIDC 버킷 URL 로 두고(join CP 는 `kubeadm-config` 에서 같은 값을 받음), CP-a 가 init 직후 발급자 문서의 issuer 를 확인한 뒤 `/openid/v1/jwks` 를 `keys.json` 으로 올립니다. 업로드는 `ca-cert-hash` 기록 전이라, 실패하면 교체된 CP-a 가 다시 init 합니다. webhook · ESO 는 gitops 앱, Role 은 Terraform `51-pod-roles` ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "IRSA · 비밀값").
 - 클러스터 확인 (SSM 접속 후): `sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide`
 - Ingress 확인 (워커에 SSM 접속 후): `curl -i http://$(hostname -I | awk '{print $1}'):30080/whoami` → whoami 200 (`/` 는 Traefik 404 가 정상). 워커 30080 인바운드는 ALB SG 에서만 열려 있어(M2) **다른 노드에서는 연결되지 않습니다.** 노드 자신의 IP 로 확인합니다 (Traefik 파드가 다른 워커에 있어도 kube-proxy 가 넘겨 줍니다).
-
-### AWS GitLab Runner (`aws-runner.yml`)
-
-> **LDP-173 부터 쓰지 않습니다.** 운영 릴리스가 GitHub Actions `release.yml`(GHCR → ECR 복사)로 옮겨 `.gitlab-ci.yml` 의 `release:*` · `aws-runner:*` job 을 지웠습니다. `40-cicd` · 이 playbook 제거는 후속 작업입니다.
-
-Terraform `40-cicd` 의 Runner(Deployment VPC, ASG 1대, Graviton) 가 user-data 로 `aws-runner.yml` 을 자기 자신에게 실행합니다. 운영 이미지 빌드 · ECR push 용이며, **보호 브랜치의 `aws` 태그 job 만** 받습니다.
-
-```
-Secrets Manager (Terraform 12-secrets)  ─▶  aws_runner role ─┬▶ tailscale    (tag:ci-runner, ephemeral)
-  ci-runner-tailscale {oauth_client_secret}                  ├▶ GitLab Tailscale IP 조회 (tailscale ip)
-  ci-runner-gitlab    {url, token}                           ├▶ docker
-                                                             └▶ gitlab_runner (docker.sock · privileged 끔)
-job(kaniko) ─▶ IMDS(hop limit 2) ─▶ Runner Role ─▶ ECR push (team04-hotel/* 만)
-```
-
-| 항목 | 온프레미스 Runner (`gitlab-runner.yml`) | AWS Runner (`aws-runner.yml`) |
-|---|---|---|
-| GitLab runner | `gitlab-runner` (tags `docker`, untagged 실행, 모든 브랜치) | `aws-ci-runner` (tags `aws` · `ecr`, untagged 안 받음, 보호 브랜치만) |
-| Tailscale | `tag:gitlab-runner` — GitLab 443 · 2222 · 5050, dev DB | `tag:ci-runner` — GitLab 443 만, ephemeral |
-| 접속 정보 | `.env` · `.secrets/gitlab-runner.env` 환경변수 | Secrets Manager (부모 그룹 `gitlab_runner` 의 환경변수 값을 덮어씀) |
-| GitLab Tailscale IP | `.secrets` 의 `GITLAB_TS_IP` | 부팅 때 `tailscale ip -4 <GitLab>` 로 조회 |
-| docker.sock 바인드 | 켬 (`gitlab_runner_mount_docker_sock: true`) | 끔 — kaniko 로 빌드 |
-| 등록 확인 실패 | playbook 실패 | 진행 (`gitlab_runner_verify_required: false`) — GitLab 이 꺼진 날 ASG 가 계속 교체하지 않게. GitLab 이 켜지면 다시 연결 |
-| 이미지 아키텍처 | 노드 아키텍처 | arm64 (운영 워커 t4g 와 같음) |
-| 사양 · 동시 job | VM 사양 (9-1), `concurrent` 2 | m7g.large (2 vCPU · 8 GiB, 고정 성능 — Terraform `40-cicd` `instance_type`), `concurrent` 2 |
-
-**최초 1회 / 값 교체**
-1. Tailscale: 1-1 ACL 에 `tag:ci-runner` 추가, 1-2 OAuth client(`tag:ci-runner`) 생성 → `.env` 의 `TS_CI_RUNNER_OAUTH_CLIENT_SECRET`
-2. `ansible-playbook gitlab.yml -K --tags runner_token` → `.secrets/aws-ci-runner.env` (8절)
-3. Terraform `12-secrets` apply 로 두 값을 Secrets Manager 에 등록 ([Terraform README](../terraform/README.md) 5절 "외부에서 발급한 비밀값")
-4. `40-cicd` apply (매일 재생성에 포함). 이후 사람이 할 일은 없습니다.
-
-**확인**
-- GitLab Admin → CI/CD → Runners 에 `aws-ci-runner` 가 online (매일 새 인스턴스가 같은 runner 에 붙음)
-- Tailscale Machines 에 `ci-runner-<인스턴스 ID>` (`tag:ci-runner`, Ephemeral). 인스턴스가 사라지면 자동 삭제
-- 부트스트랩 로그: Runner 에 SSM 접속 후 `sudo tail -n 50 /var/log/cloud-init-output.log` ("[bootstrap] 완료")
-- **보안**: hop limit 2 라 job 이 Runner Role 을 그대로 씁니다 (ECR push 를 위해 의도한 것). 같은 이유로 job 은 Runner Secret 도 읽을 수 있으므로, 이 Runner 는 리뷰를 거친 보호 브랜치 job 만 받습니다. Tailscale 권한은 GitLab 443 만이라 Secret 이 새도 다른 노드에 접근할 수 없습니다.
 
 ---
 
@@ -1289,7 +1260,7 @@ ansible-playbook db.yml -K
 set -a; source .env; source .secrets/openbao.env; set +a
 ansible-playbook k8s-cicd.yml -K --tags backend_secrets
 # 4) 배포 일정에: deploy-dev ▶ (llm-service · n8n 이 있는 차트 버전) → gitops values MR merge (15-3) → ArgoCD sync
-# 5) RAG 인덱스 1회 적재 (corpus 가 바뀔 때마다 다시)
+# 5) RAG 인덱스는 배포 때 llm-ingest Job 이 자동 적재 (gitops values llmIngest.enabled). 수동으로 다시 돌릴 때만:
 kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
 ```
 
@@ -1330,7 +1301,7 @@ n8n:
 ```bash
 kubectl -n backend get pods -l 'app.kubernetes.io/name in (llm-service,n8n,chat-bot-service)'   # 모두 Running / Ready
 kubectl -n backend logs deploy/n8n | grep -E 'activated|already active'                          # 워크플로 활성화
-kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest                            # 20 documents indexed ...
+kubectl -n backend logs job -l app.kubernetes.io/name=llm-ingest --tail=5                         # N documents indexed ...
 ```
 
 프론트(`VITE_DEV_API_PROXY` 를 클러스터로)에서 챗봇에 정책 질문 → RAG 근거 답변, 예약·결제·취소 의사 → 액션 카드, 로그인 후 대화가 이어지는지(새로고침·Pod 재시작 후에도) 확인합니다.
@@ -1374,14 +1345,15 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `dynamodb` | endpoint | ESO |
 | `n8n` | init_owner_password | ESO |
 | `gcp-sa` | key_json_b64 (서비스 계정 키 JSON 의 base64 — ESO 가 풀어서 `GCP_SA_KEY_JSON`) | ESO |
-| `seed-admin` | email, password (`seed` Job 의 `SEED_ADMIN_*`, 7-5) | ESO, db.yml(`-e db_seed_mariadb=true`) |
+| `seed-admin` | 환경변수 이름 그대로 — SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD (+ 선택 SEED_ADMIN_NAME, 지점 계정 SEED_*_PASSWORD), 7-5 | ESO(`backend/seed-admin`, 속성 전체), db.yml(`-e db_seed_mariadb=true`) |
 | `main-db-root` · `minio-root` · `ci-smoke-db` | password (· user) | db.yml, gitlab.yml — **ESO 는 못 읽음** |
 | `ghcr-push` | username, token (GHCR 봇 classic PAT — 12-4) | gitlab.yml(bootstrap → CI 변수 `GHCR_USER` · `GHCR_TOKEN`) — **ESO 는 못 읽음** |
 | `payment-db` · `payment-db-root` · `toss-payments` | (운영과 같은 이름) | payment.yml |
+| `main-db-exporter` · `payment-db-exporter` | password (MariaDB `exporter` 계정, 없으면 db.yml · payment.yml 이 생성, 17-6) | db.yml, payment.yml — **ESO 는 못 읽음** |
 | `grafana` | admin_user, admin_password (없으면 monitoring.yml 이 생성, 17절) | ESO(`monitoring/grafana-admin`) |
-| `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `aws-ci-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
+| `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
 
-- `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책은 이 목록과 `eso_extra_read_paths`(backend 밖에서 ESO 가 읽는 경로, 예: `grafana`)로 만듭니다.
+- `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책은 이 목록과 `eso_extra_read_paths`(backend-secrets 밖에서 ESO 가 읽는 경로 — `grafana`, `seed-admin`)로 만듭니다.
   - 경로를 추가하면 OpenBao 관리자가 `db.yml --tags openbao` 로 `eso-dev` 정책을 갱신해야 ESO 가 읽을 수 있습니다. 그다음 `db.yml --tags openbao_import`(값 이관), `k8s-cicd.yml --tags backend_secrets` 순서로 실행합니다.
 - 모든 playbook 은 `OPENBAO_ADDR` 이 비어 있으면 OpenBao 를 건너뛰고 예전처럼 `.env` · `backend/.env` · `.secrets/*.env` 를 읽습니다 (`k8s-cicd.yml` 은 ESO 때문에 OpenBao 필수).
 - OpenBao 호출은 Ansible 을 실행하는 PC 가 아니라 **play 대상 노드**에서 합니다 (PC 는 Tailnet 에 없을 수 있음). 그래서 1-1 의 `→ tag:db tcp:8200` grant 가 필요합니다.
@@ -1467,7 +1439,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 | 파일 | 만드는 곳 | OpenBao | 읽는 곳 |
 |---|---|---|---|
 | `gitlab-k8s.env`, `payment-node.env`, `github-mirror.env` | `gitlab.yml --tags bootstrap` | `gitlab-k8s`, `payment-node`, `github-mirror` | `k8s-cicd.yml`, `payment.yml`, bootstrap 재실행(토큰 재사용) / github-mirror 는 GitHub Secrets 등록용 기록 |
-| `gitlab-runner.env`, `aws-ci-runner.env` | `gitlab.yml` (runner_token) | `gitlab-runner`, `aws-ci-runner` | `gitlab-runner.yml` / aws-ci-runner 는 Terraform 12-secrets 등록용 기록 |
+| `gitlab-runner.env` | `gitlab.yml` (runner_token) | `gitlab-runner` | `gitlab-runner.yml` |
 | `argocd.env` | `k8s-cicd.yml` (argocd) | `argocd` | 사람 (UI 로그인) |
 | `join.env`, `admin.conf` | `control-plane.yml` | `k8s-join`, `k8s-admin` (OpenBao 가 있을 때) | `worker-join.yml`(source) / kubectl |
 | `llm-service-dev-sa.json` | gcloud | `gcp-sa` (16-3 이관) | ESO — 이관 뒤 파일 삭제 가능 |
@@ -1480,12 +1452,12 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 
 ## 17. 모니터링 (Prometheus · Grafana)
 
-클러스터의 Pod · 노드 리소스와 결제 노드(k8s 밖)를 **Grafana 하나**에서 봅니다. 수집 방식 · 라벨은 운영과 같습니다 (노션 "관측성 도입 계획" · "라벨 세부 정의 v0.2").
+클러스터의 Pod · 노드 리소스와 결제 노드 · DB 노드(k8s 밖)를 **Grafana 하나**에서 봅니다. 수집 방식 · 라벨은 운영과 같습니다 (노션 "관측성 도입 계획" · "라벨 세부 정의 v0.2").
 
 ```
-[dev 클러스터 — Prometheus 만 CP 고정, 나머지 워커 우선]       [결제 노드 — Docker Compose]
+[dev 클러스터 — Prometheus·Grafana CP 고정, 나머지 워커 우선]  [결제 · DB 노드 — Docker Compose node-collectors]
  kubelet(cAdvisor) ─┐                                          node-exporter ─┐ 127.0.0.1
- kube-state-metrics ─┼─▶ Prometheus ◀── remote_write(30909) ──── Grafana Alloy ┤
+ kube-state-metrics ─┼─▶ Prometheus ◀── remote_write(30909) ──── Grafana Alloy ┤ (+ 내장 mysqld · redis exporter)
  node-exporter(DS) ──┘    │  로컬 PV                                cAdvisor ──┘ 127.0.0.1
                           ▼
                        Grafana ◀── tailscale serve HTTPS 9443 ── 팀원 PC
@@ -1494,25 +1466,27 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 
 | 구성 | 값 |
 |---|---|
-| playbook | `monitoring.yml` (`[control_plane]`) — roles `metrics_server`, `monitoring` / 결제 노드는 `payment.yml`(roles `payment_stack`) |
+| playbook | `monitoring.yml` (`[control_plane]`) — roles `metrics_server`, `monitoring` / 결제 · DB 노드는 `payment.yml` · `db.yml` 의 role `node_collectors` |
 | chart | metrics-server `3.14.0`, kube-prometheus-stack `92.3.0` (`group_vars/control_plane.yml`) |
 | values | `roles/monitoring/files/kube-prometheus-stack-values-common.yaml` (**운영과 공유하는 정적 파일**) + `templates/kube-prometheus-stack-values-dev.yaml.j2` (dev 값) |
-| 배치 | **Prometheus**: control plane 고정 (로컬 PV), CPU limit `prometheus_cpu_limit`(500m) / **operator · kube-state-metrics · Grafana**: 워커 우선(preferred affinity), 워커가 모두 꺼져 있으면 control plane — 클러스터 기동에 필수가 아니라 control plane(vCPU 2)의 부담을 줄이려고. 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸 / node-exporter: DaemonSet |
+| 배치 | **Prometheus**: control plane 고정 (로컬 PV), CPU limit `prometheus_cpu_limit`(500m) / **Grafana**: control plane 고정 — 9443 tailscale serve 가 CP 에서 프록시하므로 (17-7, ArgoCD 와 같음) / **operator · kube-state-metrics**: 워커 우선(preferred affinity), 워커가 모두 꺼져 있으면 control plane — 클러스터 기동에 필수가 아니라 control plane(vCPU 2)의 부담을 줄이려고. 워커가 꺼지면 약 5분 뒤 다른 노드로 다시 뜸 / node-exporter: DaemonSet |
 | 저장소 | control plane 로컬 PV `prometheus-local` (`/var/lib/monitoring/prometheus`, 20Gi, StorageClass `monitoring-local`), 보존 7일 · 15GB |
 | Grafana | `https://<control plane>.<tailnet>.ts.net:9443` — admin 계정 OpenBao `grafana` → ESO → Secret `monitoring/grafana-admin` |
-| Prometheus | `http://<control plane Tailscale IP>:30909` (UI · `/targets`, 결제 노드 remote_write `/api/v1/write`) |
-| 결제 노드 수집기 | node-exporter · cAdvisor · Grafana Alloy (`group_vars/payment.yml`), 모두 127.0.0.1 바인딩 |
+| Prometheus | `http://<control plane Tailscale IP>:30909` (UI · `/targets`, 결제 · DB 노드 remote_write `/api/v1/write`) |
+| 결제 · DB 노드 수집기 | node-exporter · cAdvisor · Grafana Alloy — role `node_collectors`(이미지 버전 · 포트는 `defaults/main.yml`), Compose 프로젝트 `node-collectors`(`/opt/node-collectors`), 모두 127.0.0.1 바인딩 |
 | 알림 | Alertmanager 꺼짐 (수신처 미정) — Grafana **Alerting → Alert rules** 또는 Prometheus `/alerts` 에서 확인 |
+| 로그 | 클러스터 Alloy(로그 전용) · 결제 · DB 노드 Alloy → DB 노드 **Loki** → Grafana 데이터소스 `Loki` — [17-8](#17-8-로그-loki--alloy) |
 
 **라벨**
 
-| 라벨 | 클러스터 | 결제 노드 |
-|---|---|---|
-| `cluster` | `main` (Prometheus scrape class) | `payment` (Alloy external_labels) |
-| `env` | `dev` (`monitoring_env`) | `dev` |
-| `namespace` | Pod 네임스페이스 | `payment` |
-| `container` | 컨테이너 이름 = 서비스 이름 | Docker 컨테이너 이름 (cAdvisor `name` → `container`) |
-| `instance` | 대상 주소 | 결제 노드 `node_name` |
+| 라벨 | 클러스터 | 결제 노드 | DB 노드 |
+|---|---|---|---|
+| `cluster` | `main` (Prometheus scrape class) | `payment` (Alloy external_labels) | `db` (Alloy external_labels) |
+| `env` | `dev` (`monitoring_env`) | `dev` | `dev` |
+| `namespace` | Pod 네임스페이스 | `payment` | `db` |
+| `container` | 컨테이너 이름 = 서비스 이름 | Docker 컨테이너 이름 (cAdvisor `name` → `container`) | 결제 노드와 같음 |
+| `instance` | 대상 주소 | 결제 노드 `node_name` | DB 노드 `node_name` |
+| `job` | ServiceMonitor · PodMonitor 기준 | `node-exporter` · `cadvisor` · `payment-service` · `mysql` | `node-exporter` · `cadvisor` · `mysql` · `redis` |
 
 - `externalLabels` 는 저장된 시계열에 붙지 않아 `sum by (cluster)` 에 쓸 수 없습니다. 그래서 클러스터 쪽은 scrape class(`team04-default`) 의 relabel 로 붙입니다.
 - 앱 `/metrics`(backend `libs/common` metrics)는 backend 차트 `metrics.enabled`(PodMonitor) · 결제 노드 `payment_metrics_enabled` 로 수집합니다 (17-5). 앱이 `service` 라벨을 직접 붙이고 수집 쪽은 `honorLabels: true` 입니다.
@@ -1520,8 +1494,9 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 ### 17-1. Tailscale ACL
 
 1-1 의 정책에 아래 grant 가 들어 있어야 합니다 (1-1 예시에 반영됨).
-- `tag:payment` → `tag:k8s-node` `tcp:30909` (Alloy → Prometheus remote_write)
+- `tag:payment` · `tag:db` → `tag:k8s-node` `tcp:30909` (Alloy → Prometheus remote_write)
 - `autogroup:member` → `tag:k8s-node` `tcp:9443` (Grafana HTTPS)
+- `tag:k8s-node` · `tag:payment` → `tag:db` `tcp:3100` (Alloy → Loki push, Grafana → Loki 조회 — 17-8)
 
 ### 17-2. 실행
 
@@ -1539,6 +1514,9 @@ ansible-playbook monitoring.yml -K
 
 # 3) 결제 노드 담당자: 수집기 추가 (CLUSTER_ENTRY_IP = control plane Tailscale IP, 14-2)
 ansible-playbook payment.yml -K --tags deploy
+
+# 4) DB 노드 담당자: 수집기 + exporter 계정 (CLUSTER_ENTRY_IP 같은 값, 17-6)
+ansible-playbook db.yml -K
 ```
 
 - Grafana admin 비밀번호: `bao kv get secret/team04-hotel/dev/grafana` (OpenBao UI 도 가능). 처음 실행 때 랜덤으로 만들고 이후에는 바꾸지 않습니다.
@@ -1553,10 +1531,11 @@ ansible-playbook payment.yml -K --tags deploy
 | **team04 / 서비스 개요** | **시작점.** 서비스별 HTTP · gRPC 요청 수 · p95 · 에러 비율, 클러스터 + 결제 노드 CPU · 메모리, 메모리/limit, 스로틀링, 재시작 |
 | team04 / API · gRPC 상세 | HTTP 라우트별 · gRPC 메서드별 요청 · p95/p99 · 결과 코드, 서비스 간 호출 관계(부른 서비스 → 불린 서비스) |
 | team04 / Node.js 런타임 | 이벤트 루프 지연, heap · RSS, GC, 활성 핸들, 프로세스 재시작 |
-| team04 / 결제 노드 | 수집 상태(up), 호스트 CPU · 메모리 · 디스크, 컨테이너별 CPU · 메모리 |
+| team04 / DB | 메인 DB · 결제 DB 서버(연결 수 · 명령별 처리량 · 느린 쿼리 · buffer pool 적중률), 앱 커넥션 풀(사용 중 · 대기 · 대기 시간 · 풀 합계 vs max_connections), Valkey(메모리 · 적중률 · 축출) — 온프레미스 전용 (17-6) |
+| team04 / 외부 노드 (결제 · DB) | `cluster` 로 결제 · DB 노드 선택. 수집 상태(up), 호스트 CPU · 메모리 · 디스크, 컨테이너별 CPU · 메모리 (파일 이름은 `team04-payment-node.json` 그대로) |
 
 - 대시보드 JSON 은 `roles/monitoring/files/dashboards/` — ConfigMap(label `grafana_dashboard=1`)으로 올라가며 UI 에서 고친 내용은 저장되지 않습니다. JSON 을 고치고 `--tags monitoring` 으로 반영합니다.
-- 알람 규칙은 common values 의 `additionalPrometheusRulesMap`: `PodRestartingFrequently`(15분 3회), `ContainerOOMKilled`, `ContainerMemoryNearLimit`(limit 90%, 5분), `PaymentMetricsAbsent`(결제 노드 메트릭 5분 없음), `ApiGateway5xxRateHigh`(api-gateway 5xx 5% 초과 5분, 0.1 rps 이상일 때만), `NodeEventLoopLagHigh`(이벤트 루프 p99 0.5초 초과 10분). CPU 스로틀링은 기본 규칙 `CPUThrottlingHigh`(25%, 15분).
+- 알람 규칙은 common values 의 `additionalPrometheusRulesMap`: `PodRestartingFrequently`(15분 3회), `ContainerOOMKilled`, `ContainerMemoryNearLimit`(limit 90%, 5분), `PaymentMetricsAbsent` · `DbNodeMetricsAbsent`(결제 · DB 노드 메트릭 5분 없음), DB 규칙(17-6), `ApiGateway5xxRateHigh`(api-gateway 5xx 5% 초과 5분, 0.1 rps 이상일 때만), `NodeEventLoopLagHigh`(이벤트 루프 p99 0.5초 초과 10분). CPU 스로틀링은 기본 규칙 `CPUThrottlingHigh`(25%, 15분).
 - 에러 기준은 **HTTP 5xx 만** 입니다 (노션 합의). gRPC `grpc_code` 는 대시보드에서 비율 · 분포만 봅니다 — `NOT_FOUND` 등 비즈니스 거절이 섞여 있음.
 - **워커 PC 가 꺼져 있으면** `KubeNodeNotReady` · `TargetDown`(그 노드의 kubelet · node-exporter) 등이 firing 입니다. dev 에서는 정상 상황입니다.
 
@@ -1570,7 +1549,7 @@ kubectl -n monitoring get pods,pvc -o wide     # Prometheus 는 control plane, �
 
 1. Prometheus `/targets` — kubelet · cAdvisor · node-exporter · kube-state-metrics · apiserver · coredns 가 UP (꺼진 워커는 DOWN)
 2. Grafana "Kubernetes / Compute Resources / Namespace (Pods)" 에서 namespace `backend` 의 Pod CPU · 메모리
-3. Grafana Explore: `up{cluster="payment"}`, `container_memory_working_set_bytes{cluster="payment"}` → "team04 / 결제 노드" 대시보드
+3. Grafana Explore: `up{cluster="payment"}`, `container_memory_working_set_bytes{cluster="payment"}` → "team04 / 외부 노드 (결제 · DB)" 대시보드 (DB 노드는 `cluster="db"`)
 4. 데이터 유지: `kubectl -n monitoring delete pod prometheus-kube-prometheus-stack-prometheus-0` 뒤에도 이전 그래프가 남아 있음
 5. 결제 알람: 결제 노드에서 `docker stop alloy` → 약 6분 뒤 `PaymentMetricsAbsent` firing → `docker start alloy` (WAL 에 쌓인 값이 다시 들어옴)
 
@@ -1604,7 +1583,59 @@ kubectl -n backend exec deploy/booking-service -- wget -qO- localhost:9464/metri
 - `up{cluster="payment", job="payment-service"}` = 1
 - 프론트에서 예약 · 결제를 한 번 해 본 뒤 "team04 / API · gRPC 상세" 의 호출 관계 표가 채워지는지
 
-### 17-6. 트러블슈팅
+### 17-6. DB 지표 (DB 노드 · 결제 DB)
+
+두 가지를 함께 봅니다. **서버 쪽**은 MariaDB · Valkey 가 스스로 내는 상태, **앱 쪽**은 backend 가 본 커넥션 풀(`backend/libs/common/src/metrics/db-metrics.ts`, 메트릭 3차 #373)입니다.
+
+| 지표 | 수집 | 위치 |
+|---|---|---|
+| 메인 MariaDB 서버 (`mysql_*`) | DB 노드 Alloy 내장 mysqld_exporter → job `mysql`, `cluster="db"` | `db.yml` (role `node_collectors`, `collectors_mysql`) |
+| Valkey 서버 (`redis_*`) | DB 노드 Alloy 내장 redis_exporter → job `redis`, `cluster="db"` | `db.yml` (`collectors_redis`, 비밀번호는 `valkey_password`) |
+| 결제 MariaDB 서버 (`mysql_*`) | 결제 노드 Alloy 내장 mysqld_exporter → job `mysql`, `cluster="payment"` | `payment.yml` (`collectors_mysql`) |
+| DB 노드 호스트 · 컨테이너 | node-exporter · cAdvisor (MinIO · OpenBao · DynamoDB Local 은 컨테이너 CPU · 메모리만) | `db.yml` |
+| 앱 커넥션 풀 (`db_client_connections*`) | 서비스 `/metrics` — 클러스터 PodMonitor(auth · booking · hotel · user, `cluster="main"`) · 결제 노드 Alloy(payment-service) | 추가 작업 없음 (17-5 경로 그대로) |
+
+- **exporter 계정**: MariaDB 마다 `'exporter'@'127.0.0.1'` (`MAX_USER_CONNECTIONS 3`, 권한 `PROCESS, REPLICATION CLIENT, REPLICA MONITOR` + `performance_schema` 읽기 — 앱 데이터는 못 읽음). 비밀번호는 OpenBao `main-db-exporter` · `payment-db-exporter` — 없으면 playbook 이 만들고, 매 실행 접속 · 권한을 검사해 다를 때만 다시 맞춥니다. OpenBao 를 쓰지 않으면(`OPENBAO_ADDR` 없음) MariaDB 지표만 빠집니다.
+- 접속 비밀값은 `/opt/node-collectors/secrets/` (Alloy 실행 uid 만 읽기, 0600). Alloy `local.file` 이 다시 읽으므로 비밀번호가 바뀌어도 재시작하지 않습니다.
+- 수집기는 모두 127.0.0.1 에서 읽으므로 ufw · DB 포트 설정은 그대로입니다. 새로 필요한 것은 ACL `tag:db → tag:k8s-node tcp:30909` 하나입니다 (17-1).
+- **운영(prod)은 대상이 아닙니다** — RDS · ElastiCache 는 CloudWatch 지표입니다. 그래서 "team04 / DB" 대시보드와 `team04.db` 규칙은 운영 사본에서 뺍니다 (`.github/workflows/ci.yml` monitoring-copies 제외 목록). 앱 커넥션 풀 지표는 운영 클러스터에서도 수집됩니다.
+- 결제 노드는 수집기가 `payment-node` Compose 프로젝트에서 `node-collectors` 로 옮겨졌습니다. 첫 실행 때 이전 컨테이너를 지우고 다시 만들며, 이전 WAL(`/var/lib/payment-node/alloy`)은 지웁니다 (수집 공백 1분 이내).
+
+**알람** (`team04.db`, cluster 라벨로 메인 · 결제 DB 를 함께 봄)
+
+| 알람 | 조건 |
+|---|---|
+| `DbNodeMetricsAbsent` | DB 노드 node-exporter 메트릭이 5분 없음 |
+| `MariaDBDown` | `mysql_up == 0` 2분 (critical) |
+| `MariaDBConnectionsHigh` | 연결 수 > `max_connections` 의 80%, 5분 |
+| `ValkeyMemoryNearMax` | 사용 메모리 > `maxmemory` 의 90%, 5분 |
+| `DbPoolWaiting` | 앱 풀에서 연결을 기다리는 요청이 5분 넘게 있음 |
+
+디스크 · 메모리 부족은 kube-prometheus-stack 기본 node 규칙(`NodeFilesystemSpaceFillingUp` 등)이 job `node-exporter` 로 결제 · DB 노드에도 적용됩니다.
+
+**순서**
+
+1. Tailscale 관리자 콘솔: `tag:db → tag:k8s-node` grant 에 `tcp:30909` 추가 (1-1)
+2. `ansible-playbook monitoring.yml -K --tags monitoring` (대시보드 · 알람)
+3. `ansible-playbook db.yml -K` (`.env` 에 `CLUSTER_ENTRY_IP`) — exporter 계정 · 수집기. 이후 수집기만 바꿀 때는 `--tags collectors`
+4. `ansible-playbook payment.yml -K --tags deploy` — 수집기 이관 · 결제 DB exporter (앱 풀 지표는 payment-service 이미지가 #373 이후 커밋일 때)
+
+**확인**
+
+```bash
+# DB · 결제 노드
+docker compose -p node-collectors ps                       # node-exporter · cadvisor · alloy
+curl -s 127.0.0.1:12345/-/ready                            # Alloy (UI: ssh -L 12345:127.0.0.1:12345 <노드>)
+docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/exporter.cnf -e "SHOW GRANTS"   # 결제 노드는 payment-mariadb
+```
+
+- Prometheus: `up{cluster="db"}` — `node-exporter` · `cadvisor` · `mysql` · `redis` 가 1, `up{cluster="payment", job="mysql"}` = 1
+- `mysql_up{cluster=~"db|payment"}` = 1, `redis_memory_max_bytes{cluster="db"}` = 1GiB (`valkey_maxmemory`)
+- `count by (cluster, service) (db_client_connections_max)` — main 4개(auth · booking · hotel · user) + payment 1개
+- `count by (cluster, job) ({cluster=~"db|payment"})` — job 당 수천 이하
+- Grafana "team04 / DB" 의 모든 행, "team04 / 외부 노드" 에서 `cluster=db` 선택
+
+### 17-7. 트러블슈팅
 
 | 증상 | 확인 |
 |---|---|
@@ -1613,7 +1644,159 @@ kubectl -n backend exec deploy/booking-service -- wget -qO- localhost:9464/metri
 | Prometheus Pod 가 Pending | `kubectl get pv prometheus-local` — `Released` 면 PVC 를 지웠던 것. 데이터를 유지하려면 `kubectl patch pv prometheus-local -p '{"spec":{"claimRef":null}}'` 로 다시 Available 로 |
 | Prometheus Pod 가 `permission denied` 로 재시작 | 데이터 디렉토리 소유자 1000:2000 — `--tags monitoring` 재실행 |
 | `kubectl top` 이 `Metrics API not available` | `kubectl get apiservice v1beta1.metrics.k8s.io`, metrics-server 로그(kubelet 10250 접속). 직접 설치한 metrics-server 가 있으면 role 이 건너뜀 — 지우고 다시 실행 |
-| 결제 노드 메트릭이 없음 | 결제 노드에서 `docker logs alloy` (remote_write 오류), `curl -s 127.0.0.1:12345/-/ready`, ACL `tag:payment → tag:k8s-node tcp:30909`, `CLUSTER_ENTRY_IP` |
-| Grafana 9443 접속 불가 | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status`. Grafana Pod 가 워커에 있으면 CP `:30300` NodePort → 워커 Pod 경로라 `kubectl -n monitoring get pod -o wide` 로 Pod 가 Running 인지도 확인 |
+| 결제 · DB 노드 메트릭이 없음 | 그 노드에서 `docker logs alloy` (remote_write 오류), `curl -s 127.0.0.1:12345/-/ready`, ACL `tag:payment` · `tag:db` → `tag:k8s-node tcp:30909`, `CLUSTER_ENTRY_IP` |
+| `mysql_up` 이 0 · `up{job="mysql"}` 없음 | Alloy UI 의 `prometheus.exporter.mysql.main` 오류, `/opt/node-collectors/secrets/mysql.dsn` 존재 여부(OpenBao `*-db-exporter` 가 없으면 만들지 않음), 위 `SHOW GRANTS` 로 exporter 계정 접속 |
+| 수집기 기동이 `container name ... already in use` | 이전 프로젝트 컨테이너가 남은 경우 — `docker rm -f node-exporter cadvisor alloy` 후 `--tags collectors` |
+| Grafana 9443 접속 불가 (연결 자체가 안 됨) | ACL `autogroup:member → tag:k8s-node tcp:9443`, CP 에서 `tailscale serve status` 에 `:9443 → http://<CP Tailscale IP>:30300` 이 있는지 |
+| Grafana 9443 이 TLS 연결 뒤 응답 없이 시간 초과 (브라우저 502 · 무한 로딩), Pod 는 Running · Ready | Grafana Pod 가 **워커**에 떠 있는 경우 (`kubectl -n monitoring get pod -l app.kubernetes.io/name=grafana -o wide`). CP 의 tailscale serve 가 보낸 요청은 다른 노드 Pod 로 가지 못함 — tailscaled 가 자기 패킷에 붙이는 fwmark(`0x80000`)가 달린 채로는 Calico VXLAN(다른 노드 Pod) 경로가 막힘 (CP 에서 SO_MARK 0x80000 소켓으로 워커 Pod 접속 시 시간 초과, mark 없이 · CP Pod 는 정상으로 확인). 같은 CP 에서 curl 로 NodePort · Pod IP 를 부르면 200 이라 Grafana 문제로 보이지 않음. dev values 는 Grafana 를 CP 에 고정함 → `monitoring.yml --tags monitoring` 으로 반영 (이전 버전 values 는 워커 우선이라 `rollout restart` · 워커 기동 후 재스케줄 때 발생) |
 | control plane 과부하 (load 가 vCPU 수보다 훨씬 높음, controller-manager · scheduler 가 `leaderelection lost` 로 재시작) | `kubectl get pods -A -o wide --field-selector spec.nodeName=<CP>` 로 CP 에 몰린 Pod 확인. 급하면 `kubectl -n monitoring scale deploy --all --replicas=0 && kubectl -n monitoring scale sts --all --replicas=0` (데이터 유지, `monitoring.yml` 재실행으로 복구) |
 | chart 메이저 버전 업그레이드 | kube-prometheus-stack 은 helm 이 CRD 를 갱신하지 않음 — chart UPGRADE 문서대로 CRD 를 먼저 `kubectl apply --server-side` |
+
+### 17-8. 로그 (Loki · Alloy)
+
+클러스터 · 결제 노드 · DB 노드의 로그를 DB 노드의 **Loki** 에 모으고, 지표와 같은 **Grafana** 에서 봅니다 (Explore → 데이터소스 `Loki`). 파드가 지워져도 보존 기간(7일) 동안 로그가 남습니다.
+
+```
+[dev 클러스터]  alloy-logs (DaemonSet, CP 포함 모든 노드) — /var/log/pods · journald ─┐
+                alloy-events (Deployment 1개) — 쿠버네티스 Events ───────────────────┤
+[결제 노드]     node-collectors Alloy — docker 컨테이너 · journald · 결제 DB slow.log ─┼─▶ Loki (DB 노드 :3100) ─▶ MinIO 버킷 loki
+[DB 노드]       node-collectors Alloy — docker 컨테이너 · journald · 메인 DB slow.log ─┘        ▲      (보존 7일, compactor 가 삭제)
+                                                                                    Grafana (CP) ─┘
+```
+
+| 구성 | 값 |
+|---|---|
+| Loki | role `loki` (`db.yml --tags loki`), Compose 프로젝트 `hotel-loki`(`/opt/hotel-db/loki`), 이미지 · 보존 · 수집 한도는 `roles/loki/defaults/main.yml`. 단일 바이너리 · 복제 없음 · 인증 없음 → ufw(tailscale0) + ACL 로만 접근 |
+| 저장 | MinIO 버킷 `loki`, 전용 계정 OpenBao `minio-loki`(없으면 `db.yml` 이 생성, 이 버킷에만 권한). WAL · 인덱스 캐시는 `/var/lib/hotel-db/loki` |
+| 클러스터 수집 | role `logging` (`monitoring.yml --tags logging`) — grafana/alloy chart(`alloy_chart_version`, `group_vars/control_plane.yml`) release `alloy-logs` · `alloy-events` (ns `monitoring`). **로그만** 수집 — 지표는 지금처럼 Prometheus (중복 수집 없음) |
+| 결제 · DB 노드 수집 | 기존 `node_collectors` 의 Alloy 에 로그 블록 추가 (`collectors_loki_url` 이 있을 때). DB 노드는 `127.0.0.1:3100`, 결제 노드는 DB 노드 Tailscale IP |
+| Loki 주소 | `group_vars/all.yml` `loki_host` — OpenBao `main-db`(host), 없으면 `.env` 의 `DB_TS_IP`. 결제 노드 · 클러스터 쪽 실행에 필요 |
+| Grafana | 데이터소스 `Loki`(uid `loki`, `kube-prometheus-stack-values-dev.yaml.j2`). 대시보드 `team04 / DB` · `결제 노드` 아래쪽에 컨테이너 에러 로그 · 슬로우 쿼리 패널 (dev 전용 대시보드만 — `team04-service-overview` 는 운영 사본이라 넣지 않음) |
+
+**수집 범위 · 라벨** — 라벨은 지표(17절 표)와 같게 두고 개수를 적게 유지합니다. 파드 이름은 라벨이 아니라 structured metadata(`pod`)입니다.
+
+| job | 대상 | 라벨 |
+|---|---|---|
+| `pods` | 클러스터 모든 네임스페이스의 컨테이너 stdout · stderr | `cluster="main"` · `env` · `namespace` · `container` · `instance`(노드) |
+| `events` | 쿠버네티스 Events (스케줄 실패, OOMKilled, ImagePullBackOff, Probe 실패 …) | `cluster="main"` · `namespace` |
+| `docker` | 결제 · DB 노드의 모든 Docker 컨테이너 (일회성 `payment-db-migration` 포함) | `cluster`(`payment` · `db`) · `namespace` · `container` · `instance` |
+| `journal` | 노드 journald — 클러스터: kubelet · containerd · tailscaled, 결제 · DB: docker · containerd · tailscaled, 모두 + 커널 메시지 | `unit` · `instance` (+ `cluster`) |
+| `slowlog` | MariaDB 슬로우 쿼리 로그(1초 이상) — 메인 DB · 결제 DB. 항목 하나(`# User@Host` ~ 쿼리)가 한 줄 | `cluster` · `container`(`mariadb` · `payment-mariadb`) |
+
+- 범위 밖: GitLab · Runner 노드, kube-apiserver audit 로그(정책 미설정).
+- 예약 · 결제 로그에는 개인정보가 섞일 수 있습니다. 보존은 7일(`loki_retention`)이고, Loki 는 팀원 PC 에 열지 않습니다(조회는 Grafana 로만).
+
+**실행 순서** (처음 한 번)
+
+1. Tailscale ACL 에 `tag:k8s-node` · `tag:payment` → `tag:db` `tcp:3100` 추가 (1-1 예시에 반영됨)
+2. DB 노드: `ansible-playbook db.yml -K --tags loki` → `ansible-playbook db.yml -K --tags collectors`
+3. 결제 노드: `ansible-playbook payment.yml -K --tags collectors` (`.env` 의 `DB_TS_IP` 필요 — 비어 있으면 로그 없이 지표만 수집)
+4. 클러스터: `ansible-playbook monitoring.yml -K --tags monitoring,logging` (Grafana 데이터소스 + Alloy 2개)
+
+```bash
+cd infra/ansible
+set -a; source .env; source .secrets/openbao.env; set +a
+```
+
+**조회 예시** (Grafana → Explore → Loki)
+
+```logql
+{cluster="main", namespace="backend", container="booking-service"}            # 서비스 로그
+{cluster="main", namespace="backend"} | json | level="error"                  # JSON 로그를 필드로 풀어 거르기
+{cluster="main", namespace="backend"} | pod=~"booking-service-.*"             # 파드 이름(structured metadata)
+{cluster="payment", container="payment-service"} |= "error"
+{job="events"} |= "Warning"                                                   # 쿠버네티스 경고 이벤트
+{job="journal", unit="kubelet.service", instance="<노드>"}
+{job="slowlog"}
+```
+
+**검증**
+
+- DB 노드: `curl -s 127.0.0.1:3100/ready` → `ready`, `docker exec minio mcli ls local/loki` 에 `index/` · `fake/` 가 생김, `sudo ufw status | grep 3100` 이 `on tailscale0` 만
+- 수집기: 결제 · DB 노드 `ssh -L 12345:127.0.0.1:12345` → Alloy UI 에서 `loki.source.*` · `loki.write.main` 이 healthy. 클러스터는 `kubectl -n monitoring port-forward ds/alloy-logs 12345`
+- Grafana Explore 에서 위 조회 예시가 모두 결과를 돌려줌. 파드를 지운 뒤에도 그 파드 로그가 보임
+- `kubectl -n monitoring get pods -o wide | grep alloy-logs` — 노드 수만큼 (CP 포함)
+- Prometheus `/targets` 의 대상 수가 설치 전과 같음 (Alloy 가 지표를 수집하지 않음)
+- 1주일 뒤 `docker exec minio mcli du local/loki` 로 용량을 확인하고 보존 기간 · 수집 범위를 조정합니다.
+
+**트러블슈팅**
+
+| 증상 | 확인 |
+|---|---|
+| `monitoring.yml --tags logging` 이 `Loki 응답 없음` | `db.yml --tags loki` 실행 여부, ACL `tag:k8s-node → tag:db tcp:3100`, DB 노드 `sudo ufw status` |
+| Grafana 데이터소스 `Loki` 가 없음 | `DB_TS_IP` 없이 `--tags monitoring` 을 실행한 경우 — `.env` 를 source 하고 다시 실행 |
+| 클러스터 로그가 안 들어옴 | `kubectl -n monitoring logs ds/alloy-logs` 의 `loki.write` 오류 (4xx `rate limit` 이면 `loki_ingestion_rate_mb`), Pod 가 그 노드에 떠 있는지 |
+| 결제 · DB 노드 컨테이너 로그가 없음 | `docker logs alloy` 의 docker.sock 권한 오류 → `--tags collectors` 재실행(group_add 의 docker gid), 결제 노드는 `DB_TS_IP` · ACL `tag:payment → tag:db tcp:3100` |
+| 슬로우 쿼리가 안 들어옴 | slow.log 가 없을 때 실행했으면 MariaDB 기동 후 `--tags collectors` 다시 (읽기 ACL 을 그때 줌). `getfacl <데이터 디렉토리>/slow.log` 에 Alloy uid 가 있는지 |
+| journald 로그가 없음 | 그 노드에 `/var/log/journal` 이 있는지(영구 저장) — 없으면 `/run/log/journal`(휘발)만 읽음 |
+| Loki 가 S3 오류로 재시작 | `docker logs loki` 의 `AccessDenied` → OpenBao `minio-loki` 를 바꿨다면 `docker exec minio mcli admin user remove local loki` 후 `db.yml --tags loki` |
+
+---
+
+## 18. etcd 백업 (AWS S3)
+
+control plane 의 **etcd snapshot + `/etc/kubernetes/pki` + `admin.conf`** 를 하루 한 번 AWS S3 전용 버킷에 올립니다 (`roles/etcd_backup`).
+
+- **대상이 아닌 것:** DB(MariaDB · Valkey · DynamoDB Local · ElasticMQ)는 시딩으로 다시 만들고(7-5), 로그는 Loki(17-8)가 맡습니다. OpenBao 는 16-5 의 수동 스냅샷을 그대로 씁니다.
+- **흐름:** `team04-etcd-backup.timer`(매일 12:00 · 부팅 15분 후, `Persistent=true`) → `etcdctl snapshot save` → `etcdutl snapshot status` 로 확인 → tar.gz → **age 로 암호화** → `s3://team04-hotel-onprem-backup/etcd/onprem-dev/YYYY/MM/DD/<노드>-<UTC 시각>.tar.gz.age`
+- **AWS 쪽:** 버킷 · 업로드 전용 IAM user 는 Terraform [`live/dev/10-onprem-backup`](../terraform/live/dev/10-onprem-backup/README.md). user 는 `etcd/*` 에 PutObject 만 할 수 있습니다 (읽기 · 목록 · 삭제 불가). 30일 뒤 만료, 덮어쓴 이전 버전은 7일 보관.
+- **암호화:** snapshot 에는 Kubernetes Secret 이 평문으로 들어 있고 공유 계정이라 버킷을 읽을 수 있는 주체가 많습니다. 그래서 노드에는 age **공개키**만 두고, 복호화 개인키는 팀 password manager 에만 둡니다 (OpenBao 에 두면 OpenBao 가 망가졌을 때 함께 잃음).
+- etcdctl · etcdutl 은 `/etc/kubernetes/manifests/etcd.yaml` 의 이미지 태그와 같은 버전을 GitHub 릴리스에서 받아 sha256 을 검증한 뒤 설치합니다 (`etcd_backup_etcd_version` 으로 고정 가능).
+
+### 18-1. 최초 구성 (CP 담당자 1회)
+
+1. Terraform 담당자가 `live/dev/10-onprem-backup` 을 apply 하고 access key 를 발급합니다. 키는 OpenBao 담당자의 일회용 age 공개키로 암호화한 파일로만 넘기고, OpenBao 담당자가 풀어 바로 OpenBao `aws-backup` 에 넣습니다 ([전달 문서](../terraform/live/dev/10-onprem-backup/README.md) 4절 ①~④). CP 담당자는 "등록 완료" 연락을 받은 뒤 아래를 진행합니다.
+2. age 키를 만들고 개인키를 팀 password manager 에 저장합니다.
+   ```bash
+   sudo apt install age
+   mkdir -p .secrets/backup && age-keygen -o .secrets/backup/age.key   # 출력의 "Public key: age1..." 이 공개키
+   ```
+3. 공개키를 `inventory/group_vars/control_plane.yml` 의 `etcd_backup_age_recipients` 에 넣고 커밋합니다 (여러 명이면 목록으로, 누구의 키로든 풀 수 있음).
+4. 실행합니다. OpenBao 도입 전이면 `AWS_BACKUP_ACCESS_KEY_ID` · `AWS_BACKUP_SECRET_ACCESS_KEY` 환경변수로도 됩니다.
+   ```bash
+   set -a; source .env; source .secrets/openbao.env; set +a
+   ansible-playbook control-plane.yml --tags etcd_backup -K
+   ```
+
+자격 증명이 없으면 role 은 경고만 남기고 건너뜁니다 (키 발급 전에 `control-plane.yml` 을 실행해도 실패하지 않음). 자격 증명은 있는데 age 공개키가 없으면 중단합니다.
+
+### 18-2. 확인 · 수동 실행
+
+```bash
+systemctl list-timers team04-etcd-backup.timer
+sudo systemctl start team04-etcd-backup.service       # 즉시 실행
+journalctl -u team04-etcd-backup -n 30                # snapshot status 표 · "uploaded s3://..." 줄
+```
+
+업로드 user 는 목록을 볼 수 없으므로 객체 확인은 관리자 계정(`AWS_PROFILE=team04`)으로 합니다.
+
+```bash
+aws s3 ls s3://team04-hotel-onprem-backup/etcd/onprem-dev/ --recursive --profile team04 | tail
+```
+
+### 18-3. 복구
+
+CP VM 을 새로 만들었거나 etcd 데이터가 깨졌을 때 (단일 CP 기준).
+
+```bash
+# 1) 로컬(관리자)에서 받아 풀기
+aws s3 cp s3://team04-hotel-onprem-backup/etcd/onprem-dev/<날짜>/<파일>.tar.gz.age . --profile team04
+age -d -i .secrets/backup/age.key -o backup.tar.gz <파일>.tar.gz.age
+mkdir restore && tar -xzf backup.tar.gz -C restore      # etcd.db, pki/, admin.conf
+etcdutl snapshot status restore/etcd.db -w table
+
+# 2) CP 노드로 복사한 뒤 (CP 에서)
+sudo mv /etc/kubernetes/manifests/etcd.yaml /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/   # etcd · apiserver 정지
+sudo cp -a restore/pki/. /etc/kubernetes/pki/ && sudo cp restore/admin.conf /etc/kubernetes/admin.conf
+sudo mv /var/lib/etcd /var/lib/etcd.broken
+sudo etcdutl snapshot restore restore/etcd.db --data-dir /var/lib/etcd \
+  --name "$(hostname)" --initial-cluster "$(hostname)=https://<CP Tailscale IP>:2380" \
+  --initial-advertise-peer-urls "https://<CP Tailscale IP>:2380"
+sudo mv /tmp/etcd.yaml /tmp/kube-apiserver.yaml /etc/kubernetes/manifests/
+kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes
+```
+
+- `--name` · peer URL 은 `/etc/kubernetes/manifests/etcd.yaml` 의 `--name` · `--initial-advertise-peer-urls` 와 같아야 합니다.
+- 새 VM 이면 `kubeadm init` 전에 `pki/` 를 먼저 넣어 두면 같은 CA 로 init 되어 워커의 join 정보(CA hash)가 바뀌지 않습니다. 그다음 위 순서로 etcd 를 교체합니다.
+- 복구 후 snapshot 이후에 생긴 리소스는 ArgoCD 가 gitops 레포 기준으로 다시 맞춥니다.
+

@@ -1,0 +1,12 @@
+---
+# 클러스터 로그 수집: Grafana Alloy (로그 전용) → DB 노드 Loki (README 17-8). chart 버전은 group_vars/control_plane.yml
+#   alloy-logs   : DaemonSet — 파드 로그(/var/log/pods) · journald
+#   alloy-events : Deployment 1개 — 쿠버네티스 Events
+# 네임스페이스는 monitoring (kube-prometheus-stack 과 같은 곳, monitoring role 이 만듦)
+
+# journald 에서 남길 unit (그 밖은 버림). 커널 메시지(OOM killer 등)는 unit 과 관계없이 남김
+logging_journal_units: [kubelet.service, containerd.service, tailscaled.service]
+# 노드마다 positions(어디까지 읽었는지)를 두는 hostPath
+logging_alloy_host_dir: /var/lib/alloy-logs
+# helm values 파일 위치 (노드)
+logging_manifest_dir: "{{ monitoring_manifest_dir }}/logging"

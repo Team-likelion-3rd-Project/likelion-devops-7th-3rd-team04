@@ -132,3 +132,49 @@ additionalPrometheusRulesMap:
               severity: warning
             annotations:
               summary: 결제 노드 메트릭이 5분 넘게 들어오지 않음 (노드 · Alloy · remote_write 경로 확인)
+      # DB 서버(mysqld_exporter · redis_exporter, Alloy 내장)와 앱 커넥션 풀(backend libs/common db-metrics).
+      # cluster 라벨로 메인 DB(db) · 결제 DB(payment)를 함께 덮음. 운영 RDS · ElastiCache 는 이 지표가 없어 울리지 않음
+      - name: team04.db
+        rules:
+          - alert: DbNodeMetricsAbsent
+            expr: absent_over_time(up{cluster="db", job="node-exporter"}[5m])
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: DB 노드 메트릭이 5분 넘게 들어오지 않음 (노드 · Alloy · remote_write 경로 확인)
+          - alert: MariaDBDown
+            expr: mysql_up == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: exporter 가 MariaDB 에 접속하지 못함 (DB 컨테이너 · exporter 계정 확인)
+          - alert: MariaDBConnectionsHigh
+            expr: |
+              max by (cluster, instance) (mysql_global_status_threads_connected)
+              / max by (cluster, instance) (mysql_global_variables_max_connections)
+              > 0.8
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: MariaDB 연결 수가 max_connections 의 80% 를 5분 넘게 초과 (풀 크기 × Pod 수 확인)
+          - alert: ValkeyMemoryNearMax
+            expr: |
+              max by (cluster, instance) (redis_memory_used_bytes)
+              / max by (cluster, instance) (redis_memory_max_bytes > 0)
+              > 0.9
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: Valkey 메모리가 maxmemory 의 90% 를 5분 넘게 초과 (넘으면 키 축출)
+          # 풀의 연결이 모두 사용 중이라 요청이 줄 서는 상태가 이어짐 — 풀 크기 · 느린 쿼리 · DB 연결 수 확인
+          - alert: DbPoolWaiting
+            expr: max by (cluster, service, pod) (db_client_connections_pending) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: DB 커넥션 풀에서 연결을 기다리는 요청이 5분 넘게 있음

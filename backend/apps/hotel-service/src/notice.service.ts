@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { apiRpcException } from '@app/common';
+import { Hotel } from './entities/hotel.entity';
 import { Notice, NoticeCategory } from './entities/notice.entity';
 
 // proto(hotel.proto)의 Notice 메시지와 1:1 대응
@@ -14,6 +15,7 @@ export interface NoticeGrpcResponse {
   createdByAdminId: number; // 없으면 0 (seed 공지)
   createdAt: string; // ISO 8601
   updatedAt: string;
+  hotelId: number; // 대상 지점, 0 = 전체 공지 (LDP-188)
 }
 
 export interface NoticeInput {
@@ -21,6 +23,7 @@ export interface NoticeInput {
   body: string;
   category: string;
   isPinned: boolean;
+  hotelId?: number; // 0·생략 = 전체 공지
 }
 
 const NOTICE_CATEGORIES = Object.values(NoticeCategory) as string[];
@@ -41,15 +44,20 @@ export class NoticeService {
   constructor(
     @InjectRepository(Notice)
     private readonly noticeRepository: Repository<Notice>,
+    @InjectRepository(Hotel)
+    private readonly hotelRepository: Repository<Hotel>,
   ) {}
 
-  // 목록: 중요 고정 먼저, 그다음 최신순. page가 0이면 전체, 1 이상이면 그 페이지만. total은 전체 개수.
+  // 목록: 중요 고정 먼저, 그다음 최신순. page가 0이면 전체, 1 이상이면 그 페이지만. total은 조건에 맞는 전체 개수.
+  // hotelId가 있으면 그 지점 공지 + 전체 공지만 (호텔 상세·공지 지점 필터·지점 관리자 목록, LDP-188)
   async listNotices(
     page: number,
     size: number,
+    hotelId = 0,
   ): Promise<{ notices: NoticeGrpcResponse[]; total: number }> {
     const take = size > 0 ? size : 20;
     const [notices, total] = await this.noticeRepository.findAndCount({
+      ...(hotelId > 0 ? { where: [{ hotelId }, { hotelId: IsNull() }] } : {}),
       order: { isPinned: 'DESC', createdAt: 'DESC', noticeId: 'DESC' },
       ...(page > 0 ? { skip: (page - 1) * take, take } : {}),
     });
@@ -67,6 +75,7 @@ export class NoticeService {
   async createNotice(
     input: NoticeInput & { adminId: number },
   ): Promise<NoticeGrpcResponse> {
+    await this.assertHotelExists(input.hotelId);
     const notice = await this.noticeRepository.save(
       this.noticeRepository.create({
         ...this.toColumns(input),
@@ -85,6 +94,7 @@ export class NoticeService {
     if (!notice) {
       throw noticeNotFound();
     }
+    await this.assertHotelExists(input.hotelId);
     Object.assign(notice, this.toColumns(input));
     return this.toGrpc(await this.noticeRepository.save(notice));
   }
@@ -96,6 +106,21 @@ export class NoticeService {
       throw noticeNotFound();
     }
     return { success: true };
+  }
+
+  // 대상 지점이 없는 호텔이면 FK 오류 대신 404로 알린다
+  private async assertHotelExists(hotelId?: number): Promise<void> {
+    if (!hotelId) {
+      return;
+    }
+    if (!(await this.hotelRepository.exists({ where: { hotelId } }))) {
+      throw apiRpcException({
+        status: 404,
+        code: 'HOTEL_NOT_FOUND',
+        message: '존재하지 않는 호텔입니다.',
+        retryable: false,
+      });
+    }
   }
 
   private toColumns(input: NoticeInput) {
@@ -112,6 +137,7 @@ export class NoticeService {
       body: input.body,
       category: input.category as NoticeCategory,
       isPinned: Boolean(input.isPinned),
+      hotelId: input.hotelId || null,
     };
   }
 
@@ -126,6 +152,7 @@ export class NoticeService {
       createdByAdminId: notice.createdByAdminId ?? 0,
       createdAt: notice.createdAt.toISOString(),
       updatedAt: notice.updatedAt.toISOString(),
+      hotelId: notice.hotelId ?? 0,
     };
   }
 }

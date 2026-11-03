@@ -25,7 +25,7 @@
   ansible.builtin.debug:
     msg: >-
       v1beta1.metrics.k8s.io 가 이미 등록돼 있지만 helm release metrics-server 가 없습니다.
-      직접 설치한 metrics-server 로 보고 건너뜁니다. 이 role 로 관리하려면 기존 것을 지운 뒤 다시 실행하세요 (README 17-6).
+      직접 설치한 metrics-server 로 보고 건너뜁니다. 이 role 로 관리하려면 기존 것을 지운 뒤 다시 실행하세요 (README 17-7).
   when:
     - metrics_server_release.stdout | from_json | length == 0
     - metrics_server_apiservice.stdout | length > 0

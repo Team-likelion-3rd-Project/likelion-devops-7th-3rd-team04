@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """RAG 인덱스 적재: app/corpus.py의 문서를 임베딩(app/llm.py)해 벡터 스토어(app/vector_store.py)에 씁니다.
-문서마다 key가 고정이라 다시 실행해도 중복되지 않습니다(object 스토어는 파일 전체를 새로 씀).
+적재 후 인덱스는 corpus와 정확히 같아집니다 — 같은 key는 덮어쓰고, corpus에서 사라진 문서는 지웁니다
+(s3vectors는 넣은 뒤 list_vectors로 비교해 delete_vectors, object 스토어는 파일 전체를 새로 씀).
 
 필요한 권한:
-  - VECTOR_STORE=s3vectors: S3 Vectors 버킷/인덱스의 `s3vectors:PutVectors`
+  - VECTOR_STORE=s3vectors: S3 Vectors 인덱스의 `s3vectors:PutVectors` · `ListVectors` · `DeleteVectors`
+    (prod 는 Terraform 51-pod-roles 의 llm-ingest Role)
   - VECTOR_STORE=object: 버킷(VECTOR_OBJECT_BUCKET)에 쓰기 권한이 있는 접근 키
 
 사용법:
@@ -14,7 +16,7 @@
   # docker compose로 띄운 llm-service 컨테이너 안에서
   docker compose -f langchain_rag/docker-compose.yml exec llm-service python -m scripts.ingest
 
-  # 온프레미스 dev 클러스터
+  # 클러스터 — dev·prod 모두 배포 때 backend 차트의 llm-ingest Job 이 실행합니다. 수동으로 다시 돌릴 때만:
   kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
 """
 

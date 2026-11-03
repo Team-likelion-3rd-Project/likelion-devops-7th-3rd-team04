@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Navigate, Outlet, useLocation } from 'react-router-dom'
+import { Navigate, Outlet, useLocation, useParams } from 'react-router-dom'
 import { refreshAdminAccessToken } from '../api/gateway'
 import { adminAuth } from '../api/tokenStore'
+import { adminErrorMessage, canAccessArea, canAccessHotel, useAdminScope } from './adminScope'
+import type { AdminArea } from './adminScope'
+import { AdminForbidden } from './components/AdminStatusCard'
 
 // 관리자 라우트 전용 클라이언트 라우트가드 (UX용). 실제 접근 제어는 서버의
 // RolesGuard(@Roles('ADMIN'))가 담당하며, 이 가드는 권한 없는 사용자가 관리자 화면을
@@ -38,6 +41,21 @@ function AdminGuard() {
     return <Navigate to="/admin/login" replace state={{ from: location }} />
   }
 
+  return <Outlet />
+}
+
+// 직급별 메뉴 라우트가드 (LDP-184). 메뉴에서 숨긴 화면에 주소로 들어오면 안내 카드를 보여준다.
+// 경로에 :hotelId가 있으면 소속 지점인지도 확인한다 — 실제 차단은 서버가 한다.
+export function AdminAreaRoute({ area }: { area?: AdminArea }) {
+  const scope = useAdminScope()
+  const { hotelId } = useParams()
+
+  if (area && !canAccessArea(scope, area)) {
+    return <AdminForbidden message={adminErrorMessage('ADMIN_ROLE_FORBIDDEN', '')} />
+  }
+  if (hotelId && !canAccessHotel(scope, Number(hotelId))) {
+    return <AdminForbidden message={adminErrorMessage('ADMIN_HOTEL_FORBIDDEN', '')} />
+  }
   return <Outlet />
 }
 

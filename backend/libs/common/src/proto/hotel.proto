@@ -83,7 +83,8 @@ service HotelService {
 // 공지사항 (LDP-147, 메인 V12 notices). hotel-service가 소유한다.
 // 조회는 고객도(로그인 없이), 작성·수정·삭제는 관리자만 — 권한 검사는 api-gateway가 한다.
 service NoticeService {
-  // 중요 고정 먼저, 최신순. page가 0이면 전체, 1 이상이면 그 페이지만. total은 전체 개수
+  // 중요 고정 먼저, 최신순. page가 0이면 전체, 1 이상이면 그 페이지만. total은 조건에 맞는 전체 개수
+  // hotelId가 있으면 그 지점 공지 + 전체 공지만 (LDP-188)
   rpc ListNotices (ListNoticesRequest) returns (NoticeListResponse);
   // 없으면 404 NOTICE_NOT_FOUND
   rpc GetNotice (NoticeIdRequest) returns (Notice);
@@ -103,11 +104,13 @@ message Notice {
   int32 createdByAdminId = 6; // 작성 직원. seed 공지는 0
   string createdAt = 7; // ISO 8601
   string updatedAt = 8;
+  int32 hotelId = 9; // 대상 지점 (LDP-188). 0 = 전체 공지
 }
 
 message ListNoticesRequest {
   int32 page = 1; // 1부터. 0 = 전체
   int32 size = 2; // 한 페이지 개수 (page가 1 이상일 때)
+  int32 hotelId = 3; // 지점 필터 (LDP-188). 0 = 모든 공지, 1 이상 = 그 지점 공지 + 전체 공지
 }
 
 message NoticeListResponse {
@@ -125,6 +128,7 @@ message CreateNoticeRequest {
   string category = 3;
   bool isPinned = 4;
   int32 adminId = 5; // 작성 직원 (api-gateway가 토큰에서)
+  int32 hotelId = 6; // 대상 지점 (LDP-188). 0 = 전체 공지. 지점 관리자는 api-gateway가 자기 지점으로 채운다
 }
 
 message UpdateNoticeRequest {
@@ -133,6 +137,7 @@ message UpdateNoticeRequest {
   string body = 3;
   string category = 4;
   bool isPinned = 5;
+  int32 hotelId = 6; // 대상 지점 (LDP-188). 0 = 전체 공지
 }
 
 message DeleteNoticeResponse {

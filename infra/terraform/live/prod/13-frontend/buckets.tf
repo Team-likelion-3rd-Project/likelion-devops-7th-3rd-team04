@@ -126,14 +126,13 @@ resource "aws_s3_bucket_cors_configuration" "image" {
 
 # ── 버킷 정책 ─────────────────────────────────────────────
 # 읽기: 이 배포(aws:SourceArn)의 CloudFront 만, 버킷별로 정한 경로만.
-# 쓰기: IAM 정책으로 권한을 받은 주체(Runner · hotel-service · 시드 Job)와 관리자만. 공유 계정이라 넓은 S3 권한을 가진
+# 쓰기: IAM 정책으로 권한을 받은 주체(릴리스 Role · hotel-service · 시드 Job)와 관리자만. 공유 계정이라 넓은 S3 권한을 가진
 #       다른 주체가 운영 사이트 · 사진을 바꾸지 못하게 Deny 로 막는다 (IAM 정책의 Allow 보다 버킷 정책의 Deny 가 우선, 11-registry 와 같은 방식)
 locals {
   bucket_access = {
     site = {
       read_prefix = local.release_prefix
       writer_arns = [
-        "${local.role_arn_prefix}/${var.ci_runner_role_name}",
         "${local.role_arn_prefix}/${var.release_role_name}",
       ]
     }

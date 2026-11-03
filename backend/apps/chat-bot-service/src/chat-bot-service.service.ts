@@ -52,11 +52,13 @@ export class ChatBotServiceService {
     }
 
     const session = await this.sessionService.getOrCreateSession(userId);
-    await this.messageService.appendMessage(session.sessionId, 'USER', message);
 
+    // history는 "이번 메시지 이전의 대화"입니다. 현재 메시지를 저장한 뒤에 조회하면 history 끝에도
+    // 들어가 message와 중복되므로, 반드시 저장 전에 조회합니다.
     const recentMessages = await this.messageService.getRecentMessages(
       session.sessionId,
     );
+    await this.messageService.appendMessage(session.sessionId, 'USER', message);
 
     const { reply, intent, action } = await this.n8nClient.sendMessage({
       sessionId: session.sessionId,

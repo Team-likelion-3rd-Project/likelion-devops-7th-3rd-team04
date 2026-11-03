@@ -17,6 +17,8 @@
 infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── Chart.yaml · values.yaml · templates/ · files/   root 앱 차트 (앱 정의 → Application, 배포 결과 알림)
 ├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080)
+├── aws-load-balancer-controller/ chart.yaml · values.yaml   18  EKS 만. TargetGroupBinding 컨트롤러 (LB 를 만들지 않음)
+├── traefik-target-group/  chart.yaml · chart/               19  EKS 만. Traefik 파드 IP → 80-main-edge eks Target Group
 ├── prometheus-operator-crds/ chart.yaml                     12  PodMonitor · ServiceMonitor 등 CRD (backend PodMonitor 용)
 ├── cert-manager/          chart.yaml · values.yaml          15  webhook TLS 인증서 발급 · caBundle 주입
 ├── pod-identity-webhook/  chart.yaml · values.yaml          20  IRSA 주입 (ns/SA → Role 매핑)
@@ -39,12 +41,12 @@ kubeadm 클러스터라 EKS 의 IRSA 를 직접 구성했습니다.
 ```
 Terraform 10-global  OIDC 버킷(발급자 문서) · IAM OIDC 공급자
 Ansible (CP-a init)  kube-apiserver --service-account-issuer = OIDC 버킷 URL, keys.json(SA 서명 공개키) 업로드
-Terraform 70         IRSA Role (irsa.tf, 신뢰 정책 sub · aud StringEquals)
+Terraform 51         IRSA Role (51-pod-roles, 신뢰 정책 sub · aud StringEquals)
 pod-identity-webhook ns/SA → Role 매핑(values.yaml) 의 파드에 AWS_ROLE_ARN · 웹 ID 토큰 주입
 ```
 
-- **IRSA 를 쓰는 앱을 추가할 때**: Terraform 70 `irsa.tf` 의 `irsa_roles` 에 Role(ns · SA) 을, `pod-identity-webhook/values.yaml` 에 같은 ns/SA 매핑을 추가합니다. SA 에 `eks.amazonaws.com/role-arn` annotation 은 달지 않습니다 (ARN 에 계정 ID 가 들어감).
-- **비밀값**: 앱은 `ExternalSecret` 에서 `ClusterSecretStore` `aws-secrets-manager` 를 참조해 Secrets Manager 값(`team04-hotel/prod/*`)을 받습니다. 읽을 수 있는 Secret 은 ESO Role 정책(70 `irsa.tf`)과 Secret 리소스 정책(41-main-data)이 제한합니다.
+- **IRSA 를 쓰는 앱을 추가할 때**: Terraform `51-pod-roles` 의 `pod_roles` 에 Role(ns · SA) 을, `pod-identity-webhook/values.yaml` 에 같은 ns/SA 매핑을 추가합니다. SA 에 `eks.amazonaws.com/role-arn` annotation 은 달지 않습니다 (ARN 에 계정 ID 가 들어감).
+- **비밀값**: 앱은 `ExternalSecret` 에서 `ClusterSecretStore` `aws-secrets-manager` 를 참조해 Secrets Manager 값(`team04-hotel/prod/*`)을 받습니다. 읽을 수 있는 Secret 은 ESO Role 정책(`51-pod-roles`)과 Secret 리소스 정책(41-main-data)이 제한합니다.
 - **backend Secret**: `backend-secrets` 앱이 Secret `backend-secrets` 를 만듭니다 (`chart/values.yaml` 의 `data` = Secret key ← Secrets Manager 이름 · 속성). backend 차트의 Flyway hook Job 은 차트의 일반 리소스보다 먼저 돌기 때문에 Secret 을 backend 릴리스 밖에 둡니다. 서비스가 새 `secretEnv` 를 쓰면 여기와 Terraform 41-main-data Secret 에 같이 추가합니다.
 - **backend IRSA**: backend 차트가 서비스마다 같은 이름의 ServiceAccount 를 만듭니다 (`serviceAccounts.create: true`). 매핑은 `backend/<서비스 이름>` 으로 추가합니다.
 - **시드 관리자 계정**: `backend-secrets` 앱이 별도 ExternalSecret 으로 Secret `seed-admin` 을 만듭니다 (`chart/values.yaml` 의 `seedAdmin`, 원본 Terraform 12-secrets `team04-hotel/prod/seed-admin`). `backend-secrets` 에 합치지 않아 이 값이 없어도 서비스 Secret 동기화는 영향을 받지 않습니다 (아래 "운영 시드").
@@ -57,6 +59,8 @@ public 레포에 둘 수 없는 클러스터 값(계정 ID 등)은 root 앱을 �
 | 키 | 값 |
 |---|---|
 | `global.awsAccountId` | AWS 계정 ID (CP Role 로 STS 조회) |
+
+**클러스터별 차이** (70 kubeadm · 72 EKS 병행): root 값 `cluster`(기본 kubeadm, 72 Terraform 은 eks)로 나눈다. `chart.yaml` 의 `clusters: [kubeadm]` 은 앱을 고르고(없으면 모든 클러스터), `<앱>/values-<cluster>.yaml` 은 `values.yaml` 위에 더한다. 72 는 한 번만 돌아야 하는 작업(마이그레이션 · seed · llm-ingest · mysql-exporter 계정 Job · 배포 알림 · Alertmanager 발행)을 끈다 — 트래픽을 옮긴 뒤(LDP-202) 72 Terraform `enable_singleton_workloads` 로 켠다 (릴리스 불필요, mysql-exporter 는 `chart.yaml` 의 `clusters` 로 따로 옮김). Git 에 둘 수 없는 앱 전용 값(VPC ID)과 이 토글 값은 root 값 `appValues.<앱>` 으로 받는다.
 
 values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.awsAccountId }}` 로 씁니다 (예: `pod-identity-webhook` 매핑의 `RoleARN`, backend 의 `global.imageRegistry` · `services.*.env`). gitops 레포 `validate.sh` 는 더미 값(`000000000000`)으로 렌더링합니다. 비밀값은 넣지 않습니다.
 
@@ -76,6 +80,7 @@ values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.a
 | `order` | | 적용 순서 = Application sync-wave, 작은 값부터 (기본 50). 같은 값은 함께 sync |
 | `enabled` | | `false` 면 Application 을 만들지 않고 렌더링 검증에서 뺌 (기본 `true`). 이미 있던 Application 은 지워지고 리소스는 남음 |
 | `clusterValues` | | `true` 면 클러스터 값(위)을 더 넘김 (기본 `false`) |
+| `compareOptions` | | Application 비교 옵션(annotation `argocd.argoproj.io/compare-options`). 예: `ServerSideDiff=true` — API 서버가 채우는 기본값까지 반영해 비교. 차트가 만든 필드에 API 서버 기본값이 붙어 영구 OutOfSync 가 될 때만 씀 (기본 없음) |
 
 ## 배포 (ArgoCD)
 
@@ -148,9 +153,10 @@ node-exporter (모든 노드) · kube-state-metrics ┘                         
 | `prometheus-operator-crds` | 12 | backend PodMonitor 는 CRD 만 있으면 됨. CRD 버전은 kube-prometheus-stack 의 Operator 와 같게 |
 | `metrics-server` | 25 | 의존 없음 |
 | `monitoring` · `kube-prometheus-stack` | 55 · 60 | **backend 뒤** — 관측 스택이 Healthy 가 아니어도(Grafana Secret 없음 등) 서비스 배포는 먼저 끝나고, root sync 만 실패로 알림 |
+| `mysql-exporter-setup` · `mysql-exporter` | 62 · 65 | 메인 RDS exporter (**기본 `enabled: false`**, 아래 "DB · 캐시 지표"). 계정 생성 Job 이 실패해도 관측 스택은 먼저 뜸 |
 
-- **온프레미스와 values 를 공유하지 않습니다.** 운영은 Alertmanager · 저장소 · 노출 · 결제 지표가 달라 `kube-prometheus-stack/values.yaml` 하나에 둡니다. 다만 `team04.resources` · `team04.app` 규칙은 온프레미스 `infra/ansible/roles/monitoring/files/kube-prometheus-stack-values-common.yaml` 의 사본이라 규칙을 바꿀 때 양쪽을 같이 고칩니다 (`team04.payment-node` 는 운영에 없음).
-- **대시보드**는 온프레미스 `files/dashboards/*.json` 의 사본(`monitoring/chart/dashboards/`, `team04-payment-node` 제외)입니다. 원본만 고치고 복사합니다 — GitHub CI `Monitoring Dashboard Copies` 가 다르면 실패합니다.
+- **온프레미스와 values 를 공유하지 않습니다.** 운영은 Alertmanager · 저장소 · 노출 · 결제 지표가 달라 `kube-prometheus-stack/values.yaml` 하나에 둡니다. 다만 `team04.resources` · `team04.app` 규칙은 온프레미스 `infra/ansible/roles/monitoring/files/kube-prometheus-stack-values-common.yaml` 의 사본이라 규칙을 바꿀 때 양쪽을 같이 고칩니다 (`team04.payment-node` · `team04.db` 는 운영에 없음). `team04.nodes` 는 운영에만 있습니다 (EKS 전환 준비, LDP-200).
+- **대시보드**는 온프레미스 `files/dashboards/*.json` 의 사본(`monitoring/chart/dashboards/`, `team04-payment-node` · `team04-db` 제외)입니다. 원본만 고치고 복사합니다 — GitHub CI `Monitoring Dashboard Copies` 가 다르면 실패합니다. 운영 전용 대시보드는 `monitoring/chart/dashboards-prod/` 에 둡니다 (사본 검사 대상 아님).
 - **수집 대상 · 라벨**: 모든 대상에 `cluster="main"` · `env="prod"` 를 붙입니다(온프레미스 대시보드 · 규칙 쿼리와 호환). kubeadm 제어부(etcd · scheduler · controller-manager · kube-proxy)는 127.0.0.1 바인딩이라 수집하지 않습니다. backend 는 `backend/values.yaml` `metrics.enabled`(llm-service 제외), 9464 는 Service · Ingress 에 없습니다. Prometheus(워커 파드) → 노드 kubelet 10250 · node-exporter 9100 은 Terraform `30-security` M8 입니다.
 - **Grafana**: `https://grafana.<도메인>` (ALB → Traefik Ingress). WAF 가 `grafana_allowed_cidrs`(Terraform `80-main-edge/terraform.tfvars`) 외 출발지를 403 으로 막습니다 ([Terraform README](../../terraform/README.md) 7절). 로그인은 `admin` / Secrets Manager `team04-hotel/prod/grafana-admin`(Terraform `12-secrets`, 등록 전에는 Grafana 파드가 Secret 을 기다림). 대시보드 · 데이터소스는 코드로만 관리하고 저장소가 없어, UI 에서 고친 것은 재생성 때 사라집니다.
 - **알림**: Alertmanager 가 `severity` `warning` · `critical` 을 10-global 알림 토픽으로 보냅니다(IRSA `team04-hotel-alertmanager`, 토픽 Publish 만). `info` · `Watchdog` 은 보내지 않습니다. 알람 이름 · 네임스페이스로 묶고 해소도 보내며, 같은 알림은 12시간마다 다시 옵니다. 메시지는 Chatbot 사용자 정의 형식이라 `values.yaml` `alertmanager.templateFiles` 를 고칠 때는 결과가 JSON 인지 `amtool template render` 로 확인합니다 (JSON 이 아니면 Chatbot 이 버림 — 로그 `/aws/chatbot/team04-hotel-alerts`).
@@ -164,10 +170,35 @@ k -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090  # 다른
 k -n monitoring logs alertmanager-kube-prometheus-stack-alertmanager-0 -c alertmanager | grep -i sns   # 발행 오류
 ```
 
+### DB · 캐시 지표 (LDP-180)
+
+```
+CloudWatch AWS/RDS (메인 · 결제) · AWS/ElastiCache (Valkey) ──┐
+CloudWatch Logs /aws/rds/instance/<식별자>/{error,slowquery} ─┴→ Grafana 데이터 소스 CloudWatch (IRSA team04-hotel-grafana, 읽기만)
+메인 RDS ← mysqld_exporter (mysql-exporter, 토글) ─────────────────→ Prometheus (쿼리 수 · 락 대기 · 슬로우 쿼리 수)
+```
+
+- **CloudWatch 데이터 소스**: `kube-prometheus-stack/values.yaml` `grafana.additionalDataSources`. 자격 증명은 IRSA(`monitoring/kube-prometheus-stack-grafana` → `team04-hotel-grafana`, Terraform `51-pod-roles`) — 지표 읽기와 `/aws/rds/instance/team04-hotel-*` · `/team04-hotel/prod/*` 로그 그룹의 Logs Insights 조회만 됩니다. 알람(`#alerts`)은 Terraform `90` 이 만들고 [Terraform README](../../terraform/README.md) 14절에 있습니다.
+- **대시보드 `team04 / DB (prod)`** (`monitoring/chart/dashboards-prod/team04-db-prod.json`): 온프레미스 `team04 / DB` 의 운영판입니다. 메인 DB 서버(exporter, 토글이 꺼져 있으면 No data) · RDS 인스턴스(CloudWatch, 메인 · 결제) · 메인 앱 커넥션 풀(backend db-metrics) · Valkey(CloudWatch — 운영엔 redis exporter 없음) · RDS 슬로우 쿼리 · 에러 로그. 결제 서버의 앱 커넥션 풀은 AMP 로 가서 이 Prometheus 에 없습니다.
+- **슬로우 · 에러 로그**: RDS 파라미터 그룹(41 · 42)의 `log_slow_query`(기준 `db_slow_query_seconds`, 기본 1초) · `innodb_print_all_deadlocks` 를 CloudWatch Logs 로 내보냅니다. Grafana Explore → CloudWatch → Logs 에서 그룹 `/aws/rds/instance/team04-hotel-main/slowquery` 를 고릅니다.
+- **mysqld_exporter (토글)**: `mysql-exporter-setup` · `mysql-exporter` 의 `chart.yaml` `enabled` 를 **같이** `true` 로 바꿉니다. 메인 RDS 만 수집합니다 (결제 RDS 는 Payment VPC 라 닿지 않음 — CloudWatch 만).
+  - `mysql-exporter-setup`: ExternalSecret 2개(Job 용 master + exporter / exporter 용 `my.cnf`), RDS CA ConfigMap, 계정 생성 Job(ArgoCD Sync hook — 앱이 sync 할 때 실행: 매일 재생성의 첫 sync, 스크립트 `chart/files/account.sh` · Job 설정 변경). hook 은 ArgoCD 비교 대상이 아니라 Job 만 바뀐 커밋은 sync 를 일으키지 않으므로, 스크립트와 Job spec checksum 을 일반 리소스 ConfigMap `mysql-exporter-account-script` 에 둡니다. 비밀번호는 Terraform 41 이 매일 새로 만들고(`team04-hotel/prod/main-db-exporter`), Job 이 `CREATE USER IF NOT EXISTS` + `ALTER USER` 로 매번 다시 넣습니다. 계정은 `REQUIRE SSL`, `MAX_USER_CONNECTIONS 3`, 권한 `PROCESS` · `REPLICATION CLIENT` · `REPLICA MONITOR` · `SELECT ON performance_schema.*`.
+  - `mysql-exporter`: CA · 호스트 이름을 검증하는 TLS 로 접속합니다(`my.cnf` `ssl-ca`). `performance_schema` 수집기는 끕니다(db.t4g.micro 1 GiB 라 DB 에서 꺼져 있음). `slave_status` 는 복제본이 없어 비어 있지만 읽기 복제본 추가에 대비해 켜 둡니다(MariaDB 는 `REPLICA MONITOR` 권한이 따로 필요 — Job 이 부여). 라벨은 `job="mysql"` · `instance="team04-hotel-main"` (온프레미스 Alloy 와 같은 job).
+  - **`compareOptions: ServerSideDiff=true`**: 차트가 memory limit 을 env `GOMEMLIMIT`(`resourceFieldRef`)로 넣고 API 서버가 `divisor: "0"` 을 채워, 기본 diff 로는 영구 OutOfSync 가 됩니다 → root 가 wave 65 를 기다리다 시간 제한으로 실패(2026-10-29 작업 브랜치 검증). 이 앱만 API 서버 기준 비교(Server-Side Diff, ArgoCD Beta)를 씁니다.
+  - **연결 수 주의**: db.t4g.micro `max_connections` 는 30 입니다(2026-10-29 실측). 평소 22(앱 20 + rdsadmin 2)를 쓰고 exporter 가 1 을 더 씁니다. Job 로그에 그날 값(`max_connections` · `Threads_connected`)이 남습니다.
+
+```bash
+k -n monitoring logs job/mysql-exporter-account                  # 계정 생성 결과 · max_connections
+k -n monitoring get externalsecret mysql-exporter-setup mysql-exporter-config
+# Prometheus /targets 의 serviceMonitor/monitoring/mysql-exporter, 쿼리 mysql_up · rate(mysql_global_status_questions[5m])
+# · increase(mysql_global_status_innodb_row_lock_waits[5m]) · increase(mysql_global_status_slow_queries[5m])
+```
+
 | 규칙 (`team04.*`) | 조건 | 대응 |
 |---|---|---|
 | `ApiGateway5xxRateHigh` | api-gateway 5xx 비율 > 5% 5분 (0.1 rps 이상) | Grafana `team04-service-overview` · api-gateway 로그. ALB 5xx 알람과 같이 오면 워커 · Traefik 쪽 |
 | `NodeEventLoopLagHigh` | 이벤트 루프 지연 p99 > 0.5초 10분 | `team04-nodejs-runtime` 에서 그 파드의 CPU · GC. 동기 작업 · CPU limit |
+| `WorkerCpuAboveT3aBreakEven` (운영 전용 `team04.nodes`) | 워커 평균 CPU(3시간, CP 제외) > 41% 15분 | t3a unlimited 손익분기(m6a.large 대비, 근사치). 노드 대시보드 · Terraform 90 `ec2-cpu-surplus-charged`, 계속되면 워커 인스턴스 타입 검토 |
 | `PodRestartingFrequently` · `ContainerOOMKilled` · `ContainerMemoryNearLimit` | 재시작 · OOM · 메모리 limit 90% | `k -n <ns> describe pod`, 이전 컨테이너 로그(`--previous`), limit 조정 |
 | 기본 규칙 (`Kube*` · `Node*` · `Prometheus*` 등) | kube-prometheus-stack 기본 | 알림 description 의 runbook (`runbook_url` 라벨) |
 

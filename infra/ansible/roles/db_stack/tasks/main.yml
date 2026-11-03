@@ -176,6 +176,42 @@
   changed_when: true
   no_log: true
 
+# ── DB 서버 지표용 exporter 계정 (OpenBao main-db-exporter 가 있을 때만, README 17-6) ──
+# Alloy(node_collectors)가 127.0.0.1 로 접속. 서버 상태만 읽고 앱 데이터는 읽지 못하게 최소 권한
+- name: exporter 계정 client 자격증명
+  ansible.builtin.template:
+    src: exporter.cnf.j2
+    dest: "{{ db_base_dir }}/mysql/exporter.cnf"
+    mode: "0600"
+  when: db_exporter_password | length > 0
+  no_log: true
+
+- name: exporter 계정 권한 검사
+  # 접속이 되고 권한이 맞으면 통과 (매 실행 재설정하지 않음)
+  ansible.builtin.command: >-
+    docker exec mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/exporter.cnf
+    -N -e "SHOW GRANTS FOR CURRENT_USER()"
+  register: db_exporter_grants
+  changed_when: false
+  failed_when: false
+  when: db_exporter_password | length > 0
+
+- name: exporter 계정 재설정
+  ansible.builtin.command:
+    cmd: docker exec -i mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/root.cnf
+    stdin: |
+      CREATE USER IF NOT EXISTS '{{ db_exporter_user }}'@'127.0.0.1' IDENTIFIED BY '{{ db_exporter_password }}' WITH MAX_USER_CONNECTIONS 3;
+      ALTER USER '{{ db_exporter_user }}'@'127.0.0.1' IDENTIFIED BY '{{ db_exporter_password }}' WITH MAX_USER_CONNECTIONS 3;
+      GRANT PROCESS, REPLICATION CLIENT, REPLICA MONITOR ON *.* TO '{{ db_exporter_user }}'@'127.0.0.1';
+      GRANT SELECT ON performance_schema.* TO '{{ db_exporter_user }}'@'127.0.0.1';
+  when: >-
+    db_exporter_password | length > 0 and
+    (db_exporter_grants.rc != 0
+     or 'REPLICA MONITOR' not in db_exporter_grants.stdout
+     or 'performance_schema' not in db_exporter_grants.stdout)
+  changed_when: true
+  no_log: true
+
 # ── MinIO 버킷 · 앱 계정 상태 맞추기 ──────────────────────────
 # mcli 의 alias(local=root, app=앱 계정)는 minio.env 의 MC_HOST_* 로 주입됨
 - name: MinIO 버킷 확인

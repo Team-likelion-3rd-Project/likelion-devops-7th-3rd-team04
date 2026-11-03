@@ -20,6 +20,13 @@ import { RoomAvailability } from '../apps/hotel-service/src/entities/room-availa
 import { RoomImage } from '../apps/hotel-service/src/entities/room-image.entity';
 import { Facility } from '../apps/hotel-service/src/entities/facility.entity';
 import { mariaDbSslOptions } from '../libs/common/src/db/mariadb-ssl';
+import {
+  FACILITY_SEEDS,
+  HOTEL_SEEDS,
+  NOTICE_SEEDS,
+  RoomDetail,
+  WEEKEND_PRICE_RATE,
+} from './seed-catalog';
 
 // docker compose 기동 시(db-seed 서비스, scripts/Dockerfile.seed) 1회 실행되는 시딩 스크립트입니다.
 // 온프레미스 dev는 Ansible db_seed, 운영은 backend 차트의 seed Job(같은 Dockerfile 이미지, LDP-141)이 실행합니다.
@@ -39,135 +46,61 @@ const DB_DATABASE = process.env.DB_DATABASE;
 // admin_credentials 해시 방식은 auth-service.service.ts의 SALT_ROUNDS와 동일하게 맞춥니다.
 const SALT_ROUNDS = 10;
 
-// room_availabilities 시딩 시 기본 가격 — 아래 요금표(HOTEL_SEEDS의 weekdayPrice)에 없는 객실(관리자가 만든
+// room_availabilities 시딩 시 기본 가격 — 요금표(seed-catalog.ts HOTEL_SEEDS의 weekdayPrice)에 없는 객실(관리자가 만든
 // 객실 종류)에 쓰고, 예전 시드가 모든 날짜에 넣던 값이라 요금표 적용 대상을 고를 때도 쓴다 (LDP-174).
 const DEFAULT_ROOM_PRICE = 100000;
 
-// 주말(금·토 밤 숙박) 요금 = 평일 요금 × 1.2 (LDP-174, 10-26 요금표)
-const WEEKEND_PRICE_RATE = 1.2;
-
 // room_availabilities에 채워 넣을 기간(오늘부터 며칠간). 시드를 다시 실행하면 이 기간 중 빠진 날짜만 채운다.
 const AVAILABILITY_DAYS = Number(process.env.SEED_AVAILABILITY_DAYS) || 365;
-
-// booking-service.service.ts의 FACILITY_NAME_INDOOR_POOL/FACILITY_NAME_LOUNGE 상수와
-// name이 정확히 일치해야 createBooking의 편의시설 요금 조회(이름 매칭)가 성공합니다.
-const FACILITY_SEEDS: Pick<Facility, 'name' | 'price'>[] = [
-  { name: '수영장', price: 30000 },
-  { name: '라운지', price: 50000 },
-];
-
-// 첫 공지 (LDP-147) — 프론트가 직접 적어 두던 frontend/src/data/notices.ts의 6건 그대로.
-// date는 작성일(created_at)로 넣는다 (한국 날짜가 같게 보이도록 UTC 자정).
-const NOTICE_SEEDS: {
-  date: string;
-  category: 'NOTICE' | 'EVENT' | 'MAINTENANCE';
-  title: string;
-  body: string;
-  pinned: boolean;
-}[] = [
-  {
-    date: '2026-10-01',
-    category: 'NOTICE',
-    title: '머묾 온라인 예약 오픈',
-    body: '서울점·부산점·제주점의 객실을 홈페이지에서 바로 예약하고 결제할 수 있습니다. 예약 내역과 결제 내역은 마이페이지에서 확인하세요.',
-    pinned: false,
-  },
-  {
-    date: '2026-10-05',
-    category: 'NOTICE',
-    title: '제주점 라운지 리뉴얼 오픈',
-    body: '제주점 라운지가 새 단장을 마치고 문을 열었습니다. 오름이 보이는 창가 좌석과 지역 재료로 만든 다과를 준비했습니다.',
-    pinned: false,
-  },
-  {
-    date: '2026-10-10',
-    category: 'MAINTENANCE',
-    title: '예약 시스템 점검 안내 (10월 12일 02:00~04:00)',
-    body: '더 안정적인 서비스를 위해 시스템 점검을 진행합니다. 점검 시간에는 예약·결제가 잠시 중단되며, 이미 완료된 예약에는 영향이 없습니다.',
-    pinned: false,
-  },
-  {
-    date: '2026-10-15',
-    category: 'EVENT',
-    title: '가을 시즌 수영장 야간 운영 연장',
-    body: '10월 한 달 동안 세 지점 수영장을 밤 11시까지 운영합니다. 예약 시 수영장 옵션을 선택하시면 이용하실 수 있습니다.',
-    pinned: false,
-  },
-  {
-    date: '2026-10-20',
-    category: 'NOTICE',
-    title:
-      '결제 기한 안내 — 결제 대기 예약은 기한이 지나면 자동으로 만료됩니다',
-    body: '오늘 체크인하는 예약은 예약 후 30분, 내일 이후 체크인하는 예약은 체크인 전날 자정까지 결제해 주세요. 기한은 마이페이지의 예약 상세와 결제 대기 화면에서 확인할 수 있습니다.',
-    pinned: true,
-  },
-  {
-    date: '2026-10-23',
-    category: 'NOTICE',
-    title: '호텔 브랜드명이 "머묾(MEOMULM)"으로 바뀌었습니다',
-    body: '머무는 순간을 온전히 손님의 시간으로 만들겠다는 뜻을 담아, 브랜드명을 "머묾"으로 정했습니다. 예약 내역과 회원 정보는 그대로 이용하실 수 있습니다.',
-    pinned: true,
-  },
-];
 
 const SEED_ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL;
 const SEED_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD;
 const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME || '본사 관리자';
 
-// 지점 관리자·직원 계정 (LDP-176). 위 본사 계정(SUPER)과 같은 비밀번호·이메일 도메인을 쓴다
+// 지점 관리자·직원 계정 (LDP-176). 이메일 도메인은 위 본사 계정(SUPER)을 따른다
 // (예: admin@example.com → seoul.manager@example.com). 지점은 HOTEL_SEEDS의 호텔 이름으로 찾는다.
+// 비밀번호는 계정마다 passwordEnv 환경변수로 따로 둔다 (LDP-190). 비어 있으면 본사 비밀번호를 쓰고 경고를 남긴다.
 const BRANCH_ADMIN_SEEDS: {
   localPart: string;
   name: string;
   hotelName: string;
   adminRole: 'MANAGER' | 'STAFF';
+  passwordEnv: string;
 }[] = [
   {
     localPart: 'seoul.manager',
     name: '서울점 관리자',
     hotelName: '서울점',
     adminRole: 'MANAGER',
+    passwordEnv: 'SEED_SEOUL_MANAGER_PASSWORD',
   },
   {
     localPart: 'busan.manager',
     name: '부산점 관리자',
     hotelName: '부산점',
     adminRole: 'MANAGER',
+    passwordEnv: 'SEED_BUSAN_MANAGER_PASSWORD',
   },
   {
     localPart: 'jeju.manager',
     name: '제주점 관리자',
     hotelName: '제주점',
     adminRole: 'MANAGER',
+    passwordEnv: 'SEED_JEJU_MANAGER_PASSWORD',
   },
   {
     localPart: 'seoul.staff',
     name: '서울점 직원',
     hotelName: '서울점',
     adminRole: 'STAFF',
+    passwordEnv: 'SEED_SEOUL_STAFF_PASSWORD',
   },
 ];
-
-interface HotelSeed {
-  hotel: Pick<Hotel, 'name' | 'address' | 'phoneNumber' | 'description'>;
-  // images: scripts/seed-images/ 안의 사진 파일 이름 (배열 순서 = 노출 순서, 첫 번째가 대표 사진) — seedRoomImages()
-  // weekdayPrice: 평일(일~목 밤 숙박) 1박 요금 — 주말은 WEEKEND_PRICE_RATE를 곱한다 (LDP-174)
-  rooms: (Pick<RoomType, 'name' | 'capacity' | 'totalCount' | 'description'> & {
-    images: string[];
-    weekdayPrice: number;
-  })[];
-}
 
 // 객실 설명에 소개 문구 + 침실/침대 구성 + 최대 인원 + 제공 어메니티를 한 항목씩 줄바꿈해서 정리한다.
 // 프론트의 room-detail-description/room-detail-modal-description 둘 다 white-space: pre-line이라
 // 이 \n 줄바꿈이 그대로 화면에 반영된다(RoomDetailPage.css, RoomDetailModal.css).
-function describeRoom(opts: {
-  intro: string;
-  bedroomCount: number;
-  bedConfig: string;
-  maxGuests: number;
-  amenities: string[];
-}): string {
+function describeRoom(opts: RoomDetail): string {
   return [
     opts.intro,
     '',
@@ -176,303 +109,6 @@ function describeRoom(opts: {
     `- 제공 어메니티: ${opts.amenities.join(', ')}`,
   ].join('\n');
 }
-
-// 호텔당 객실 타입 4개, 타입별 보유 수량(totalCount)을 합쳐 호텔당 방 20개 · 전체 60개 (LDP-62).
-// rooms 한 줄 = 객실 타입이라, 같은 날짜에 보유 수량만큼 예약을 받는다 — 성능 테스트나 여러 명이 동시에
-// 테스트해도 금방 매진되지 않게 하려는 것 (60개 × 365일 = 21,900박).
-//
-// hotelId가 1/2/3 순서로 생성되도록(빈 테이블 기준 auto_increment) 배열 순서를 유지합니다.
-// frontend/src/data/hotels.ts의 하드코딩 배열(서울점=1, 부산점=2, 제주점=3)과 맞물립니다.
-const HOTEL_SEEDS: HotelSeed[] = [
-  {
-    hotel: {
-      name: '서울점',
-      address: '서울 강남구 테헤란로 123',
-      phoneNumber: '02-1234-5678',
-      description: '도심 속에서 누리는 조용한 휴식',
-    },
-    rooms: [
-      {
-        name: '디럭스 더블룸',
-        weekdayPrice: 120000,
-        images: [
-          '01-seoul-deluxe-double-1.jpg',
-          '01-seoul-deluxe-double-2.jpg',
-        ],
-        capacity: 2,
-        totalCount: 10,
-        description: describeRoom({
-          intro: '시티뷰를 갖춘 넓은 더블룸입니다.',
-          bedroomCount: 1,
-          bedConfig: '킹사이즈 베드 1개',
-          maxGuests: 2,
-          amenities: [
-            '무료 Wi-Fi',
-            '43인치 스마트 TV',
-            '미니바',
-            '캡슐 커피머신',
-            '헤어드라이어',
-            '다리미',
-            '전자 금고',
-            '욕실 어메니티(샴푸·린스·바디워시)',
-          ],
-        }),
-      },
-      {
-        name: '스탠다드 트윈룸',
-        weekdayPrice: 100000,
-        images: [
-          '02-seoul-standard-twin-1.jpg',
-          '02-seoul-standard-twin-2.jpg',
-        ],
-        capacity: 2,
-        totalCount: 5,
-        description: describeRoom({
-          intro: '실용적인 구성의 스탠다드 트윈룸입니다.',
-          bedroomCount: 1,
-          bedConfig: '싱글사이즈 베드 2개',
-          maxGuests: 2,
-          amenities: ['무료 Wi-Fi', '32인치 TV', '냉장고', '전기 주전자', '헤어드라이어', '욕실 어메니티'],
-        }),
-      },
-      {
-        name: '프리미어 스위트룸',
-        weekdayPrice: 150000,
-        images: [
-          '03-seoul-premier-suite-1.jpg',
-          '03-seoul-premier-suite-2.jpg',
-        ],
-        capacity: 3,
-        totalCount: 2,
-        description: describeRoom({
-          intro: '넓은 거실 공간을 갖춘 프리미어 스위트룸입니다.',
-          bedroomCount: 1,
-          bedConfig: '킹사이즈 베드 1개 + 별도 거실의 소파베드 1개',
-          maxGuests: 3,
-          amenities: [
-            '무료 Wi-Fi',
-            '55인치 스마트 TV',
-            '미니바',
-            '네스프레소 머신',
-            '욕조',
-            '가운 & 슬리퍼',
-            '전자 금고',
-            '다리미',
-          ],
-        }),
-      },
-      {
-        name: '패밀리룸',
-        weekdayPrice: 150000,
-        images: ['04-seoul-family-1.jpg', '04-seoul-family-2.jpg'],
-        capacity: 4,
-        totalCount: 3,
-        description: describeRoom({
-          intro: '가족 단위 투숙객을 위한 넉넉한 패밀리룸입니다.',
-          bedroomCount: 2,
-          bedConfig: '퀸사이즈 베드 1개 + 싱글사이즈 베드 2개',
-          maxGuests: 4,
-          amenities: [
-            '무료 Wi-Fi',
-            '객실별 TV 2대',
-            '냉장고',
-            '전자레인지',
-            '헤어드라이어',
-            '아기 침대 요청 가능',
-            '욕실 어메니티',
-          ],
-        }),
-      },
-    ],
-  },
-  {
-    hotel: {
-      name: '부산점',
-      address: '부산 해운대구 해운대해변로 264',
-      phoneNumber: '051-1234-5678',
-      description: '오션뷰와 함께하는 여유로운 시간',
-    },
-    rooms: [
-      {
-        name: '오션뷰 스위트룸',
-        weekdayPrice: 170000,
-        images: [
-          '05-busan-oceanview-suite-1.jpg',
-          '05-busan-oceanview-suite-2.jpg',
-        ],
-        capacity: 2,
-        totalCount: 5,
-        description: describeRoom({
-          intro: '탁 트인 오션뷰를 자랑하는 스위트룸입니다.',
-          bedroomCount: 1,
-          bedConfig: '킹사이즈 베드 1개 + 별도 거실',
-          maxGuests: 2,
-          amenities: [
-            '오션뷰 발코니',
-            '무료 Wi-Fi',
-            '스마트 TV',
-            '미니바',
-            '욕조',
-            '캡슐 커피머신',
-            '가운 & 슬리퍼',
-          ],
-        }),
-      },
-      {
-        name: '스탠다드 더블룸',
-        weekdayPrice: 90000,
-        images: [
-          '06-busan-standard-double-1.jpg',
-          '06-busan-standard-double-2.jpg',
-        ],
-        capacity: 2,
-        totalCount: 5,
-        description: describeRoom({
-          intro: '아늑한 구성의 스탠다드 더블룸입니다.',
-          bedroomCount: 1,
-          bedConfig: '더블사이즈 베드 1개',
-          maxGuests: 2,
-          amenities: ['무료 Wi-Fi', 'TV', '냉장고', '헤어드라이어', '욕실 어메니티'],
-        }),
-      },
-      {
-        name: '프리미엄 오션뷰룸',
-        weekdayPrice: 150000,
-        images: [
-          '07-busan-premium-oceanview-1.jpg',
-          '07-busan-premium-oceanview-2.jpg',
-        ],
-        capacity: 3,
-        totalCount: 5,
-        description: describeRoom({
-          intro: '파노라마 오션뷰를 즐길 수 있는 프리미엄룸입니다.',
-          bedroomCount: 1,
-          bedConfig: '킹사이즈 베드 1개 + 싱글 소파베드 1개',
-          maxGuests: 3,
-          amenities: [
-            '통유리 오션뷰 창',
-            '전용 발코니',
-            '무료 Wi-Fi',
-            '스마트 TV',
-            '미니바',
-            '캡슐 커피머신',
-            '욕조',
-          ],
-        }),
-      },
-      {
-        name: '패밀리 트윈룸',
-        weekdayPrice: 140000,
-        images: ['08-busan-family-twin-1.jpg', '08-busan-family-twin-2.jpg'],
-        capacity: 4,
-        totalCount: 5,
-        description: describeRoom({
-          intro: '가족 여행객을 위한 넓은 패밀리 트윈룸입니다.',
-          bedroomCount: 2,
-          bedConfig: '더블사이즈 베드 1개 + 싱글사이즈 베드 2개',
-          maxGuests: 4,
-          amenities: [
-            '오션뷰 발코니',
-            '무료 Wi-Fi',
-            '객실별 TV 2대',
-            '냉장고',
-            '전자레인지',
-            '욕실 어메니티',
-          ],
-        }),
-      },
-    ],
-  },
-  {
-    hotel: {
-      name: '제주점',
-      address: '제주 서귀포시 중문관광로72번길 100',
-      phoneNumber: '064-1234-5678',
-      description: '자연 속 프라이빗한 힐링 스테이',
-    },
-    rooms: [
-      {
-        name: '가든뷰 트윈룸',
-        weekdayPrice: 110000,
-        images: [
-          '09-jeju-gardenview-twin-1.jpg',
-          '09-jeju-gardenview-twin-2.jpg',
-        ],
-        capacity: 2,
-        totalCount: 5,
-        description: describeRoom({
-          intro: '아늑한 정원 전망의 트윈룸입니다.',
-          bedroomCount: 1,
-          bedConfig: '싱글사이즈 베드 2개',
-          maxGuests: 2,
-          amenities: ['정원뷰 창', '무료 Wi-Fi', 'TV', '냉장고', '헤어드라이어', '욕실 어메니티'],
-        }),
-      },
-      {
-        name: '스탠다드 더블룸',
-        weekdayPrice: 90000,
-        images: [
-          '10-jeju-standard-double-1.jpg',
-          '10-jeju-standard-double-2.jpg',
-        ],
-        capacity: 2,
-        totalCount: 10,
-        description: describeRoom({
-          intro: '제주의 자연을 가까이 느낄 수 있는 스탠다드룸입니다.',
-          bedroomCount: 1,
-          bedConfig: '더블사이즈 베드 1개',
-          maxGuests: 2,
-          amenities: ['무료 Wi-Fi', 'TV', '냉장고', '전기 주전자', '욕실 어메니티'],
-        }),
-      },
-      {
-        name: '프라이빗 풀빌라룸',
-        weekdayPrice: 250000,
-        images: [
-          '11-jeju-private-poolvilla-1.jpg',
-          '11-jeju-private-poolvilla-2.jpg',
-        ],
-        capacity: 3,
-        totalCount: 3,
-        description: describeRoom({
-          intro: '독립적인 야외 풀을 갖춘 프라이빗 풀빌라룸입니다.',
-          bedroomCount: 1,
-          bedConfig: '킹사이즈 베드 1개',
-          maxGuests: 3,
-          amenities: [
-            '프라이빗 야외 수영장',
-            '전용 테라스',
-            '무료 Wi-Fi',
-            '스마트 TV',
-            '미니바',
-            '가운 & 슬리퍼',
-          ],
-        }),
-      },
-      {
-        name: '패밀리 스위트룸',
-        weekdayPrice: 170000,
-        images: ['12-jeju-family-suite-1.jpg', '12-jeju-family-suite-2.jpg'],
-        capacity: 4,
-        totalCount: 2,
-        description: describeRoom({
-          intro: '넓은 공간의 패밀리 스위트룸입니다.',
-          bedroomCount: 2,
-          bedConfig: '퀸사이즈 베드 1개 + 싱글사이즈 베드 2개',
-          maxGuests: 4,
-          amenities: [
-            '정원뷰 테라스',
-            '무료 Wi-Fi',
-            '객실별 TV 2대',
-            '냉장고',
-            '전자레인지 & 전기 주전자',
-            '욕실 어메니티',
-          ],
-        }),
-      },
-    ],
-  },
-];
 
 // mariadb 컨테이너가 healthy해도, 접속 직후 잠깐 연결이 튈 수 있어 짧게 재시도합니다.
 // 테이블은 전부 main-db-migration(Flyway)이 만들어 두므로 synchronize: false로 엽니다 — true로 열면
@@ -575,7 +211,6 @@ async function seedBranchAdmins(dataSource: DataSource): Promise<void> {
   const hotelRepository = dataSource.getRepository(Hotel);
   const adminRepository = dataSource.getRepository(Admin);
   const credentialRepository = dataSource.getRepository(AdminCredential);
-  const passwordHash = await bcrypt.hash(SEED_ADMIN_PASSWORD, SALT_ROUNDS);
 
   for (const seed of BRANCH_ADMIN_SEEDS) {
     const email = `${seed.localPart}@${domain}`;
@@ -591,6 +226,14 @@ async function seedBranchAdmins(dataSource: DataSource): Promise<void> {
       );
       continue;
     }
+    let password = process.env[seed.passwordEnv];
+    if (!password) {
+      console.warn(
+        `[seed] ${seed.passwordEnv}가 없어 본사 비밀번호로 만듭니다: ${email}`,
+      );
+      password = SEED_ADMIN_PASSWORD;
+    }
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
     const admin = await adminRepository.save(
       adminRepository.create({
         email,
@@ -626,13 +269,13 @@ async function seedHotelsAndRooms(dataSource: DataSource): Promise<void> {
       hotelRepository.create(seed.hotel),
     );
     await roomRepository.save(
-      seed.rooms.map(({ name, capacity, totalCount, description }) =>
+      seed.rooms.map(({ name, capacity, totalCount, detail }) =>
         roomRepository.create({
           hotelId: hotel.hotelId,
           name,
           capacity,
           totalCount,
-          description,
+          description: describeRoom(detail),
         }),
       ),
     );

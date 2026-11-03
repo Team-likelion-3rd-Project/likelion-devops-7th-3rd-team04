@@ -1,0 +1,6 @@
+# 72 EKS 의 AppProject bootstrap · root 앱. 70 은 Ansible roles/argocd argocd-root-aws.yaml.j2 가 같은 내용을 만든다
+apiVersion: v2
+name: argocd-bootstrap
+description: AppProject bootstrap, root Application prod-apps
+type: application
+version: 1.0.0

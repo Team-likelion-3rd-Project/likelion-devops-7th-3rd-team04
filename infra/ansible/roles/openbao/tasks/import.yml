@@ -69,16 +69,20 @@
         password: "{{ lookup('env', 'PAYMENT_DB_ROOT_PASSWORD') }}"
       toss-payments:
         secret_key: "{{ backend_env.TOSS_SECRET_KEY | default('') | trim }}"
-      # 차트 seed Job 의 관리자 계정 (backend/.env 의 SEED_ADMIN_*)
-      seed-admin:
-        email: "{{ backend_env.SEED_ADMIN_EMAIL | default('') }}"
-        password: "{{ backend_env.SEED_ADMIN_PASSWORD | default('') }}"
+      # 차트 seed Job 의 관리자 계정 (backend/.env 의 SEED_*). ESO 가 속성을 이름 그대로 가져가므로 속성 이름 = 환경변수 이름 (LDP-193, 운영과 다름)
+      #   SEED_ADMIN_EMAIL · SEED_ADMIN_PASSWORD 는 필수, SEED_ADMIN_NAME · 지점 계정 SEED_*_PASSWORD 는 값이 있을 때만
+      seed-admin: >-
+        {{ {'SEED_ADMIN_EMAIL': backend_env.SEED_ADMIN_EMAIL | default(''),
+            'SEED_ADMIN_PASSWORD': backend_env.SEED_ADMIN_PASSWORD | default('')}
+           | combine(backend_env | dict2items
+                     | selectattr('key', 'match', '^SEED_(ADMIN_NAME|.+_PASSWORD)$')
+                     | rejectattr('value', 'equalto', '')
+                     | items2dict) }}
       # ── playbook 이 만든 .secrets/*.env (gitlab.yml · k8s-cicd.yml · control-plane.yml) — 속성 = 파일의 변수 이름 ──
       gitlab-k8s: "{{ openbao_import_files['gitlab-k8s.env'] }}"
       payment-node: "{{ openbao_import_files['payment-node.env'] }}"
       github-mirror: "{{ openbao_import_files['github-mirror.env'] }}"
       gitlab-runner: "{{ openbao_import_files['gitlab-runner.env'] }}"
-      aws-ci-runner: "{{ openbao_import_files['aws-ci-runner.env'] }}"
       argocd: "{{ openbao_import_files['argocd.env'] }}"
       k8s-join: "{{ openbao_import_files['join.env'] }}"
       k8s-admin:
@@ -90,7 +94,7 @@
          else (playbook_dir ~ '/' ~ openbao_import_gcp_key_file) | realpath }}
     openbao_import_files: >-
       {%- set out = {} -%}
-      {%- for f in ['gitlab-k8s.env', 'payment-node.env', 'github-mirror.env', 'gitlab-runner.env', 'aws-ci-runner.env', 'argocd.env', 'join.env'] -%}
+      {%- for f in ['gitlab-k8s.env', 'payment-node.env', 'github-mirror.env', 'gitlab-runner.env', 'argocd.env', 'join.env'] -%}
         {%- set _ = out.update({f: lookup('ansible.builtin.file', local_secrets_dir ~ '/' ~ f, errors='ignore') | default('', true) | parse_dotenv}) -%}
       {%- endfor -%}
       {{ out }}
@@ -116,7 +120,6 @@
       payment-node: [GITLAB_URL, GITLAB_TS_IP, GITLAB_REGISTRY, PAYMENT_DEPLOY_USER, PAYMENT_DEPLOY_TOKEN]
       github-mirror: [GITLAB_HOST, GITLAB_MIRROR_REPO, GITLAB_MIRROR_TOKEN]
       gitlab-runner: [GITLAB_URL, GITLAB_TS_IP, GITLAB_RUNNER_TOKEN]
-      aws-ci-runner: [GITLAB_URL, GITLAB_TS_IP, GITLAB_RUNNER_TOKEN]
       argocd: [ARGOCD_URL, ARGOCD_ADMIN_USER, ARGOCD_ADMIN_PASSWORD]
       k8s-join: [K8S_API_ENDPOINT, K8S_JOIN_TOKEN, K8S_CA_CERT_HASH]
   run_once: true

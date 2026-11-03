@@ -9,6 +9,8 @@ export interface UserInfo {
   email: string
   name: string
   role: string
+  /** 카카오로 가입한 회원이면 'KAKAO', 아니면 '' — 비밀번호 변경 메뉴를 숨길 때 쓴다 (LDP-195) */
+  socialProvider?: string
 }
 
 export interface AuthStore {

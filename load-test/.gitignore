@@ -1,0 +1,4 @@
+# k6 실행 결과 (handleSummary) — 위키 「검증 결과」에 옮겨 적고 파일은 커밋하지 않는다.
+# k6 가 디렉터리를 만들지 않으므로 디렉터리는 .gitkeep 으로 남긴다
+k6/result/*
+!k6/result/.gitkeep

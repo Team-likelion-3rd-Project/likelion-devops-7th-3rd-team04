@@ -16,12 +16,18 @@ GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 GCP_LOCATION = os.getenv("GCP_LOCATION", "asia-northeast3")
 VERTEX_CHAT_LOCATION = os.getenv("VERTEX_CHAT_LOCATION", "global")
 GCP_SA_KEY_JSON = os.getenv("GCP_SA_KEY_JSON")
+# EKS(운영): 파드의 AWS 자격 증명으로 Workload Identity Federation (Terraform 14-gcp-llm AWS Provider). 키가 없을 때만 씁니다.
+GCP_WIF_AWS_AUDIENCE = os.getenv("GCP_WIF_AWS_AUDIENCE")
+GCP_WIF_SERVICE_ACCOUNT_EMAIL = os.getenv("GCP_WIF_SERVICE_ACCOUNT_EMAIL")
 VERTEX_CHAT_MODEL = os.getenv("VERTEX_CHAT_MODEL", "gemini-2.5-flash")
 VERTEX_EMBED_MODEL = os.getenv("VERTEX_EMBED_MODEL", "text-multilingual-embedding-002")
 
 # RAG 벡터 스토어: s3vectors(prod, AWS S3 Vectors) | object(dev, MinIO 등 S3 호환 저장소의 JSON) | none
 VECTOR_STORE = os.getenv("VECTOR_STORE", "s3vectors")
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
+# 이 코사인 유사도 미만인 문서는 context에 넣지 않습니다. 임베딩 모델마다 분포가 달라 scripts.eval_retrieval로 정합니다
+# (text-multilingual-embedding-002 기준 관련 문서 최저 0.646 · 무관 질문 0.53~0.68 → 관련 문서를 놓치지 않는 0.62).
+RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.62"))
 
 # VECTOR_STORE=s3vectors — VECTOR_BUCKET_NAME이 비어 있으면 RAG 없이 동작합니다.
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
@@ -39,3 +45,10 @@ VECTOR_OBJECT_REFRESH_SECONDS = int(os.getenv("VECTOR_OBJECT_REFRESH_SECONDS", "
 
 # 의도 분류(app/intent.py)에 넣을 최근 대화 이력 메시지 수.
 INTENT_HISTORY_MESSAGES = int(os.getenv("INTENT_HISTORY_MESSAGES", "10"))
+
+# 타임아웃 — 바깥(n8n·chat-bot-service 50초)보다 먼저 끊기도록 맞춥니다(../n8n/README.md 타임아웃 절).
+# LLM·임베딩 호출 1회의 타임아웃과, 429(용량 부족)·5xx·타임아웃 시 지수 백오프로 다시 시도할 횟수.
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "15"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+# POST /chat 한 턴(의도 분류 + RAG 검색 + 답변) 전체의 마감. 넘으면 504.
+CHAT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("CHAT_REQUEST_TIMEOUT_SECONDS", "40"))

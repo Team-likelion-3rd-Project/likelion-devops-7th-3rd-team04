@@ -1,4 +1,4 @@
-# 운영환경 VPC 3개. VPC 간 Peering / TGW 없이 메인 → 결제만 PrivateLink(60-payment-app) 로 잇는다.
+# 운영환경 VPC 2개. VPC 간 Peering / TGW 없이 메인 → 결제만 PrivateLink(60-payment-app) 로 잇는다.
 #
 # CIDR 은 서로, 그리고 아래 대역과 겹치지 않게 잡는다.
 #   Calico 파드 10.0.0.0/16, kubeadm 서비스 10.96.0.0/12 (infra/ansible group_vars)
@@ -6,9 +6,7 @@
 #
 #   VPC          CIDR            계층 (AZ)
 #   Main         10.10.0.0/16    public(a·b) cp(a·b·c) db(a·b) worker(a·b, /19 — EKS VPC CNI 파드 IP 여유)
-#   Payment      10.20.0.0/16    public(a·b) firewall(a·b, /28) lb(a·b) app(a·b) db(a·b)
-#   Deployment   10.30.0.0/16    public(a) runner(a)
-#
+#   Payment      10.20.0.0/16    public(a·b) firewall(a·b, /28) lb(a·b) app(a·b) db(a·b)#
 # DB 계층은 NAT 경로 없이 isolated 라우트 테이블을 쓴다.
 # 결제 VPC 의 lb · app 계층 egress 는 Network Firewall(network-firewall.tf) 을 거쳐 NAT 로 나간다.
 
@@ -87,28 +85,6 @@ module "payment" {
 
   # 10-global 버킷 정책이 vpc-flow-logs/AWSLogs/<계정>/* 에만 쓰기를 허용한다
   flow_log_destination_arn = "${var.log_bucket_arn}/vpc-flow-logs/"
-}
-
-# AZ 하나뿐이라 NAT 도 항상 1개
-module "deployment" {
-  source = "../../../modules/vpc"
-
-  name       = "${local.name}-deployment"
-  cidr_block = "10.30.0.0/16"
-
-  subnets = {
-    public = {
-      public = true
-      cidrs  = { a = "10.30.0.0/24" }
-    }
-    runner = {
-      cidrs = { a = "10.30.4.0/24" }
-    }
-  }
-
-  # 무료라 둔다. AL2023 패키지 저장소·ECR pull 레이어(S3) 트래픽만 NAT 를 우회한다
-  # (ECR push 는 레이어도 dkr 엔드포인트로 올라가므로 NAT 를 거친다)
-  gateway_endpoints = ["s3"]
 }
 
 # 결제 app-a 서브넷의 고정 IP 대역. explicit 예약 대역은 AWS 가 자동 할당하지 않으므로

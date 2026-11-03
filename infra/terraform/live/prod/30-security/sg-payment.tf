@@ -12,7 +12,7 @@
 #
 # pg-mock(부하 테스트용 토스 대체) 은 결제 앱과 분리한 인스턴스다 (61-payment-mock). 결제 앱만 mock 포트로 붙는다.
 #
-# payment_lambda (P6) 는 결제 웹훅 이슈에서 추가한다.
+# 토스 웹훅 Lambda (50-payment-webhook) 는 인터페이스 엔드포인트(SQS) 로만 나간다 (P6).
 
 locals {
   payment_security_groups = {
@@ -21,6 +21,8 @@ locals {
     payment_vpce = { vpc = "payment", description = "Payment VPC interface endpoints" }
     payment_nlb  = { vpc = "payment", description = "Payment internal NLB (PrivateLink endpoint service)" }
     payment_mock = { vpc = "payment", description = "Payment PG mock instance (load test)" }
+
+    payment_lambda = { vpc = "payment", description = "Payment Toss webhook Lambda" }
   }
 
   payment_ingress_rules = {
@@ -37,6 +39,9 @@ locals {
 
     # P7 결제 앱 → pg-mock (PAYMENT_PROVIDER=MOCK)
     p7_mock_from_app = { sg = "payment_mock", source = "payment_app", port = var.payment_mock_port, description = "P7 PG mock from payment app" }
+
+    # P6 웹훅 Lambda → 인터페이스 엔드포인트 (SQS)
+    p6_vpce_from_lambda = { sg = "payment_vpce", source = "payment_lambda", port = 443, description = "P6 HTTPS from payment webhook Lambda" }
   }
 
   payment_egress_rules = {
@@ -55,5 +60,7 @@ locals {
     # mock 은 외부로 나갈 일이 없다. 인터페이스 엔드포인트(ECR · SSM) 와 S3 게이트웨이 엔드포인트(ECR 레이어 · dnf) 만.
     # S3 게이트웨이는 prefix list 대상이라 CIDR 로 연다 (NFW · DNS Firewall 이 외부 도메인을 한 번 더 막는다)
     p4_mock_https = { sg = "payment_mock", cidr = "0.0.0.0/0", port = 443, description = "P4 HTTPS (VPC endpoints, S3 gateway)" }
+
+    p6_lambda_to_vpce = { sg = "payment_lambda", source = "payment_vpce", port = 443, description = "P6 HTTPS to VPC endpoints" }
   }
 }
