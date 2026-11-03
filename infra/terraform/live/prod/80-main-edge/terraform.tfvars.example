@@ -6,3 +6,8 @@
 grafana_allowed_cidrs = [
   # "203.0.113.10/32", # 이름
 ]
+
+# WAF rate limit 에서 뺄 출발지 (부하 생성기 73 EIP 는 자동). 노트북에서 smoke 할 때만 넣고, 끝나면 비운다.
+waf_rate_limit_exempt_cidrs = [
+  # "203.0.113.10/32", # 이름
+]

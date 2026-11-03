@@ -52,6 +52,7 @@ infra/terraform/
         ├── 61-payment-mock/         🔁 부하 테스트용 pg-mock 인스턴스
         ├── 70-main-cluster-kubeadm/ 🔁
         ├── 71-payment-link/         🔁 메인 VPC 결제 PrivateLink 엔드포인트 · 고정 이름
+        ├── 73-load-generator/       🔁 부하 테스트 k6 생성기 · EIP (기본 꺼짐, 80 WAF rate limit 예외)
         ├── 80-main-edge/            🔁
         └── 90-observability-alarms/ 🔁 필수 CloudWatch 알람 → Slack #alerts
 ```
@@ -162,7 +163,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 41-main-data   42-payment-data   43-messaging   44-payment-endpoints
 50-payment-webhook   51-pod-roles
 60-payment-app   61-payment-mock
-70-main-cluster-kubeadm   71-payment-link   72-main-cluster-eks
+70-main-cluster-kubeadm   71-payment-link   72-main-cluster-eks   73-load-generator
 80-main-edge
 90-observability-alarms
 ```
@@ -390,6 +391,7 @@ AWS_PROFILE=team04 aws elbv2 describe-target-health \
 ```
 
 - WAF 차단 응답은 403 입니다. IP 당 rate limit 은 기본 60초에 300회(`waf_rate_limit`, `waf_rate_limit_window_sec`)이고, 넘은 뒤 차단까지 수십 초 걸립니다.
+- **rate limit 예외**: IP set `team04-hotel-main-rate-limit-exempt` 출발지는 rate limit 집계에서 빠집니다 (IP reputation · 관리형 규칙 · Grafana 허용 목록은 그대로). `73-load-generator` 를 켜면 생성기 EIP 가 자동으로 들어가고(`80` 이 `73` output 을 읽음), 그 밖의 출발지는 `80-main-edge/terraform.tfvars` 의 `waf_rate_limit_exempt_cidrs` 에 넣습니다. 생성기를 켜고 끌 때는 `73` 다음 `80` 을 apply 합니다. 사용법은 [`load-test/README.md`](../../load-test/README.md) 5절.
 - **Grafana (`grafana.<도메인>`)** 는 WAF 규칙 `grafana-ip-allowlist` 가 `grafana_allowed_cidrs` 출발지 외에서 403 으로 막습니다. ALB 는 호스트와 관계없이 Traefik 으로 보내므로 Grafana 를 가리는 곳은 이 규칙 하나입니다 (Host 가 `grafana.` 로 시작하면 도메인 · ALB DNS 와 관계없이 적용). 허용 IP 는 레포에 두지 않고 `80-main-edge/terraform.tfvars`(gitignore)에 `grafana_allowed_cidrs = ["203.0.113.10/32"]` 처럼 둡니다. 비어 있으면 아무도 접속할 수 없습니다. IP 가 바뀌면 tfvars 를 고쳐 `80` 만 apply 합니다 (IP set 만 바뀜, 수십 초).
 - 본문 8KB 초과 요청은 경로와 관계없이 403 입니다 (관리형 규칙 `SizeRestrictions_BODY`). 객실 이미지는 Presigned PUT 으로 S3 에 직접 올리므로 API 본문이 크지 않습니다. 큰 파일은 API 대신 Presigned URL 로 받습니다.
 - 액세스 로그는 `10-global` 로그 버킷 `alb/` 에 5분 단위로 쌓입니다. Object Lock 버킷이라 잠금 기간(7일) 동안 지워지지 않습니다.

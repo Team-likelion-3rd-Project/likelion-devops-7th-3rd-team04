@@ -37,6 +37,16 @@ dependency "security" {
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
+# 부하 생성기 EIP (WAF rate limit 예외). 꺼져 있으면 [] 라 예외가 없다
+dependency "load_generator" {
+  config_path = "../73-load-generator"
+
+  mock_outputs = {
+    waf_exempt_cidrs = []
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
+}
+
 inputs = {
   # 값이 null 인 output 은 state 에 저장되지 않아 키 자체가 없다 (도메인 · 인증서 생성 전)
   log_bucket_name = dependency.global.outputs.log_bucket_name
@@ -46,4 +56,6 @@ inputs = {
 
   main_network = dependency.network.outputs.main
   sg_ids       = dependency.security.outputs.sg_ids
+
+  load_generator_cidrs = dependency.load_generator.outputs.waf_exempt_cidrs
 }

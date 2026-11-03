@@ -1,6 +1,7 @@
 # ALB 앞 WAF (REGIONAL).
 #
-#   0  rate limit           IP 하나가 평가 기간 동안 waf_rate_limit 회를 넘으면 차단
+#   0  rate limit           IP 하나가 평가 기간 동안 waf_rate_limit 회를 넘으면 차단.
+#                           부하 생성기(73) EIP · waf_rate_limit_exempt_cidrs 는 집계하지 않는다 (LDP-226)
 #   1  IP reputation        AWS 위협 인텔리전스의 악성 IP (봇, 스캐너)
 #   2  Common rule set      OWASP Top 10 계열 (XSS, LFI, 본문 8KB 초과 등)
 #   3  Known bad inputs     Log4Shell 등 알려진 악성 입력
@@ -33,6 +34,19 @@ resource "aws_wafv2_ip_set" "grafana_allowed" {
   }
 }
 
+# rate limit 예외 출발지. 부하 테스트 날 73-load-generator 를 켜면 EIP 가 자동으로 들어오고, 끄면 빈다.
+# 예외는 rate limit 에만 준다. IP reputation · 관리형 규칙 · Grafana 허용 목록은 그대로 적용한다
+resource "aws_wafv2_ip_set" "rate_limit_exempt" {
+  name               = "${local.name}-rate-limit-exempt"
+  scope              = "REGIONAL"
+  ip_address_version = "IPV4"
+  addresses          = distinct(concat(var.load_generator_cidrs, var.waf_rate_limit_exempt_cidrs))
+
+  tags = {
+    Name = "${local.name}-rate-limit-exempt"
+  }
+}
+
 resource "aws_wafv2_web_acl" "main" {
   name  = "${local.name}-alb"
   scope = "REGIONAL"
@@ -54,6 +68,17 @@ resource "aws_wafv2_web_acl" "main" {
         limit                 = var.waf_rate_limit
         evaluation_window_sec = var.waf_rate_limit_window_sec
         aggregate_key_type    = "IP"
+
+        # 예외 IP 는 집계 대상에서 빼서 차단되지 않게 한다. IP set 이 비면 모든 요청을 집계한다 (예외 없음)
+        scope_down_statement {
+          not_statement {
+            statement {
+              ip_set_reference_statement {
+                arn = aws_wafv2_ip_set.rate_limit_exempt.arn
+              }
+            }
+          }
+        }
       }
     }
 
