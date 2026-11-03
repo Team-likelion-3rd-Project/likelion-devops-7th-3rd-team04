@@ -294,6 +294,8 @@
   loop:
     - "{{ payment_result_queue }}"
     - "{{ payment_result_dlq }}"
+    - "{{ payment_webhook_queue }}"
+    - "{{ payment_webhook_dlq }}"
   changed_when: false
 
 # ── 2) Flyway — payment-service 보다 먼저 ─────────────────────

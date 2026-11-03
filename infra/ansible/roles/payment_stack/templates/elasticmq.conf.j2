@@ -1,5 +1,5 @@
 # Ansible(payment_stack role)이 생성 — 값은 inventory/group_vars/payment.yml 에서 조정
-# prod 의 SQS FIFO(Terraform 43-messaging)를 dev 에서 흉내내는 설정
+# prod 의 SQS(Terraform 43-messaging 결제 결과 FIFO, 50-payment-webhook 토스 웹훅)를 dev 에서 흉내내는 설정
 include classpath("application.conf")
 
 # 큐 URL 에 들어가는 주소 — 클러스터의 booking-service 가 그대로 접속할 수 있게 Tailscale IP 로 고정
@@ -36,6 +36,15 @@ queues {
     deadLettersQueue {
       name = "{{ payment_result_dlq }}"
       maxReceiveCount = {{ payment_result_max_receive }}
+    }
+  }
+  # 토스 웹훅 — prod 50-payment-webhook 과 같은 표준 큐 (수신기 → payment-service pg_webhook_inbox)
+  "{{ payment_webhook_dlq }}" { }
+  "{{ payment_webhook_queue }}" {
+    defaultVisibilityTimeout = {{ payment_webhook_visibility_timeout }} seconds
+    deadLettersQueue {
+      name = "{{ payment_webhook_dlq }}"
+      maxReceiveCount = {{ payment_webhook_max_receive }}
     }
   }
 }
