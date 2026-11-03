@@ -114,7 +114,7 @@ variable "toss_client_key" {
 variable "seed_admin_credentials_version" {
   description = "시드 관리자 계정 Secret 값을 다시 넣을 때 올리는 번호 (비밀번호 변경 등). 다음 DB 재생성부터 새 값으로 시딩된다"
   type        = number
-  default     = 2
+  default     = 3
 }
 
 variable "seed_admin_email" {
