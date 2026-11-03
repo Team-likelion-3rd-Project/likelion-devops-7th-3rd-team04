@@ -110,6 +110,10 @@ services:
       # 사진을 올릴 버킷이 먼저 있어야 한다
       minio-init:
         condition: service_completed_successfully
+      # 시딩 후 hotel-service 조회 캐시를 비운다 (REDIS_HOST=redis). 실패해도 시딩은 성공
+      redis:
+        condition: service_started
+        required: false
     restart: "no"
 
   # 1-1b. 메인 DB 마이그레이션 (Flyway). migrations/의 SQL을 버전 순서대로 적용하고 종료합니다.

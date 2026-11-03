@@ -420,7 +420,11 @@ seed:
     tag: ""
   env:
     DB_PORT: "3306"
-  secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+    # 시딩을 마친 뒤 hotel-service 조회 캐시(cache:hotel-service:*)를 비운다 — 앱과 같이 떠서 시딩 중 캐시된
+    # 빈 목록을 지우려고. REDIS_HOST 가 없거나 접속에 실패하면 건너뛰고 시딩은 성공 (캐시는 TTL 5분 뒤 맞춰짐)
+    REDIS_PORT: "6379"
+    REDIS_TLS: "false"
+  secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, REDIS_HOST, REDIS_PASSWORD]
   adminSecretName: ""
   db:
     caConfigMap: ""

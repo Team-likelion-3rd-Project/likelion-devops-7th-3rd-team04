@@ -160,6 +160,8 @@ seed:
     # 엔드포인트 · 키를 비우면 AWS 기본 주소 + IRSA(team04-hotel-seed, room-types/* PutObject 만)
     S3_BUCKET: team04-hotel-room-images
     S3_REGION: us-east-1
+    # 시딩 후 hotel-service 조회 캐시 비우기 (REDIS_HOST · REDIS_PASSWORD 는 차트 기본 secretEnv). ElastiCache 전송 암호화 required
+    REDIS_TLS: "true"
   # 관리자 계정 Secret (backend-secrets 앱의 ExternalSecret ← Secrets Manager team04-hotel/prod/seed-admin, Terraform 12-secrets)
   adminSecretName: seed-admin
   db:

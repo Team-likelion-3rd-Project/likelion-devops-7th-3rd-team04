@@ -35,13 +35,23 @@ kubectl -n backend create configmap loadtest-seed-sql --from-file=load-test/seed
   --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n backend create secret generic loadtest-seed --from-literal=LT_PASSWORD_HASH="$LT_PASSWORD_HASH" \
   --dry-run=client -o yaml | kubectl apply -f -
+# ElastiCache Valkey 서버 인증서 검증용 (캐시 비우기 단계)
+curl -fsSo /tmp/AmazonRootCA1.pem https://www.amazontrust.com/repository/AmazonRootCA1.pem
+kubectl -n backend create configmap amazon-root-ca --from-file=AmazonRootCA1.pem=/tmp/AmazonRootCA1.pem \
+  --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n backend delete job loadtest-seed --ignore-not-found   # 다시 실행할 때 (Job spec 은 바꿀 수 없음)
 kubectl apply -f load-test/seed/loadtest-seed-job.yaml
 kubectl -n backend wait --for=condition=complete job/loadtest-seed --timeout=5m
-kubectl -n backend logs job/loadtest-seed                        # 객실 종류별 total_count · 사용자 수 요약
+kubectl -n backend logs job/loadtest-seed -c seed                # 객실 종류별 total_count · 사용자 수 요약
+kubectl -n backend logs job/loadtest-seed -c clear-cache         # hotel-service 조회 캐시 비움: 키 N개
 ```
 
 규모(호실 수 · 기간 · 사용자 수)는 Job 의 `LT_UNITS` · `LT_DAYS` · `LT_USERS` 를 고친다. 같은 날 다시 실행해도 있는 행은 건너뛴다.
+
+SQL 을 넣은 뒤 Job 이 hotel-service 조회 캐시(Valkey `cache:hotel-service:*`, TTL 5분)를 비운다. 비우지 않으면 시드 전에 캐시된
+호텔 · 객실 목록이 최대 5분 동안 그대로 보여 새 부하용 데이터가 검색되지 않는다. `clear-cache` 가 실패하면(Valkey 접속 실패 등)
+Job 은 실패로 끝나지만 SQL 은 이미 반영된 상태다 — 5분 기다린 뒤 테스트하면 된다.
+리프레시 토큰 · 요청 제한 키가 같은 Valkey 에 있으므로 `FLUSHDB` · `FLUSHALL` 은 쓰지 않는다.
 
 ### 로컬 (docker compose)
 
@@ -49,6 +59,8 @@ kubectl -n backend logs job/loadtest-seed                        # 객실 종류
 cd backend
 { echo "SET @lt_password_hash = '$LT_PASSWORD_HASH';"; cat ../load-test/seed/loadtest-seed.sql; } \
   | docker compose exec -T mariadb sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" --table'
+# hotel-service 조회 캐시 비우기 (cache:hotel-service:* 만)
+docker compose exec -T redis sh -c "valkey-cli --scan --pattern 'cache:hotel-service:*' | xargs -r valkey-cli unlink"
 ```
 
 SQL 은 컬럼 이름이 고정이라 스키마(backend/migrations)가 바뀌면 같이 고친다. 운영 RDS(MariaDB 11.8)와 로컬(11.2)의 기본 collation 이 다르니, SQL 을 고치면 11.8 에서도 한 번 실행해 본다.
