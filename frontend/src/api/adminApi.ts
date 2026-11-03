@@ -33,7 +33,7 @@ export interface AdminRoomImageInput {
 export interface AdminRoomImage extends AdminRoomImageInput {
   imageId: number
   mimeType: string
-  imageUrl: string // 사진 보기용 Presigned URL (1시간 뒤 만료)
+  imageUrl: string // 사진 보기 고정 URL (저장소 공개 경로 · 운영은 CloudFront)
   sortOrder: number
 }
 

@@ -141,7 +141,15 @@ services:
     replicas: 1
     env:
       DB_PORT: "3306"
-    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+      # 호텔·객실·편의시설·공지 조회 캐시 (auth-service 와 같은 Valkey, libs/common cache/read-cache.ts).
+      # REDIS_HOST 가 없거나 Valkey 장애면 매번 DB 에서 읽음 (서비스는 계속 동작)
+      REDIS_PORT: "6379"
+      REDIS_TLS: "false"
+      # 캐시 켜고 끄기 · 유지 시간. 성능 비교 때 gitops values 에서 READ_CACHE_ENABLED: "false" 로 끈다
+      # (selfHeal 이 kubectl set env 를 되돌리므로 values 커밋으로). 적중률 = 메트릭 cache_requests_total
+      READ_CACHE_ENABLED: "true"
+      READ_CACHE_TTL_SECONDS: "300"
+    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, REDIS_HOST, REDIS_PASSWORD]
     resources: {}
     hpa:
       enabled: false
@@ -416,7 +424,11 @@ seed:
     tag: ""
   env:
     DB_PORT: "3306"
-  secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+    # 시딩을 마친 뒤 hotel-service 조회 캐시(cache:hotel-service:*)를 비운다 — 앱과 같이 떠서 시딩 중 캐시된
+    # 빈 목록을 지우려고. REDIS_HOST 가 없거나 접속에 실패하면 건너뛰고 시딩은 성공 (캐시는 TTL 5분 뒤 맞춰짐)
+    REDIS_PORT: "6379"
+    REDIS_TLS: "false"
+  secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, REDIS_HOST, REDIS_PASSWORD]
   adminSecretName: ""
   db:
     caConfigMap: ""

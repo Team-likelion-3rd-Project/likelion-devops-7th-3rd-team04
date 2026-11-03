@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
-import { apiRpcException } from '@app/common';
+import { apiRpcException, ReadCache } from '@app/common';
+import { HotelCacheKeys } from './hotel-cache-keys';
 import { Hotel } from './entities/hotel.entity';
 import { Notice, NoticeCategory } from './entities/notice.entity';
 
@@ -46,30 +47,54 @@ export class NoticeService {
     private readonly noticeRepository: Repository<Notice>,
     @InjectRepository(Hotel)
     private readonly hotelRepository: Repository<Hotel>,
+    private readonly cache: ReadCache,
   ) {}
 
   // 목록: 중요 고정 먼저, 그다음 최신순. page가 0이면 전체, 1 이상이면 그 페이지만. total은 조건에 맞는 전체 개수.
   // hotelId가 있으면 그 지점 공지 + 전체 공지만 (호텔 상세·공지 지점 필터·지점 관리자 목록, LDP-188)
+  // 조회 캐시: 페이지·크기·지점 조합마다 키가 생기므로, 공지를 바꾸면 버전을 올려 목록 키를 한꺼번에 버린다.
   async listNotices(
     page: number,
     size: number,
     hotelId = 0,
   ): Promise<{ notices: NoticeGrpcResponse[]; total: number }> {
     const take = size > 0 ? size : 20;
-    const [notices, total] = await this.noticeRepository.findAndCount({
-      ...(hotelId > 0 ? { where: [{ hotelId }, { hotelId: IsNull() }] } : {}),
-      order: { isPinned: 'DESC', createdAt: 'DESC', noticeId: 'DESC' },
-      ...(page > 0 ? { skip: (page - 1) * take, take } : {}),
-    });
-    return { notices: notices.map((notice) => this.toGrpc(notice)), total };
+    return this.cache.getOrLoadVersioned(
+      'notices',
+      HotelCacheKeys.noticeVersion(),
+      (version) => HotelCacheKeys.notices(version, hotelId, page, take),
+      async () => {
+        const [notices, total] = await this.noticeRepository.findAndCount({
+          ...(hotelId > 0
+            ? { where: [{ hotelId }, { hotelId: IsNull() }] }
+            : {}),
+          order: { isPinned: 'DESC', createdAt: 'DESC', noticeId: 'DESC' },
+          ...(page > 0 ? { skip: (page - 1) * take, take } : {}),
+        });
+        return {
+          notices: notices.map((notice) => this.toGrpc(notice)),
+          total,
+        };
+      },
+    );
   }
 
+  // 단건 (조회 캐시)
   async getNotice(noticeId: number): Promise<NoticeGrpcResponse> {
-    const notice = await this.noticeRepository.findOne({ where: { noticeId } });
+    const notice = await this.cache.getOrLoad(
+      'notice',
+      HotelCacheKeys.notice(noticeId),
+      async () => {
+        const found = await this.noticeRepository.findOne({
+          where: { noticeId },
+        });
+        return found ? this.toGrpc(found) : null;
+      },
+    );
     if (!notice) {
       throw noticeNotFound();
     }
-    return this.toGrpc(notice);
+    return notice;
   }
 
   async createNotice(
@@ -82,6 +107,7 @@ export class NoticeService {
         createdByAdminId: input.adminId || null,
       }),
     );
+    await this.cache.bumpVersion(HotelCacheKeys.noticeVersion());
     return this.toGrpc(notice);
   }
 
@@ -96,7 +122,9 @@ export class NoticeService {
     }
     await this.assertHotelExists(input.hotelId);
     Object.assign(notice, this.toColumns(input));
-    return this.toGrpc(await this.noticeRepository.save(notice));
+    const saved = await this.noticeRepository.save(notice);
+    await this.invalidateNotice(noticeId);
+    return this.toGrpc(saved);
   }
 
   // 실제로 지운다 (공지는 이력을 남길 필요가 없어 백업하지 않음)
@@ -105,7 +133,16 @@ export class NoticeService {
     if (!affected) {
       throw noticeNotFound();
     }
+    await this.invalidateNotice(noticeId);
     return { success: true };
+  }
+
+  // 공지 하나가 바뀌면 단건 키를 지우고 목록 버전을 올린다
+  private async invalidateNotice(noticeId: number): Promise<void> {
+    await Promise.all([
+      this.cache.invalidate(HotelCacheKeys.notice(noticeId)),
+      this.cache.bumpVersion(HotelCacheKeys.noticeVersion()),
+    ]);
   }
 
   // 대상 지점이 없는 호텔이면 FK 오류 대신 404로 알린다

@@ -35,13 +35,23 @@ kubectl -n backend create configmap loadtest-seed-sql --from-file=load-test/seed
   --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n backend create secret generic loadtest-seed --from-literal=LT_PASSWORD_HASH="$LT_PASSWORD_HASH" \
   --dry-run=client -o yaml | kubectl apply -f -
+# ElastiCache Valkey 서버 인증서 검증용 (캐시 비우기 단계)
+curl -fsSo /tmp/AmazonRootCA1.pem https://www.amazontrust.com/repository/AmazonRootCA1.pem
+kubectl -n backend create configmap amazon-root-ca --from-file=AmazonRootCA1.pem=/tmp/AmazonRootCA1.pem \
+  --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n backend delete job loadtest-seed --ignore-not-found   # 다시 실행할 때 (Job spec 은 바꿀 수 없음)
 kubectl apply -f load-test/seed/loadtest-seed-job.yaml
 kubectl -n backend wait --for=condition=complete job/loadtest-seed --timeout=5m
-kubectl -n backend logs job/loadtest-seed                        # 객실 종류별 total_count · 사용자 수 요약
+kubectl -n backend logs job/loadtest-seed -c seed                # 객실 종류별 total_count · 사용자 수 요약
+kubectl -n backend logs job/loadtest-seed -c clear-cache         # hotel-service 조회 캐시 비움: 키 N개
 ```
 
 규모(호실 수 · 기간 · 사용자 수)는 Job 의 `LT_UNITS` · `LT_DAYS` · `LT_USERS` 를 고친다. 같은 날 다시 실행해도 있는 행은 건너뛴다.
+
+SQL 을 넣은 뒤 Job 이 hotel-service 조회 캐시(Valkey `cache:hotel-service:*`, TTL 5분)를 비운다. 비우지 않으면 시드 전에 캐시된
+호텔 · 객실 목록이 최대 5분 동안 그대로 보여 새 부하용 데이터가 검색되지 않는다. `clear-cache` 가 실패하면(Valkey 접속 실패 등)
+Job 은 실패로 끝나지만 SQL 은 이미 반영된 상태다 — 5분 기다린 뒤 테스트하면 된다.
+리프레시 토큰 · 요청 제한 키가 같은 Valkey 에 있으므로 `FLUSHDB` · `FLUSHALL` 은 쓰지 않는다.
 
 ### 로컬 (docker compose)
 
@@ -49,6 +59,8 @@ kubectl -n backend logs job/loadtest-seed                        # 객실 종류
 cd backend
 { echo "SET @lt_password_hash = '$LT_PASSWORD_HASH';"; cat ../load-test/seed/loadtest-seed.sql; } \
   | docker compose exec -T mariadb sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" --table'
+# hotel-service 조회 캐시 비우기 (cache:hotel-service:* 만)
+docker compose exec -T redis sh -c "valkey-cli --scan --pattern 'cache:hotel-service:*' | xargs -r valkey-cli unlink"
 ```
 
 SQL 은 컬럼 이름이 고정이라 스키마(backend/migrations)가 바뀌면 같이 고친다. 운영 RDS(MariaDB 11.8)와 로컬(11.2)의 기본 collation 이 다르니, SQL 을 고치면 11.8 에서도 한 번 실행해 본다.
@@ -110,6 +122,43 @@ k6 run -e TEST=fault --out csv=result/fault-$(date -u +%H%M).csv.gz ... main.js 
 - `API=booking` · `confirm` 은 재고를 빠르게 쓴다 (booking 은 결제하지 않아 결제 마감까지 재고를 잡음). 단계를 낮게 시작한다
 - `API=confirm` 의 rate 는 확정 요청 기준이고, 이터레이션마다 준비 요청(예약 생성 · 결제 준비, `kind: prep`)이 2건 더 나간다
 - stress 상한 500 요청/초에서 VU 가 최대 약 3,500 개까지 늘 수 있다 — 부하 생성기 메모리 확인
+
+### 조회 캐시 on/off 비교
+
+hotel-service 는 호텔 · 객실 · 편의시설 · 공지를 Valkey 에 캐시한다 (`cache:hotel-service:*`, TTL 5분). 검색 · 재고 조회는 객실 종류만
+캐시에서 읽고 날짜별 재고는 매번 DB 에서 읽는다. 같은 이미지에서 `READ_CACHE_ENABLED` 로 캐시를 끄고 켜며 효과를 비교한다.
+
+- 전제: 캐시 코드가 운영에 릴리스된 상태 (차트 revision · 이미지 태그가 커밋 SHA 고정). 시드 Job 의 `clear-cache` 가 끝난 뒤 시작한다
+- 바꾸는 곳: 테스트 브랜치 `envs/prod/backend/values.yaml` 의 `services.hotel-service.env` (`THROTTLE_LIMIT` 과 같은 방식).
+  ArgoCD selfHeal 이 `kubectl set env` 를 되돌리므로 반드시 커밋으로 바꾼다
+
+| 순서 | 테스트 브랜치 값 | 확인 | 실행 |
+|------|------------------|------|------|
+| 1. OFF | `READ_CACHE_ENABLED: "false"` 커밋 · sync | 로그 `조회 캐시 꺼짐 (READ_CACHE_ENABLED=false)` | 1 – 2분 지난 뒤 k6, `-e NOTE=cache-off` |
+| 2. ON | 위 줄 삭제(또는 `"true"`) 커밋 · sync | 로그 `조회 캐시 켜짐 — TTL 300초` | 1 – 2분 워밍업(캐시 채우기) 뒤 같은 k6, `-e NOTE=cache-on` |
+
+```bash
+kubectl -n backend logs deploy/hotel-service | grep '조회 캐시'
+k6 run -e TEST=api -e API=hotels -e STAGES=50,100,150 -e NOTE=cache-off ... main.js       # ON 은 NOTE=cache-on
+k6 run -e TEST=api -e API=availability -e STAGES=50,100,150 -e NOTE=cache-off ... main.js
+```
+
+- 두 번은 같은 `TEST` · `API` · `STAGES`(또는 `TARGET_RPS`) · hotel-service 파드 수로 연달아 돌린다. 결과 JSON 은 `NOTE` · `GITOPS_SHA` 로 구분한다
+- 효과가 드러나는 곳: 흐름 A · B (`API=hotels` · `availability`, `TEST=load` 의 read p95). 흐름 C 는 예약 생성 때 편의시설 조회만, 흐름 D(마이페이지)는 캐시 대상이 아니다
+- 값을 바꾸면 hotel-service 가 재시작되고 캐시가 빈 채로 뜬다 — 테스트 도중에 바꾸지 않고, 바꾼 직후 1 – 2분은 측정에서 뺀다
+- 같은 시간 범위로 Grafana 에서 비교한다 (`service="hotel-service"`)
+
+| 지표 | PromQL |
+|------|--------|
+| 처리 시간 p95 (메서드별) | `histogram_quantile(0.95, sum by (le, rpc_method) (rate(rpc_server_duration_seconds_bucket{service="hotel-service"}[1m])))` |
+| 캐시 적중률 | `sum by (cache) (rate(cache_requests_total{service="hotel-service",result="hit"}[5m])) / sum by (cache) (rate(cache_requests_total{service="hotel-service"}[5m]))` |
+| DB 조회 수 | `sum(rate(mysql_global_status_commands_total{command="select"}[1m]))` — 메인 DB 를 고르는 라벨은 운영 Grafana 에서 확인 |
+| DB 커넥션 대기 p95 | `histogram_quantile(0.95, sum by (le) (rate(db_client_connection_wait_duration_seconds_bucket{service="hotel-service"}[1m])))` |
+
+- `cache_requests_total` 의 `result`: `hit` 캐시 · `miss` DB 조회 후 저장 · `error` Valkey 실패로 DB 조회 · `bypass` 캐시 꺼짐. OFF 에서는 `bypass` 만 늘어야 한다
+- ElastiCache(`cache.t4g.micro`) `EngineCPUUtilization` · `CurrConnections` 도 함께 본다
+- 온프레미스 dev 에서 미리 볼 때는 GitLab `backend-gitops` 의 `envs/dev/values.yaml` 에 같은 키를 커밋하고, 부하는 클러스터 안에서 보낸다
+  (dev api-gateway 도 `THROTTLE_LIMIT` 을 올린다)
 
 ## 4. 동시 예약 (테스트 4)
 

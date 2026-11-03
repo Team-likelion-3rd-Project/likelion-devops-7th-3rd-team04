@@ -83,11 +83,14 @@ valkey_maxmemory: "1gb"
 
 # ── MinIO: dev 용 S3 (객실 이미지, README 7-6) ────────────────
 # 비밀값은 OpenBao minio-root · minio-app · minio-rag (도입 전: infra/ansible/.env)
-# 버킷은 private. 브라우저 · Pod 모두 presigned URL 로 tailnet(:9000) 에 직접 접근
+# 버킷은 private 이고 minio_public_prefix 아래 객체만 익명 읽기(GetObject) 허용 — 운영 CloudFront 고정 URL 과 같은 방식.
+# 사진 보기는 hotel-service IMAGE_BASE_URL(http://<DB_TS_IP>:9000/room-images) 고정 URL, 올리기는 presigned PUT. 모두 tailnet(:9000) 직접 접근
 minio_api_port: 9000
 minio_console_port: 9001
 minio_region: ap-northeast-2   # SQS_REGION 과 같은 값
 minio_bucket: room-images
+# 익명 읽기 허용 경로. hotel-service 객실 사진 경로(room-image.storage.ts objectKeyPrefix: room-types/{roomId}/)와 같아야 함
+minio_public_prefix: room-types/
 minio_root_user: "{{ openbao_kv['minio-root'].user | default(lookup('env', 'MINIO_ROOT_USER'), true) }}"
 minio_root_password: "{{ openbao_kv['minio-root'].password | default(lookup('env', 'MINIO_ROOT_PASSWORD'), true) }}"
 # 앱 전용 계정 — minio_bucket 에만 읽기/쓰기 (root 키는 앱에 주지 않음)
