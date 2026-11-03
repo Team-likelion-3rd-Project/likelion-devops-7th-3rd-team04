@@ -7,6 +7,7 @@ include "root" {
 exclude {
   if      = true
   actions = ["all"]
+  no_run  = true
 }
 
 # 🔒 10-global 은 destroy 하지 않으므로 mock 없이 실제 output 을 읽는다
