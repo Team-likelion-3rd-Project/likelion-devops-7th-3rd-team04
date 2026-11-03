@@ -1,5 +1,7 @@
 import { Logger, OnApplicationShutdown } from '@nestjs/common';
 import Redis from 'ioredis';
+import { Counter, Registry } from 'prom-client';
+import { activeMetricsRegistry } from '../metrics/metrics';
 import { redisOptionsFromEnv } from '../redis/redis.module';
 
 // 조회 캐시 (Valkey, cache-aside). 자주 읽고 드물게 바뀌는 데이터(호텔·객실·편의시설·공지)를 DB 대신 Valkey에서 읽는다.
@@ -7,14 +9,43 @@ import { redisOptionsFromEnv } from '../redis/redis.module';
 //  - 쓰기: DB 반영 뒤 해당 키를 DEL(invalidate) — TTL은 무효화를 놓쳤을 때의 안전장치다
 //  - Valkey 장애·미설정이면 매번 DB에서 읽는다 (캐시 장애가 서비스 장애로 번지지 않게)
 // 날짜별 재고·예약처럼 정합성이 중요한 데이터는 캐시하지 않는다.
-// 접속 정보는 auth-service와 같은 REDIS_HOST/PORT/PASSWORD/DB/TLS 환경변수.
+// 환경변수
+//  - REDIS_HOST/PORT/PASSWORD/DB/TLS: auth-service와 같은 Valkey 접속 정보
+//  - READ_CACHE_ENABLED=false: 캐시를 끄고 매번 DB에서 읽는다 (같은 이미지로 캐시 효과를 켜고 끄며 비교할 때)
+//  - READ_CACHE_TTL_SECONDS: 캐시 유지 시간 (기본 300초)
+// 메트릭 cache_requests_total{cache, result} — METRICS_PORT가 있을 때만 (libs/common metrics)
 
 // 명령이 이보다 오래 걸리면 실패로 보고 DB에서 읽는다 (DB 조회보다 길게 기다리지 않게)
 const COMMAND_TIMEOUT_MS = 200;
-const TTL_SECONDS = 300;
+const DEFAULT_TTL_SECONDS = 300;
+
+// hit: 캐시에서 읽음 · miss: DB에서 읽어 저장(= DB 조회) · error: Valkey 실패로 DB 조회 · bypass: 캐시 꺼짐으로 DB 조회
+type CacheResult = 'hit' | 'miss' | 'error' | 'bypass';
+
+// 레지스트리마다 카운터를 한 번만 만든다 (grpc-metrics.ts와 같은 방식)
+const counters = new WeakMap<Registry, Counter<string>>();
+
+function requestCounter(): Counter<string> | null {
+  const registry = activeMetricsRegistry();
+  if (!registry) {
+    return null;
+  }
+  let counter = counters.get(registry);
+  if (!counter) {
+    counter = new Counter({
+      name: 'cache_requests_total',
+      help: '조회 캐시 요청 수 (hit: 캐시에서 읽음, miss: DB 조회 후 저장, error: Valkey 실패로 DB 조회, bypass: 캐시 꺼짐)',
+      labelNames: ['cache', 'result'],
+      registers: [registry],
+    });
+    counters.set(registry, counter);
+  }
+  return counter;
+}
 
 export class ReadCache implements OnApplicationShutdown {
   private readonly logger = new Logger(ReadCache.name);
+  private readonly requests = requestCounter();
   // 장애 중 매 요청마다 찍히지 않게 처음 한 번만 경고
   private failing = false;
 
@@ -37,6 +68,7 @@ export class ReadCache implements OnApplicationShutdown {
     load: () => Promise<T>,
   ): Promise<T> {
     if (!this.redis) {
+      this.count(name, 'bypass');
       return load();
     }
     const fullKey = this.prefix + key;
@@ -47,17 +79,21 @@ export class ReadCache implements OnApplicationShutdown {
       this.recovered();
     } catch (err) {
       this.fail(name, err);
+      this.count(name, 'error');
       return load();
     }
 
     if (cached !== null) {
       try {
-        return JSON.parse(cached) as T;
+        const parsed = JSON.parse(cached) as T;
+        this.count(name, 'hit');
+        return parsed;
       } catch {
         // 깨진 값이면 없는 것으로 보고 다시 채운다
       }
     }
 
+    this.count(name, 'miss');
     const value = await load();
     if (value !== null && value !== undefined) {
       // 응답을 기다리게 하지 않는다. 저장 실패는 다음 요청이 다시 DB에서 읽을 뿐이다
@@ -77,6 +113,7 @@ export class ReadCache implements OnApplicationShutdown {
     load: () => Promise<T>,
   ): Promise<T> {
     if (!this.redis) {
+      this.count(name, 'bypass');
       return load();
     }
     let version: string;
@@ -85,6 +122,7 @@ export class ReadCache implements OnApplicationShutdown {
     } catch (err) {
       // 버전을 모르면 옛 버전 키를 읽을 수 있으므로 캐시를 쓰지 않는다
       this.fail(name, err);
+      this.count(name, 'error');
       return load();
     }
     return this.getOrLoad(name, key(version), load);
@@ -129,6 +167,10 @@ export class ReadCache implements OnApplicationShutdown {
     return created ? initial : ((await redis.get(fullKey)) ?? initial);
   }
 
+  private count(name: string, result: CacheResult) {
+    this.requests?.inc({ cache: name, result });
+  }
+
   private fail(name: string, err: unknown) {
     if (!this.failing) {
       this.failing = true;
@@ -146,11 +188,23 @@ export class ReadCache implements OnApplicationShutdown {
   }
 }
 
-// REDIS_HOST가 있으면 Valkey 캐시, 없으면 항상 DB에서 읽는 캐시.
+// READ_CACHE_TTL_SECONDS 값. 없거나 1 이상의 정수가 아니면 기본 300초
+export function readCacheTtlFromEnv(): number {
+  const ttl = Number(process.env.READ_CACHE_TTL_SECONDS);
+  return Number.isInteger(ttl) && ttl > 0 ? ttl : DEFAULT_TTL_SECONDS;
+}
+
+// REDIS_HOST가 있고 READ_CACHE_ENABLED가 'false'가 아니면 Valkey 캐시, 아니면 항상 DB에서 읽는 캐시.
 // 키는 cache:<서비스>:v1:... — 같은 Valkey의 리프레시 토큰·요청 제한 키와 섞이지 않는다.
 // 캐시 값의 모양을 바꾸면 v1을 올린다 (배포 중 옛 Pod·새 Pod가 서로 다른 모양을 읽지 않게).
 export function createReadCacheFromEnv(service: string): ReadCache {
   const logger = new Logger(ReadCache.name);
+  if (process.env.READ_CACHE_ENABLED === 'false') {
+    logger.log(
+      '조회 캐시 꺼짐 (READ_CACHE_ENABLED=false) — 매번 DB에서 읽습니다',
+    );
+    return ReadCache.disabled();
+  }
   if (!process.env.REDIS_HOST) {
     logger.log('조회 캐시 꺼짐 (REDIS_HOST 없음) — 매번 DB에서 읽습니다');
     return ReadCache.disabled();
@@ -163,8 +217,9 @@ export function createReadCacheFromEnv(service: string): ReadCache {
   });
   // 리스너가 없으면 재연결 시도마다 'Unhandled error event'가 찍힌다. 경고는 실패한 요청에서 한 번만 남긴다
   redis.on('error', () => {});
-  logger.log(`조회 캐시 켜짐 — TTL ${TTL_SECONDS}초`);
-  return new ReadCache(redis, `cache:${service}:v1:`, TTL_SECONDS);
+  const ttl = readCacheTtlFromEnv();
+  logger.log(`조회 캐시 켜짐 — TTL ${ttl}초`);
+  return new ReadCache(redis, `cache:${service}:v1:`, ttl);
 }
 
 // 서비스의 조회 캐시 키(cache:<서비스>:*, 모든 버전)를 지우고 지운 개수를 돌려준다.

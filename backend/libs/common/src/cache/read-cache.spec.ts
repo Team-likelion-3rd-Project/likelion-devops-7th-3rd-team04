@@ -1,5 +1,12 @@
 import type Redis from 'ioredis';
-import { clearReadCacheKeys, ReadCache } from './read-cache';
+import { Counter } from 'prom-client';
+import { AppMetrics, startMetrics } from '../metrics/metrics';
+import {
+  clearReadCacheKeys,
+  createReadCacheFromEnv,
+  ReadCache,
+  readCacheTtlFromEnv,
+} from './read-cache';
 
 // Map으로 흉내 낸 Valkey (GET/SET/DEL/INCR만)
 function fakeRedis() {
@@ -207,5 +214,85 @@ describe('clearReadCacheKeys', () => {
       await clearReadCacheKeys(redis as unknown as Redis, 'hotel-service'),
     ).toBe(0);
     expect(redis.unlink).not.toHaveBeenCalled();
+  });
+});
+
+describe('조회 캐시 환경변수', () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  it('READ_CACHE_ENABLED=false면 REDIS_HOST가 있어도 캐시를 쓰지 않는다 (Valkey에 접속하지 않음)', async () => {
+    process.env.REDIS_HOST = '127.0.0.1';
+    process.env.READ_CACHE_ENABLED = 'false';
+    const cache = createReadCacheFromEnv('hotel-service');
+    const load = jest.fn().mockResolvedValue({ id: 1 });
+
+    await cache.getOrLoad('hotel', 'hotel:1', load);
+    await cache.getOrLoad('hotel', 'hotel:1', load);
+
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('REDIS_HOST가 없으면 캐시를 쓰지 않는다', async () => {
+    delete process.env.REDIS_HOST;
+    const cache = createReadCacheFromEnv('hotel-service');
+    const load = jest.fn().mockResolvedValue({ id: 1 });
+
+    await cache.getOrLoad('hotel', 'hotel:1', load);
+    await cache.getOrLoad('hotel', 'hotel:1', load);
+
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('READ_CACHE_TTL_SECONDS는 1 이상의 정수만 쓰고, 아니면 기본 300초', () => {
+    delete process.env.READ_CACHE_TTL_SECONDS;
+    expect(readCacheTtlFromEnv()).toBe(300);
+    process.env.READ_CACHE_TTL_SECONDS = '60';
+    expect(readCacheTtlFromEnv()).toBe(60);
+    for (const invalid of ['0', '-5', '1.5', 'abc']) {
+      process.env.READ_CACHE_TTL_SECONDS = invalid;
+      expect(readCacheTtlFromEnv()).toBe(300);
+    }
+  });
+});
+
+describe('cache_requests_total 메트릭', () => {
+  let metrics: AppMetrics | null = null;
+  afterEach(() => {
+    metrics?.server.close();
+  });
+
+  const countsOf = async (registry: AppMetrics['registry']) => {
+    const counter = registry.getSingleMetric(
+      'cache_requests_total',
+    ) as Counter<string>;
+    const { values } = await counter.get();
+    return Object.fromEntries(
+      values.map((v) => [`${v.labels.cache}/${v.labels.result}`, v.value]),
+    );
+  };
+
+  it('캐시 종류별로 hit · miss · error · bypass를 센다', async () => {
+    metrics = startMetrics('hotel-service', 19471);
+    const redis = fakeRedis();
+    const cache = new ReadCache(redis as unknown as Redis, 'p:', 60);
+    const load = () => Promise.resolve({ id: 1 });
+
+    await cache.getOrLoad('rooms', 'hotel:1:rooms', load); // miss
+    await flush();
+    await cache.getOrLoad('rooms', 'hotel:1:rooms', load); // hit
+    await cache.getOrLoad('rooms', 'hotel:1:rooms', load); // hit
+    redis.get.mockRejectedValueOnce(new Error('timeout'));
+    await cache.getOrLoad('hotel', 'hotel:1', load); // error
+    await ReadCache.disabled().getOrLoad('hotel', 'hotel:1', load); // bypass
+
+    expect(await countsOf(metrics!.registry)).toEqual({
+      'rooms/miss': 1,
+      'rooms/hit': 2,
+      'hotel/error': 1,
+      'hotel/bypass': 1,
+    });
   });
 });

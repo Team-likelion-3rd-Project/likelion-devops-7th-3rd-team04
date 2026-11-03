@@ -145,6 +145,10 @@ services:
       # REDIS_HOST 가 없거나 Valkey 장애면 매번 DB 에서 읽음 (서비스는 계속 동작)
       REDIS_PORT: "6379"
       REDIS_TLS: "false"
+      # 캐시 켜고 끄기 · 유지 시간. 성능 비교 때 gitops values 에서 READ_CACHE_ENABLED: "false" 로 끈다
+      # (selfHeal 이 kubectl set env 를 되돌리므로 values 커밋으로). 적중률 = 메트릭 cache_requests_total
+      READ_CACHE_ENABLED: "true"
+      READ_CACHE_TTL_SECONDS: "300"
     secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, REDIS_HOST, REDIS_PASSWORD]
     resources: {}
     hpa:
