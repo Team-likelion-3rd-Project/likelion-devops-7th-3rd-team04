@@ -1,5 +1,5 @@
 import type Redis from 'ioredis';
-import { ReadCache } from './read-cache';
+import { clearReadCacheKeys, ReadCache } from './read-cache';
 
 // Map으로 흉내 낸 Valkey (GET/SET/DEL/INCR만)
 function fakeRedis() {
@@ -144,5 +144,68 @@ describe('ReadCache', () => {
     await disabled.invalidate('hotel:1');
 
     expect(load).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('clearReadCacheKeys', () => {
+  // SCAN 결과를 두 페이지(커서 0 → 7 → 0)로 나눠 돌려주는 Valkey. 페이지는 첫 SCAN 때 한 번 정한다
+  function scanningRedis(keys: string[]) {
+    const store = new Set(keys);
+    let pages: string[][] = [];
+    return {
+      store,
+      scan: jest.fn((cursor: string, _m: string, pattern: string) => {
+        if (cursor === '0') {
+          const prefix = pattern.replace(/\*$/, '');
+          const matched = [...store].filter((key) => key.startsWith(prefix));
+          const half = Math.ceil(matched.length / 2);
+          pages = [matched.slice(0, half), matched.slice(half)];
+          return Promise.resolve(['7', pages[0]]);
+        }
+        return Promise.resolve(['0', pages[1]]);
+      }),
+      unlink: jest.fn((...targets: string[]) =>
+        Promise.resolve(targets.filter((key) => store.delete(key)).length),
+      ),
+    };
+  }
+
+  it('그 서비스의 캐시 키(모든 버전)만 지우고 리프레시 토큰 등 다른 키는 남긴다', async () => {
+    const redis = scanningRedis([
+      'cache:hotel-service:v1:hotels',
+      'cache:hotel-service:v1:hotel:1:rooms',
+      'cache:hotel-service:v0:hotels',
+      'cache:other-service:v1:x',
+      'refresh:42',
+      'throttle:1.2.3.4',
+    ]);
+
+    const deleted = await clearReadCacheKeys(
+      redis as unknown as Redis,
+      'hotel-service',
+    );
+
+    expect(deleted).toBe(3);
+    expect([...redis.store].sort()).toEqual([
+      'cache:other-service:v1:x',
+      'refresh:42',
+      'throttle:1.2.3.4',
+    ]);
+    expect(redis.scan).toHaveBeenCalledWith(
+      '0',
+      'MATCH',
+      'cache:hotel-service:*',
+      'COUNT',
+      500,
+    );
+  });
+
+  it('지울 키가 없으면 UNLINK를 보내지 않는다', async () => {
+    const redis = scanningRedis(['refresh:42']);
+
+    expect(
+      await clearReadCacheKeys(redis as unknown as Redis, 'hotel-service'),
+    ).toBe(0);
+    expect(redis.unlink).not.toHaveBeenCalled();
   });
 });

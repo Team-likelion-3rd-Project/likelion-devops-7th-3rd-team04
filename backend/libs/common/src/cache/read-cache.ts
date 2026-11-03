@@ -166,3 +166,65 @@ export function createReadCacheFromEnv(service: string): ReadCache {
   logger.log(`조회 캐시 켜짐 — TTL ${TTL_SECONDS}초`);
   return new ReadCache(redis, `cache:${service}:v1:`, TTL_SECONDS);
 }
+
+// 서비스의 조회 캐시 키(cache:<서비스>:*, 모든 버전)를 지우고 지운 개수를 돌려준다.
+// 같은 Valkey에 리프레시 토큰·요청 제한 키가 있으므로 FLUSHDB가 아니라 SCAN으로 찾은 키만 지운다.
+export async function clearReadCacheKeys(
+  redis: Redis,
+  service: string,
+): Promise<number> {
+  let cursor = '0';
+  let deleted = 0;
+  do {
+    const [next, keys] = await redis.scan(
+      cursor,
+      'MATCH',
+      `cache:${service}:*`,
+      'COUNT',
+      500,
+    );
+    if (keys.length > 0) {
+      deleted += await redis.unlink(...keys);
+    }
+    cursor = next;
+  } while (cursor !== '0');
+  return deleted;
+}
+
+// 시드처럼 DB를 직접 바꾼 뒤 한 번 호출한다 (DB가 채워지는 동안 서비스가 캐시한 빈 목록·덜 채워진 객실을 지움).
+// REDIS_HOST가 없으면 null. 접속·명령 실패는 예외로 던진다 — 호출하는 쪽이 실패를 무시할지 정한다.
+export async function clearReadCacheFromEnv(
+  service: string,
+): Promise<number | null> {
+  if (!process.env.REDIS_HOST) {
+    return null;
+  }
+  const redis = new Redis({
+    ...redisOptionsFromEnv(),
+    lazyConnect: true,
+    connectTimeout: 5000,
+    commandTimeout: 5000,
+    // 한 번 실행하고 끝나는 작업이라 재연결하지 않고 바로 실패시킨다
+    maxRetriesPerRequest: 0,
+    retryStrategy: () => null,
+  });
+  // 접속 실패 시 명령 쪽 예외는 'Connection is closed.' 뿐이라, 실제 원인(WRONGPASS · ECONNREFUSED 등)을 대신 던진다
+  let lastError: Error | undefined;
+  redis.on('error', (err: Error) => {
+    lastError = err;
+  });
+  try {
+    await redis.connect();
+    return await clearReadCacheKeys(redis, service);
+  } catch (err) {
+    const cause = lastError ?? err;
+    // IPv4·IPv6 모두 거부되면 message 가 빈 AggregateError 라 코드(ECONNREFUSED 등)를 메시지로 쓴다
+    if (cause instanceof Error && !cause.message) {
+      const code = (cause as NodeJS.ErrnoException).code ?? cause.name;
+      throw new Error(code, { cause });
+    }
+    throw cause;
+  } finally {
+    redis.disconnect();
+  }
+}
