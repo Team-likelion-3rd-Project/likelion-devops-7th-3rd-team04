@@ -1400,6 +1400,7 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `main-db` | engine, host, port, dbname, username, password | ESO, db.yml, gitlab.yml(smoke) |
 | `main-valkey` | host, port, password | ESO, db.yml, gitlab.yml(smoke) |
 | `backend-app` | jwt_access_secret, jwt_refresh_secret, mock_pg_secret | ESO |
+| `kakao-login` | client_id, client_secret (카카오 dev 앱 REST API 키 · Client Secret, 운영과 같은 이름) | ESO |
 | `minio-app` · `minio-rag` | endpoint, access_key, secret_key | ESO, db.yml |
 | `dynamodb` | endpoint | ESO |
 | `n8n` | init_owner_password | ESO |
