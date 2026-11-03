@@ -116,7 +116,7 @@ infra/ansible/
     { "src": ["tag:db"], "dst": ["tag:k8s-node"], "ip": ["tcp:6443", "tcp:30909"] },
     // GitLab CI 이미지 smoke test → dev DB 서버 (파이프라인 전용 database ci_<id> 만 사용, 12절)
     { "src": ["tag:gitlab-runner"], "dst": ["tag:db"], "ip": ["tcp:3306", "tcp:6379"] },
-    // 팀원 PC → DB : SSH, DBeaver 등 DB 클라이언트, valkey-cli 디버깅, 브라우저 → MinIO presigned URL(9000) / Console(9001), OpenBao UI · CLI(8200)
+    // 팀원 PC → DB : SSH, DBeaver 등 DB 클라이언트, valkey-cli 디버깅, 브라우저 → MinIO 사진 보기 · presigned 업로드(9000) / Console(9001), OpenBao UI · CLI(8200)
     { "src": ["autogroup:member"], "dst": ["tag:db"], "ip": ["tcp:22", "tcp:3306", "tcp:6379", "tcp:9000", "tcp:9001", "tcp:8200"] },
 
     // ── GitLab ───────────────────────────────────────────
@@ -454,12 +454,20 @@ ansible-playbook db.yml -K --tags seed -e db_seed_mariadb=true  # + 이 PC 의 b
 
 ### 7-6. MinIO (dev 용 S3)
 
-객실 이미지를 MariaDB 의 Base64 컬럼(`room_images.image_base64`) 대신 S3 에 저장하도록 바꾸기 위한 dev 저장소입니다. **온프레미스에서는 객실 이미지에 관한 S3 역할(저장 · presigned URL 발급 대상 · 삭제)을 모두 MinIO 가 맡습니다.**
+객실 이미지를 MariaDB 의 Base64 컬럼(`room_images.image_base64`) 대신 S3 에 저장하도록 바꾸기 위한 dev 저장소입니다. **온프레미스에서는 객실 이미지에 관한 S3 역할(저장 · 사진 보기 · presigned 업로드 대상 · 삭제)을 모두 MinIO 가 맡습니다.**
 
 - **이미지**: 업스트림 `minio/minio` 는 커뮤니티 이미지 배포가 끝나 Docker Hub 에서 내려갔습니다. 그래서 호환 포크 [Silo(`pgsty/minio`)](https://github.com/pgsty/minio) 를 버전을 고정해 씁니다. `MINIO_*` 환경변수, S3 API, Console 은 동일하고, 클라이언트는 `mcli`(`mc` 와 같음)입니다.
-- **버킷**: `room-images` (`group_vars/db.yml` 의 `minio_bucket`). playbook 이 매번 버킷이 있는지와 **익명 접근이 꺼져 있는지(private)**를 확인합니다.
+- **버킷**: `room-images` (`group_vars/db.yml` 의 `minio_bucket`). playbook 이 매번 버킷이 있는지와 **익명 접근 정책이 아래 "사진 보기" 범위와 같은지**를 확인하고 다르면 다시 적용합니다.
 - **앱 계정**: `MINIO_APP_ACCESS_KEY` 에 `hotel-app` 정책을 붙입니다. 이 정책은 버킷 하나에 Get / Put / Delete / List 만 허용합니다. MariaDB 와 같은 방식으로, 앱 계정으로 접속을 검사해 **실패할 때만** 계정 생성 · secret 갱신 · 정책 부여를 다시 합니다.
-- **접근 방식: presigned URL** — backend 가 앱 키로 서명한 URL 을 발급하면, 브라우저와 Pod 가 tailnet 으로 `:9000` 에 직접 접근합니다. 서명에 Host 가 들어가므로 **backend 의 endpoint 와 브라우저가 접근하는 주소가 같아야** 합니다(DB 노드 Tailscale IP).
+- **접근 방식 — 운영(CloudFront 고정 URL + presigned 업로드)과 같은 구조**
+  - **사진 보기: 서명 없는 고정 URL** `http://<DB_TS_IP>:9000/room-images/<objectKey>`. hotel-service 의 `IMAGE_BASE_URL` 이 있으면 이 주소를 내려줍니다.
+    - 버킷 익명 정책(`templates/minio-anon-policy.json.j2`)은 `room-types/*`(`minio_public_prefix`) 아래 **`s3:GetObject` 만** 허용합니다.
+    - 목록 조회(ListBucket), 다른 경로, 쓰기는 막혀 있습니다. 내장 `download` 정책은 ListBucket 까지 열어서 쓰지 않습니다.
+    - objectKey 는 업로드마다 새 uuid 라 주소가 바뀌지 않아 브라우저 캐시가 동작합니다.
+    - 접근 범위는 그대로 tailnet 입니다(ufw `tailscale0` + ACL `autogroup:member → tag:db tcp:9000`).
+  - **사진 올리기: presigned PUT** — backend 가 앱 키로 서명한 URL 로 브라우저가 tailnet 의 `:9000` 에 직접 올립니다. 서명에 Host 가 들어가므로 **backend 의 endpoint 와 브라우저가 접근하는 주소가 같아야** 합니다(DB 노드 Tailscale IP).
+  - `IMAGE_BASE_URL` 을 비우면 보기도 예전처럼 presigned GET(1시간 만료)으로 돌아갑니다.
+  - `rag-index` · `loki` 버킷은 익명 접근이 없습니다(private).
 - **hotel-service 환경변수 (확정)**
 
   | 이름 | dev (MinIO) | 주입 위치 (dev) | prod (AWS S3) |
@@ -469,6 +477,7 @@ ansible-playbook db.yml -K --tags seed -e db_seed_mariadb=true  # + 이 PC 의 b
   | `S3_REGION` | `ap-northeast-2` (고정 — MinIO 에서는 의미 없지만 SDK 서명에 필요) | gitops `envs/dev/values.yaml` env | 실제 리전 |
   | `S3_BUCKET` | `room-images` | gitops env | (미정) |
   | `S3_FORCE_PATH_STYLE` | `true` | gitops env | `false` |
+  | `IMAGE_BASE_URL` | `http://<DB_TS_IP>:9000/room-images` (path-style 이라 버킷 이름까지. `db.yml` 마지막 출력에 값이 나옴) | gitops env | `https://<도메인>` (CloudFront) |
 
 - **반영 순서** (gitops seed 는 레포를 처음 만들 때만 들어가므로 기존 레포는 직접 커밋)
   1. `.env` 에 `MINIO_APP_*` · `DB_TS_IP` 확인 → `ansible-playbook k8s-cicd.yml -K --tags backend_secrets`
@@ -482,19 +491,28 @@ ansible-playbook db.yml -K --tags seed -e db_seed_mariadb=true  # + 이 PC 의 b
            S3_REGION: ap-northeast-2
            S3_BUCKET: room-images
            S3_FORCE_PATH_STYLE: "true"
+           IMAGE_BASE_URL: "http://<DB_TS_IP>:9000/room-images"
          # 리스트는 차트 기본값을 덮어쓰므로 DB_* 도 다시 적음
          secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY]
      ```
-  3. 확인: `kubectl -n backend exec deploy/hotel-service -- printenv | grep ^S3_` → 관리자 화면에서 사진 업로드 → DB 노드에서 `sudo docker exec minio mcli ls app/room-images`
+     `IMAGE_BASE_URL` 은 `db.yml` 로 익명 읽기 정책을 적용한 **뒤에** 넣습니다. 먼저 넣으면 그 사이 사진이 403 으로 깨집니다.
+  3. 확인: `kubectl -n backend exec deploy/hotel-service -- printenv | grep -E '^(S3_|IMAGE_BASE_URL)'` → 관리자 화면에서 사진 업로드 → DB 노드에서 `sudo docker exec minio mcli ls app/room-images`
 
 - **CORS**: `minio_cors_allow_origin: "*"`(서버 전역)입니다.
 - **자동화하지 않는 것**: `MINIO_ROOT_PASSWORD` 변경. root 자격증명은 데이터 디렉토리가 빈 상태로 처음 기동할 때만 반영됩니다. 값을 바꾸려면 Console 이나 `mcli admin` 으로 직접 변경한 뒤 `.env` 를 맞춥니다.
-- presigned 동작 확인 (DB 노드):
+- 익명 읽기 범위 확인 (DB 노드에서 올리고 팀원 PC 에서 확인):
   ```bash
+  # DB 노드
+  sudo docker exec minio mcli anonymous get-json local/room-images      # Resource 가 room-images/room-types/* 하나, Action 은 s3:GetObject 만
+  echo hello | sudo docker exec -i minio mcli pipe app/room-images/room-types/0/test.txt
   echo hello | sudo docker exec -i minio mcli pipe app/room-images/test.txt
-  # 서명 Host 가 Tailscale IP 가 되도록 앱 키로 alias 를 잡아 발급 (127.0.0.1 로 발급하면 외부에서 못 씀)
-  sudo docker exec -it minio sh -c 'mcli alias set ts http://<DB ts ip>:9000 <APP_KEY> <APP_SECRET> >/dev/null && mcli share download ts/room-images/test.txt'
-  # 팀원 PC: 출력된 URL → 200, 서명 없이 http://<DB ts ip>:9000/room-images/test.txt → 403
+  # 팀원 PC (tailnet)
+  curl -s -o /dev/null -w '%{http_code}\n' http://<DB ts ip>:9000/room-images/room-types/0/test.txt   # 200 (서명 없이 보기)
+  curl -s -o /dev/null -w '%{http_code}\n' http://<DB ts ip>:9000/room-images/test.txt                # 403 (공개 경로 밖)
+  curl -s -o /dev/null -w '%{http_code}\n' 'http://<DB ts ip>:9000/room-images?list-type=2'           # 403 (목록 조회 금지)
+  curl -s -o /dev/null -w '%{http_code}\n' -X PUT --data x http://<DB ts ip>:9000/room-images/room-types/0/x.txt  # 403 (익명 쓰기 금지)
+  # 정리
+  sudo docker exec minio mcli rm app/room-images/room-types/0/test.txt app/room-images/test.txt
   ```
 
 ### 7-7. DynamoDB Local · RAG 인덱스 버킷 (챗봇)

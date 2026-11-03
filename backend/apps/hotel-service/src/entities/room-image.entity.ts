@@ -6,8 +6,8 @@ import {
 } from 'typeorm';
 
 // 객실별 이미지 목록. 사진 파일은 저장소(dev MinIO · prod S3)에 두고, DB에는 경로(object_key)만 저장한다
-// (LDP-88, V10 — 그 전에는 image_base64 컬럼에 사진 자체를 넣었다). 버킷이 비공개라 화면에는
-// object_key로 만든 Presigned URL을 내려준다 (RoomImageStorage).
+// (LDP-88, V10 — 그 전에는 image_base64 컬럼에 사진 자체를 넣었다). 화면에는 object_key로 만든
+// 보기 URL(고정 URL, IMAGE_BASE_URL이 없으면 Presigned URL)을 내려준다 (RoomImageStorage).
 // sortOrder가 0인 이미지가 대표(썸네일) 이미지다.
 @Entity('room_images')
 export class RoomImage {

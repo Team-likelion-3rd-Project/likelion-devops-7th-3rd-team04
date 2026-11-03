@@ -51,7 +51,7 @@ interface HotelDto {
 interface RoomImageDto {
   imageId: number;
   mimeType: string;
-  imageUrl: string; // 사진 보기용 Presigned URL (1시간 뒤 만료)
+  imageUrl: string; // 사진 보기 URL (고정 URL — IMAGE_BASE_URL이 없는 환경만 1시간 뒤 만료되는 Presigned URL)
   objectKey: string; // 객실 수정 때 기존 사진을 유지하려면 그대로 다시 보낸다
   sortOrder: number;
 }
@@ -475,8 +475,8 @@ export class HotelController implements OnModuleInit {
     summary: '객실 사진 업로드 URL 발급 (관리자 전용)',
     description:
       '사진 파일은 이 API로 받은 uploadUrl에 브라우저가 직접 PUT합니다(Content-Type·크기는 요청한 값과 같아야 함, 5분 뒤 만료). ' +
-      '업로드가 끝나면 objectKey를 객실 수정의 images[].objectKey로 보냅니다(경로 room-types/{roomId}/...). 저장소 버킷은 비공개라 사진 보기는 ' +
-      '객실 조회 응답의 images[].imageUrl(Presigned URL)을 씁니다.',
+      '업로드가 끝나면 objectKey를 객실 수정의 images[].objectKey로 보냅니다(경로 room-types/{roomId}/...). 사진 보기는 ' +
+      '객실 조회 응답의 images[].imageUrl(고정 URL)을 씁니다.',
   })
   @ApiResponse({ status: 201, description: '업로드 URL 발급 성공' })
   @ApiResponse({
