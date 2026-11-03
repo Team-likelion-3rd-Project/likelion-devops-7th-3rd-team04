@@ -62,9 +62,22 @@ describe('RoomService 조회 캐시', () => {
     delete: jest.Mock;
     save: jest.Mock;
   };
+  let roomAvailabilityRepository: { find: jest.Mock };
   let service: RoomService;
 
+  // 판매 중 · 남은 방 있음
+  const day = (date: string, bookedCount = 0) => ({
+    roomId: 1,
+    date,
+    price: 100000,
+    isAvailable: true,
+    bookedCount,
+  });
+
   beforeEach(() => {
+    roomAvailabilityRepository = {
+      find: jest.fn().mockResolvedValue([day('2026-09-01')]),
+    };
     hotelRepository = { findOne: jest.fn().mockResolvedValue({ hotelId: 1 }) };
     roomRepository = {
       find: jest.fn().mockResolvedValue([room]),
@@ -86,7 +99,7 @@ describe('RoomService 조회 캐시', () => {
       roomRepository as unknown as Repository<RoomType>,
       {} as Repository<RoomUnit>,
       hotelRepository as unknown as Repository<Hotel>,
-      {} as Repository<RoomAvailability>,
+      roomAvailabilityRepository as unknown as Repository<RoomAvailability>,
       roomImageRepository as unknown as Repository<RoomImage>,
       {} as DataSource,
       {
@@ -143,6 +156,60 @@ describe('RoomService 조회 캐시', () => {
     expect((await service.getRoomsByHotel(1))[0].name).toBe('새 이름');
     expect((await service.getRoomById(1, 1)).name).toBe('새 이름');
     expect(roomRepository.find).toHaveBeenCalledTimes(2);
+  });
+
+  it('검색은 객실 종류·사진을 캐시에서 읽고, 날짜별 재고는 매번 DB에서 읽는다', async () => {
+    await service.searchAvailableRooms(1, '2026-09-01', '2026-09-02', 2);
+    await flush();
+    const results = await service.searchAvailableRooms(
+      1,
+      '2026-09-01',
+      '2026-09-02',
+      2,
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0].room.images[0].objectKey).toBe('room-types/1/a.jpg');
+    expect(hotelRepository.findOne).toHaveBeenCalledTimes(1);
+    expect(roomRepository.find).toHaveBeenCalledTimes(1);
+    expect(roomImageRepository.find).toHaveBeenCalledTimes(1);
+    expect(roomAvailabilityRepository.find).toHaveBeenCalledTimes(2);
+  });
+
+  it('검색은 객실 목록과 같은 캐시를 쓴다 (목록을 본 뒤 검색하면 객실 종류를 다시 읽지 않음)', async () => {
+    await service.getRoomsByHotel(1);
+    await flush();
+    await service.searchAvailableRooms(1, '2026-09-01', '2026-09-02', 2);
+
+    expect(roomRepository.find).toHaveBeenCalledTimes(1);
+  });
+
+  it('예약으로 재고가 바뀌면 캐시와 관계없이 바로 매진으로 보인다', async () => {
+    await service.searchAvailableRooms(1, '2026-09-01', '2026-09-02', 2);
+    await flush();
+    // 보유 수량 3개가 모두 예약됨
+    roomAvailabilityRepository.find.mockResolvedValue([day('2026-09-01', 3)]);
+
+    expect(
+      await service.searchAvailableRooms(1, '2026-09-01', '2026-09-02', 2),
+    ).toEqual([]);
+  });
+
+  it('재고 조회는 객실 종류(보유 수량)를 캐시에서 읽고, 남은 방 수는 DB 값으로 계산한다', async () => {
+    roomAvailabilityRepository.find.mockResolvedValue([day('2026-09-01', 1)]);
+    await service.getRoomAvailability(1, 1, '2026-09-01', '2026-09-01');
+    await flush();
+    roomAvailabilityRepository.find.mockResolvedValue([day('2026-09-01', 2)]);
+    const result = await service.getRoomAvailability(
+      1,
+      1,
+      '2026-09-01',
+      '2026-09-01',
+    );
+
+    expect(roomRepository.findOne).toHaveBeenCalledTimes(1);
+    expect(roomAvailabilityRepository.find).toHaveBeenCalledTimes(2);
+    expect(result.availabilities[0].remainingCount).toBe(1);
   });
 
   it('없는 호텔은 캐시에 남기지 않는다', async () => {

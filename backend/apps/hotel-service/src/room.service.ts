@@ -1,14 +1,7 @@
 import { status as GrpcStatus } from '@grpc/grpc-js';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import {
-  Between,
-  DataSource,
-  In,
-  MoreThan,
-  MoreThanOrEqual,
-  Repository,
-} from 'typeorm';
+import { Between, DataSource, In, MoreThan, Repository } from 'typeorm';
 import { RoomType } from './entities/room-type.entity';
 import { RoomUnit } from './entities/room-unit.entity';
 import { Hotel } from './entities/hotel.entity';
@@ -263,20 +256,21 @@ export class RoomService {
   // 행이 하루도 빠짐없이 존재하고 전부 "판매 중 + 남은 방 1개 이상"인 객실만 반환한다 (checkOut 당일은
   // 다음 손님의 체크인일이므로 검사 대상에서 제외 — reserveRoomAvailability/createBooking과 동일한 규칙).
   // 이 검증 과정에서 이미 조회한 row.price로 minPrice(구간 중 최저 1박 요금)도 추가 쿼리 없이 함께 계산한다.
+  // 호텔 확인·객실 종류·사진은 조회 캐시(hotel:{id}:rooms, getRoomsByHotel과 같은 키)에서 읽고,
+  // 예약·취소마다 바뀌는 날짜별 재고만 DB에서 읽는다 (캐시가 차 있으면 DB 1번).
+  // 캐시의 보유 수량이 잠깐 어긋나도 오버부킹은 없다 — 예약(reserveRoomAvailability)은 DB 행을 잠그고 다시 확인한다.
   async searchAvailableRooms(
     hotelId: number,
     checkIn: string,
     checkOut: string,
     guests: number,
   ): Promise<RoomSearchResultGrpcResponse[]> {
-    const hotel = await this.hotelRepository.findOne({ where: { hotelId } });
-    if (!hotel) {
+    const rooms = await this.loadHotelRooms(hotelId);
+    if (!rooms) {
       throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
 
-    const candidates = await this.roomRepository.find({
-      where: { hotelId, capacity: MoreThanOrEqual(guests) },
-    });
+    const candidates = rooms.filter((room) => room.capacity >= guests);
     if (candidates.length === 0) {
       return [];
     }
@@ -314,26 +308,9 @@ export class RoomService {
     const availableRooms = candidates.filter(
       (room) => availableNightsByRoomId.get(room.roomId) === totalNights,
     );
-    if (availableRooms.length === 0) {
-      return [];
-    }
-
-    const images = await this.roomImageRepository.find({
-      where: { roomId: In(availableRooms.map((room) => room.roomId)) },
-      order: { sortOrder: 'ASC' },
-    });
-    const imagesByRoomId = new Map<number, RoomImage[]>();
-    for (const image of images) {
-      const bucket = imagesByRoomId.get(image.roomId) ?? [];
-      bucket.push(image);
-      imagesByRoomId.set(image.roomId, bucket);
-    }
-
     return Promise.all(
       availableRooms.map(async (room) => ({
-        room: await this.toGrpcResponse(
-          toRoomSnapshot(room, imagesByRoomId.get(room.roomId) ?? []),
-        ),
+        room: await this.toGrpcResponse(room),
         minPrice: minPriceByRoomId.get(room.roomId) ?? 0,
       })),
     );
@@ -490,15 +467,15 @@ export class RoomService {
   // 존재하고 전부 "판매 중 + 남은 방 1개 이상"일 때만 overall isAvailable을 true로 판단한다.
   // 날짜별로 남은 방 수(remainingCount)와 판매 중지 여부(isSaleStopped)를 따로 내려 줘서
   // 화면에서 "매진"(남은 방 0)과 "판매 중지"를 구분할 수 있다.
+  // 객실 종류(보유 수량)는 조회 캐시(hotel:{id}:room:{roomId})에서, 날짜별 재고는 DB에서 읽는다
+  // (searchAvailableRooms와 같은 이유 — 캐시가 차 있으면 DB 1번).
   async getRoomAvailability(
     hotelId: number,
     roomId: number,
     startDate: string,
     endDate: string,
   ): Promise<RoomAvailabilityGrpcResponse> {
-    const room = await this.roomRepository.findOne({
-      where: { hotelId, roomId },
-    });
+    const room = await this.loadRoom(hotelId, roomId);
     if (!room) {
       throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 객실입니다.');
     }

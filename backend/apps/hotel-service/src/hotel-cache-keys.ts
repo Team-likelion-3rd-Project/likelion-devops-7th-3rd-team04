@@ -2,12 +2,13 @@
 //
 //  키                            채우는 곳                       무효화하는 곳
 //  hotels, hotel:{id}            GetHotels, GetHotel             UpdateHotel
-//  hotel:{id}:rooms              GetRooms                        Create/Update/DeleteRoom, 호실 추가·점검(보유 수량)
-//  hotel:{id}:room:{roomId}      GetRoom                         Update/DeleteRoom, 호실 추가·점검(보유 수량)
+//  hotel:{id}:rooms              GetRooms, SearchRooms           Create/Update/DeleteRoom, 호실 추가·점검(보유 수량)
+//  hotel:{id}:room:{roomId}      GetRoom, GetRoomAvailability    Update/DeleteRoom, 호실 추가·점검(보유 수량)
 //  hotel:{id}:facilities         GetFacilities                   CreateFacility
 //  notices:{ver}:..., notice:{id}  ListNotices, GetNotice        Create/Update/DeleteNotice (목록은 버전을 올림)
 //
-// 날짜별 재고(room_availabilities)는 예약·취소마다 바뀌어 캐시하지 않는다.
+// 날짜별 재고(room_availabilities)는 예약·취소마다 바뀌어 캐시하지 않는다 — SearchRooms · GetRoomAvailability 도
+// 객실 종류만 캐시에서 읽고 재고는 매번 DB 에서 읽는다.
 export const HotelCacheKeys = {
   hotels: () => 'hotels',
   hotel: (hotelId: number) => `hotel:${hotelId}`,
