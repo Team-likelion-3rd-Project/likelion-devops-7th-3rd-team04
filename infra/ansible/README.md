@@ -9,7 +9,7 @@
 | `db.yml` | `[db]` (1대) | Tailscale 등록(`tag:db`) → Docker → ufw → OpenBao(dev 비밀값, [16절](#16-openbao--external-secrets-operator-dev-비밀값)) → MariaDB + Valkey + MinIO (Docker Compose) → 모니터링 수집기([17-6](#17-6-db-지표-db-노드--결제-db)) → dev 시딩(`--tags seed`, 스키마가 있을 때만) — [7절](#7-db-노드-구성-mariadb--valkey--minio) |
 | `gitlab.yml` | `[gitlab]` (1대) | Tailscale 등록(`tag:gitlab`) → Docker → ufw → GitLab CE (Docker Compose) → `tailscale serve` HTTPS → Runner 토큰 발급 — [8절](#8-gitlab-노드-구성) |
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
-| `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) → 모니터링 수집기(17절) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
+| `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) → 토스 웹훅 수신기 + Funnel → 모니터링 수집기(17절) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) — [11절](#11-ingress-controller-traefik) |
 | `k8s-cicd.yml` | `[control_plane]` (1대) | External Secrets Operator(OpenBao 연결) → `backend` 네임스페이스 · 레지스트리 pull Secret · `backend-secrets`(ExternalSecret) → ArgoCD (backend 배포) — [12절](#12-cicd-registry--파이프라인--argocd), [16절](#16-openbao--external-secrets-operator-dev-비밀값) |
 | `monitoring.yml` | `[control_plane]` (1대) | metrics-server → kube-prometheus-stack(Prometheus · Grafana · node-exporter) → 대시보드 → `tailscale serve` HTTPS(Grafana) — [17절](#17-모니터링-prometheus--grafana) |
@@ -80,7 +80,7 @@ infra/ansible/
 | `tag:db` | DB 노드 (OpenBao + MariaDB + Valkey + MinIO) | `db.yml` |
 | `tag:gitlab` | GitLab 노드 | `gitlab.yml` |
 | `tag:gitlab-runner` | GitLab Runner 노드 | `gitlab-runner.yml` |
-| `tag:payment` | 결제 서버 노드 (결제 DB + payment-service + ElasticMQ) | `payment.yml` |
+| `tag:payment` | 결제 서버 노드 (결제 DB + payment-service + ElasticMQ + 토스 웹훅 수신기, Funnel) | `payment.yml` |
 | `tag:ci` | GitHub Actions runner (ephemeral, 미러링 workflow) | `.github/workflows/mirror-gitlab.yml` |
 
 ```jsonc
@@ -140,6 +140,10 @@ infra/ansible/
     { "src": ["tag:payment"], "dst": ["tag:gitlab"], "ip": ["tcp:443", "tcp:5050"] },
     // 팀원 PC → 결제 노드 : SSH(VM 관리). 결제 DB 는 열지 않음 — SSH 터널로 접속
     { "src": ["autogroup:member"], "dst": ["tag:payment"], "ip": ["tcp:22"] }
+  ],
+  "nodeAttrs": [
+    // 결제 노드 Funnel : 토스 웹훅 공개 입구 (1-4, 14-8). grants 와 별개 — 인터넷 → 노드 443 의 Funnel 경로만 허용
+    { "target": ["tag:payment"], "attr": ["funnel"] }
   ]
 }
 ```
@@ -171,6 +175,13 @@ infra/ansible/
 GitLab 노드의 `tailscale serve` 가 `<node_name>.<tailnet>.ts.net` 용 Let's Encrypt 인증서를 자동 발급·갱신하는 데 필요합니다.
 
 > 인증서는 Certificate Transparency 로그에 공개되므로 Tailnet 이름(`<tailnet>.ts.net`)과 노드명이 외부에 노출된다는 점만 알아 두세요. (접근은 여전히 Tailnet 내부로 제한)
+
+### 1-4. Funnel (결제 노드 토스 웹훅)
+
+토스가 인터넷에서 웹훅을 보낼 수 있게 결제 노드의 경로 하나(`/webhook/toss`)만 공개합니다 ([14-8](#14-8-토스-웹훅-수신-funnel--수신기--elasticmq)). 1-1 정책의 `nodeAttrs`(`tag:payment` → `funnel`)와 1-3 의 HTTPS Certificates 가 있어야 하고, 없으면 `payment.yml` 이 Funnel 단계에서 안내와 함께 중단합니다.
+
+- Funnel 은 **Tailnet 밖에서 들어오는 유일한 경로**입니다. 노드 443 에서 tailscaled 가 TLS 를 끝내고 127.0.0.1 의 수신기로만 넘기므로 ufw · grants 는 바꾸지 않습니다.
+- 외부 입구 없이 두려면 `group_vars/payment.yml` 의 `payment_webhook_funnel_enabled: false` 로 두고 다시 실행합니다 (Funnel 만 닫히고 수신기 · 큐는 그대로).
 
 ---
 
@@ -1069,6 +1080,8 @@ payment-node  payment-service ─▶ 127.0.0.1:3306 결제 MariaDB (loopback 전
               payment-service ─▶ 127.0.0.1:9324 payment-result.fifo 발행 (payment_outbox)
               payment-service ─▶ <control plane>:30303 booking-service (gRPC) / :30307 pg-mock-service (HTTP)  ← NodePort
               docker pull / git clone ─▶ <gitlab fqdn>:5050 / :443 (결제 노드 전용 Deploy Token)
+인터넷(토스)   https://<payment-node>.<tailnet>.ts.net/webhook/toss ─Funnel─▶ 127.0.0.1:3110 웹훅 수신기 ─▶ payment-webhook
+              payment-service ◀─ payment-webhook 수신 → pg_webhook_inbox (14-8)
 ```
 
 | 구성 요소 | 이미지 | 포트 | 비고 |
@@ -1076,9 +1089,10 @@ payment-node  payment-service ─▶ 127.0.0.1:3306 결제 MariaDB (loopback 전
 | 결제 MariaDB | `mariadb:11.4.13` | `PAYMENT_DB_PORT`(3306) | `bind-address=127.0.0.1` — tailnet 에서도 접속 불가 |
 | Flyway | `<registry>/team04/hotel/payment-migrations:<tag>` | - | payment-service 갱신 직전 `compose run --rm` 1회 |
 | payment-service | `<registry>/team04/hotel/payment-service:<tag>` | 3004 (gRPC), 3104 (health, 내부) | `synchronize: false` — 테이블은 Flyway 만 만듦 |
-| ElasticMQ | `softwaremill/elasticmq:1.7.1` | 9324 (SQS) | 큐 `payment-result.fifo` + DLQ `payment-result-dlq.fifo`, 큐·메시지 디스크 저장 |
+| ElasticMQ | `softwaremill/elasticmq:1.7.1` | 9324 (SQS) | 큐 `payment-result.fifo` + DLQ `payment-result-dlq.fifo`, `payment-webhook` + DLQ `payment-webhook-dlq`, 큐·메시지 디스크 저장 |
+| 토스 웹훅 수신기 | `payment-webhook-receiver:local` (노드에서 빌드, `node:22-alpine`) | 3110 (127.0.0.1) | prod Lambda 코드(`index.mjs`) 그대로 실행, Funnel 로 공개 (14-8) |
 
-- 모든 컨테이너는 `network_mode: host` 이고, ufw 가 `tailscale0` 의 **3004 · 9324 만** 허용합니다.
+- 모든 컨테이너는 `network_mode: host` 이고, ufw 가 `tailscale0` 의 **3004 · 9324 만** 허용합니다. 웹훅 수신기는 Funnel(1-4)로만 들어옵니다.
 - 경로: 설정·자격증명 `/opt/payment-node`(0700), 데이터 `/var/lib/payment-node/{mariadb,elasticmq}`
 - 이미지 태그: gitops `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` → `global.imageTag` 를 따릅니다. 클러스터에 배포된 것과 같은 커밋의 이미지를 씁니다. `PAYMENT_IMAGE_TAG` 를 지정하면 그 값을 우선합니다.
 
@@ -1132,7 +1146,7 @@ ansible-playbook payment.yml -K --tags deploy     # 이미지 태그 갱신만 (
 PAYMENT_IMAGE_TAG=<short sha> ansible-playbook payment.yml -K --tags deploy   # 특정 태그로 (롤백)
 ```
 
-순서: 결제 DB · ElasticMQ 기동 → 결제 DB 계정 맞추기 → Flyway migrate → payment-service 갱신(healthy 대기). 마지막에 적용된 스키마 버전과 **gitops 에 넣을 값**(14-4)이 출력됩니다.
+순서: 결제 DB · ElasticMQ 기동 → 결제 DB 계정 맞추기 → Flyway migrate → payment-service 갱신(healthy 대기) → 웹훅 수신기 빌드 · 기동 → Funnel. 마지막에 적용된 스키마 버전과 **gitops 에 넣을 값**(14-4)이 출력됩니다.
 
 - `backend/.env` 의 `PAYMENT_DB_*` 를 바꿨을 때도 다시 실행하면 됩니다 — 앱 계정 접속이 실패할 때만 DB / 계정 / 비밀번호 / 권한을 다시 맞춥니다 (`db.yml` 과 같은 방식).
 - `PAYMENT_PROVIDER` · `TOSS_*` 를 바꿨으면 `--tags deploy` 로 다시 실행합니다. env 파일이 바뀌어 payment-service 컨테이너만 다시 만들어집니다.
@@ -1182,7 +1196,8 @@ migrations:
 ### 14-6. ElasticMQ (dev 용 SQS)
 
 - 결제 결과 이벤트: payment-service 가 `payment_outbox` 미발행 행을 `payment-result.fifo` 로 보내고, booking-service 가 받아 `payment_result_inbox` 에 기록합니다 (`MessageGroupId` = reservation_id, `MessageDeduplicationId` = outbox `event_id`).
-- 5회 수신 후에도 처리되지 않은 메시지는 `payment-result-dlq.fifo` 로 갑니다. 큐 이름 · 횟수 · visibility timeout 은 `group_vars/payment.yml` 에서 조정합니다.
+- 토스 웹훅: 웹훅 수신기(14-8)가 `payment-webhook` 표준 큐에 넣고, payment-service 가 받아 `pg_webhook_inbox` 에 기록합니다. prod 50-payment-webhook 과 같은 표준 큐입니다 (중복은 inbox UNIQUE 키가 막음). 결제 노드 안에서만 쓰므로 클러스터 값은 없습니다.
+- 5회 수신 후에도 처리되지 않은 메시지는 각 DLQ(`payment-result-dlq.fifo`, `payment-webhook-dlq`)로 갑니다. 큐 이름 · 횟수 · visibility timeout 은 `group_vars/payment.yml` 에서 조정합니다.
 - 큐 URL 은 `node-address` 를 결제 노드 Tailscale IP 로 고정해, `GetQueueUrl` 결과를 클러스터에서도 그대로 쓸 수 있습니다.
 - ElasticMQ 는 인증이 없습니다. 접근 제어는 ACL(`tag:k8s-node → tag:payment tcp:9324`)과 ufw 로만 합니다.
 - **SQS 연동 환경변수 (확정)** — 발행기(payment-service)와 소비기(booking-service)가 같은 이름을 씁니다.
@@ -1192,6 +1207,7 @@ migrations:
   | `SQS_ENDPOINT` | `http://127.0.0.1:9324`(결제 노드) / `http://<payment ts ip>:9324`(클러스터) | 비움 → AWS SDK 기본 엔드포인트 |
   | `SQS_REGION` | `ap-northeast-2` | 실제 리전 |
   | `PAYMENT_RESULT_QUEUE_URL` | `http://<payment ts ip>:9324/000000000000/payment-result.fifo` | Terraform 43-messaging 의 큐 URL |
+  | `PAYMENT_WEBHOOK_QUEUE_URL` (payment-service 만) | `http://<payment ts ip>:9324/000000000000/payment-webhook` | Terraform 50-payment-webhook 의 큐 URL (60-payment-app 이 주입) |
   | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | 더미값(`elasticmq`) — ElasticMQ 는 검증 안 함 | 넣지 않음 (IAM 역할) |
 
   결제 노드 쪽 값은 `group_vars/payment.yml` 의 `payment_sqs_env`, 클러스터 쪽 값은 14-4 의 booking-service env 입니다.
@@ -1202,9 +1218,10 @@ migrations:
 
 ```bash
 # 결제 노드
-sudo docker compose -f /opt/payment-node/compose.yml ps    # payment-mariadb, elasticmq, payment-service 모두 healthy
+sudo docker compose -f /opt/payment-node/compose.yml ps    # payment-mariadb, elasticmq, payment-service, payment-webhook-receiver 모두 healthy
 sudo ufw status                                            # tailscale0 의 3004, 9324 만 허용
-curl -s 'http://127.0.0.1:9324/?Action=ListQueues'         # payment-result.fifo, payment-result-dlq.fifo
+curl -s 'http://127.0.0.1:9324/?Action=ListQueues'         # payment-result(-dlq).fifo, payment-webhook(-dlq)
+sudo tailscale funnel status                               # /webhook/toss → http://127.0.0.1:3110 (Funnel on)
 nc -zv <control plane Tailscale IP> 30303                  # booking-service NodePort (14-4 반영 후)
 
 # k8s 노드 (Tailnet 경유)
@@ -1216,13 +1233,55 @@ nc -zv <결제 노드 Tailscale IP> 3306                        # 실패해야 �
 - 적용된 스키마는 `payment.yml` 마지막 출력(`schema V<n>`) 또는 `docker exec payment-mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/app.cnf -e "SELECT version, description FROM flyway_schema_history"` 로 확인합니다.
 - 다시 실행하면 거의 모든 task 가 `ok` (changed=0 에 가까움) 로 끝나야 합니다.
 
-### 14-8. 트러블슈팅
+### 14-8. 토스 웹훅 수신 (Funnel → 수신기 → ElasticMQ)
+
+prod 50-payment-webhook(API Gateway → Lambda → SQS)을 결제 노드에서 같은 흐름 · 같은 코드로 재현합니다.
+
+```
+토스 ─HTTPS─▶ Funnel https://<payment-node>.<tailnet>.ts.net/webhook/toss     (prod: API Gateway pay-webhook.<도메인>)
+          ─▶ 127.0.0.1:3110 payment-webhook-receiver (index.mjs 그대로)       (prod: Lambda)
+          ─▶ ElasticMQ payment-webhook (+ payment-webhook-dlq)                 (prod: SQS 표준 큐 + DLQ)
+          ─▶ payment-service 수신기 → pg_webhook_inbox → 대사 배치가 토스 재조회로 검증 후 반영
+```
+
+| prod | dev | 값 (`group_vars/payment.yml`) |
+|---|---|---|
+| API Gateway `POST /webhook/toss` | Funnel `--set-path=/webhook/toss` (그 경로만 공개) | `payment_webhook_path`, `payment_webhook_funnel_enabled` |
+| 스로틀링 20/s · 순간 40 → 429 | 수신기의 토큰 버킷 (같은 값) | `webhook_receiver_rate_limit` / `_burst_limit` |
+| Lambda `index.mjs` (nodejs22.x, 8초) | 같은 파일을 Node 22 컨테이너에서 실행, 8초 넘기면 500 | `webhook_receiver_node_image`, `webhook_receiver_timeout_ms` |
+| SQS 표준 큐 · DLQ (30초, 5회) | ElasticMQ 같은 이름 · 같은 값 | `payment_webhook_*` |
+
+- **Lambda 코드는 복제하지 않습니다.** playbook 이 `infra/terraform/live/prod/50-payment-webhook/lambda/index.mjs` 를 그대로 복사해 노드에서 이미지를 빌드합니다. Lambda 를 고치면 다음 `--tags deploy` 에 dev 도 같은 코드가 됩니다. 수신기 쪽 코드(`roles/payment_stack/files/webhook-receiver/server.mjs`)는 요청을 API Gateway payload 2.0 이벤트로 바꿔 `handler` 를 부르는 일만 합니다.
+- 큐 주소는 컨테이너 env 로만 바꿉니다 (`PAYMENT_WEBHOOK_QUEUE_URL` = loopback 큐 URL, `AWS_ENDPOINT_URL_SQS`, 더미 자격증명). SQS SDK 는 큐 URL 의 호스트로 접속하므로 수신기에는 `127.0.0.1` 큐 URL 을 넣습니다 (같은 큐).
+- 본문 위조는 백엔드가 막습니다. 웹훅 본문으로 판단하지 않고 토스 재조회 결과와 주문번호 · 금액이 같을 때만 반영합니다. 수신기는 본문을 로그에 남기지 않습니다.
+- **prod 와 다른 점**: IAM · 큐 정책 없음(ElasticMQ 무인증 — 큐는 루프백 · ACL · ufw 로만 접근), VPC 엔드포인트 · SG 없음, CloudWatch 알람(DLQ 적재 · Lambda 오류 · 5xx) 없음 — 수신기 로그는 Loki(17-8)에서 `container="payment-webhook-receiver"` 로 봅니다, 수신기 1개(동시 실행 확장 없음).
+- **토스 개발자센터**: playbook 마지막 출력의 공개 주소(`https://<payment-node>.<tailnet>.ts.net/webhook/toss`)를 테스트 환경 웹훅으로 등록하고 `PAYMENT_STATUS_CHANGED` 를 고릅니다. 테스트 상점 키를 prod 와 같이 쓰면 양쪽이 서로의 웹훅을 받을 수 있습니다 — DB 에 없는 주문은 처리 완료로만 남아 결제에 영향은 없습니다.
+
+검증 (Tailnet 밖, 예: 휴대폰 LTE 에서):
+
+```bash
+URL=https://<payment-node>.<tailnet>.ts.net/webhook/toss
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $URL -H 'content-type: application/json' \
+  -d '{"eventType":"PAYMENT_STATUS_CHANGED","data":{"paymentKey":"test_pk","orderId":"test_order","status":"DONE"}}'   # 200
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $URL -d 'not json'   # 400 (Lambda 가 거부)
+curl -s -o /dev/null -w '%{http_code}\n' $URL                          # 404 (POST 만)
+
+# 결제 노드 — 위 200 건이 inbox 에 들어왔는지 (가짜 주문이라 다음 대사 배치에서 processed_at 만 채워짐)
+sudo docker exec payment-mariadb mariadb --defaults-extra-file=/etc/mysql/ansible/app.cnf \
+  -e "SELECT inbox_id, pg_event_key, received_at, processed_at FROM pg_webhook_inbox ORDER BY inbox_id DESC LIMIT 5"
+sudo docker logs --tail 20 payment-webhook-receiver
+```
+
+### 14-9. 트러블슈팅
 
 - **gitops clone 실패**: Deploy Token 에 `read_repository` 가 없거나 만료된 경우 → `.secrets/payment-node.env` 의 `PAYMENT_DEPLOY_TOKEN` 을 비우고 `gitlab.yml --tags bootstrap` 재실행. timeout 이면 ACL `tag:payment → tag:gitlab tcp:443`.
 - **이미지 pull 실패**: 401 이면 Deploy Token, `manifest unknown` 이면 해당 태그가 아직 승격(`push` job) 전인지 확인. timeout 이면 ACL `tag:payment → tag:gitlab tcp:5050`.
 - **Flyway 실패 (validate)**: 이미 적용된 SQL 파일이 바뀐 경우입니다. 파일을 되돌리고 새 버전(`V<n+1>__...sql`)으로 추가합니다. payment-service 는 이전 버전으로 계속 동작합니다.
 - **payment-service 가 healthy 가 안 됨**: playbook 이 마지막 로그 40줄을 출력합니다. `docker logs payment-service` 로 DB 접속 / 환경변수 누락을 확인합니다.
 - **booking-service 호출 timeout**: gitops 에 `booking-service.nodePort` 가 반영됐는지(`kubectl -n backend get svc booking-service` 가 `NodePort`), ACL `tag:payment → tag:k8s-node tcp:30303` 을 확인합니다.
+- **Funnel 단계에서 중단**: 1-1 정책의 `nodeAttrs`(`tag:payment` → `funnel`), 1-3 의 HTTPS Certificates 를 확인합니다. 당장 공개하지 않으려면 `payment_webhook_funnel_enabled: false`.
+- **웹훅이 500**: 수신기가 큐에 넣지 못한 경우입니다 (토스가 재전송). `docker logs payment-webhook-receiver` 의 `웹훅 큐 전송 실패` 와 ElasticMQ 상태를 확인합니다. 429 는 요청 한도 초과입니다.
+- **웹훅이 inbox 에 안 쌓임**: `docker logs payment-service` 에 `토스 웹훅 수신 시작` 이 없으면 `PAYMENT_WEBHOOK_QUEUE_URL` 이 빠진 것입니다 (이미지가 #439 이전이거나 env 미반영). 형식 오류 · 저장 실패 메시지는 5회 뒤 `payment-webhook-dlq` 로 갑니다.
 
 ---
 
