@@ -133,3 +133,41 @@ WHERE rt.name = '동시예약 전용룸' AND a.booked_count > 0 ORDER BY a.date;
 ```
 
 로컬에서는 부하를 주지 않는다 (smoke · `k6 inspect` · 아주 낮은 단계 확인만). 기본 rate limit(IP당 분당 100회) 안에서 끝나야 한다.
+
+## 5. 운영 부하 생성기 (`73-load-generator`)
+
+운영 부하는 노트북이 아니라 us-east-1 의 EC2 생성기(기본 `m7a.xlarge`, EIP)에서 보낸다. 생성기 EIP 는 `80-main-edge` WAF rate limit 에서 자동으로 빠진다 (IP reputation · 관리형 규칙은 그대로). 앱 throttler(`THROTTLE_LIMIT`) · 토큰 만료는 테스트 브랜치 gitops 에서 바꾼다.
+
+```bash
+# 켜기 — 73 다음 80 (EIP 를 WAF IP set 에 넣는다). 시간당 약 $0.24 (인스턴스 + EIP)
+cd infra/terraform/live/prod
+AWS_PROFILE=team04 TF_VAR_enable_load_generator=true terragrunt run --all apply \
+  --filter './73-load-generator' --filter './80-main-edge'
+AWS_PROFILE=team04 aws wafv2 get-ip-set --scope REGIONAL --name team04-hotel-main-rate-limit-exempt \
+  --id "$(AWS_PROFILE=team04 aws wafv2 list-ip-sets --scope REGIONAL --query "IPSets[?Name=='team04-hotel-main-rate-limit-exempt'].Id" --output text)" \
+  --query 'IPSet.Addresses'                                   # 생성기 EIP /32
+
+# 접속 (인바운드 없음, Session Manager)
+AWS_PROFILE=team04 aws ssm start-session --target "$(cd 73-load-generator && AWS_PROFILE=team04 terragrunt output -raw instance_id)"
+```
+
+생성기 안에서:
+
+```bash
+test -f /etc/load-generator/ready || sudo tail -50 /var/log/cloud-init-output.log   # 부트스트랩 확인 (부팅 후 몇 분)
+sudo -iu loadtest
+cd repo && git pull && cd load-test/k6        # 부팅 때 main 의 load-test/ 만 받는다. 다른 브랜치는 git fetch origin <브랜치> && git checkout FETCH_HEAD
+ulimit -n                                     # 250000
+export LT_PASSWORD='<테스트 사용자 비밀번호>'   # 3절 명령에 그대로 쓴다
+k6 run -e TEST=smoke -e BASE_URL=https://api.<운영 도메인> ... main.js
+
+# 결과 보존 — 10-global 로그 버킷 load-test/<날짜>/ (Object Lock 보존 기간 동안 지워지지 않음)
+set -a; . /etc/load-generator/config.env; set +a
+aws s3 cp result/ "s3://$RESULT_BUCKET/${RESULT_PREFIX}$(date -u +%F)/" --recursive --exclude .gitkeep
+```
+
+- **테스트 날은 `run --all apply` · `72` apply 마다 `TF_VAR_enable_load_generator=true` · `TF_VAR_node_desired_size=4` 를 같이 준다.** 빼고 apply 하면 테스트 중에 생성기 · EIP 가 삭제되고(WAF 예외도 비워짐) EKS 노드가 기본 2대로 줄어든다. 터미널에 export 해 두는 것을 권장한다
+- 노드 4대 고정: Cluster Autoscaler 가 없어 노드 수가 부하에 따라 바뀌지 않는다. 측정 조건을 고정하려고 테스트 날은 `72` 를 `TF_VAR_node_desired_size=4`(= `node_max_size`)로 apply 한다
+- 생성기 CPU · 메모리는 테스트 중에 `top` 으로 본다. `dropped_iterations > 0` 인데 생성기 CPU 가 80% 를 넘으면 생성기 부족이다 → `instance_type` 을 올린다 (버스터블 t* 는 쓰지 않는다)
+- 생성기를 다시 만들면(`instance_type` 변경 등) 인스턴스는 교체되지만 EIP 는 그대로라 `80` 을 다시 apply 할 필요가 없다. 켜고 끌 때만 `80` 도 apply 한다
+- 끄기: 위 명령에서 `TF_VAR_enable_load_generator` 를 빼고 다시 실행 (인스턴스 · EIP 삭제, WAF 예외 비움). 매일 destroy 에도 포함된다. 결과를 올리기 전에 끄면 결과 파일도 사라진다

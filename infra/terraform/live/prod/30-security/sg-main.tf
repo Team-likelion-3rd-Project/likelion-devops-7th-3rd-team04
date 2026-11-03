@@ -1,4 +1,4 @@
-# Main VPC SG 와 규칙 (설계 문서 4-1절 M1 – M15, M16 은 EKS 전환 LDP-200)
+# Main VPC SG 와 규칙 (설계 문서 4-1절 M1 – M15, M16 은 EKS 전환 LDP-200, M17 은 부하 생성기 LDP-226)
 #
 # 노드(워커 · CP) 는 아웃바운드 전체 허용(M14) 이라 노드에서 출발하는 흐름은 대상 SG 인바운드만 만든다.
 # 아웃바운드가 제한된 LB(ALB, 내부 NLB) 에서 출발하는 흐름은 인바운드 · 아웃바운드 양쪽을 만든다.
@@ -15,6 +15,9 @@ locals {
       main_valkey = { vpc = "main", description = "Main ElastiCache Valkey" }
 
       main_privatelink = { vpc = "main", description = "Main payment PrivateLink interface endpoint" }
+
+      # 부하 테스트 k6 생성기 (73-load-generator). 인바운드 없음 (Session Manager)
+      main_load_generator = { vpc = "main", description = "Main k6 load generator (load test)" }
     },
     var.enable_control_plane ? {
       main_cp           = { vpc = "main", description = "Main kubeadm control plane nodes" }
@@ -92,6 +95,9 @@ locals {
 
       # M14 NAT 경유 외부 · AWS API, 위 인바운드 규칙의 출발 쪽
       m14_worker_all = { sg = "main_worker", cidr = "0.0.0.0/0", protocol = "-1", description = "M14 all outbound" }
+
+      # M17 부하 생성기 → 운영 ALB 공인 주소 · k6 · 레포 다운로드 · SSM
+      m17_load_generator_https = { sg = "main_load_generator", cidr = "0.0.0.0/0", port = 443, description = "M17 HTTPS to internet (ALB, downloads, SSM)" }
     },
     var.enable_control_plane ? {
       # M5 NLB 는 대상 포트만
