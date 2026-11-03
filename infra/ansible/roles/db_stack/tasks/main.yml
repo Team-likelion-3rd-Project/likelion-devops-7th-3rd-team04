@@ -235,7 +235,8 @@
 # 사진 보기는 서명 없는 고정 URL(hotel-service IMAGE_BASE_URL) — minio_public_prefix 아래 GetObject 만 익명 허용.
 # 목록 조회(ListBucket) · 다른 경로 · 쓰기는 막힘 (내장 download 정책은 ListBucket 까지 열어서 쓰지 않음).
 # MinIO 는 버킷 · 경로별 anonymous set 결과를 한 정책에 합치므로(예: set download 를 하면 버킷 전체 읽기가 추가됨),
-# 현재 정책 JSON 이 템플릿과 정확히 같지 않으면 set-json 으로 통째로 덮어쓴다 (정책 없음 = "{}")
+# 현재 정책 JSON 이 템플릿과 정확히 같지 않으면 set-json 으로 통째로 덮어쓴다 (정책 없음 = "{}").
+# template lookup 은 기본(convert_data)으로 JSON 모양 결과를 dict 로 바꿔 from_json 이 실패하므로 문자열로 받는다
 - name: MinIO 버킷 익명 접근 정책 확인
   ansible.builtin.command: docker exec minio mcli anonymous get-json local/{{ minio_bucket }}
   register: minio_bucket_anon
@@ -247,7 +248,8 @@
     docker exec minio mcli anonymous set-json /etc/minio/ansible/anon-policy.json local/{{ minio_bucket }}
   when: >-
     minio_bucket_anon.rc != 0
-    or (minio_bucket_anon.stdout | from_json) != (lookup('ansible.builtin.template', 'minio-anon-policy.json.j2') | from_json)
+    or (minio_bucket_anon.stdout | from_json)
+       != (lookup('ansible.builtin.template', 'minio-anon-policy.json.j2', convert_data=False) | from_json)
   changed_when: true
 
 - name: MinIO 앱 정책 확인
