@@ -4,6 +4,7 @@
 #                                           gitops 레포 릴리스 PR 용 GitHub App (모노레포 release.yml 이 읽음)
 #   team04-hotel/prod/toss-payments       : {secret_key}           토스페이먼츠 시크릿 키 → TOSS_SECRET_KEY (결제 서버가 읽음)
 #   team04-hotel/prod/seed-admin          : {email, password, name} 시드 관리자 계정 → backend 시드 Job 의 SEED_ADMIN_*
+#                                           + {seoul,busan,jeju}_manager_password, seoul_staff_password 지점 계정 → SEED_*_PASSWORD
 #                                           (ESO 가 읽어 Secret seed-admin 생성, gitops backend-secrets 앱)
 #   team04-hotel/prod/grafana-admin       : {admin_user, admin_password} 운영 Grafana admin 계정
 #                                           (ESO 가 읽어 Secret grafana-admin 생성, gitops monitoring 앱)
@@ -90,6 +91,11 @@ resource "aws_secretsmanager_secret_version" "seed_admin" {
     email    = var.seed_admin_email
     password = var.seed_admin_password
     name     = var.seed_admin_name
+
+    seoul_manager_password = var.seed_seoul_manager_password
+    busan_manager_password = var.seed_busan_manager_password
+    jeju_manager_password  = var.seed_jeju_manager_password
+    seoul_staff_password   = var.seed_seoul_staff_password
   })
   secret_string_wo_version = var.seed_admin_credentials_version
 }
