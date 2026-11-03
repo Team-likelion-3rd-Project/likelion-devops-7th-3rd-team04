@@ -10,7 +10,7 @@ function HotelsPage() {
       <h1>호텔</h1>
       <div className="hotels-page-grid">
         {hotels.map((hotel) => (
-          <HotelCard key={hotel.id} hotel={hotel} />
+          <HotelCard key={hotel.id} hotel={hotel} headingLevel={2} />
         ))}
       </div>
     </section>

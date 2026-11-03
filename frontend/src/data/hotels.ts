@@ -1,12 +1,12 @@
-import seoulHero from '../assets/images/hotels/seoul/hero.jpg'
-import seoulStay from '../assets/images/hotels/seoul/stay.jpg'
-import seoulWaters from '../assets/images/hotels/seoul/waters.jpg'
-import busanHero from '../assets/images/hotels/busan/hero.jpg'
-import busanStay from '../assets/images/hotels/busan/stay.jpg'
-import busanWaters from '../assets/images/hotels/busan/waters.jpg'
-import jejuHero from '../assets/images/hotels/jeju/hero.jpg'
-import jejuStay from '../assets/images/hotels/jeju/stay.jpg'
-import jejuWaters from '../assets/images/hotels/jeju/waters.jpg'
+import seoulHero from '../assets/images/hotels/seoul/hero.webp'
+import seoulStay from '../assets/images/hotels/seoul/stay.webp'
+import seoulWaters from '../assets/images/hotels/seoul/waters.webp'
+import busanHero from '../assets/images/hotels/busan/hero.webp'
+import busanStay from '../assets/images/hotels/busan/stay.webp'
+import busanWaters from '../assets/images/hotels/busan/waters.webp'
+import jejuHero from '../assets/images/hotels/jeju/hero.webp'
+import jejuStay from '../assets/images/hotels/jeju/stay.webp'
+import jejuWaters from '../assets/images/hotels/jeju/waters.webp'
 
 // 화면에 쓰는 호텔 기본값. 이름·소개·주소·전화번호는 앱 시작 시 GET /api/hotels 응답으로 덮어쓴다
 // (data/hotelStore.ts). id(주소용 slug)·사진·색은 DB에 없어 여기 값을 그대로 쓴다.

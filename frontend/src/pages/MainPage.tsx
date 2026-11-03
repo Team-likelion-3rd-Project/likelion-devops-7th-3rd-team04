@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
+import { preload } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { HOTELS } from '../data/hotels'
 import { BRAND_VALUES } from '../data/brandValues'
@@ -26,6 +27,11 @@ function MainPage() {
   const hotels = useHotels()
   const accessToken = customerAuth.useAccessToken()
   const [heroIndex, setHeroIndex] = useState(0)
+  // 사진을 불러 둔 슬라이드 수 — 처음엔 첫 장만 받아 첫 화면(LCP)이 빨리 뜨게 하고,
+  // 페이지를 다 불러온 뒤 다음 장, 이후엔 바뀔 때마다 그다음 장을 미리 받는다 (LDP-222)
+  const [preparedCount, setPreparedCount] = useState(1)
+  // 첫 사진은 CSS 배경이라 브라우저가 늦게 발견한다 — 먼저 받으라고 알려 준다
+  if (HERO_PHOTOS[0]) preload(HERO_PHOTOS[0], { as: 'image', fetchPriority: 'high' })
   // 메인 하단 "새로운 소식" — 공지 API 첫 3개(중요 고정 먼저, 최신순). 못 불러오면 구역을 숨긴다
   const [latestNotices, setLatestNotices] = useState<Notice[]>([])
 
@@ -43,8 +49,20 @@ function MainPage() {
 
   useEffect(() => {
     if (HERO_PHOTOS.length < 2 || prefersReducedMotion()) return
-    const timer = window.setInterval(() => setHeroIndex((i) => (i + 1) % HERO_PHOTOS.length), HERO_INTERVAL_MS)
-    return () => window.clearInterval(timer)
+    const prepareNext = () => setPreparedCount((count) => Math.max(count, 2))
+    if (document.readyState === 'complete') prepareNext()
+    else window.addEventListener('load', prepareNext, { once: true })
+    const timer = window.setInterval(() => {
+      setHeroIndex((i) => {
+        const next = (i + 1) % HERO_PHOTOS.length
+        setPreparedCount((count) => Math.max(count, next + 2))
+        return next
+      })
+    }, HERO_INTERVAL_MS)
+    return () => {
+      window.removeEventListener('load', prepareNext)
+      window.clearInterval(timer)
+    }
   }, [])
 
   return (
@@ -56,7 +74,7 @@ function MainPage() {
             <div
               key={photo}
               className={`hero-slide${index === heroIndex ? ' is-active' : ''}`}
-              style={{ '--main-hero-photo': `url(${photo})` } as CSSProperties}
+              style={index < preparedCount ? ({ '--main-hero-photo': `url(${photo})` } as CSSProperties) : undefined}
             />
           ))}
         </div>
@@ -89,7 +107,7 @@ function MainPage() {
         </div>
         <div className="hotel-intro-grid">
           {hotels.map((hotel) => (
-            <HotelCard key={hotel.id} hotel={hotel} />
+            <HotelCard key={hotel.id} hotel={hotel} lazyImage />
           ))}
         </div>
       </section>
@@ -100,12 +118,9 @@ function MainPage() {
           <h2>머묾이 지키는 네 가지</h2>
           <div className="main-values-grid">
             {BRAND_VALUES.map((value) => (
-              <Link
-                key={value.slug}
-                to={`/philosophy/${value.slug}`}
-                className="main-value-tile"
-                style={{ '--value-photo': `url(${value.image})` } as CSSProperties}
-              >
+              <Link key={value.slug} to={`/philosophy/${value.slug}`} className="main-value-tile">
+                {/* 첫 화면 밖이라 화면에 가까워질 때 불러온다 (LDP-222) */}
+                <img className="main-value-photo" src={value.image} alt="" width={600} height={800} loading="lazy" decoding="async" />
                 <span className="main-value-label">{value.label}</span>
                 <span className="main-value-title">{value.title}</span>
               </Link>

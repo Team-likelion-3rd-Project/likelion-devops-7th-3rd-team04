@@ -129,7 +129,29 @@ async function parseAuthResponse(res: Response, store: AuthStore): Promise<AuthR
   return data
 }
 
+// 고객이 이 브라우저에서 로그인한 적이 있는지 표시 (토큰이 아니라 "1"만 남긴다).
+// 표시가 없으면 앱 부팅 때 토큰 재발급을 보내지 않아, 비로그인 방문자의 콘솔에 401이 남지 않는다 (LDP-222)
+const LOGIN_HINT_KEY = 'meomulm:customer-login'
+
+export function hasCustomerLoginHint(): boolean {
+  try {
+    return localStorage.getItem(LOGIN_HINT_KEY) === '1'
+  } catch {
+    return true
+  }
+}
+
+function setCustomerLoginHint(loggedIn: boolean): void {
+  try {
+    if (loggedIn) localStorage.setItem(LOGIN_HINT_KEY, '1')
+    else localStorage.removeItem(LOGIN_HINT_KEY)
+  } catch {
+    // 저장소를 못 쓰면 표시 없이 동작한다 (부팅 때 항상 재발급 시도)
+  }
+}
+
 function saveAuth(data: AuthResponse, store: AuthStore): void {
+  if (store === customerAuth) setCustomerLoginHint(true)
   store.setAuth(data.accessToken, {
     userId: data.userId,
     email: data.email,
@@ -336,6 +358,7 @@ export async function updateMe(payload: UpdateMeRequest): Promise<UserProfile> {
 export async function withdrawMe(): Promise<{ message: string }> {
   const res = await authorizedFetch('/api/users/me', { method: 'DELETE' })
   const result = await parseJsonResponse<{ message: string }>(res)
+  setCustomerLoginHint(false)
   customerAuth.clearAccessToken()
   return result
 }
@@ -393,6 +416,10 @@ export async function refreshAccessToken(): Promise<AuthResponse> {
 
   try {
     return await refreshInFlight
+  } catch (error) {
+    // 쿠키가 없거나 만료됐으면 다음 방문부터는 부팅 때 재발급을 보내지 않는다
+    if (isUnauthorized(error)) setCustomerLoginHint(false)
+    throw error
   } finally {
     refreshInFlight = null
   }
@@ -540,6 +567,7 @@ async function logoutFrom(store: AuthStore): Promise<void> {
       })
     }
   } finally {
+    if (store === customerAuth) setCustomerLoginHint(false)
     store.clearAccessToken()
   }
 }
