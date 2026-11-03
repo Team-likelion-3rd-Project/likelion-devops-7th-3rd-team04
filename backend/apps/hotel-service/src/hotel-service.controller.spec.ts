@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Between, DataSource, MoreThan, MoreThanOrEqual } from 'typeorm';
 import { RpcException } from '@nestjs/microservices';
+import { ReadCache } from '@app/common';
 import { HotelServiceController } from './hotel-service.controller';
 import { HotelServiceService } from './hotel-service.service';
 import { RoomService } from './room.service';
@@ -130,6 +131,8 @@ describe('HotelServiceController', () => {
           useValue: roomImageRepository,
         },
         { provide: RoomImageStorage, useValue: roomImageStorage },
+        // 캐시 없이 매번 DB(목)에서 읽는다 — 캐시 동작은 hotel-cache.spec.ts에서 따로 본다
+        { provide: ReadCache, useValue: ReadCache.disabled() },
       ],
     }).compile();
 

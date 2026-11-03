@@ -8,7 +8,8 @@ import {
   QueryFailedError,
   Repository,
 } from 'typeorm';
-import { apiRpcException } from '@app/common';
+import { apiRpcException, ReadCache } from '@app/common';
+import { roomCacheKeys } from './hotel-cache-keys';
 import { Hotel } from './entities/hotel.entity';
 import { RoomType } from './entities/room-type.entity';
 import { RoomUnit, RoomUnitStatus } from './entities/room-unit.entity';
@@ -53,6 +54,7 @@ export class RoomUnitService {
     @InjectRepository(RoomUnit)
     private readonly roomUnitRepository: Repository<RoomUnit>,
     private readonly dataSource: DataSource,
+    private readonly cache: ReadCache,
   ) {}
 
   // 호실 목록. roomId(객실 종류)를 주면 그 종류만, status를 주면 그 상태만.
@@ -124,6 +126,8 @@ export class RoomUnitService {
       .catch((error: unknown) => {
         throw this.duplicateRoomNumber(error, roomNumber);
       });
+    // 보유 수량(totalCount)이 바뀌었으므로 객실 조회 캐시를 지운다 (커밋 뒤)
+    await this.cache.invalidate(...roomCacheKeys(saved.hotelId, saved.roomId));
     const [response] = await this.withRoomNames([saved]);
     return response;
   }
@@ -199,6 +203,8 @@ export class RoomUnitService {
       await this.syncTotalCount(manager, unit.roomId);
       return updated;
     });
+    // 보유 수량(totalCount)이 바뀌었을 수 있으므로 객실 조회 캐시를 지운다 (커밋 뒤)
+    await this.cache.invalidate(...roomCacheKeys(saved.hotelId, saved.roomId));
     const [response] = await this.withRoomNames([saved]);
     return response;
   }

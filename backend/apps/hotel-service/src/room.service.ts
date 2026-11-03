@@ -15,7 +15,8 @@ import { Hotel } from './entities/hotel.entity';
 import { RoomAvailability } from './entities/room-availability.entity';
 import { RoomImage } from './entities/room-image.entity';
 import { RoomImageStorage } from './room-image.storage';
-import { rpcError } from '@app/common';
+import { ReadCache, rpcError } from '@app/common';
+import { HotelCacheKeys, roomCacheKeys } from './hotel-cache-keys';
 
 // 'YYYY-MM-DD' 문자열에 일 단위 offset을 더한 'YYYY-MM-DD' 문자열을 반환한다 (UTC 기준 계산,
 // date 컬럼은 시간대 정보가 없으므로 로컬 타임존에 영향받지 않도록 UTC로 계산한다).
@@ -73,6 +74,41 @@ export interface RoomGrpcResponse {
   images: RoomImageGrpcResponse[];
 }
 
+// 조회 캐시(Valkey)에 저장하는 객실 모양 — 엔티티를 JSON으로 그대로 넣지 않고 응답에 쓰는 값만 담는다.
+// 사진은 보기 URL이 아니라 저장소 경로(objectKey)만 담고, URL은 꺼낼 때마다 만든다 — IMAGE_BASE_URL이 없는
+// 환경의 Presigned URL은 만료가 있어 캐시하면 안 되고, 고정 URL은 문자열 연결이라 매번 만들어도 비용이 없다.
+interface RoomSnapshot {
+  roomId: number;
+  hotelId: number;
+  name: string;
+  capacity: number;
+  totalCount: number;
+  description: string;
+  images: {
+    imageId: number;
+    mimeType: string;
+    objectKey: string;
+    sortOrder: number;
+  }[];
+}
+
+function toRoomSnapshot(room: RoomType, images: RoomImage[]): RoomSnapshot {
+  return {
+    roomId: room.roomId,
+    hotelId: room.hotelId,
+    name: room.name,
+    capacity: room.capacity,
+    totalCount: room.totalCount,
+    description: room.description ?? '',
+    images: images.map((image) => ({
+      imageId: image.imageId,
+      mimeType: image.mimeType,
+      objectKey: image.objectKey,
+      sortOrder: image.sortOrder,
+    })),
+  };
+}
+
 // proto의 RoomSearchResult 메시지와 1:1 대응되는 응답 형태
 export interface RoomSearchResultGrpcResponse {
   room: RoomGrpcResponse;
@@ -111,6 +147,7 @@ export class RoomService {
     private readonly roomImageRepository: Repository<RoomImage>,
     private readonly dataSource: DataSource,
     private readonly roomImageStorage: RoomImageStorage,
+    private readonly cache: ReadCache,
   ) {}
 
   // 신규 객실 등록. hotelId가 존재하지 않으면 RpcException.
@@ -138,57 +175,87 @@ export class RoomService {
       description: data.description,
     });
     const saved = await this.roomRepository.save(room);
-    return this.toGrpcResponse(saved, []);
+    await this.cache.invalidate(HotelCacheKeys.rooms(saved.hotelId));
+    return this.toGrpcResponse(toRoomSnapshot(saved, []));
   }
 
-  // 특정 호텔의 전체 객실 목록 조회. hotelId가 존재하지 않으면 RpcException.
+  // 특정 호텔의 전체 객실 목록 조회 (조회 캐시). hotelId가 존재하지 않으면 RpcException.
   async getRoomsByHotel(hotelId: number): Promise<RoomGrpcResponse[]> {
-    const hotel = await this.hotelRepository.findOne({
-      where: { hotelId },
-    });
-    if (!hotel) {
+    const rooms = await this.loadHotelRooms(hotelId);
+    if (!rooms) {
       throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
-
-    const rooms = await this.roomRepository.find({ where: { hotelId } });
-    if (rooms.length === 0) {
-      return [];
-    }
-
-    const images = await this.roomImageRepository.find({
-      where: { roomId: In(rooms.map((room) => room.roomId)) },
-      order: { sortOrder: 'ASC' },
-    });
-    const imagesByRoomId = new Map<number, RoomImage[]>();
-    for (const image of images) {
-      const bucket = imagesByRoomId.get(image.roomId) ?? [];
-      bucket.push(image);
-      imagesByRoomId.set(image.roomId, bucket);
-    }
-
-    return Promise.all(
-      rooms.map((room) =>
-        this.toGrpcResponse(room, imagesByRoomId.get(room.roomId) ?? []),
-      ),
-    );
+    return Promise.all(rooms.map((room) => this.toGrpcResponse(room)));
   }
 
-  // 단건 객실 조회. hotelId/roomId 조합이 존재하지 않으면 RpcException.
+  // 단건 객실 조회 (조회 캐시). hotelId/roomId 조합이 존재하지 않으면 RpcException.
   async getRoomById(
     hotelId: number,
     roomId: number,
   ): Promise<RoomGrpcResponse> {
-    const room = await this.roomRepository.findOne({
-      where: { hotelId, roomId },
-    });
+    const room = await this.loadRoom(hotelId, roomId);
     if (!room) {
       throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 객실입니다.');
     }
-    const images = await this.roomImageRepository.find({
-      where: { roomId },
-      order: { sortOrder: 'ASC' },
-    });
-    return this.toGrpcResponse(room, images);
+    return this.toGrpcResponse(room);
+  }
+
+  // 호텔의 객실 종류 + 사진 (조회 캐시 hotel:{id}:rooms). 호텔이 없으면 null(저장하지 않음).
+  // 캐시가 비었을 때만 DB를 3번(호텔 확인 · 객실 종류 · 사진) 읽는다.
+  private loadHotelRooms(hotelId: number): Promise<RoomSnapshot[] | null> {
+    return this.cache.getOrLoad(
+      'rooms',
+      HotelCacheKeys.rooms(hotelId),
+      async () => {
+        const hotel = await this.hotelRepository.findOne({
+          where: { hotelId },
+        });
+        if (!hotel) {
+          return null;
+        }
+        const rooms = await this.roomRepository.find({ where: { hotelId } });
+        if (rooms.length === 0) {
+          return [];
+        }
+        const images = await this.roomImageRepository.find({
+          where: { roomId: In(rooms.map((room) => room.roomId)) },
+          order: { sortOrder: 'ASC' },
+        });
+        const imagesByRoomId = new Map<number, RoomImage[]>();
+        for (const image of images) {
+          const bucket = imagesByRoomId.get(image.roomId) ?? [];
+          bucket.push(image);
+          imagesByRoomId.set(image.roomId, bucket);
+        }
+        return rooms.map((room) =>
+          toRoomSnapshot(room, imagesByRoomId.get(room.roomId) ?? []),
+        );
+      },
+    );
+  }
+
+  // 객실 종류 하나 + 사진 (조회 캐시 hotel:{id}:room:{roomId}). 없으면 null(저장하지 않음).
+  private loadRoom(
+    hotelId: number,
+    roomId: number,
+  ): Promise<RoomSnapshot | null> {
+    return this.cache.getOrLoad(
+      'room',
+      HotelCacheKeys.room(hotelId, roomId),
+      async () => {
+        const room = await this.roomRepository.findOne({
+          where: { hotelId, roomId },
+        });
+        if (!room) {
+          return null;
+        }
+        const images = await this.roomImageRepository.find({
+          where: { roomId },
+          order: { sortOrder: 'ASC' },
+        });
+        return toRoomSnapshot(room, images);
+      },
+    );
   }
 
   // 예약 가능 객실 검색. hotelId가 존재하지 않으면 RpcException.
@@ -265,8 +332,7 @@ export class RoomService {
     return Promise.all(
       availableRooms.map(async (room) => ({
         room: await this.toGrpcResponse(
-          room,
-          imagesByRoomId.get(room.roomId) ?? [],
+          toRoomSnapshot(room, imagesByRoomId.get(room.roomId) ?? []),
         ),
         minPrice: minPriceByRoomId.get(room.roomId) ?? 0,
       })),
@@ -300,9 +366,14 @@ export class RoomService {
     room.name = data.name;
     room.capacity = data.capacity;
     room.description = data.description;
-    const saved = await this.roomRepository.save(room);
-    const images = await this.replaceRoomImages(saved.roomId, verifiedImages);
-    return this.toGrpcResponse(saved, images);
+    try {
+      const saved = await this.roomRepository.save(room);
+      const images = await this.replaceRoomImages(saved.roomId, verifiedImages);
+      return await this.toGrpcResponse(toRoomSnapshot(saved, images));
+    } finally {
+      // 사진 교체가 중간에 실패해도 객실 행은 이미 바뀌었을 수 있으므로 항상 지운다
+      await this.cache.invalidate(...roomCacheKeys(hotelId, roomId));
+    }
   }
 
   // 객실(객실 종류) 삭제. hotelId/roomId 조합이 존재하지 않으면 RpcException.
@@ -335,6 +406,7 @@ export class RoomService {
     await this.roomImageRepository.delete({ roomId });
     await this.roomAvailabilityRepository.delete({ roomId });
     await this.roomRepository.delete({ hotelId, roomId });
+    await this.cache.invalidate(...roomCacheKeys(hotelId, roomId));
     // DB에서 지운 뒤 저장소의 사진 파일도 정리한다
     await this.roomImageStorage.deleteObjects(
       oldImages.map((image) => image.objectKey),
@@ -541,20 +613,18 @@ export class RoomService {
     return { success: true };
   }
 
-  // 사진은 저장소 경로(objectKey)로 보기용 Presigned URL을 만들어 내려준다 (서명만 하고 저장소에 요청하지 않음).
-  private async toGrpcResponse(
-    room: RoomType,
-    images: RoomImage[],
-  ): Promise<RoomGrpcResponse> {
+  // 사진은 저장소 경로(objectKey)로 보기 URL을 만들어 내려준다 — 고정 URL 또는 Presigned URL (저장소에 요청하지 않음).
+  // 캐시에서 꺼낸 객실도 여기서 매번 URL을 만든다.
+  private async toGrpcResponse(room: RoomSnapshot): Promise<RoomGrpcResponse> {
     return {
       roomId: room.roomId,
       hotelId: room.hotelId,
       name: room.name,
       capacity: room.capacity,
       totalCount: room.totalCount,
-      description: room.description ?? '',
+      description: room.description,
       images: await Promise.all(
-        images.map(async (image) => ({
+        room.images.map(async (image) => ({
           imageId: image.imageId,
           mimeType: image.mimeType,
           imageUrl: await this.roomImageStorage.createViewUrl(image.objectKey),

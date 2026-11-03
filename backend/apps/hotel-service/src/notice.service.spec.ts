@@ -1,5 +1,5 @@
 import { IsNull, Repository } from 'typeorm';
-import { parseApiRpcError } from '@app/common';
+import { parseApiRpcError, ReadCache } from '@app/common';
 import { Hotel } from './entities/hotel.entity';
 import { Notice, NoticeCategory } from './entities/notice.entity';
 import { NoticeService } from './notice.service';
@@ -17,6 +17,7 @@ describe('NoticeService', () => {
   const service = new NoticeService(
     repository as unknown as Repository<Notice>,
     hotelRepository as unknown as Repository<Hotel>,
+    ReadCache.disabled(),
   );
   const saved: Notice = {
     noticeId: 7,
