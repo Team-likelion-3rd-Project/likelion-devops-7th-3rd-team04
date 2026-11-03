@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ClientsModule } from '@nestjs/microservices';
 import { PassportModule } from '@nestjs/passport';
-import { getGrpcOptions, JwtStrategy } from '@app/common';
+import { JwtStrategy } from '@app/common';
+import { getGatewayGrpcOptions } from '../grpc-deadlines';
 import { AuthController } from './auth.controller';
 
 @Module({
@@ -13,7 +14,7 @@ import { AuthController } from './auth.controller';
     ClientsModule.register([
       {
         name: 'AUTH_SERVICE', // DI(의존성 주입)에 사용될 토큰 명
-        ...getGrpcOptions(
+        ...getGatewayGrpcOptions(
           'auth', // auth.proto의 package명
           'auth.proto', // proto 파일명
           process.env.AUTH_SERVICE_HOST || 'localhost:3006', // auth-service gRPC 주소

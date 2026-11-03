@@ -1,6 +1,7 @@
 export * from './common.module';
 export * from './common.service';
 export * from './grpc/grpc-options';
+export * from './grpc/grpc-deadline';
 export * from './auth/jwt-payload.interface';
 export * from './auth/jwt.strategy';
 export * from './auth/jwt-auth.guard';

@@ -47,21 +47,25 @@ export function grpcChannelOptions(): Record<string, string | number> {
 // 서버와 클라이언트는 인터셉터 모양이 달라서, 서버는 getGrpcServerOptions(main.ts), 클라이언트는 getGrpcOptions(ClientsModule)를 쓴다
 function withMetrics(
   interceptor: Interceptor | ServerInterceptor,
+  others: (Interceptor | ServerInterceptor)[] = [],
 ): Record<string, unknown> {
-  return metricsPortFromEnv() ? { interceptors: [interceptor] } : {};
+  const interceptors = metricsPortFromEnv() ? [...others, interceptor] : others;
+  return interceptors.length > 0 ? { interceptors } : {};
 }
 
-// 다른 서비스를 부르는 쪽(ClientsModule.register)에서 쓴다
+// 다른 서비스를 부르는 쪽(ClientsModule.register)에서 쓴다.
+// interceptors: 호출마다 끼울 클라이언트 인터셉터 (예: api-gateway의 호출 기한, LDP-223)
 export function getGrpcOptions(
   packageName: string,
   protoFile: string,
   url: string,
+  interceptors: Interceptor[] = [],
 ): GrpcOptions {
   return baseGrpcOptions(
     packageName,
     protoFile,
     url,
-    withMetrics(grpcClientMetricsInterceptor),
+    withMetrics(grpcClientMetricsInterceptor, interceptors),
   );
 }
 
