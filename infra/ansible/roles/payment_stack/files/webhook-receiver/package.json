@@ -1,0 +1,9 @@
+{
+  "name": "payment-webhook-receiver",
+  "private": true,
+  "type": "module",
+  "description": "dev 토스 웹훅 수신기 — prod 50-payment-webhook Lambda(index.mjs)를 그대로 실행 (Ansible payment_stack)",
+  "dependencies": {
+    "@aws-sdk/client-sqs": "3.1111.0"
+  }
+}

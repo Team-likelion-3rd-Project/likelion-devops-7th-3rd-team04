@@ -1,5 +1,5 @@
 ---
-# 결제 노드: 결제 MariaDB + ElasticMQ 기동 → 결제 DB 계정 맞추기 → Flyway(payment-migrations) → payment-service
+# 결제 노드: 결제 MariaDB + ElasticMQ 기동 → 결제 DB 계정 맞추기 → Flyway(payment-migrations) → payment-service → 토스 웹훅 수신기 + Funnel
 # payment-service 는 synchronize: false 라 테이블을 직접 만들지 않으므로, 앱보다 Flyway 가 먼저 성공해야 함.
 # (클러스터 차트의 migrations.payment hook 은 dev 에서 끔 — 결제 DB 를 클러스터에 노출하지 않기 위해, README 14절)
 
@@ -194,14 +194,41 @@
   loop: [root.cnf, app.cnf]
   no_log: true
 
+# 토스 웹훅 수신기 빌드 컨텍스트 (README 14-8). 비밀값 없음
+- name: 웹훅 수신기 디렉토리
+  ansible.builtin.file:
+    path: "{{ payment_base_dir }}/webhook-receiver"
+    state: directory
+    mode: "0755"
+
+# Lambda 코드는 복제하지 않고 prod 스택의 파일을 그대로 씀 → Lambda 를 고치면 다음 배포에 dev 도 같이 바뀜
+- name: 웹훅 수신기 코드 (prod Lambda index.mjs · 어댑터)
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ payment_base_dir }}/webhook-receiver/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: "{{ playbook_dir }}/../terraform/live/prod/50-payment-webhook/lambda/index.mjs", dest: index.mjs }
+    - { src: webhook-receiver/server.mjs, dest: server.mjs }
+    - { src: webhook-receiver/package.json, dest: package.json }
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: 웹훅 수신기 Dockerfile
+  ansible.builtin.template:
+    src: webhook-receiver.Dockerfile.j2
+    dest: "{{ payment_base_dir }}/webhook-receiver/Dockerfile"
+    mode: "0644"
+
 - name: compose 파일
   ansible.builtin.template:
     src: compose.yml.j2
     dest: "{{ payment_base_dir }}/compose.yml"
     mode: "0600"
 
+# 웹훅 수신기는 노드에서 빌드하므로 pull 대상에서 뺌
 - name: 이미지 pull (payment-service / payment-migrations / mariadb)
-  ansible.builtin.command: docker compose --profile migrate pull --quiet
+  ansible.builtin.command: docker compose --profile migrate pull --quiet --ignore-buildable
   args:
     chdir: "{{ payment_base_dir }}"
   changed_when: false
@@ -342,6 +369,86 @@
           - "payment-service 가 healthy 가 되지 않았습니다 ({{ payment_service_image }})."
           - "{{ (pay_app_logs.stdout_lines | default([])) + (pay_app_logs.stderr_lines | default([])) }}"
 
+# ── 4) 토스 웹훅 수신기 + Funnel (README 14-8) ────────────────
+# --build: 코드(index.mjs · server.mjs)가 그대로면 캐시로 같은 이미지 → 컨테이너도 그대로
+- name: 웹훅 수신기 빌드 · 기동 (healthy 까지 대기)
+  ansible.builtin.command: docker compose up -d --build --wait --wait-timeout 120 payment-webhook-receiver
+  args:
+    chdir: "{{ payment_base_dir }}"
+  register: pay_receiver_up
+  changed_when: >-
+    'Started' in pay_receiver_up.stderr or
+    'Recreated' in pay_receiver_up.stderr or
+    'Created' in pay_receiver_up.stderr
+  failed_when: false
+
+- name: 웹훅 수신기 기동 실패 안내
+  when: pay_receiver_up.rc != 0
+  block:
+    - name: 웹훅 수신기 로그
+      ansible.builtin.command: docker logs --tail 40 payment-webhook-receiver
+      register: pay_receiver_logs
+      changed_when: false
+      failed_when: false
+
+    - name: 웹훅 수신기 기동 실패
+      ansible.builtin.fail:
+        msg:
+          - "payment-webhook-receiver 가 healthy 가 되지 않았습니다."
+          - "{{ ((pay_receiver_up.stderr_lines | default([]))[-15:]) + (pay_receiver_logs.stdout_lines | default([])) + (pay_receiver_logs.stderr_lines | default([])) }}"
+
+# 다시 빌드하면 이전 이미지는 태그가 빠진(dangling) 채 남음 — 수신기 이미지만 정리
+- name: 이전 웹훅 수신기 이미지 정리
+  ansible.builtin.command: docker image prune -f --filter "label=payment-node.image=webhook-receiver"
+  register: pay_receiver_prune
+  changed_when: "'Total reclaimed space: 0B' not in pay_receiver_prune.stdout"
+
+- name: Tailscale 노드 주소 조회
+  ansible.builtin.command: tailscale status --json --peers=false
+  register: pay_ts_status
+  changed_when: false
+
+- name: 웹훅 공개 주소
+  ansible.builtin.set_fact:
+    payment_webhook_public_url: "https://{{ (pay_ts_status.stdout | from_json).Self.DNSName | regex_replace('\\.$', '') }}{{ payment_webhook_path }}"
+
+# tailscaled 가 443 에서 TLS 종료(*.ts.net 인증서 자동 발급 · 갱신) → 127.0.0.1 수신기로 넘김. 이 경로만 공개되고 설정은 재부팅 후에도 유지
+- name: 현재 Funnel 설정 조회
+  ansible.builtin.command: tailscale funnel status --json
+  register: pay_funnel_status
+  changed_when: false
+
+- name: Funnel 설정 판별
+  ansible.builtin.set_fact:
+    pay_funnel_active: >-
+      {{ pay_funnel_status.stdout is search('"' ~ payment_webhook_path ~ '":\s*\{\s*"Proxy":\s*"http://127\.0\.0\.1:' ~ webhook_receiver_port ~ '"')
+         and pay_funnel_status.stdout is search('"AllowFunnel":\s*\{[^}]*:443":\s*true') }}
+
+- name: Funnel 공개 ({{ payment_webhook_path }} → 127.0.0.1:{{ webhook_receiver_port }})
+  # ACL nodeAttrs 에 funnel 이 없으면 활성화 안내를 띄우고 대기하므로 timeout 으로 끊음
+  ansible.builtin.command: >-
+    timeout 60 tailscale funnel --bg --https=443 --set-path={{ payment_webhook_path }}
+    http://127.0.0.1:{{ webhook_receiver_port }}
+  when: payment_webhook_funnel_enabled and not (pay_funnel_active | bool)
+  register: pay_funnel_on
+  changed_when: pay_funnel_on.rc == 0
+  failed_when: false
+
+- name: Funnel 공개 실패 안내
+  ansible.builtin.fail:
+    msg:
+      - "Funnel 을 켜지 못했습니다 (rc={{ pay_funnel_on.rc }})."
+      - "Tailscale ACL 의 nodeAttrs 에 tag:payment funnel 이 있는지, HTTPS Certificates 가 켜져 있는지 확인하세요 (README 1-4)."
+      - "외부 입구 없이 두려면 payment_webhook_funnel_enabled: false"
+      - "{{ (pay_funnel_on.stdout_lines | default([])) + (pay_funnel_on.stderr_lines | default([])) }}"
+  when: pay_funnel_on is not skipped and pay_funnel_on.rc != 0
+
+- name: Funnel 닫기 (payment_webhook_funnel_enabled false)
+  ansible.builtin.command: >-
+    tailscale funnel --https=443 --set-path={{ payment_webhook_path }} off
+  when: not payment_webhook_funnel_enabled and pay_funnel_status.stdout is search('"' ~ payment_webhook_path ~ '":')
+  changed_when: true
+
 # CI 가 빌드한 이미지(org.opencontainers.image.source label) 중 컨테이너가 쓰지 않고 7일 지난 것만 삭제.
 # 현재 태그의 payment-migrations 가 지워지면 다음 실행 때 다시 pull 함
 - name: 이전 태그 이미지 정리
@@ -367,6 +474,8 @@
       - "payment    : {{ ts_ip }}:{{ payment_service_port }} (gRPC)"
       - "결제 PG     : {{ payment_provider }}{{ ' (' ~ (toss_api_base_url or 'https://api.tosspayments.com') ~ ')' if payment_provider == 'TOSS' else '' }}"
       - "ElasticMQ  : {{ payment_result_queue_url }}  (DLQ {{ payment_result_dlq }})"
+      - "웹훅 큐     : {{ payment_webhook_queue_url }}  (DLQ {{ payment_webhook_dlq }})"
+      - "웹훅 수신기 : 127.0.0.1:{{ webhook_receiver_port }} ← {{ payment_webhook_public_url ~ ' (Funnel, 토스 개발자센터에 등록)' if payment_webhook_funnel_enabled else 'Funnel 꺼짐 (외부 입구 없음)' }}"
       - "메트릭     : node_collectors role (payment-service /metrics 수집 {{ 'ON' if payment_metrics_enabled else 'OFF' }}, 결제 DB 서버 지표 {{ 'ON' if payment_db_exporter_password | length > 0 else 'OFF — OpenBao payment-db-exporter 없음' }})"
       - "── gitops {{ payment_gitops_repo }} {{ payment_gitops_values }} 에 아래 값이 있어야 합니다 (README 14-4) ──"
       - "services.api-gateway.env.PAYMENT_SERVICE_HOST: \"{{ ts_ip }}:{{ payment_service_port }}\""
