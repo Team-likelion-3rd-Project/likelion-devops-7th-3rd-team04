@@ -25,6 +25,13 @@
   width: 100%;
   background-size: cover;
   background-position: center;
+
+  & img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
 }
 
 .hotel-card-body {
@@ -42,6 +49,12 @@
 .hotel-card-name {
   margin: 0 0 8px;
   font-size: 20px;
+  /* /hotels에서는 h2라 전역 h2 글꼴이 붙는다 — 메인(h3)과 같은 모양으로 맞춘다 */
+  font-family: inherit;
+  font-weight: bold;
+  line-height: inherit;
+  letter-spacing: normal;
+  color: inherit;
 }
 
 .hotel-card-summary {
