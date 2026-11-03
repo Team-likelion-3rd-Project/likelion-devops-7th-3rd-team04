@@ -56,28 +56,6 @@ variable "sg_ids" {
   type        = map(string)
 }
 
-variable "worker_asg_name" {
-  description = "70-main-cluster-kubeadm 워커 ASG 이름 (ALB Target Group 연결)"
-  type        = string
-}
-
-variable "traffic_weights" {
-  description = "리스너가 클러스터별 Target Group 에 보내는 가중치 (kubeadm = 70 워커 NodePort, eks = 72 Traefik 파드). EKS 전환 때 100/0 → 90/10 → 0/100"
-  type = object({
-    kubeadm = number
-    eks     = number
-  })
-  default = {
-    kubeadm = 100
-    eks     = 0
-  }
-
-  validation {
-    condition     = alltrue([for w in values(var.traffic_weights) : w >= 0 && w <= 999 && floor(w) == w]) && sum(values(var.traffic_weights)) > 0
-    error_message = "traffic_weights 는 0 – 999 정수이고, 합이 0 보다 커야 합니다 (ALB weighted forward 제약)."
-  }
-}
-
 variable "traefik_container_port" {
   description = "Traefik web 엔트리포인트 컨테이너 포트 (eks Target Group 포트). 30-security M16 규칙과 같아야 함"
   type        = number

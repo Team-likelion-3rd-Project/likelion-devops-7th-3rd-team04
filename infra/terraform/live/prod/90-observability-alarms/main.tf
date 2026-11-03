@@ -7,7 +7,7 @@
 #   payment-webhook-lambda-errors  웹훅 Lambda 오류 (50)                  큐 전송 실패 · 코드 오류 → 토스 재전송에 의존
 #   payment-webhook-api-5xx  웹훅 API Gateway 5xx (50)                    Lambda 호출 실패 · 비정상 응답
 #   main-alb-5xx-rate        ALB 5xx 비율 (80)                            api-gateway · 백엔드 오류, 워커 전부 다운
-#   main-alb-<클러스터>-unhealthy  Target Group unhealthy (80, kubeadm · eks)   워커 · Traefik 이상
+#   main-alb-<클러스터>-unhealthy  Target Group unhealthy (80, eks)          Traefik · 노드 이상
 #   ec2-cpu-surplus-charged  계정 EC2 CPU 초과 크레딧 과금 (Metrics Insights)  t3a unlimited 초과 사용 → 인스턴스 타입 검토
 #   payment-nlb-unhealthy    결제 NLB(PrivateLink) Target unhealthy (60)   결제 서버 이상 (배포 중 Standby 는 unhealthy 가 아님)
 #   payment-deploy-failed    결제 배포 실패 · 롤백 (60 deploy 로그 지표 필터)
@@ -28,8 +28,7 @@ locals {
 
   # unhealthy 알람 설명의 확인 대상 (키 = 80 target_group_arn_suffixes 키)
   alb_target_checks = {
-    kubeadm = "워커 노드 · Traefik(NodePort 30080) 확인"
-    eks     = "Traefik 파드(8000) · TargetGroupBinding · 노드 확인"
+    eks = "Traefik 파드(8000) · TargetGroupBinding · 노드 확인"
   }
 }
 
@@ -169,7 +168,7 @@ resource "aws_cloudwatch_metric_alarm" "main_alb_5xx_rate" {
   alarm_actions = local.alarm_actions
 }
 
-# Target Group 별 (kubeadm 워커 NodePort, eks Traefik 파드). 대상이 없는 TG(전환 전 eks)는 지표가 없어 울리지 않는다
+# Target Group 별 (eks Traefik 파드). 대상이 없는 TG 는 지표가 없어 울리지 않는다
 resource "aws_cloudwatch_metric_alarm" "main_alb_unhealthy" {
   for_each = var.alb_target_group_arn_suffixes
 

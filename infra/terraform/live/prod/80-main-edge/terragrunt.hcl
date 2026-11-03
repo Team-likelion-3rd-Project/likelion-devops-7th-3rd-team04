@@ -37,15 +37,6 @@ dependency "security" {
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
-dependency "main_cluster" {
-  config_path = "../70-main-cluster-kubeadm"
-
-  mock_outputs = {
-    worker_asg_name = "team04-hotel-main-worker"
-  }
-  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
-}
-
 inputs = {
   # 값이 null 인 output 은 state 에 저장되지 않아 키 자체가 없다 (도메인 · 인증서 생성 전)
   log_bucket_name = dependency.global.outputs.log_bucket_name
@@ -53,7 +44,6 @@ inputs = {
   zone_id         = try(dependency.global.outputs.zone_id, null)
   certificate_arn = try(dependency.global.outputs.certificate_arn, null)
 
-  main_network    = dependency.network.outputs.main
-  sg_ids          = dependency.security.outputs.sg_ids
-  worker_asg_name = dependency.main_cluster.outputs.worker_asg_name
+  main_network = dependency.network.outputs.main
+  sg_ids       = dependency.security.outputs.sg_ids
 }
