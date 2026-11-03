@@ -1,5 +1,5 @@
 ---
-# 결제 서버 노드: 결제 MariaDB + Flyway(payment-migrations) + payment-service + ElasticMQ (Docker Compose) → 모니터링 수집기
+# 결제 서버 노드: 결제 MariaDB + Flyway(payment-migrations) + payment-service + ElasticMQ + 토스 웹훅 수신기(Funnel) (Docker Compose) → 모니터링 수집기
 # 이미지 태그는 gitops(team04/infra/backend-gitops) envs/dev 의 global.imageTag 를 따름 (README 14절)
 #   전체 구성     : ansible-playbook payment.yml -K
 #   이미지만 갱신 : ansible-playbook payment.yml -K --tags deploy

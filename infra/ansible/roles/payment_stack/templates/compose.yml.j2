@@ -1,6 +1,6 @@
 # Ansible(payment_stack role)이 생성 — 직접 수정하지 마세요.
 # network_mode: host + ufw 로 tailscale0 의 payment-service(gRPC)·ElasticMQ(SQS API) 만 허용
-# (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음. MariaDB 는 127.0.0.1 에만 바인딩)
+# (Docker 포트 publish 는 ufw 를 우회하므로 사용하지 않음. MariaDB · 웹훅 수신기는 127.0.0.1 에만 바인딩)
 name: payment-node
 
 services:
@@ -70,3 +70,37 @@ services:
       timeout: 3s
       retries: 3
       start_period: 30s
+
+  # 토스 웹훅 수신기 — prod API Gateway + Lambda 대체 (README 14-8). 같은 Lambda 코드로 웹훅을 큐에 넣기만 함.
+  # 127.0.0.1 에만 열고 Tailscale Funnel 이 {{ payment_webhook_path }} 를 넘겨줌 (ufw 에 열지 않음)
+  # 노드에서 빌드 (Ansible 이 `up --build` — 코드가 바뀌면 이미지가 바뀌어 컨테이너가 다시 만들어짐)
+  payment-webhook-receiver:
+    build: ./webhook-receiver
+    image: payment-webhook-receiver:local
+    container_name: payment-webhook-receiver
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      PORT: "{{ webhook_receiver_port }}"
+      WEBHOOK_PATH: "{{ payment_webhook_path }}"
+      RATE_LIMIT: "{{ webhook_receiver_rate_limit }}"
+      BURST_LIMIT: "{{ webhook_receiver_burst_limit }}"
+      HANDLER_TIMEOUT_MS: "{{ webhook_receiver_timeout_ms }}"
+      # index.mjs 가 읽는 값 (prod 는 Lambda 환경변수). SQS SDK 는 큐 URL 의 호스트로 접속하므로
+      # 소비기용 URL(Tailscale IP) 대신 loopback 으로 둠 — 같은 큐 (ElasticMQ 는 경로의 큐 이름으로 찾음)
+      PAYMENT_WEBHOOK_QUEUE_URL: "http://127.0.0.1:{{ elasticmq_port }}/{{ elasticmq_account_id }}/{{ payment_webhook_queue }}"
+      # SDK 의 SQS 주소를 같은 노드 ElasticMQ 로 — index.mjs 는 수정하지 않음
+      AWS_ENDPOINT_URL_SQS: "http://127.0.0.1:{{ elasticmq_port }}"
+      AWS_REGION: "{{ elasticmq_region }}"
+      # ElasticMQ 는 서명을 검증하지 않음 — SDK 가 자격증명을 요구하므로 더미값
+      AWS_ACCESS_KEY_ID: elasticmq
+      AWS_SECRET_ACCESS_KEY: elasticmq
+    depends_on:
+      elasticmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:{{ webhook_receiver_port }}/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
