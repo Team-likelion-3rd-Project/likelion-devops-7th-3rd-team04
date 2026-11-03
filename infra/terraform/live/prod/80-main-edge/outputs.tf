@@ -19,7 +19,7 @@ output "alb_arn_suffix" {
 }
 
 output "target_group_arn_suffixes" {
-  description = "클러스터(kubeadm, eks) → Target Group arn_suffix (90-observability-alarms TG 별 unhealthy 알람 TargetGroup 차원)"
+  description = "클러스터(eks) → Target Group arn_suffix (90-observability-alarms TG 별 unhealthy 알람 TargetGroup 차원)"
   value       = { for k, tg in local.target_groups : k => tg.arn_suffix }
 }
 

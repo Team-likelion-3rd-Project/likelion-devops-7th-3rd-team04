@@ -72,8 +72,7 @@ dependency "main_edge" {
   mock_outputs = {
     alb_arn_suffix = "app/team04-hotel-main-alb/0000000000000000"
     target_group_arn_suffixes = {
-      kubeadm = "targetgroup/team04-hotel-main-worker/0000000000000000"
-      eks     = "targetgroup/team04-hotel-main-eks/0000000000000000"
+      eks = "targetgroup/team04-hotel-main-eks/0000000000000000"
     }
   }
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]

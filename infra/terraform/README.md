@@ -817,7 +817,6 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 | `team04-hotel-payment-webhook-lambda-errors` | 웹훅 Lambda `Errors` > 0 | 토스가 재전송하므로 웹훅은 유실되지 않음. Lambda 로그(`/aws/lambda/team04-hotel-payment-webhook`), 44 SQS 엔드포인트 · P6 규칙 확인 |
 | `team04-hotel-payment-webhook-api-5xx` | 웹훅 API Gateway `5xx` > 0 | 위와 같음. Lambda 호출 실패 · 비정상 응답 확인 |
 | `team04-hotel-main-alb-5xx-rate` | ALB 5xx 비율 > 5% (1분 3번 중 2번, 요청 20건 이상) | `kubectl -n backend get pods`, api-gateway 로그. ELB 5xx 만 늘면 대상 없음(워커 · Traefik) |
-| `team04-hotel-main-alb-kubeadm-unhealthy` | 워커(70 NodePort 30080) Target Group unhealthy 5분 | 7절 Target Group 상태, 워커 교체 중인지(6절) 확인 |
 | `team04-hotel-main-alb-eks-unhealthy` | EKS(72 Traefik 파드 8000) Target Group unhealthy 5분. 대상이 없으면 울리지 않음 | Traefik 파드 · TargetGroupBinding 상태 확인 |
 | `team04-hotel-ec2-cpu-surplus-charged` | 계정 EC2 `CPUSurplusCreditsCharged` 5분 합 > 0 (Metrics Insights) | t3a unlimited 초과 사용이 과금됨. Prometheus 노드 평균 CPU 알람 · 노드 대시보드 확인, 계속되면 고정 성능 타입(m6a) 검토 |
 | `team04-hotel-payment-nlb-unhealthy` | 결제 NLB unhealthy 5분 | 9절 결제 서버 SSM 접속 → `docker ps` · app 로그. ASG 가 교체 중일 수 있음 |

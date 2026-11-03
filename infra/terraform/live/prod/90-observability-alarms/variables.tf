@@ -69,7 +69,7 @@ variable "alb_arn_suffix" {
 }
 
 variable "alb_target_group_arn_suffixes" {
-  description = "80-main-edge 의 target_group_arn_suffixes (kubeadm, eks → TG arn_suffix). TG 별 unhealthy 알람"
+  description = "80-main-edge 의 target_group_arn_suffixes (eks → TG arn_suffix). TG 별 unhealthy 알람"
   type        = map(string)
 }
 
