@@ -72,6 +72,8 @@ services:
       S3_PUBLIC_ENDPOINT: ""
       # 사진 보기 = 서명 없는 CloudFront 고정 URL <IMAGE_BASE_URL>/<objectKey> (/room-types/* behavior). 올리기는 Presigned PUT
       IMAGE_BASE_URL: "https://meomulm.click"
+      # 조회 캐시 Valkey(REDIS_HOST · REDIS_PASSWORD 는 차트 기본 secretEnv). ElastiCache 는 전송 암호화 required (41-main-data)
+      REDIS_TLS: "true"
   auth-service:
     env:
       # ElastiCache Valkey 는 전송 암호화 required (41-main-data)

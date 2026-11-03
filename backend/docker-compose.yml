@@ -355,6 +355,10 @@ services:
       minio-init:
         condition: service_completed_successfully
         required: false
+      # 조회 캐시 (REDIS_HOST=redis). 없거나 늦게 떠도 캐시 없이 DB에서 읽으므로 required: false
+      redis:
+        condition: service_started
+        required: false
 
 
 # DB 볼륨 사용 시 아래 주속 해제

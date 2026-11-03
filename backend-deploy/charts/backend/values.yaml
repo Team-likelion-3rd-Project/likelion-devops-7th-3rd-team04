@@ -141,7 +141,11 @@ services:
     replicas: 1
     env:
       DB_PORT: "3306"
-    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE]
+      # 호텔·객실·편의시설·공지 조회 캐시 (auth-service 와 같은 Valkey, libs/common cache/read-cache.ts).
+      # REDIS_HOST 가 없거나 Valkey 장애면 매번 DB 에서 읽음 (서비스는 계속 동작)
+      REDIS_PORT: "6379"
+      REDIS_TLS: "false"
+    secretEnv: [DB_HOST, DB_USERNAME, DB_PASSWORD, DB_DATABASE, REDIS_HOST, REDIS_PASSWORD]
     resources: {}
     hpa:
       enabled: false
