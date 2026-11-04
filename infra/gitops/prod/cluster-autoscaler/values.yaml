@@ -23,6 +23,9 @@ extraArgs:
   # 증설 뒤 10분, 남는 상태 10분이 지나야 줄인다 (부하 테스트 단계 사이에 노드가 오르내리지 않게)
   scale-down-delay-after-add: 10m
   scale-down-unneeded-time: 10m
+  # 축소 후보 노드에 PreferNoSchedule taint(DeletionCandidateOfClusterAutoscaler)를 붙이지 않는다. 붙이면 막 늘어난 빈 노드를
+  # 스케줄러가 피해서 HPA 가 늘린 Pod 가 포화된 기존 노드로 가고, 빈 노드는 그대로 축소된다 (11-04 검증)
+  max-bulk-soft-taint-count: 0
 
 resources:
   requests:
