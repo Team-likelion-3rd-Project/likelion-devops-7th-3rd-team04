@@ -18,6 +18,7 @@ infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── Chart.yaml · values.yaml · templates/ · files/   root 앱 차트 (앱 정의 → Application, 배포 결과 알림)
 ├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080)
 ├── aws-load-balancer-controller/ chart.yaml · values.yaml   18  EKS 만. TargetGroupBinding 컨트롤러 (LB 를 만들지 않음)
+├── cluster-autoscaler/    chart.yaml · values.yaml          18  EKS 만. Pending Pod 를 보고 워커 노드 그룹 2 ~ 4대 조절 (Terraform 72)
 ├── traefik-target-group/  chart.yaml · chart/               19  EKS 만. Traefik 파드 IP → 80-main-edge eks Target Group
 ├── prometheus-operator-crds/ chart.yaml                     12  PodMonitor · ServiceMonitor 등 CRD (backend PodMonitor 용)
 ├── cert-manager/          chart.yaml · values.yaml          15  webhook TLS 인증서 발급 · caBundle 주입

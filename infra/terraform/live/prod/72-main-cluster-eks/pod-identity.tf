@@ -24,6 +24,11 @@ locals {
       namespace       = "kube-system"
       service_account = "ebs-csi-controller-sa"
     }
+    # gitops cluster-autoscaler values 의 rbac.serviceAccount.name 과 같아야 한다
+    cluster-autoscaler = {
+      namespace       = "kube-system"
+      service_account = "cluster-autoscaler"
+    }
   }
 }
 
@@ -117,6 +122,61 @@ resource "aws_iam_role_policy" "lb_controller" {
   name   = "target-group-binding"
   role   = aws_iam_role.lb_controller.id
   policy = data.aws_iam_policy_document.lb_controller.json
+}
+
+resource "aws_iam_role" "cluster_autoscaler" {
+  name               = "${var.project}-cluster-autoscaler"
+  description        = "Cluster Autoscaler (worker node group desired capacity)"
+  assume_role_policy = data.aws_iam_policy_document.eks_only_assume["cluster-autoscaler"].json
+}
+
+# 노드 수 조절 (LDP-227). Cluster Autoscaler AWS 문서의 최소 권한
+#   Describe   조회 API 는 리소스 지정을 지원하지 않는다
+#   Scale      이 클러스터 소유 태그가 붙은 ASG(MNG 가 붙임)에서만 desired 변경 · 인스턴스 종료
+data "aws_iam_policy_document" "cluster_autoscaler" {
+  statement {
+    sid = "Describe"
+    actions = [
+      "autoscaling:DescribeAutoScalingGroups",
+      "autoscaling:DescribeAutoScalingInstances",
+      "autoscaling:DescribeLaunchConfigurations",
+      "autoscaling:DescribeScalingActivities",
+      "autoscaling:DescribeTags",
+      "ec2:DescribeImages",
+      "ec2:DescribeInstanceTypes",
+      "ec2:DescribeLaunchTemplateVersions",
+      "ec2:GetInstanceTypesFromInstanceRequirements",
+      "eks:DescribeNodegroup",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "Scale"
+    actions   = ["autoscaling:SetDesiredCapacity", "autoscaling:TerminateInstanceInAutoScalingGroup"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/k8s.io/cluster-autoscaler/${var.cluster_name}"
+      values   = ["owned"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "cluster_autoscaler" {
+  name   = "node-group-scaling"
+  role   = aws_iam_role.cluster_autoscaler.id
+  policy = data.aws_iam_policy_document.cluster_autoscaler.json
+}
+
+resource "aws_eks_pod_identity_association" "cluster_autoscaler" {
+  cluster_name    = aws_eks_cluster.this.name
+  namespace       = local.eks_only_roles.cluster-autoscaler.namespace
+  service_account = local.eks_only_roles.cluster-autoscaler.service_account
+  role_arn        = aws_iam_role.cluster_autoscaler.arn
+
+  depends_on = [aws_eks_addon.pod_identity_agent]
 }
 
 resource "aws_eks_pod_identity_association" "lb_controller" {

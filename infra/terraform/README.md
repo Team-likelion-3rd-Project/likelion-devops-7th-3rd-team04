@@ -47,7 +47,7 @@ infra/terraform/
         ├── 44-payment-endpoints/    🔁
         ├── 50-payment-webhook/      🔁
         ├── 51-pod-roles/            🔁 메인 클러스터 파드 Role (IRSA · EKS Pod Identity 신뢰, 70 · 72 공용)
-        ├── 72-main-cluster-eks/     🔁 EKS 클러스터 · 노드 · 애드온 · Pod Identity Association · ArgoCD root 앱. 병행 기간 트래픽 가중치 0
+        ├── 72-main-cluster-eks/     🔁 EKS 클러스터 · 노드(2 ~ 4대, Cluster Autoscaler 가 조절 — desired 는 ignore_changes) · 애드온 · Pod Identity Association · ArgoCD root 앱
         ├── 60-payment-app/          🔁 결제 서버 · NLB · Endpoint Service
         ├── 61-payment-mock/         🔁 부하 테스트용 pg-mock 인스턴스
         ├── 70-main-cluster-kubeadm/ 🔁

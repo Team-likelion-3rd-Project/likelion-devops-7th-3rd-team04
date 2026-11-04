@@ -48,6 +48,19 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- /* services.<이름>.topologySpread: false 로 뺀 서비스 제외 (metrics 와 같은 방식) */}}
+      {{- if and $.Values.topologySpread.enabled (ne (toString $svc.topologySpread) "false") }}
+      topologySpreadConstraints:
+        - maxSkew: {{ $.Values.topologySpread.maxSkew }}
+          topologyKey: {{ $.Values.topologySpread.topologyKey }}
+          whenUnsatisfiable: {{ $.Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "backend.selectorLabels" $ctx | nindent 14 }}
+          {{- /* 롤링 업데이트 중 이전 ReplicaSet Pod 는 세지 않는다 */}}
+          matchLabelKeys:
+            - pod-template-hash
+      {{- end }}
       {{- if $gcpWifFile }}
       volumes:
         {{- include "backend.gcpWif.volume" $ | nindent 8 }}
