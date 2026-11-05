@@ -1,0 +1,22 @@
+# 기본값만 둡니다. dev 매핑은 gitops 레포 envs/dev/backend-secrets.yaml (infra/ansible README 16절)
+
+# backend 차트의 global.secretName 과 같아야 한다
+secretName: backend-secrets
+# ClusterSecretStore 이름 (infra/ansible roles/external_secrets 가 만듦)
+clusterSecretStore: openbao
+# OpenBao 값을 다시 읽는 주기. 값을 바꾼 뒤 바로 반영하려면 ExternalSecret 에 force-sync annotation (README 16-4)
+refreshInterval: 1h
+# OpenBao KV 경로 앞부분 (운영 Secrets Manager 이름 team04-hotel/prod/<이름> 과 env 만 다름)
+remotePrefix: team04-hotel/dev
+
+# Secret key ← OpenBao <remotePrefix>/<경로>.<속성>. 경로 하나라도 원본에 없으면 ExternalSecret 전체가 동기화에 실패한다
+# 예) main-db: {DB_HOST: host}
+data: {}
+# OpenBao 에 base64 로 둔 key (ESO 가 풀어서 Secret 에 넣음)
+base64Keys: []
+
+# seed Job 의 관리자 계정 Secret (backend 차트 seed.adminSecretName). 경로의 속성을 모두 이름 그대로 가져옴 (속성 이름 = 환경변수 이름)
+seedAdmin:
+  enabled: false
+  secretName: seed-admin
+  remotePath: seed-admin
