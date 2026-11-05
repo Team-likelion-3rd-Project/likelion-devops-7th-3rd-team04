@@ -1,0 +1,10 @@
+# E2E 테스트 전용 덮어쓰기 (LDP-232)
+# .env가 토스 모드(PAYMENT_PROVIDER=TOSS)여도 E2E에서는 가짜 결제(pg-mock-service)를 쓰게 한다.
+# 실제 토스 API를 부르지 않기 위해서다.
+#
+# 사용:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml --profile local-infra up -d --build
+services:
+  payment-service:
+    environment:
+      - PAYMENT_PROVIDER=MOCK
