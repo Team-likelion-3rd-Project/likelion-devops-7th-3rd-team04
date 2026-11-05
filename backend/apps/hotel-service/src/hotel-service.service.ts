@@ -3,7 +3,8 @@ import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Hotel } from './entities/hotel.entity';
-import { rpcError } from '@app/common';
+import { ReadCache, rpcError } from '@app/common';
+import { HotelCacheKeys } from './hotel-cache-keys';
 
 // proto의 Hotel 메시지와 1:1 대응되는 응답 형태
 export interface HotelGrpcResponse {
@@ -23,6 +24,7 @@ export class HotelServiceService implements OnModuleInit {
     private readonly dataSource: DataSource,
     @InjectRepository(Hotel)
     private readonly hotelRepository: Repository<Hotel>,
+    private readonly cache: ReadCache,
   ) {}
 
   // 서비스 모듈이 로드될 때 DB 연결 상태 자동 점검
@@ -59,21 +61,30 @@ export class HotelServiceService implements OnModuleInit {
     }
   }
 
-  // 전체 호텔 목록 조회
+  // 전체 호텔 목록 조회 (조회 캐시)
   async getHotels(): Promise<HotelGrpcResponse[]> {
-    const hotels = await this.hotelRepository.find();
-    return hotels.map((hotel) => this.toGrpcResponse(hotel));
+    return this.cache.getOrLoad('hotels', HotelCacheKeys.hotels(), async () => {
+      const hotels = await this.hotelRepository.find();
+      return hotels.map((hotel) => this.toGrpcResponse(hotel));
+    });
   }
 
-  // 단건 호텔 조회. 존재하지 않으면 RpcException.
+  // 단건 호텔 조회 (조회 캐시). 존재하지 않으면 RpcException.
   async getHotel(id: number): Promise<HotelGrpcResponse> {
-    const hotel = await this.hotelRepository.findOne({
-      where: { hotelId: id },
-    });
+    const hotel = await this.cache.getOrLoad(
+      'hotel',
+      HotelCacheKeys.hotel(id),
+      async () => {
+        const found = await this.hotelRepository.findOne({
+          where: { hotelId: id },
+        });
+        return found ? this.toGrpcResponse(found) : null;
+      },
+    );
     if (!hotel) {
       throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 호텔입니다.');
     }
-    return this.toGrpcResponse(hotel);
+    return hotel;
   }
 
   // 기존 호텔 정보 수정. hotelId가 존재하지 않으면 RpcException.
@@ -98,6 +109,10 @@ export class HotelServiceService implements OnModuleInit {
     hotel.phoneNumber = data.phoneNumber;
     hotel.description = data.description;
     const saved = await this.hotelRepository.save(hotel);
+    await this.cache.invalidate(
+      HotelCacheKeys.hotels(),
+      HotelCacheKeys.hotel(id),
+    );
     return this.toGrpcResponse(saved);
   }
 

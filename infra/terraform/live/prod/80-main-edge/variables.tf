@@ -56,26 +56,10 @@ variable "sg_ids" {
   type        = map(string)
 }
 
-variable "worker_asg_name" {
-  description = "70-main-cluster-kubeadm 워커 ASG 이름 (ALB Target Group 연결)"
-  type        = string
-}
-
-variable "traffic_weights" {
-  description = "리스너가 클러스터별 Target Group 에 보내는 가중치 (kubeadm = 70 워커 NodePort, eks = 72 Traefik 파드). EKS 전환 때 100/0 → 90/10 → 0/100"
-  type = object({
-    kubeadm = number
-    eks     = number
-  })
-  default = {
-    kubeadm = 100
-    eks     = 0
-  }
-
-  validation {
-    condition     = alltrue([for w in values(var.traffic_weights) : w >= 0 && w <= 999 && floor(w) == w]) && sum(values(var.traffic_weights)) > 0
-    error_message = "traffic_weights 는 0 – 999 정수이고, 합이 0 보다 커야 합니다 (ALB weighted forward 제약)."
-  }
+variable "load_generator_cidrs" {
+  description = "73-load-generator 의 waf_exempt_cidrs output (부하 생성기 EIP /32, 꺼져 있으면 []). WAF rate limit 에서 제외"
+  type        = list(string)
+  default     = []
 }
 
 variable "traefik_container_port" {
@@ -109,6 +93,17 @@ variable "waf_rate_limit_window_sec" {
   validation {
     condition     = contains([60, 120, 300, 600], var.waf_rate_limit_window_sec)
     error_message = "waf_rate_limit_window_sec 는 60, 120, 300, 600 중 하나여야 합니다."
+  }
+}
+
+variable "waf_rate_limit_exempt_cidrs" {
+  description = "부하 생성기 외에 WAF rate limit 에서 뺄 출발지 IPv4 CIDR (예: 노트북에서 smoke). 테스트가 끝나면 비운다. 레포에 두지 않고 이 디렉터리의 terraform.tfvars(gitignore)에 둔다"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for c in var.waf_rate_limit_exempt_cidrs : can(cidrhost(c, 0)) && !strcontains(c, ":")])
+    error_message = "waf_rate_limit_exempt_cidrs 는 IPv4 CIDR 형식이어야 합니다 (예: 203.0.113.10/32)."
   }
 }
 

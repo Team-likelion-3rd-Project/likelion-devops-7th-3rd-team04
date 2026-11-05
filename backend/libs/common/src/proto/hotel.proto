@@ -215,7 +215,7 @@ message CreateRoomRequest {
 }
 
 // 객실 이미지. 사진 파일은 저장소(MinIO·S3)에 있고 DB에는 경로(objectKey)만 저장한다 (LDP-88).
-// 버킷이 비공개라 imageUrl(보기용 Presigned URL, 1시간 뒤 만료)로 화면에 표시한다.
+// imageUrl(보기용 고정 URL <IMAGE_BASE_URL>/<objectKey>, IMAGE_BASE_URL이 없으면 1시간 뒤 만료되는 Presigned URL)로 화면에 표시한다.
 message RoomImage {
   reserved 3; // 예전 imageBase64 (DB에 사진 자체를 넣던 방식)
   reserved "imageBase64";

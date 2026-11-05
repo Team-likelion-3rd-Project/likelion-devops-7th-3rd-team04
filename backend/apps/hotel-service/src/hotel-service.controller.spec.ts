@@ -1,7 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Between, DataSource, MoreThan, MoreThanOrEqual } from 'typeorm';
+import { Between, DataSource, In, MoreThan } from 'typeorm';
 import { RpcException } from '@nestjs/microservices';
+import { ReadCache } from '@app/common';
 import { HotelServiceController } from './hotel-service.controller';
 import { HotelServiceService } from './hotel-service.service';
 import { RoomService } from './room.service';
@@ -130,6 +131,8 @@ describe('HotelServiceController', () => {
           useValue: roomImageRepository,
         },
         { provide: RoomImageStorage, useValue: roomImageStorage },
+        // 캐시 없이 매번 DB(목)에서 읽는다 — 캐시 동작은 room-cache.spec.ts에서 따로 본다
+        { provide: ReadCache, useValue: ReadCache.disabled() },
       ],
     }).compile();
 
@@ -357,8 +360,17 @@ describe('HotelServiceController', () => {
         guests: 2,
       });
 
+      // 객실 종류는 호텔 전체를 읽어(조회 캐시 hotel:{id}:rooms와 같은 모양) 인원으로 거르고,
+      // 날짜별 재고는 후보 객실만 DB에서 읽는다
       expect(roomRepository.find).toHaveBeenCalledWith({
-        where: { hotelId: 1, capacity: MoreThanOrEqual(2) },
+        where: { hotelId: 1 },
+      });
+      expect(roomAvailabilityRepository.find).toHaveBeenCalledWith({
+        where: {
+          roomId: In([1, 2]),
+          date: Between('2026-09-01', '2026-09-02'),
+          isAvailable: true,
+        },
       });
       expect(result.results).toEqual([
         {
@@ -384,7 +396,7 @@ describe('HotelServiceController', () => {
 
     it('should return an empty list when no room meets the capacity condition', async () => {
       hotelRepository.findOne.mockResolvedValue(hotel);
-      roomRepository.find.mockResolvedValue([]);
+      roomRepository.find.mockResolvedValue([roomA, roomB]);
 
       const result = await hotelServiceController.searchRooms({
         hotelId: 1,
@@ -395,6 +407,23 @@ describe('HotelServiceController', () => {
 
       expect(result.results).toEqual([]);
       expect(roomAvailabilityRepository.find).not.toHaveBeenCalled();
+    });
+
+    it('인원보다 작은 객실은 재고 조회 대상에서 뺀다', async () => {
+      hotelRepository.findOne.mockResolvedValue(hotel);
+      roomRepository.find.mockResolvedValue([roomA, roomB]);
+      roomAvailabilityRepository.find.mockResolvedValue([]);
+
+      await hotelServiceController.searchRooms({
+        hotelId: 1,
+        checkIn: '2026-09-01',
+        checkOut: '2026-09-03',
+        guests: 3,
+      });
+
+      expect(roomAvailabilityRepository.find).toHaveBeenCalledWith({
+        where: expect.objectContaining({ roomId: In([2]) }),
+      });
     });
 
     it('판매 중이어도 하루라도 매진(예약 수 = 보유 수량)이면 제외한다', async () => {

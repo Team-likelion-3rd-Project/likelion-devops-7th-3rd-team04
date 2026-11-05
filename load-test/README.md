@@ -35,13 +35,23 @@ kubectl -n backend create configmap loadtest-seed-sql --from-file=load-test/seed
   --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n backend create secret generic loadtest-seed --from-literal=LT_PASSWORD_HASH="$LT_PASSWORD_HASH" \
   --dry-run=client -o yaml | kubectl apply -f -
+# ElastiCache Valkey 서버 인증서 검증용 (캐시 비우기 단계)
+curl -fsSo /tmp/AmazonRootCA1.pem https://www.amazontrust.com/repository/AmazonRootCA1.pem
+kubectl -n backend create configmap amazon-root-ca --from-file=AmazonRootCA1.pem=/tmp/AmazonRootCA1.pem \
+  --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n backend delete job loadtest-seed --ignore-not-found   # 다시 실행할 때 (Job spec 은 바꿀 수 없음)
 kubectl apply -f load-test/seed/loadtest-seed-job.yaml
 kubectl -n backend wait --for=condition=complete job/loadtest-seed --timeout=5m
-kubectl -n backend logs job/loadtest-seed                        # 객실 종류별 total_count · 사용자 수 요약
+kubectl -n backend logs job/loadtest-seed -c seed                # 객실 종류별 total_count · 사용자 수 요약
+kubectl -n backend logs job/loadtest-seed -c clear-cache         # hotel-service 조회 캐시 비움: 키 N개
 ```
 
 규모(호실 수 · 기간 · 사용자 수)는 Job 의 `LT_UNITS` · `LT_DAYS` · `LT_USERS` 를 고친다. 같은 날 다시 실행해도 있는 행은 건너뛴다.
+
+SQL 을 넣은 뒤 Job 이 hotel-service 조회 캐시(Valkey `cache:hotel-service:*`, TTL 5분)를 비운다. 비우지 않으면 시드 전에 캐시된
+호텔 · 객실 목록이 최대 5분 동안 그대로 보여 새 부하용 데이터가 검색되지 않는다. `clear-cache` 가 실패하면(Valkey 접속 실패 등)
+Job 은 실패로 끝나지만 SQL 은 이미 반영된 상태다 — 5분 기다린 뒤 테스트하면 된다.
+리프레시 토큰 · 요청 제한 키가 같은 Valkey 에 있으므로 `FLUSHDB` · `FLUSHALL` 은 쓰지 않는다.
 
 ### 로컬 (docker compose)
 
@@ -49,6 +59,8 @@ kubectl -n backend logs job/loadtest-seed                        # 객실 종류
 cd backend
 { echo "SET @lt_password_hash = '$LT_PASSWORD_HASH';"; cat ../load-test/seed/loadtest-seed.sql; } \
   | docker compose exec -T mariadb sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" --table'
+# hotel-service 조회 캐시 비우기 (cache:hotel-service:* 만)
+docker compose exec -T redis sh -c "valkey-cli --scan --pattern 'cache:hotel-service:*' | xargs -r valkey-cli unlink"
 ```
 
 SQL 은 컬럼 이름이 고정이라 스키마(backend/migrations)가 바뀌면 같이 고친다. 운영 RDS(MariaDB 11.8)와 로컬(11.2)의 기본 collation 이 다르니, SQL 을 고치면 11.8 에서도 한 번 실행해 본다.
@@ -111,6 +123,43 @@ k6 run -e TEST=fault --out csv=result/fault-$(date -u +%H%M).csv.gz ... main.js 
 - `API=confirm` 의 rate 는 확정 요청 기준이고, 이터레이션마다 준비 요청(예약 생성 · 결제 준비, `kind: prep`)이 2건 더 나간다
 - stress 상한 500 요청/초에서 VU 가 최대 약 3,500 개까지 늘 수 있다 — 부하 생성기 메모리 확인
 
+### 조회 캐시 on/off 비교
+
+hotel-service 는 호텔 · 객실 · 편의시설 · 공지를 Valkey 에 캐시한다 (`cache:hotel-service:*`, TTL 5분). 검색 · 재고 조회는 객실 종류만
+캐시에서 읽고 날짜별 재고는 매번 DB 에서 읽는다. 같은 이미지에서 `READ_CACHE_ENABLED` 로 캐시를 끄고 켜며 효과를 비교한다.
+
+- 전제: 캐시 코드가 운영에 릴리스된 상태 (차트 revision · 이미지 태그가 커밋 SHA 고정). 시드 Job 의 `clear-cache` 가 끝난 뒤 시작한다
+- 바꾸는 곳: 테스트 브랜치 `envs/prod/backend/values.yaml` 의 `services.hotel-service.env` (`THROTTLE_LIMIT` 과 같은 방식).
+  ArgoCD selfHeal 이 `kubectl set env` 를 되돌리므로 반드시 커밋으로 바꾼다
+
+| 순서 | 테스트 브랜치 값 | 확인 | 실행 |
+|------|------------------|------|------|
+| 1. OFF | `READ_CACHE_ENABLED: "false"` 커밋 · sync | 로그 `조회 캐시 꺼짐 (READ_CACHE_ENABLED=false)` | 1 – 2분 지난 뒤 k6, `-e NOTE=cache-off` |
+| 2. ON | 위 줄 삭제(또는 `"true"`) 커밋 · sync | 로그 `조회 캐시 켜짐 — TTL 300초` | 1 – 2분 워밍업(캐시 채우기) 뒤 같은 k6, `-e NOTE=cache-on` |
+
+```bash
+kubectl -n backend logs deploy/hotel-service | grep '조회 캐시'
+k6 run -e TEST=api -e API=hotels -e STAGES=50,100,150 -e NOTE=cache-off ... main.js       # ON 은 NOTE=cache-on
+k6 run -e TEST=api -e API=availability -e STAGES=50,100,150 -e NOTE=cache-off ... main.js
+```
+
+- 두 번은 같은 `TEST` · `API` · `STAGES`(또는 `TARGET_RPS`) · hotel-service 파드 수로 연달아 돌린다. 결과 JSON 은 `NOTE` · `GITOPS_SHA` 로 구분한다
+- 효과가 드러나는 곳: 흐름 A · B (`API=hotels` · `availability`, `TEST=load` 의 read p95). 흐름 C 는 예약 생성 때 편의시설 조회만, 흐름 D(마이페이지)는 캐시 대상이 아니다
+- 값을 바꾸면 hotel-service 가 재시작되고 캐시가 빈 채로 뜬다 — 테스트 도중에 바꾸지 않고, 바꾼 직후 1 – 2분은 측정에서 뺀다
+- 같은 시간 범위로 Grafana 에서 비교한다 (`service="hotel-service"`)
+
+| 지표 | PromQL |
+|------|--------|
+| 처리 시간 p95 (메서드별) | `histogram_quantile(0.95, sum by (le, rpc_method) (rate(rpc_server_duration_seconds_bucket{service="hotel-service"}[1m])))` |
+| 캐시 적중률 | `sum by (cache) (rate(cache_requests_total{service="hotel-service",result="hit"}[5m])) / sum by (cache) (rate(cache_requests_total{service="hotel-service"}[5m]))` |
+| DB 조회 수 | `sum(rate(mysql_global_status_commands_total{command="select"}[1m]))` — 메인 DB 를 고르는 라벨은 운영 Grafana 에서 확인 |
+| DB 커넥션 대기 p95 | `histogram_quantile(0.95, sum by (le) (rate(db_client_connection_wait_duration_seconds_bucket{service="hotel-service"}[1m])))` |
+
+- `cache_requests_total` 의 `result`: `hit` 캐시 · `miss` DB 조회 후 저장 · `error` Valkey 실패로 DB 조회 · `bypass` 캐시 꺼짐. OFF 에서는 `bypass` 만 늘어야 한다
+- ElastiCache(`cache.t4g.micro`) `EngineCPUUtilization` · `CurrConnections` 도 함께 본다
+- 온프레미스 dev 에서 미리 볼 때는 GitLab `backend-gitops` 의 `envs/dev/values.yaml` 에 같은 키를 커밋하고, 부하는 클러스터 안에서 보낸다
+  (dev api-gateway 도 `THROTTLE_LIMIT` 을 올린다)
+
 ## 4. 동시 예약 (테스트 4)
 
 ```bash
@@ -133,3 +182,54 @@ WHERE rt.name = '동시예약 전용룸' AND a.booked_count > 0 ORDER BY a.date;
 ```
 
 로컬에서는 부하를 주지 않는다 (smoke · `k6 inspect` · 아주 낮은 단계 확인만). 기본 rate limit(IP당 분당 100회) 안에서 끝나야 한다.
+
+## 5. 운영 부하 생성기 (`73-load-generator`)
+
+운영 부하는 노트북이 아니라 us-east-1 의 EC2 생성기(기본 `m7a.xlarge`, EIP)에서 보낸다. 생성기 EIP 는 `80-main-edge` WAF rate limit 에서 자동으로 빠진다 (IP reputation · 관리형 규칙은 그대로). 앱 throttler(`THROTTLE_LIMIT`) · 토큰 만료는 테스트 브랜치 gitops 에서 바꾼다.
+
+```bash
+# 켜기 — 73 다음 80 (EIP 를 WAF IP set 에 넣는다). 시간당 약 $0.24 (인스턴스 + EIP)
+cd infra/terraform/live/prod
+AWS_PROFILE=team04 TF_VAR_enable_load_generator=true terragrunt run --all apply \
+  --filter './73-load-generator' --filter './80-main-edge'
+AWS_PROFILE=team04 aws wafv2 get-ip-set --scope REGIONAL --name team04-hotel-main-rate-limit-exempt \
+  --id "$(AWS_PROFILE=team04 aws wafv2 list-ip-sets --scope REGIONAL --query "IPSets[?Name=='team04-hotel-main-rate-limit-exempt'].Id" --output text)" \
+  --query 'IPSet.Addresses'                                   # 생성기 EIP /32
+
+# 접속 (인바운드 없음, Session Manager)
+AWS_PROFILE=team04 aws ssm start-session --target "$(cd 73-load-generator && AWS_PROFILE=team04 terragrunt output -raw instance_id)"
+```
+
+생성기 안에서:
+
+```bash
+test -f /etc/load-generator/ready || sudo tail -50 /var/log/cloud-init-output.log   # 부트스트랩 확인 (부팅 후 몇 분)
+sudo -iu loadtest
+cd repo && git pull && cd load-test/k6        # 부팅 때 main 의 load-test/ 만 받는다. 다른 브랜치는 git fetch origin <브랜치> && git checkout FETCH_HEAD
+ulimit -n                                     # 250000
+export LT_PASSWORD='<테스트 사용자 비밀번호>'   # 3절 명령에 그대로 쓴다
+k6 run -e TEST=smoke -e BASE_URL=https://api.<운영 도메인> ... main.js
+
+# 결과 보존 — 10-global 로그 버킷 load-test/<날짜>/ (Object Lock 보존 기간 동안 지워지지 않음)
+set -a; . /etc/load-generator/config.env; set +a
+aws s3 cp result/ "s3://$RESULT_BUCKET/${RESULT_PREFIX}$(date -u +%F)/" --recursive --exclude .gitkeep
+```
+
+
+Prometheus 지표는 destroy 하면 사라진다 (저장소 emptyDir). **destroy 전에 노트북에서** 테스트 구간 지표를 내려받아 같은 버킷 `load-test/<날짜>/prometheus/` 에 올린다:
+
+```bash
+load-test/scripts/export-prometheus.sh 2026-11-04T01:30:00Z                 # 시작(UTC) ~ 지금
+load-test/scripts/export-prometheus.sh <시작 UTC> <끝 UTC> <이름>            # 구간을 나눌 때
+```
+
+- **테스트 날은 `run --all apply` · `73` apply 마다 `TF_VAR_enable_load_generator=true` 를 같이 준다.** 빼고 apply 하면 테스트 중에 생성기 · EIP 가 삭제되고 WAF 예외도 비워진다. 터미널에 export 해 두는 것을 권장한다
+- 노드 수: 평소 2대, Cluster Autoscaler 가 Pending Pod 를 보고 최대 4대까지 늘린다 (`72` `node_min_size` ~ `node_max_size`). `node_desired_size` 는 노드 그룹을 처음 만들 때만 쓰이고 이후 apply 는 노드 수를 바꾸지 않는다 (`ignore_changes`)
+- 노드 수를 고정해야 하는 측정은 `72` 를 `TF_VAR_node_min_size=N TF_VAR_node_max_size=N` 으로 apply 한다. **노드 수가 바뀌면 그 위의 Pod 가 옮겨지고, Prometheus 가 옮겨지면 그날 지표가 사라진다** (저장소 emptyDir). 바꾸기 전에 Grafana 스냅샷 · 필요한 지표를 먼저 남긴다
+- 기준선은 평소 구성(노드 2대 · main values)에서 먼저 잰다. 노드 4대 고정 결과는 피크 상한으로만 쓴다
+- 결제는 테스트 브랜치로 바뀌지 않는다. 결제 서버는 SSM `/team04-hotel/prod/payment/release` 를 읽고, 이 파라미터는 gitops main 이 바뀔 때만 갱신된다. 테스트 시작 전 `PAYMENT_PROVIDER` 를 `MOCK` 으로 바꾸고(k6 의 mock 결제 키는 TOSS 에서 전부 거절됨), **끝나면 `TOSS` 로 되돌린다** (`11-registry` 소속이라 destroy 해도 남는다)
+- 하루 테스트로 가까운 날짜(14일 이내) 재고가 빠르게 찬다 (11-04: stress · load 7회에 81%). 매진 비율이 1% 를 넘으면 결과가 무효이므로 측정 사이에 확인한다
+
+- 생성기 CPU · 메모리는 테스트 중에 `top` 으로 본다. `dropped_iterations > 0` 인데 생성기 CPU 가 80% 를 넘으면 생성기 부족이다 → `instance_type` 을 올린다 (버스터블 t* 는 쓰지 않는다)
+- 생성기를 다시 만들면(`instance_type` 변경 등) 인스턴스는 교체되지만 EIP 는 그대로라 `80` 을 다시 apply 할 필요가 없다. 켜고 끌 때만 `80` 도 apply 한다
+- 끄기: 위 명령에서 `TF_VAR_enable_load_generator` 를 빼고 다시 실행 (인스턴스 · EIP 삭제, WAF 예외 비움). 매일 destroy 에도 포함된다. 결과를 올리기 전에 끄면 결과 파일도 사라진다

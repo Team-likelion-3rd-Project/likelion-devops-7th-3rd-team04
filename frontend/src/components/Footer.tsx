@@ -32,12 +32,12 @@ function Footer() {
         {/* TODO: 실제 소셜 채널 링크로 교체 */}
         <ul className="footer-social">
           <li>
-            <a href="#" aria-label="Instagram">
+            <a href="#" aria-label="IG (Instagram)">
               IG
             </a>
           </li>
           <li>
-            <a href="#" aria-label="YouTube">
+            <a href="#" aria-label="YT (YouTube)">
               YT
             </a>
           </li>

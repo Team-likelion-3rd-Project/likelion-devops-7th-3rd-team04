@@ -1,0 +1,69 @@
+#!/bin/bash
+# k6 부하 생성기 부트스트랩 (LDP-226). 진행 · 실패 로그는 /var/log/cloud-init-output.log
+#   - 커널 · 파일 디스크립터 한도 (VU 수천 개 · 연결 수천 개)
+#   - k6 설치 (GitHub 릴리스, SHA-256 고정)
+#   - loadtest 사용자 · 레포 load-test/ 만 sparse clone
+# 끝나면 /etc/load-generator/ready 를 만든다. 접속 후 이 파일이 없으면 위 로그를 본다
+set -Eeuo pipefail
+
+echo "[bootstrap] 공인 IP 확인 (EIP ${public_ip} 여야 WAF 예외가 적용된다)"
+for i in $(seq 1 30); do
+  ip=$(curl -fsS --max-time 5 https://checkip.amazonaws.com || true)
+  [ -n "$ip" ] && break
+  sleep 5
+done
+if [ "$ip" != "${public_ip}" ]; then
+  echo "[bootstrap] 공인 IP 가 '$ip' 입니다 (기대값 ${public_ip}). 외부 통신이 안 되거나 EIP 가 붙지 않았습니다"
+  exit 1
+fi
+
+echo "[bootstrap] git 설치"
+dnf install -y -q git
+
+echo "[bootstrap] 커널 · 한도 설정"
+cat > /etc/sysctl.d/90-load-generator.conf <<'SYSCTL_EOF'
+# 부하 생성기 (73-load-generator)
+net.ipv4.ip_local_port_range = 1024 65535
+net.ipv4.tcp_tw_reuse = 1
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+fs.file-max = 1048576
+SYSCTL_EOF
+sysctl --system >/dev/null
+
+cat > /etc/security/limits.d/90-load-generator.conf <<'LIMITS_EOF'
+loadtest soft nofile 250000
+loadtest hard nofile 250000
+LIMITS_EOF
+
+echo "[bootstrap] k6 v${k6_version} 설치"
+tmp=$(mktemp -d)
+curl -fsSL --retry 3 -o "$tmp/k6.tar.gz" \
+  "https://github.com/grafana/k6/releases/download/v${k6_version}/k6-v${k6_version}-linux-amd64.tar.gz"
+echo "${k6_sha256}  $tmp/k6.tar.gz" | sha256sum -c -
+tar -xzf "$tmp/k6.tar.gz" -C "$tmp"
+install -m 0755 "$tmp/k6-v${k6_version}-linux-amd64/k6" /usr/local/bin/k6
+rm -rf "$tmp"
+k6 version
+
+echo "[bootstrap] 설정 파일"
+install -d -m 0755 /etc/load-generator
+cat > /etc/load-generator/config.env <<'CONFIG_EOF'
+# Terraform 73-load-generator 가 만든 설정 (비밀값 없음)
+%{ for key, value in config ~}
+${key}=${jsonencode(value)}
+%{ endfor ~}
+CONFIG_EOF
+
+echo "[bootstrap] loadtest 사용자 · 레포 (${repo_ref}, load-test/ 만)"
+id loadtest >/dev/null 2>&1 || useradd -m -s /bin/bash loadtest
+sudo -iu loadtest bash -Eeuo pipefail <<'CLONE_EOF'
+repo="${config.REPO_DIR}"
+if [ ! -d "$repo/.git" ]; then
+  git clone --depth 1 --filter=blob:none --sparse --branch "${repo_ref}" "${repo_url}" "$repo"
+  git -C "$repo" sparse-checkout set load-test
+fi
+CLONE_EOF
+
+touch /etc/load-generator/ready
+echo "[bootstrap] 완료"

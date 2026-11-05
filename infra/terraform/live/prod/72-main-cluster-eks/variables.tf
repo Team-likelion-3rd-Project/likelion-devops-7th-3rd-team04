@@ -81,19 +81,19 @@ variable "node_instance_type" {
 }
 
 variable "node_desired_size" {
-  description = "노드 희망 대수"
+  description = "노드 그룹을 처음 만들 때의 노드 대수. 이후는 Cluster Autoscaler 가 바꾸고 apply 는 되돌리지 않는다 (ignore_changes)"
   type        = number
   default     = 2
 }
 
 variable "node_min_size" {
-  description = "노드 최소 대수"
+  description = "노드 최소 대수 (Cluster Autoscaler 축소 하한)"
   type        = number
   default     = 2
 }
 
 variable "node_max_size" {
-  description = "노드 최대 대수"
+  description = "노드 최대 대수 (Cluster Autoscaler 증설 상한)"
   type        = number
   default     = 4
 }
@@ -149,9 +149,9 @@ variable "argocd_sync_timeout_seconds" {
 }
 
 variable "enable_singleton_workloads" {
-  description = "한 클러스터에서만 돌아야 하는 작업(마이그레이션 · seed · llm-ingest · Alertmanager 발행 · 배포 알림)을 이 클러스터에서 켤지 여부. 병행 기간에는 70 만 실행하고, 트래픽을 0/100 으로 옮긴 뒤(LDP-202) true"
+  description = "한 클러스터에서만 돌아야 하는 작업(마이그레이션 · seed · llm-ingest · Alertmanager 발행 · 배포 알림)을 이 클러스터에서 켤지 여부. 70 제거(LDP-202) 후 이 클러스터만 남아 기본으로 켠다 — 끄면 매일 재생성에서 마이그레이션 · seed 가 돌지 않는다"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "eks_target_group_name" {

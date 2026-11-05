@@ -47,11 +47,12 @@ infra/terraform/
         ├── 44-payment-endpoints/    🔁
         ├── 50-payment-webhook/      🔁
         ├── 51-pod-roles/            🔁 메인 클러스터 파드 Role (IRSA · EKS Pod Identity 신뢰, 70 · 72 공용)
-        ├── 72-main-cluster-eks/     🔁 EKS 클러스터 · 노드 · 애드온 · Pod Identity Association · ArgoCD root 앱. 병행 기간 트래픽 가중치 0
+        ├── 72-main-cluster-eks/     🔁 EKS 클러스터 · 노드(2 ~ 4대, Cluster Autoscaler 가 조절 — desired 는 ignore_changes) · 애드온 · Pod Identity Association · ArgoCD root 앱
         ├── 60-payment-app/          🔁 결제 서버 · NLB · Endpoint Service
         ├── 61-payment-mock/         🔁 부하 테스트용 pg-mock 인스턴스
         ├── 70-main-cluster-kubeadm/ 🔁
         ├── 71-payment-link/         🔁 메인 VPC 결제 PrivateLink 엔드포인트 · 고정 이름
+        ├── 73-load-generator/       🔁 부하 테스트 k6 생성기 · EIP (기본 꺼짐, 80 WAF rate limit 예외)
         ├── 80-main-edge/            🔁
         └── 90-observability-alarms/ 🔁 필수 CloudWatch 알람 → Slack #alerts
 ```
@@ -162,7 +163,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 41-main-data   42-payment-data   43-messaging   44-payment-endpoints
 50-payment-webhook   51-pod-roles
 60-payment-app   61-payment-mock
-70-main-cluster-kubeadm   71-payment-link   72-main-cluster-eks
+70-main-cluster-kubeadm   71-payment-link   72-main-cluster-eks   73-load-generator
 80-main-edge
 90-observability-alarms
 ```
@@ -245,7 +246,7 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 | `team04-hotel/prod/toss-payments` | `{secret_key}` | 토스페이먼츠 개발자센터 API 키 → 결제위젯 연동 키의 **시크릿 키**(테스트 `test_gsk_*`, 지금은 로컬 `backend/.env` 의 `TOSS_SECRET_KEY` 와 같은 값). 프론트 클라이언트 키(`test_gck_*`)와 같은 줄의 한 쌍 | `60-payment-app` 결제 서버 Role (`TOSS_SECRET_KEY`) |
 | `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `10-global` 릴리스 Role `team04-hotel-release` (`release.yml` gitops-pr job) |
 | SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 릴리스 Role 이 시크릿 키까지 읽게 되므로 분리 | `10-global` 릴리스 Role (`release.yml` plan job 의 `VITE_TOSS_CLIENT_KEY`) |
-| `team04-hotel/prod/seed-admin` | `{email, password, name}` | 운영 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*`, 비밀번호 12자 이상). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | `70` ESO Role (`team04-hotel-external-secrets`) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
+| `team04-hotel/prod/seed-admin` | `{email, password, name, seoul_manager_password, busan_manager_password, jeju_manager_password, seoul_staff_password}` | 운영 본사 · 지점 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*` · `SEED_*_PASSWORD`, 비밀번호 12자 이상, 지점 비밀번호는 본사와 다르게). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | `70` ESO Role (`team04-hotel-external-secrets`) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
 | `team04-hotel/prod/grafana-admin` | `{admin_user, admin_password}` | 운영 Grafana admin 계정. 이름은 `admin` 고정, 비밀번호만 사람이 정함(`.env` 의 `GRAFANA_ADMIN_PASSWORD`, 16자 이상). **등록 전에는 운영 Grafana 가 뜨지 않습니다**(서비스 배포에는 영향 없음, [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측") | `70` ESO Role → Secret `grafana-admin` (gitops `monitoring` 앱) |
 | `team04-hotel/prod/kakao-login` | `{client_id, client_secret}` | 카카오 디벨로퍼스 앱 → 플랫폼 키 → REST API 키 상세(`.env` 의 `KAKAO_CLIENT_*`). 앱 하나를 온프레미스와 함께 쓰므로 재발급 금지. **등록 전에 gitops `backend-secrets` 에 매핑을 넣으면 backend 전체 Secret 동기화가 실패합니다** | ESO Role → Secret `backend-secrets` → auth-service 의 `KAKAO_CLIENT_*` |
 
@@ -390,6 +391,7 @@ AWS_PROFILE=team04 aws elbv2 describe-target-health \
 ```
 
 - WAF 차단 응답은 403 입니다. IP 당 rate limit 은 기본 60초에 300회(`waf_rate_limit`, `waf_rate_limit_window_sec`)이고, 넘은 뒤 차단까지 수십 초 걸립니다.
+- **rate limit 예외**: IP set `team04-hotel-main-rate-limit-exempt` 출발지는 rate limit 집계에서 빠집니다 (IP reputation · 관리형 규칙 · Grafana 허용 목록은 그대로). `73-load-generator` 를 켜면 생성기 EIP 가 자동으로 들어가고(`80` 이 `73` output 을 읽음), 그 밖의 출발지는 `80-main-edge/terraform.tfvars` 의 `waf_rate_limit_exempt_cidrs` 에 넣습니다. 생성기를 켜고 끌 때는 `73` 다음 `80` 을 apply 합니다. 사용법은 [`load-test/README.md`](../../load-test/README.md) 5절.
 - **Grafana (`grafana.<도메인>`)** 는 WAF 규칙 `grafana-ip-allowlist` 가 `grafana_allowed_cidrs` 출발지 외에서 403 으로 막습니다. ALB 는 호스트와 관계없이 Traefik 으로 보내므로 Grafana 를 가리는 곳은 이 규칙 하나입니다 (Host 가 `grafana.` 로 시작하면 도메인 · ALB DNS 와 관계없이 적용). 허용 IP 는 레포에 두지 않고 `80-main-edge/terraform.tfvars`(gitignore)에 `grafana_allowed_cidrs = ["203.0.113.10/32"]` 처럼 둡니다. 비어 있으면 아무도 접속할 수 없습니다. IP 가 바뀌면 tfvars 를 고쳐 `80` 만 apply 합니다 (IP set 만 바뀜, 수십 초).
 - 본문 8KB 초과 요청은 경로와 관계없이 403 입니다 (관리형 규칙 `SizeRestrictions_BODY`). 객실 이미지는 Presigned PUT 으로 S3 에 직접 올리므로 API 본문이 크지 않습니다. 큰 파일은 API 대신 Presigned URL 로 받습니다.
 - 액세스 로그는 `10-global` 로그 버킷 `alb/` 에 5분 단위로 쌓입니다. Object Lock 버킷이라 잠금 기간(7일) 동안 지워지지 않습니다.
@@ -817,7 +819,6 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 | `team04-hotel-payment-webhook-lambda-errors` | 웹훅 Lambda `Errors` > 0 | 토스가 재전송하므로 웹훅은 유실되지 않음. Lambda 로그(`/aws/lambda/team04-hotel-payment-webhook`), 44 SQS 엔드포인트 · P6 규칙 확인 |
 | `team04-hotel-payment-webhook-api-5xx` | 웹훅 API Gateway `5xx` > 0 | 위와 같음. Lambda 호출 실패 · 비정상 응답 확인 |
 | `team04-hotel-main-alb-5xx-rate` | ALB 5xx 비율 > 5% (1분 3번 중 2번, 요청 20건 이상) | `kubectl -n backend get pods`, api-gateway 로그. ELB 5xx 만 늘면 대상 없음(워커 · Traefik) |
-| `team04-hotel-main-alb-kubeadm-unhealthy` | 워커(70 NodePort 30080) Target Group unhealthy 5분 | 7절 Target Group 상태, 워커 교체 중인지(6절) 확인 |
 | `team04-hotel-main-alb-eks-unhealthy` | EKS(72 Traefik 파드 8000) Target Group unhealthy 5분. 대상이 없으면 울리지 않음 | Traefik 파드 · TargetGroupBinding 상태 확인 |
 | `team04-hotel-ec2-cpu-surplus-charged` | 계정 EC2 `CPUSurplusCreditsCharged` 5분 합 > 0 (Metrics Insights) | t3a unlimited 초과 사용이 과금됨. Prometheus 노드 평균 CPU 알람 · 노드 대시보드 확인, 계속되면 고정 성능 타입(m6a) 검토 |
 | `team04-hotel-payment-nlb-unhealthy` | 결제 NLB unhealthy 5분 | 9절 결제 서버 SSM 접속 → `docker ps` · app 로그. ASG 가 교체 중일 수 있음 |

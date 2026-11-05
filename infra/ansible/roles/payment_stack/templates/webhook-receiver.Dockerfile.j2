@@ -1,0 +1,17 @@
+# Ansible(payment_stack role)이 생성 — 직접 수정하지 마세요.
+# dev 토스 웹훅 수신기. index.mjs 는 prod Lambda 코드(terraform/live/prod/50-payment-webhook/lambda/index.mjs)를 복사한 것
+FROM {{ webhook_receiver_node_image }}
+# 다시 빌드한 뒤 남는 이전 이미지를 Ansible 이 이 label 로 정리
+LABEL payment-node.image=webhook-receiver
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Lambda 런타임에는 AWS SDK 가 들어 있지만 컨테이너에는 없어 설치한다 (backend 와 같은 버전 고정)
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
+
+COPY index.mjs server.mjs ./
+
+USER node
+CMD ["node", "server.mjs"]

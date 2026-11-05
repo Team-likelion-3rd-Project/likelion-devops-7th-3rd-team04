@@ -1,5 +1,5 @@
 import { DataSource, QueryFailedError, Repository } from 'typeorm';
-import { parseApiRpcError } from '@app/common';
+import { parseApiRpcError, ReadCache } from '@app/common';
 import { RoomUnitService } from './room-unit.service';
 import { Hotel } from './entities/hotel.entity';
 import { RoomType } from './entities/room-type.entity';
@@ -30,10 +30,14 @@ describe('RoomUnitService', () => {
     update: jest.Mock;
   };
   let service: RoomUnitService;
+  // 보유 수량이 바뀌면 객실 조회 캐시를 지우는지 본다
+  let cache: ReadCache;
 
   const codeOf = (error: unknown) => parseApiRpcError(error)?.code;
 
   beforeEach(() => {
+    cache = ReadCache.disabled();
+    jest.spyOn(cache, 'invalidate');
     manager = {
       findOne: jest.fn(),
       create: jest.fn((_entity, data: Partial<RoomUnit>) => data),
@@ -58,6 +62,7 @@ describe('RoomUnitService', () => {
         transaction: (work: (m: typeof manager) => Promise<unknown>) =>
           work(manager),
       } as unknown as DataSource,
+      cache,
     );
   });
 
@@ -86,6 +91,11 @@ describe('RoomUnitService', () => {
         RoomType,
         { roomId: 1 },
         { totalCount: 3 },
+      );
+      // 보유 수량이 바뀌었으므로 객실 목록·단건 조회 캐시를 지운다
+      expect(cache.invalidate).toHaveBeenCalledWith(
+        'hotel:1:rooms',
+        'hotel:1:room:1',
       );
     });
 
@@ -139,6 +149,7 @@ describe('RoomUnitService', () => {
       expect(codeOf(error)).toBe('ROOM_UNIT_OVERBOOKING');
       expect(manager.save).not.toHaveBeenCalled();
       expect(manager.update).not.toHaveBeenCalled();
+      expect(cache.invalidate).not.toHaveBeenCalled();
       // 오늘 이후 날짜만 본다
       expect(manager.maximum).toHaveBeenCalledWith(
         RoomAvailability,
@@ -158,6 +169,10 @@ describe('RoomUnitService', () => {
         RoomType,
         { roomId: 1 },
         { totalCount: 1 },
+      );
+      expect(cache.invalidate).toHaveBeenCalledWith(
+        'hotel:1:rooms',
+        'hotel:1:room:1',
       );
     });
 

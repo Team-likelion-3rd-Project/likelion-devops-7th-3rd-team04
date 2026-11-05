@@ -2,6 +2,14 @@ include "root" {
   path = find_in_parent_folders("root.hcl")
 }
 
+# EKS 전환(LDP-202) 후 사용하지 않는다. run --all · 직접 실행 모두 건너뛴다 (코드 삭제는 재생성 검증 후)
+# 되돌릴 때는 이 블록을 지우고 80 의 kubeadm Target Group 과 함께 되돌린다
+exclude {
+  if      = true
+  actions = ["all"]
+  no_run  = true
+}
+
 # 🔒 10-global 은 destroy 하지 않으므로 mock 없이 실제 output 을 읽는다
 dependency "global" {
   config_path = "../10-global"

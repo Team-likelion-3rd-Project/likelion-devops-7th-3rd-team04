@@ -46,6 +46,11 @@ inputs = {
   seed_admin_password = lookup(local.env, "SEED_ADMIN_PASSWORD", "")
   seed_admin_name     = lookup(local.env, "SEED_ADMIN_NAME", "")
 
+  seed_seoul_manager_password = lookup(local.env, "SEED_SEOUL_MANAGER_PASSWORD", "")
+  seed_busan_manager_password = lookup(local.env, "SEED_BUSAN_MANAGER_PASSWORD", "")
+  seed_jeju_manager_password  = lookup(local.env, "SEED_JEJU_MANAGER_PASSWORD", "")
+  seed_seoul_staff_password   = lookup(local.env, "SEED_SEOUL_STAFF_PASSWORD", "")
+
   grafana_admin_password = lookup(local.env, "GRAFANA_ADMIN_PASSWORD", "")
 
   kakao_client_id     = lookup(local.env, "KAKAO_CLIENT_ID", "")

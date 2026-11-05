@@ -101,10 +101,16 @@ resource "aws_eks_node_group" "worker" {
     version = aws_launch_template.node.latest_version
   }
 
+  # 노드 수는 Cluster Autoscaler 가 desired 를 바꿔 조절한다 (min ~ max, LDP-227). ASG 자동 발견 태그는 MNG 가 붙인다
   scaling_config {
     desired_size = var.node_desired_size
     min_size     = var.node_min_size
     max_size     = var.node_max_size
+  }
+
+  # Autoscaler 가 바꾼 desired 를 다음 apply 가 되돌리지 않게 한다. 노드 수를 직접 고정하려면 min · max 를 바꾼다
+  lifecycle {
+    ignore_changes = [scaling_config[0].desired_size]
   }
 
   depends_on = [

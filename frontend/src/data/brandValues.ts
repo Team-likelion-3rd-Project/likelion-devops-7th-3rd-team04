@@ -1,7 +1,7 @@
-import valueArchitecture from '../assets/images/brand/value-architecture.jpg'
-import valueDesign from '../assets/images/brand/value-design.jpg'
-import valueNature from '../assets/images/brand/value-nature.jpg'
-import valueEco from '../assets/images/brand/value-eco.jpg'
+import valueArchitecture from '../assets/images/brand/value-architecture.webp'
+import valueDesign from '../assets/images/brand/value-design.webp'
+import valueNature from '../assets/images/brand/value-nature.webp'
+import valueEco from '../assets/images/brand/value-eco.webp'
 
 // 브랜드 가치(헤더 "브랜드 가치" 메뉴) 페이지 내용. 서버에 두지 않고 화면에서 바로 쓴다.
 export interface BrandValue {

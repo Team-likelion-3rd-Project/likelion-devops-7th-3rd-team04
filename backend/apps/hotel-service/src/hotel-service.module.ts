@@ -17,8 +17,10 @@ import { RoomImage } from './entities/room-image.entity';
 import { Facility } from './entities/facility.entity';
 import { Notice } from './entities/notice.entity';
 import {
+  createReadCacheFromEnv,
   HealthModule,
   mariaDbSslOptions,
+  ReadCache,
   typeOrmLoggingOptions,
 } from '@app/common';
 
@@ -83,6 +85,11 @@ import {
     FacilityService,
     RoomUnitService,
     NoticeService,
+    // 호텔·객실·편의시설·공지 조회 캐시 (Valkey). REDIS_HOST가 없으면 매번 DB에서 읽는다
+    {
+      provide: ReadCache,
+      useFactory: () => createReadCacheFromEnv('hotel-service'),
+    },
   ],
 })
 export class HotelServiceModule {}

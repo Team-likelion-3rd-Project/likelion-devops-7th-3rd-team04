@@ -7,10 +7,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- 글꼴 CSS가 화면 그리기를 막지 않게 print로 받고, 다 받으면 all로 바꾼다. 그동안은 기본 글꼴 (LDP-222) -->
     <link
       href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;500;600&family=Noto+Sans+KR:wght@400;500&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;500;600&family=Noto+Sans+KR:wght@400;500&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
     <meta name="description" content="머묾 MEOMULM — 서울 · 부산 · 제주, 머무는 순간을 위한 호텔" />
     <title>머묾 MEOMULM</title>
   </head>

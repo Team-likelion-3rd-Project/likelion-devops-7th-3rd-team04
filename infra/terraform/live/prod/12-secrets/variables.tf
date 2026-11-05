@@ -114,7 +114,7 @@ variable "toss_client_key" {
 variable "seed_admin_credentials_version" {
   description = "시드 관리자 계정 Secret 값을 다시 넣을 때 올리는 번호 (비밀번호 변경 등). 다음 DB 재생성부터 새 값으로 시딩된다"
   type        = number
-  default     = 1
+  default     = 3
 }
 
 variable "seed_admin_email" {
@@ -149,6 +149,57 @@ variable "seed_admin_name" {
   validation {
     condition     = length(trimspace(var.seed_admin_name)) > 0
     error_message = "TF_VAR_seed_admin_name 이 비었습니다."
+  }
+}
+
+# 지점 관리자 · 직원 계정 비밀번호 (seed.ts 의 SEED_*_PASSWORD, LDP-190 · LDP-221). 이메일은 본사 도메인을 따라 seed.ts 가 만든다.
+# seed.ts 는 값이 없으면 본사 비밀번호를 쓰지만, 운영은 계정마다 다르게 두려고 필수 · 본사와 다른 값으로 검증한다
+
+variable "seed_seoul_manager_password" {
+  description = "서울점 관리자(seoul.manager@) 비밀번호 (12자 이상, 본사와 다르게). 12-secrets/.env 의 SEED_SEOUL_MANAGER_PASSWORD"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = length(var.seed_seoul_manager_password) >= 12 && var.seed_seoul_manager_password != var.seed_admin_password
+    error_message = "TF_VAR_seed_seoul_manager_password 가 비었거나 12자보다 짧거나 본사 비밀번호와 같습니다."
+  }
+}
+
+variable "seed_busan_manager_password" {
+  description = "부산점 관리자(busan.manager@) 비밀번호 (12자 이상, 본사와 다르게). 12-secrets/.env 의 SEED_BUSAN_MANAGER_PASSWORD"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = length(var.seed_busan_manager_password) >= 12 && var.seed_busan_manager_password != var.seed_admin_password
+    error_message = "TF_VAR_seed_busan_manager_password 가 비었거나 12자보다 짧거나 본사 비밀번호와 같습니다."
+  }
+}
+
+variable "seed_jeju_manager_password" {
+  description = "제주점 관리자(jeju.manager@) 비밀번호 (12자 이상, 본사와 다르게). 12-secrets/.env 의 SEED_JEJU_MANAGER_PASSWORD"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = length(var.seed_jeju_manager_password) >= 12 && var.seed_jeju_manager_password != var.seed_admin_password
+    error_message = "TF_VAR_seed_jeju_manager_password 가 비었거나 12자보다 짧거나 본사 비밀번호와 같습니다."
+  }
+}
+
+variable "seed_seoul_staff_password" {
+  description = "서울점 직원(seoul.staff@) 비밀번호 (12자 이상, 본사와 다르게). 12-secrets/.env 의 SEED_SEOUL_STAFF_PASSWORD"
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+
+  validation {
+    condition     = length(var.seed_seoul_staff_password) >= 12 && var.seed_seoul_staff_password != var.seed_admin_password
+    error_message = "TF_VAR_seed_seoul_staff_password 가 비었거나 12자보다 짧거나 본사 비밀번호와 같습니다."
   }
 }
 

@@ -110,6 +110,10 @@ services:
       # 사진을 올릴 버킷이 먼저 있어야 한다
       minio-init:
         condition: service_completed_successfully
+      # 시딩 후 hotel-service 조회 캐시를 비운다 (REDIS_HOST=redis). 실패해도 시딩은 성공
+      redis:
+        condition: service_started
+        required: false
     restart: "no"
 
   # 1-1b. 메인 DB 마이그레이션 (Flyway). migrations/의 SQL을 버전 순서대로 적용하고 종료합니다.
@@ -182,8 +186,9 @@ services:
 
   # 2-3. MinIO (로컬 개발용 S3 대체, 객실 이미지 저장소 — LDP-88).
   #      온프레미스 dev는 DB 노드의 MinIO(infra/ansible README 7-6), 운영(AWS)은 실제 S3를 쓰며
-  #      코드는 그대로 두고 hotel-service의 S3_* 값만 바꿉니다. 버킷은 비공개라 사진 보기·올리기 모두
-  #      hotel-service가 발급한 Presigned URL로 접근합니다. 로컬은 편의상 root 계정을 앱 키로 씁니다.
+  #      코드는 그대로 두고 hotel-service의 S3_*·IMAGE_BASE_URL 값만 바꿉니다. 버킷은 비공개이고 사진 경로(room-types/*)만
+  #      익명 읽기를 허용해, 사진 보기는 서명 없는 고정 URL(IMAGE_BASE_URL), 올리기는 hotel-service가 발급한
+  #      Presigned URL로 합니다 (운영 CloudFront와 같은 방식). 로컬은 편의상 root 계정을 앱 키로 씁니다.
   #      업스트림 minio/minio 이미지가 Docker Hub에서 내려가 온프레미스와 같은 호환 포크(pgsty/minio)를 씁니다.
   minio:
     image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
@@ -192,7 +197,7 @@ services:
     profiles: ["local-infra"]
     command: ["server", "/data", "--console-address", ":9001"]
     ports:
-      - "9000:9000" # S3 API — 브라우저가 Presigned URL로 직접 접근
+      - "9000:9000" # S3 API — 브라우저가 사진 보기(고정 URL)·올리기(Presigned URL)로 직접 접근
       - "9001:9001" # 관리 콘솔 (http://localhost:9001)
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
@@ -208,14 +213,18 @@ services:
       retries: 10
       start_period: 10s
 
-  # 2-4. MinIO 버킷 생성 (room-images, 비공개). minio가 healthy해지면 1회 실행 후 종료됩니다.
-  #      이미 있으면 건너뛰므로(멱등) docker compose up을 반복해도 안전합니다.
+  # 2-4. MinIO 버킷 생성 (room-images, 비공개 + room-types/* 익명 읽기). minio가 healthy해지면 1회 실행 후 종료됩니다.
+  #      익명 정책은 GetObject만 허용합니다 (목록 조회·다른 경로·쓰기는 막힘 — 온프레미스 db_stack의 minio-anon-policy와 같음).
+  #      이미 있으면 건너뛰고 정책은 매번 같은 값으로 덮어쓰므로(멱등) docker compose up을 반복해도 안전합니다.
   minio-init:
     image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     profiles: ["local-infra"]
     entrypoint: ["sh", "-c"]
     command:
-      - mcli mb --ignore-existing local/$${S3_BUCKET} && mcli anonymous set none local/$${S3_BUCKET}
+      - >-
+        mcli mb --ignore-existing local/$${S3_BUCKET}
+        && printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::%s/room-types/*"]}]}' "$${S3_BUCKET}" > /tmp/anon-policy.json
+        && mcli anonymous set-json /tmp/anon-policy.json local/$${S3_BUCKET}
     environment:
       - S3_BUCKET=${S3_BUCKET:-room-images}
       - MC_HOST_local=http://${MINIO_ROOT_USER:-minioadmin}:${MINIO_ROOT_PASSWORD:-minioadmin}@minio:9000
@@ -331,7 +340,9 @@ services:
     environment:
       - NODE_ENV=development
       # 객실 이미지 저장소 (로컬 MinIO). hotel-service는 컨테이너 안에서 minio:9000으로 접근하고,
-      # Presigned URL은 브라우저가 여는 주소(localhost:9000)로 서명해야 해서 S3_PUBLIC_ENDPOINT를 따로 둡니다.
+      # Presigned URL(업로드)은 브라우저가 여는 주소(localhost:9000)로 서명해야 해서 S3_PUBLIC_ENDPOINT를 따로 둡니다.
+      # 사진 보기는 서명 없는 고정 URL <IMAGE_BASE_URL>/<objectKey> (minio-init이 room-types/* 익명 읽기를 설정, 운영과 같은 방식)
+      - IMAGE_BASE_URL=${IMAGE_BASE_URL:-http://localhost:9000/${S3_BUCKET:-room-images}}
       - S3_ENDPOINT=${S3_ENDPOINT:-http://minio:9000}
       - S3_PUBLIC_ENDPOINT=${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
       - S3_REGION=${S3_REGION:-ap-northeast-2}
@@ -347,6 +358,10 @@ services:
       # local-infra profile 없이(실제 S3 사용) 실행할 때는 minio가 없으므로 required: false
       minio-init:
         condition: service_completed_successfully
+        required: false
+      # 조회 캐시 (REDIS_HOST=redis). 없거나 늦게 떠도 캐시 없이 DB에서 읽으므로 required: false
+      redis:
+        condition: service_started
         required: false
 
 

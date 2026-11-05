@@ -37,11 +37,12 @@ dependency "security" {
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
 
-dependency "main_cluster" {
-  config_path = "../70-main-cluster-kubeadm"
+# 부하 생성기 EIP (WAF rate limit 예외). 꺼져 있으면 [] 라 예외가 없다
+dependency "load_generator" {
+  config_path = "../73-load-generator"
 
   mock_outputs = {
-    worker_asg_name = "team04-hotel-main-worker"
+    waf_exempt_cidrs = []
   }
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
 }
@@ -53,7 +54,8 @@ inputs = {
   zone_id         = try(dependency.global.outputs.zone_id, null)
   certificate_arn = try(dependency.global.outputs.certificate_arn, null)
 
-  main_network    = dependency.network.outputs.main
-  sg_ids          = dependency.security.outputs.sg_ids
-  worker_asg_name = dependency.main_cluster.outputs.worker_asg_name
+  main_network = dependency.network.outputs.main
+  sg_ids       = dependency.security.outputs.sg_ids
+
+  load_generator_cidrs = dependency.load_generator.outputs.waf_exempt_cidrs
 }

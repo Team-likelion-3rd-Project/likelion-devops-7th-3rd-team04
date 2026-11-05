@@ -20,6 +20,7 @@ import { RoomAvailability } from '../apps/hotel-service/src/entities/room-availa
 import { RoomImage } from '../apps/hotel-service/src/entities/room-image.entity';
 import { Facility } from '../apps/hotel-service/src/entities/facility.entity';
 import { mariaDbSslOptions } from '../libs/common/src/db/mariadb-ssl';
+import { clearReadCacheFromEnv } from '../libs/common/src/cache/read-cache';
 import {
   FACILITY_SEEDS,
   HOTEL_SEEDS,
@@ -702,6 +703,24 @@ async function seedRoomImages(dataSource: DataSource): Promise<void> {
   );
 }
 
+// hotel-service 조회 캐시(Valkey) 비우기. 시드 Job은 앱 Deployment와 같이 떠서, 시딩이 끝나기 전 들어온 조회가
+// 빈 호텔 목록·사진 없는 객실을 캐시할 수 있다 → 시딩을 마친 뒤 한 번 지운다.
+// 실패해도 시딩은 성공으로 둔다 (캐시는 TTL 5분 뒤 DB 값으로 맞춰진다).
+async function clearHotelReadCache(): Promise<void> {
+  try {
+    const deleted = await clearReadCacheFromEnv('hotel-service');
+    console.log(
+      deleted === null
+        ? '[seed] REDIS_HOST 없음 — hotel-service 조회 캐시 비우기 건너뜀'
+        : `[seed] hotel-service 조회 캐시 비움: 키 ${deleted}개`,
+    );
+  } catch (err) {
+    console.warn(
+      `[seed] hotel-service 조회 캐시 비우기 실패 — TTL(5분) 뒤 맞춰집니다: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const dataSource = await createDataSourceWithRetry();
   try {
@@ -717,6 +736,7 @@ async function main(): Promise<void> {
   } finally {
     await dataSource.destroy();
   }
+  await clearHotelReadCache();
 }
 
 main()

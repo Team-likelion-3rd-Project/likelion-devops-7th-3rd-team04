@@ -79,6 +79,10 @@ backend_external_secret_data:
     JWT_ACCESS_SECRET: jwt_access_secret
     JWT_REFRESH_SECRET: jwt_refresh_secret
     MOCK_PG_SECRET: mock_pg_secret
+  # 카카오 로그인 dev 앱 키 (운영 team04-hotel/prod/kakao-login 과 같은 속성). Redirect URI 는 gitops envs/dev 의 auth-service env
+  kakao-login:
+    KAKAO_CLIENT_ID: client_id
+    KAKAO_CLIENT_SECRET: client_secret
   # ── dev 전용 (운영은 S3 · DynamoDB 를 IAM 으로, n8n · llm-service 는 아직 없음) ──
   minio-app:
     S3_ENDPOINT: endpoint

@@ -33,7 +33,7 @@ import KakaoCallbackPage from './pages/KakaoCallbackPage'
 import KakaoSignupPage from './pages/KakaoSignupPage'
 import NotFoundPage from './pages/NotFoundPage'
 import ErrorPage from './pages/ErrorPage'
-import { refreshAccessToken } from './api/gateway'
+import { hasCustomerLoginHint, refreshAccessToken } from './api/gateway'
 import { loadHotels } from './data/hotelStore'
 
 // 고객 프론트와 완전히 독립된 관리자 화면. 별도 청크로 code splitting되도록 lazy import한다.
@@ -45,7 +45,8 @@ function App() {
   useEffect(() => {
     // 액세스 토큰은 메모리에만 두므로 새로고침하면 사라진다. httpOnly 리프레시 토큰 쿠키가
     // 남아있다면 앱 부팅 시 조용히 재발급받아 로그인 상태를 복구한다 (없거나 만료됐으면 그냥 비로그인 상태).
-    refreshAccessToken().catch(() => {})
+    // 이 브라우저에서 로그인한 적이 없으면 쿠키도 없으니 요청하지 않는다 (LDP-222)
+    if (hasCustomerLoginHint()) refreshAccessToken().catch(() => {})
     // 호텔 이름·소개 등을 DB 값으로 갱신한다 (실패하면 data/hotels.ts 기본값 유지).
     loadHotels()
   }, [])
