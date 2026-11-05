@@ -5,31 +5,46 @@
 - 로컬 전용입니다. 운영 서버에는 돌리지 않습니다 (응답을 일부러 503 등으로 바꾸는 테스트가 있습니다).
 - 결제는 가짜 결제(MOCK)로만 돌립니다. 실제 토스 API를 부르지 않습니다.
 
-## 실행
+## 폴더 구성
 
-**1. 백엔드 띄우기** (`backend/` 폴더, 처음엔 빌드로 몇 분 걸림)
+화면(frontend)과 백엔드를 함께 띄워 확인하는 테스트라 어느 한쪽에 두지 않고 저장소 맨 위 `e2e/`에 모았습니다.
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.e2e.yml --profile local-infra up -d --build
+```
+e2e/
+├── playwright.config.ts      # 테스트 설정 (화면 서버를 ../frontend 에서 5174 포트로 띄움)
+├── docker-compose.e2e.yml    # 백엔드 E2E용 덮어쓰기 (결제 MOCK, 요청 한도 상향)
+├── tests/                    # 시나리오와 공통 단계(helpers.ts)
+└── package.json              # Playwright만 들어 있음 (frontend 의존성과 분리)
 ```
 
-`docker-compose.e2e.yml`은 E2E용 덮어쓰기입니다.
+## 실행
+
+모든 명령은 **`e2e/` 폴더**에서 실행합니다.
+
+**1. 백엔드 띄우기** (처음엔 빌드로 몇 분 걸림)
+
+```bash
+docker compose -f ../backend/docker-compose.yml -f docker-compose.e2e.yml --profile local-infra up -d --build
+```
+
+`docker-compose.e2e.yml`은 E2E용 덮어쓰기입니다. 첫 번째 `-f`가 backend 쪽이라 빌드 경로와 컨테이너 이름은 평소 compose와 같습니다.
 
 - 결제 서버를 MOCK으로 고정합니다 (`.env`가 TOSS여도).
 - gateway 요청 한도를 올립니다 (테스트가 모두 localhost 한 IP에서 나가 기본 한도 1분 100회에 금방 걸리기 때문).
 
-**2. 테스트 실행** (`frontend/` 폴더)
+**2. 테스트 실행**
 
 ```bash
 npm install                            # 처음 한 번
+(cd ../frontend && npm install)        # 처음 한 번 (화면 서버를 띄우는 데 필요)
 npx playwright install chromium        # 처음 한 번 (테스트용 브라우저)
-npm run test:e2e                       # 전체 실행 (약 1~2분)
-npm run test:e2e:ui                    # 브라우저가 움직이는 걸 보면서 실행
-npx playwright test e2e/r1-duplicate-booking.spec.ts   # 파일 하나만
-npx playwright show-report             # 실패 시 스크린샷·영상·단계 기록 보기
+npm test                               # 전체 실행 (약 1~2분)
+npm run test:ui                        # 브라우저가 움직이는 걸 보면서 실행
+npx playwright test tests/r1-duplicate-booking.spec.ts   # 파일 하나만
+npm run report                         # 실패 시 스크린샷·영상·단계 기록 보기
 ```
 
-화면 서버(Vite)는 테스트가 **5174 포트**로 직접 띄웁니다. 평소 쓰는 5173과 섞이지 않습니다.
+화면 서버(Vite)는 테스트가 `../frontend`에서 **5174 포트**로 직접 띄웁니다. 평소 쓰는 5173과 섞이지 않습니다.
 
 WSL에서 `missing dependencies` 오류가 나면 `sudo npx playwright install-deps chromium`을 한 번 실행합니다.
 
@@ -38,7 +53,7 @@ WSL에서 `missing dependencies` 오류가 나면 `sudo npx playwright install-d
 관리자 테스트는 계정을 파일에 적지 않고 실행할 때 읽습니다.
 
 1. 환경변수 `E2E_ADMIN_EMAIL` · `E2E_ADMIN_PASSWORD`
-2. 없으면 `backend/.env`의 `SEED_ADMIN_EMAIL` · `SEED_ADMIN_PASSWORD` (db-seed가 만든 관리자)
+2. 없으면 `../backend/.env`의 `SEED_ADMIN_EMAIL` · `SEED_ADMIN_PASSWORD` (db-seed가 만든 관리자)
 
 실패 기록(`test-results/`, `playwright-report/`)에는 입력값이 남을 수 있습니다. 둘 다 git에 올라가지 않지만, 다른 사람에게 폴더째 보내지 마세요.
 
@@ -55,7 +70,7 @@ WSL에서 `missing dependencies` 오류가 나면 `sudo npx playwright install-d
 | `r7-auto-retry.spec.ts` | R7: 429·401 뒤 자동 재전송이 중복을 만들지 않는가 |
 | `admin-basic.spec.ts` | 관리자 대리 예약 → 손님 화면 결제 대기 / 직원 취소 → 손님 화면 취소 사유·환불 |
 
-공통 단계(가입, 객실 선택, 예약, 결제, 관리자 로그인)는 `helpers.ts`에 있습니다.
+파일은 모두 `tests/`에 있고, 공통 단계(가입, 객실 선택, 예약, 결제, 관리자 로그인)는 `tests/helpers.ts`에 있습니다.
 
 ## 알려진 실패 (`test.fail`)
 

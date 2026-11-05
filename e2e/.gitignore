@@ -1,0 +1,8 @@
+node_modules/
+
+# Playwright 실행 결과 (실패 시 입력값이 남을 수 있어 올리지 않는다)
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
