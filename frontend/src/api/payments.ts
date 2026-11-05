@@ -1,5 +1,6 @@
 import { ApiError, authorizedFetch, fetchMyBookings as fetchMyGatewayBookings, parseJsonResponse } from './gateway'
 import type { Booking } from './gateway'
+import { displayableServerMessage, httpFallbackMessage } from './apiError'
 import { fetchMyBookings } from './bookings'
 
 // proto의 Payment 메시지 / gateway PaymentDto와 1:1 대응
@@ -105,7 +106,11 @@ async function parsePaymentResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다.
     const rawMessage = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    const message = paymentErrorMessage(body?.code, rawMessage, `${res.status} ${res.statusText}`)
+    const message = paymentErrorMessage(
+      body?.code,
+      displayableServerMessage(res.status, body?.code, rawMessage),
+      httpFallbackMessage(res.status),
+    )
     throw new PaymentApiError(message, res.status, body?.code, body?.retryable === true)
   }
   return body as T

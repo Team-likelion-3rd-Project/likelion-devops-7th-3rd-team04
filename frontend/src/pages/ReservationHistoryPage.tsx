@@ -78,7 +78,7 @@ function ReservationHistoryPage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [retryTick])
 
   return (
     <section className="mypage-page">

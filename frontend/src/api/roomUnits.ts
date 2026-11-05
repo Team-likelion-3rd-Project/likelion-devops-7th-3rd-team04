@@ -1,6 +1,7 @@
 import { authedFetch, authedJsonFetch } from './adminApi'
 import { adminErrorMessage } from '../admin/adminScope'
 import { ApiError } from './gateway'
+import { apiErrorMessage } from './apiError'
 import * as fake from './roomUnitsFake'
 
 // ─── 호실(방 번호) 관리·예약 호실 배정 — 관리자 전용 ──────────────────────────────────────────
@@ -108,7 +109,7 @@ async function parseRoomUnitResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다.
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new RoomUnitApiError(adminErrorMessage(body?.code, message ?? `${res.status} ${res.statusText}`), res.status, body?.code)
+    throw new RoomUnitApiError(adminErrorMessage(body?.code, apiErrorMessage(res.status, body?.code, message)), res.status, body?.code)
   }
   return body as T
 }

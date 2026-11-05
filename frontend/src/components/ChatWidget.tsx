@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { sendChatMessage, type ChatAction } from '../api/gateway'
+import { ApiError, sendChatMessage, type ChatAction } from '../api/gateway'
 import ChatActionCard from './chat/ChatActionCard'
 import './ChatWidget.css'
 
@@ -111,8 +111,7 @@ function ChatWidget() {
       appendMessage({ role: 'bot', text: reply, action })
     } catch (err) {
       if (!isMountedRef.current) return
-      const message = err instanceof Error ? err.message : ''
-      const isRateLimited = /429|too many/i.test(message)
+      const isRateLimited = err instanceof ApiError && err.status === 429
       appendMessage({
         role: 'bot',
         text: isRateLimited

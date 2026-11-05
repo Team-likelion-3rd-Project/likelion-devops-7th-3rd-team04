@@ -1,5 +1,6 @@
 import { customerAuth, adminAuth } from './tokenStore'
 import type { AuthStore } from './tokenStore'
+import { apiErrorMessage, apiFetch } from './apiError'
 
 // 비워 두면 같은 출처의 /api/...로 호출한다 — 로컬 개발에서는 Vite 개발 서버가 /api를 클러스터로 프록시한다.
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
@@ -24,6 +25,11 @@ export class ApiError extends Error {
 // 각 페이지의 재조회 실패 처리에서 "진짜 로그인이 필요한 상태"만 걸러낼 때 쓴다.
 export function isUnauthorized(err: unknown): boolean {
   return err instanceof ApiError && err.status === 401
+}
+
+// 서버 장애·네트워크 오류·요청 제한처럼 입력과 무관한 실패인지 (로그인 화면이 비밀번호 불일치로 안내하지 않게)
+export function isTemporaryFailure(err: unknown): boolean {
+  return !(err instanceof ApiError) || err.status >= 500 || err.status === 429
 }
 
 // 429(Too Many Requests) 자동 재시도 설정. api-gateway의 ThrottlerGuard는 요청이 실제 라우트
@@ -55,7 +61,7 @@ async function fetchWithRateLimitRetry(input: string, init: RequestInit): Promis
   let waitedMs = 0
 
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(input, init)
+    const res = await apiFetch(input, init)
     if (res.status !== 429 || attempt >= MAX_RATE_LIMIT_RETRIES) return res
 
     const retryAfterSec = Number(res.headers.get('Retry-After'))
@@ -121,7 +127,7 @@ async function parseAuthResponse(res: Response, store: AuthStore): Promise<AuthR
     const body = await res.json().catch(() => null)
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다 (필드별 검증 메시지 여러 개).
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(message ?? `${res.status} ${res.statusText}`, res.status, body?.code)
+    throw new ApiError(apiErrorMessage(res.status, body?.code, message), res.status, body?.code)
   }
 
   const data: AuthResponse = await res.json()
@@ -308,7 +314,7 @@ export async function parseJsonResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다 (필드별 검증 메시지 여러 개).
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(message ?? `${res.status} ${res.statusText}`, res.status, body?.code)
+    throw new ApiError(apiErrorMessage(res.status, body?.code, message), res.status, body?.code)
   }
   return body as T
 }

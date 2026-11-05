@@ -90,7 +90,7 @@ function PaymentsPendingPage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [retryTick])
 
   const pendingBookings = bookings?.filter((booking) => booking.status === 'PENDING_PAYMENT') ?? null
 

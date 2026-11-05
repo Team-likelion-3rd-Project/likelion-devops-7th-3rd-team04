@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { login } from '../api/gateway'
+import { isTemporaryFailure, login } from '../api/gateway'
 import KakaoLoginButton from '../components/KakaoLoginButton'
 import { loginRedirectPath, type LoginLocationState } from '../utils/loginRedirect'
 import './LoginPage.css'
@@ -28,10 +28,15 @@ function LoginPage() {
       // 리프레시 토큰은 서버가 httpOnly 쿠키로 내려주므로 JS에서는 다루지 않는다.
       await login({ email, password })
       navigate(loginRedirectPath(loginState?.from), { replace: true })
-    } catch {
+    } catch (err) {
       // 서버가 내려주는 구체적인 실패 사유(비밀번호 형식 오류/이메일 불일치 등)를 그대로 노출하지 않고
       // 하나의 문구로 통일한다 (계정 존재 여부·비밀번호 정책을 추측할 수 있는 단서를 주지 않기 위함).
-      setError('이메일 또는 비밀번호가 일치하지 않습니다.')
+      // 서버 장애에는 비밀번호가 틀렸다고 안내하지 않는다 (LDP-235).
+      setError(
+        isTemporaryFailure(err)
+          ? '일시적인 문제로 로그인하지 못했습니다. 잠시 후 다시 시도해주세요.'
+          : '이메일 또는 비밀번호가 일치하지 않습니다.',
+      )
     } finally {
       setIsLoading(false)
     }

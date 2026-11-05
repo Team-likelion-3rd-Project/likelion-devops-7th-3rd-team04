@@ -61,7 +61,7 @@ function RoomDetailPage() {
         <p className="room-detail-status">객실 정보를 불러오는 중입니다…</p>
       )}
       {!isNotFound && status === 'error' && (
-        <p className="room-detail-status error">객실 정보를 불러오지 못했습니다: {error}</p>
+        <p className="room-detail-status error">객실 정보를 불러오지 못했습니다. {error}</p>
       )}
       {!isNotFound && status === 'success' && room && (
         <article className="room-detail">

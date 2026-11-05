@@ -213,7 +213,7 @@ function ReservationCompletePage() {
             </h2>
             {isPendingPayment && (
               <p className="reservation-complete-guide">
-                {paymentDue ? `결제 기한(${paymentDue}) 안에` : '결제 기한 안에'} 결제를 완료하면 예약이 확정됩니다.
+                {paymentDue ?? '결제 기한 안에'} 결제를 완료하면 예약이 확정됩니다.
               </p>
             )}
             <p className="reservation-complete-number">예약번호 {booking.reservationId}</p>
