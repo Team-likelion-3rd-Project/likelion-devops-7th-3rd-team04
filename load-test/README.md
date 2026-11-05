@@ -215,6 +215,13 @@ set -a; . /etc/load-generator/config.env; set +a
 aws s3 cp result/ "s3://$RESULT_BUCKET/${RESULT_PREFIX}$(date -u +%F)/" --recursive --exclude .gitkeep
 ```
 
+Prometheus 지표는 destroy 하면 사라진다 (저장소 emptyDir). **destroy 전에 노트북에서** 테스트 구간 지표를 내려받아 같은 버킷 `load-test/<날짜>/prometheus/` 에 올린다:
+
+```bash
+load-test/scripts/export-prometheus.sh 2026-11-04T01:30:00Z                 # 시작(UTC) ~ 지금
+load-test/scripts/export-prometheus.sh <시작 UTC> <끝 UTC> <이름>            # 구간을 나눌 때
+```
+
 - **테스트 날은 `run --all apply` · `72` apply 마다 `TF_VAR_enable_load_generator=true` · `TF_VAR_node_desired_size=4` 를 같이 준다.** 빼고 apply 하면 테스트 중에 생성기 · EIP 가 삭제되고(WAF 예외도 비워짐) EKS 노드가 기본 2대로 줄어든다. 터미널에 export 해 두는 것을 권장한다
 - 노드 4대 고정: Cluster Autoscaler 가 없어 노드 수가 부하에 따라 바뀌지 않는다. 측정 조건을 고정하려고 테스트 날은 `72` 를 `TF_VAR_node_desired_size=4`(= `node_max_size`)로 apply 한다
 - 생성기 CPU · 메모리는 테스트 중에 `top` 으로 본다. `dropped_iterations > 0` 인데 생성기 CPU 가 80% 를 넘으면 생성기 부족이다 → `instance_type` 을 올린다 (버스터블 t* 는 쓰지 않는다)

@@ -87,6 +87,19 @@ additionalPrometheusRulesMap:
               severity: warning
             annotations:
               summary: 컨테이너가 메모리 limit 을 넘어 OOMKilled 로 재시작
+          # 헬스 체크 실패(부하 포화로 이벤트 루프 지연) · 오류 종료로 한 번이라도 재시작하면 알림 (LDP-228).
+          # 11-04 부하 테스트에서 api-gateway 가 liveness 실패로 1 ~ 2번 재시작하며 502 · 503 이 났지만 PodRestartingFrequently(15분 3번)에 걸리지 않았다.
+          # 시작 직후 15분(매일 재생성 · 배포 직후 DB 대기 등)은 뺀다
+          - alert: BackendContainerRestarted
+            expr: |
+              increase(kube_pod_container_status_restarts_total{namespace="backend"}[5m]) > 0
+              and on (namespace, pod)
+              (time() - kube_pod_start_time{namespace="backend"}) > 900
+            labels:
+              severity: warning
+            annotations:
+              summary: backend 컨테이너가 재시작 (5분 안)
+              description: '{{ $labels.pod }} / {{ $labels.container }}. 이유는 kube_pod_container_status_last_terminated_reason 과 kubectl describe pod 이벤트(Liveness probe failed 등)로 확인'
           - alert: ContainerMemoryNearLimit
             expr: |
               max by (namespace, pod, container) (container_memory_working_set_bytes{container!="", container!="POD"})
