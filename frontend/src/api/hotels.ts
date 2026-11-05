@@ -1,3 +1,5 @@
+import { apiErrorMessage, apiFetch } from './apiError'
+
 // 비워 두면 같은 출처의 /api/...로 호출한다 — 로컬 개발에서는 Vite 개발 서버가 /api를 클러스터로 프록시한다.
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
@@ -37,7 +39,7 @@ interface RoomSearchResponse {
 
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText}`)
+    throw new Error(apiErrorMessage(res.status))
   }
   return res.json()
 }
@@ -53,14 +55,14 @@ export interface HotelInfo {
 
 // GET /api/hotels — 등록된 전체 호텔 목록 조회 (인증 불필요)
 export async function fetchHotels(): Promise<HotelInfo[]> {
-  const res = await fetch(`${BASE_URL}/api/hotels`)
+  const res = await apiFetch(`${BASE_URL}/api/hotels`)
   const data = await parseJsonOrThrow<{ hotels: HotelInfo[] }>(res)
   return data.hotels
 }
 
 // GET /api/hotels/{hotelId}/rooms — 특정 호텔의 전체 객실 목록 조회 (인증 불필요)
 export async function fetchRooms(hotelId: number): Promise<Room[]> {
-  const res = await fetch(`${BASE_URL}/api/hotels/${hotelId}/rooms`)
+  const res = await apiFetch(`${BASE_URL}/api/hotels/${hotelId}/rooms`)
   const data = await parseJsonOrThrow<RoomListResponse>(res)
   return data.rooms
 }
@@ -75,14 +77,14 @@ export async function searchRooms(
   guests: number,
 ): Promise<RoomSearchResult[]> {
   const params = new URLSearchParams({ checkIn, checkOut, guests: String(guests) })
-  const res = await fetch(`${BASE_URL}/api/hotels/${hotelId}/rooms/search?${params}`)
+  const res = await apiFetch(`${BASE_URL}/api/hotels/${hotelId}/rooms/search?${params}`)
   const data = await parseJsonOrThrow<RoomSearchResponse>(res)
   return data.results
 }
 
 // GET /api/hotels/{hotelId}/rooms/{roomId} — 단건 객실 상세 조회 (인증 불필요)
 export async function fetchRoom(hotelId: number, roomId: number): Promise<Room> {
-  const res = await fetch(`${BASE_URL}/api/hotels/${hotelId}/rooms/${roomId}`)
+  const res = await apiFetch(`${BASE_URL}/api/hotels/${hotelId}/rooms/${roomId}`)
   return parseJsonOrThrow<Room>(res)
 }
 
@@ -118,6 +120,6 @@ export async function fetchRoomAvailability(
   endDate: string,
 ): Promise<RoomAvailability> {
   const params = new URLSearchParams({ startDate, endDate })
-  const res = await fetch(`${BASE_URL}/api/hotels/${hotelId}/rooms/${roomId}/availability?${params}`)
+  const res = await apiFetch(`${BASE_URL}/api/hotels/${hotelId}/rooms/${roomId}/availability?${params}`)
   return parseJsonOrThrow<RoomAvailability>(res)
 }

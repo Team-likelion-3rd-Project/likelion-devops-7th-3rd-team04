@@ -1,6 +1,7 @@
 import { adminAuth } from './tokenStore'
 import { adminErrorMessage, adminScopeOf, filterHotelsInScope } from '../admin/adminScope'
 import { refreshAdminAccessToken } from './gateway'
+import { apiErrorMessage, apiFetch } from './apiError'
 
 // 비워 두면 같은 출처의 /api/...로 호출한다 — 로컬 개발에서는 Vite 개발 서버가 /api를 클러스터로 프록시한다.
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
@@ -87,7 +88,7 @@ async function parseJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new Error(adminErrorMessage(body?.code, message ?? `${res.status} ${res.statusText}`))
+    throw new Error(adminErrorMessage(body?.code, apiErrorMessage(res.status, body?.code, message)))
   }
   return res.json()
 }
@@ -104,7 +105,7 @@ function withAuthHeaders(init: RequestInit | undefined, token: string | null): R
 }
 
 export async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(`${BASE_URL}${path}`, withAuthHeaders(init, adminAuth.getAccessToken()))
+  const res = await apiFetch(`${BASE_URL}${path}`, withAuthHeaders(init, adminAuth.getAccessToken()))
 
   if (res.status !== 401) {
     return res
@@ -117,7 +118,7 @@ export async function authedFetch(path: string, init?: RequestInit): Promise<Res
     throw new Error('로그인이 만료되었습니다. 다시 로그인해주세요.')
   }
 
-  return fetch(`${BASE_URL}${path}`, withAuthHeaders(init, adminAuth.getAccessToken()))
+  return apiFetch(`${BASE_URL}${path}`, withAuthHeaders(init, adminAuth.getAccessToken()))
 }
 
 // POST/PUT 등 JSON body를 실어 보내는 관리자 API 공용 헬퍼.
@@ -269,6 +270,6 @@ export async function deleteAdminRoom(hotelId: string | number, roomId: string |
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new Error(message ?? `${res.status} ${res.statusText}`)
+    throw new Error(apiErrorMessage(res.status, body?.code, message))
   }
 }

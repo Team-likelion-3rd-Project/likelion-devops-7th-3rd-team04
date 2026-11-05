@@ -4,7 +4,7 @@ import { useHotels } from '../data/hotelStore'
 import { fetchRoom, fetchRoomAvailability } from '../api/hotels'
 import type { Room, RoomAvailabilityDay } from '../api/hotels'
 import { createBooking } from '../api/bookings'
-import { refreshAccessToken } from '../api/gateway'
+import { isUnauthorized, refreshAccessToken } from '../api/gateway'
 import { customerAuth } from '../api/tokenStore'
 import ReservationSteps from '../components/reservation/ReservationSteps'
 import { sumGuests } from '../components/reservation/guestTypes'
@@ -134,8 +134,13 @@ function ReservationOptionsPage() {
       // 그래도 안 되면 로그인 화면으로 보내고, 로그인 후 지금 고른 조건(쿼리 포함) 그대로 이 화면으로 돌아온다.
       try {
         await refreshAccessToken()
-      } catch {
-        navigate('/login', { state: currentLoginState('예약하려면 로그인이 필요합니다.') })
+      } catch (err) {
+        if (isUnauthorized(err)) {
+          navigate('/login', { state: currentLoginState('예약하려면 로그인이 필요합니다.') })
+        } else {
+          setBookingStatus('error')
+          setBookingError(err instanceof Error ? err.message : '예약 생성에 실패했습니다.')
+        }
         return
       }
     }
@@ -158,6 +163,11 @@ function ReservationOptionsPage() {
         state: { booking, hotel, room, guestRooms: search.rooms },
       })
     } catch (err) {
+      // 다른 기기 로그인 등으로 세션이 끊기면 다시 로그인한 뒤 고른 조건으로 돌아온다 (LDP-235).
+      if (isUnauthorized(err)) {
+        navigate('/login', { state: currentLoginState('로그인이 만료되었습니다. 다시 로그인해주세요.') })
+        return
+      }
       setBookingStatus('error')
       setBookingError(err instanceof Error ? err.message : '예약 생성에 실패했습니다.')
     }

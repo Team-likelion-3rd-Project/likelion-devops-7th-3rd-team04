@@ -1,6 +1,7 @@
 import { authedFetch, authedJsonFetch } from './adminApi'
 import { adminErrorMessage } from '../admin/adminScope'
 import { ApiError, type Booking } from './gateway'
+import { apiErrorMessage } from './apiError'
 import type { Payment } from './payments'
 
 // ─── 관리자 예약 관리 — 예약 목록, 대리 예약·직원 취소·투숙 연장 (LDP-90 #172, PR #204) ─────────────
@@ -69,7 +70,7 @@ async function parseAdminResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다.
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(adminErrorMessage(body?.code, message ?? `${res.status} ${res.statusText}`), res.status, body?.code)
+    throw new ApiError(adminErrorMessage(body?.code, apiErrorMessage(res.status, body?.code, message)), res.status, body?.code)
   }
   return body as T
 }
