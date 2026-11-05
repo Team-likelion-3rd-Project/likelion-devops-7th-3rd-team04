@@ -118,6 +118,7 @@ spec:
               path: /healthz
               port: 5678
             periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ $.Values.probes.readiness.timeoutSeconds }}
             failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}
           livenessProbe:
             httpGet:
