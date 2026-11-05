@@ -59,6 +59,9 @@ gitlab_gitops_seed_files:
   - {path: envs/dev/values.yaml, src: "{{ gitlab_gitops_seed_dir }}/envs/dev/values.yaml.j2", render: true}
   # ArgoCD backend Application — 첫 deploy-dev 전에는 imageTag 가 비어 ComparisonError (배포되지 않음, 정상)
   - {path: apps/dev/backend.yaml, src: "{{ gitlab_gitops_seed_dir }}/apps/dev/backend.yaml.j2", render: true}
+  # ArgoCD backend-secrets Application + Secret 매핑 (ExternalSecret backend-secrets · seed-admin, README 16절)
+  - {path: envs/dev/backend-secrets.yaml, src: "{{ gitlab_gitops_seed_dir }}/envs/dev/backend-secrets.yaml"}
+  - {path: apps/dev/backend-secrets.yaml, src: "{{ gitlab_gitops_seed_dir }}/apps/dev/backend-secrets.yaml.j2", render: true}
 # backend-gitops 레포에서 Ansible 이 계속 맞추는 파일 (seed 와 달리 매 실행 동기화)
 #   apps/dev/README.md: ArgoCD root app(dev-apps)의 경로 설명 (apps/dev/backend.yaml 은 seed — 이후 CI 가 관리)
 gitlab_gitops_managed_files:

@@ -97,6 +97,10 @@ jobs:
           helm lint backend-deploy/charts/backend --set global.imageTag=lint
           helm template backend backend-deploy/charts/backend -n backend \
             --set global.imageTag=lint --set ingress.enabled=true > /dev/null
+          # dev backend-secrets 차트 (온프레미스 ArgoCD backend-secrets 앱)
+          helm lint backend-deploy/charts/backend-secrets -f backend-deploy/gitops-seed/envs/dev/backend-secrets.yaml
+          helm template backend-secrets backend-deploy/charts/backend-secrets -n backend \
+            -f backend-deploy/gitops-seed/envs/dev/backend-secrets.yaml > /dev/null
 
   # 운영 Grafana 대시보드(infra/gitops/prod/monitoring)는 온프레미스 원본의 사본 — 원본만 고치고 복사를 잊지 않도록 검사.
   # 원본의 team04-payment-node(외부 노드) · team04-db 는 운영에서 뺀다 (운영 결제 지표는 AMP, 운영 DB 는 RDS · ElastiCache 라 exporter 지표가 없음)

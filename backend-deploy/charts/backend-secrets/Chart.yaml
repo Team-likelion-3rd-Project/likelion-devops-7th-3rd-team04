@@ -1,0 +1,5 @@
+apiVersion: v2
+name: backend-secrets
+description: 온프레미스 dev backend Secret(backend-secrets · seed-admin) — OpenBao 원본을 ESO 가 동기화하는 ExternalSecret. 매핑은 GitLab team04/infra/backend-gitops 의 envs/dev/backend-secrets.yaml (운영은 infra/gitops/prod/backend-secrets)
+type: application
+version: 0.1.0

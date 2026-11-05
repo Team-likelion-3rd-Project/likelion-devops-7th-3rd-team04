@@ -211,6 +211,9 @@ helm-lint:
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set metrics.enabled=true --set services.llm-service.enabled=true > /dev/null
     # dev 의 롤백 대비(마이그레이션 resetOnDowngrade) · 시딩 Job 렌더링
     - helm template "$HELM_RELEASE" "$CHART_PATH" -n "$K8S_NAMESPACE" --set global.imageTag=lint --set migrations.main.resetOnDowngrade=true --set seed.enabled=true > /dev/null
+    # dev backend-secrets 차트(ArgoCD backend-secrets 앱) — gitops seed 매핑으로 렌더링, GCP 키 Base64 디코딩 확인
+    - helm lint backend-deploy/charts/backend-secrets -f backend-deploy/gitops-seed/envs/dev/backend-secrets.yaml
+    - helm template backend-secrets backend-deploy/charts/backend-secrets -n "$K8S_NAMESPACE" -f backend-deploy/gitops-seed/envs/dev/backend-secrets.yaml | grep -q "decodingStrategy: Base64"
     # 차트의 n8n 워크플로 · 활성화 스크립트(files/n8n)는 langchain_rag/n8n 의 사본 — 원본만 고치고 복사를 잊지 않도록 검사
     - |
       for pair in "workflows/chat-orchestration.json:chat-orchestration.json" "scripts/activate-workflow.js:activate-workflow.js"; do

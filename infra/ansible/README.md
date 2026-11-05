@@ -11,7 +11,7 @@
 | `gitlab-runner.yml` | `[gitlab_runner]` (1대) | Tailscale 등록(`tag:gitlab-runner`) → Docker → ufw → GitLab Runner (docker executor) 등록 — [9절](#9-gitlab-runner-노드-구성) |
 | `payment.yml` | `[payment]` (1대) | Tailscale 등록(`tag:payment`) → Docker → ufw → 결제 MariaDB + ElasticMQ → Flyway → payment-service (Docker Compose, GitLab Registry 이미지) → 토스 웹훅 수신기 + Funnel → 모니터링 수집기(17절) — [14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) — [11절](#11-ingress-controller-traefik) |
-| `k8s-cicd.yml` | `[control_plane]` (1대) | External Secrets Operator(OpenBao 연결) → `backend` 네임스페이스 · 레지스트리 pull Secret · `backend-secrets`(ExternalSecret) → ArgoCD (backend 배포) — [12절](#12-cicd-registry--파이프라인--argocd), [16절](#16-openbao--external-secrets-operator-dev-비밀값) |
+| `k8s-cicd.yml` | `[control_plane]` (1대) | External Secrets Operator(OpenBao 연결) → `backend` 네임스페이스 · 레지스트리 pull Secret → ArgoCD (backend · backend-secrets 배포) — [12절](#12-cicd-registry--파이프라인--argocd), [16절](#16-openbao--external-secrets-operator-dev-비밀값) |
 | `monitoring.yml` | `[control_plane]` (1대) | metrics-server → kube-prometheus-stack(Prometheus · Grafana · node-exporter) → 대시보드 → `tailscale serve` HTTPS(Grafana) — [17절](#17-모니터링-prometheus--grafana) |
 | `registry-trust.yml` | `[control_plane]`, `[workers]` | containerd `certs.d` 설정 (사설 CA 를 쓸 때 레지스트리 CA 신뢰) — [12-7](#12-7-사설-ca-를-쓸-때-선택) |
 | `ingress.yml` | `[control_plane]` (1대) | helm 설치 → Traefik Ingress Controller (NodePort 30080) → api-gateway Ingress(`/api`) — [11절](#11-ingress-controller-traefik) |
@@ -44,7 +44,7 @@ infra/ansible/
 │   ├── hosts.example.ini      # → hosts.ini 로 복사 (gitignore)
 │   ├── aws.ini                # AWS 노드가 자기 자신에게 실행할 때 쓰는 inventory (13절)
 │   └── group_vars/
-│       ├── all.yml            # 버전·CIDR 고정값, 환경변수 매핑, OpenBao 주소 · backend-secrets key(ExternalSecret)
+│       ├── all.yml            # 버전·CIDR 고정값, 환경변수 매핑, OpenBao 주소 · ESO 읽기 경로(eso_read_paths)
 │       ├── control_plane.yml  # Ingress: helm/Traefik 버전, NodePort / CI/CD: ESO · ArgoCD 버전 / 모니터링 버전 · 저장소 · 포트
 │       ├── db.yml             # DB 노드: 이미지 버전(OpenBao 포함), 튜닝값, OpenBao 경로 매핑, MinIO 버킷
 │       ├── gitlab.yml         # GitLab 노드: 이미지 버전, 포트, Runner 태그
@@ -368,7 +368,7 @@ OpenBao 도입 전에는 DB 계정 정보를 **`backend/.env` 에서 직접 읽�
 | `TS_DB_OAUTH_CLIENT_SECRET` | `infra/ansible/.env` | 1-2 의 DB 용 OAuth client |
 | `VALKEY_PASSWORD` | `infra/ansible/.env` | 추후 backend `REDIS_PASSWORD` 와 같은 값으로 맞출 예정 |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | `infra/ansible/.env` | MinIO 관리자 (Console 로그인). 최초 기동 때만 반영 |
-| `MINIO_APP_ACCESS_KEY`, `MINIO_APP_SECRET_KEY` | `infra/ansible/.env` | 앱 전용 계정 (객실 이미지 버킷만). `k8s-cicd.yml` 이 `backend-secrets` 의 `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` 로 넣음 (7-6) |
+| `MINIO_APP_ACCESS_KEY`, `MINIO_APP_SECRET_KEY` | `infra/ansible/.env` | 앱 전용 계정 (객실 이미지 버킷만). OpenBao `minio-app` → ESO 가 `backend-secrets` 의 `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` 로 넣음 (7-6, 16절) |
 | `BACKEND_ENV_FILE` (선택) | `infra/ansible/.env` | backend/.env 대신 다른 파일을 쓸 때 |
 | `CLUSTER_ENTRY_IP` | `infra/ansible/.env` | control plane Tailscale IP — 모니터링 수집기(Alloy)가 Prometheus 로 보낼 주소 (14-2 와 같은 값, 17-6) |
 
@@ -424,7 +424,7 @@ kubectl run vktest --rm -it --image=valkey/valkey:9.1 --restart=Never --   valke
 | 초기 데이터 | 클러스터 — 차트의 `seed` Job (운영과 같은 템플릿) | ArgoCD sync 때 마이그레이션 hook 뒤에 `seed:<tag>`(배포 버전과 같은 `scripts/seed.ts`) 실행 — 관리자 계정, 호텔 3 · 객실 · 사진, 편의시설, 객실 재고. Job 이름이 `seed-<태그 8자>-<spec 해시>` 라 새 버전마다 다시 돌고, 멱등이라 이미 있는 데이터는 건너뜀 |
 | DynamoDB 테이블 | DB 노드 — `db.yml --tags seed` (`db_seed` role) | `scripts/dynamodb-init.ts` (스키마 버전과 무관) |
 
-- 관리자 계정은 OpenBao `seed-admin` → ESO 가 Secret `backend/seed-admin` 으로 **속성 전체를 이름 그대로** 동기화(`dataFrom.extract`, `k8s-cicd.yml --tags backend_secrets`) → `seed` Job 이 그 Secret 을 통째로 env 로 받음 (gitops `seed.adminSecretName: seed-admin`, 차트 `envFrom`). 운영의 Secret `seed-admin` 과 같은 역할입니다 (LDP-193).
+- 관리자 계정은 OpenBao `seed-admin` → ESO 가 Secret `backend/seed-admin` 으로 **속성 전체를 이름 그대로** 동기화(`dataFrom.extract`, ArgoCD `backend-secrets` 앱 — 16절) → `seed` Job 이 그 Secret 을 통째로 env 로 받음 (gitops `seed.adminSecretName: seed-admin`, 차트 `envFrom`). 운영의 Secret `seed-admin` 과 같은 역할입니다 (LDP-193).
   - 속성 이름 = 환경변수 이름: `SEED_ADMIN_EMAIL` · `SEED_ADMIN_PASSWORD` (필수), `SEED_ADMIN_NAME`, 지점 계정 `SEED_SEOUL_MANAGER_PASSWORD` · `SEED_BUSAN_MANAGER_PASSWORD` · `SEED_JEJU_MANAGER_PASSWORD` · `SEED_SEOUL_STAFF_PASSWORD` (선택 — 없으면 본사 비밀번호, LDP-190). 이관 원본은 `backend/.env` 의 같은 이름.
   - **값 추가 · 변경은 OpenBao 만** — UI 에서 `seed-admin` → *Create new version* (*Create secret* 은 기존 경로라 거부됨) 또는 `bao kv patch secret/team04-hotel/dev/seed-admin SEED_…=<값>`. ESO 가 1시간 안에 반영(바로: `kubectl -n backend annotate externalsecret seed-admin force-sync=$(date +%s) --overwrite`), 다음 `seed` Job 부터 적용. seed.ts 가 새 `SEED_*` 를 읽게 돼도 Ansible · gitops · 차트는 고치지 않습니다.
   - seed.ts 는 **이미 있는 계정을 건너뜁니다** — 이미 만들어진 계정의 비밀번호는 OpenBao 값을 바꿔도 그대로입니다 (관리자 화면에서 바꾸거나 계정을 지운 뒤 다시 시딩).
@@ -472,15 +472,15 @@ ansible-playbook db.yml -K --tags seed -e db_seed_mariadb=true  # + 이 PC 의 b
 
   | 이름 | dev (MinIO) | 주입 위치 (dev) | prod (AWS S3) |
   |---|---|---|---|
-  | `S3_ENDPOINT` | `http://<DB_TS_IP>:9000` | `backend-secrets` (`k8s-cicd.yml`) | 비움 → AWS SDK 기본 엔드포인트 |
-  | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `MINIO_APP_ACCESS_KEY` / `MINIO_APP_SECRET_KEY` | `backend-secrets` (`k8s-cicd.yml`) | 넣지 않음 (IAM 역할) |
+  | `S3_ENDPOINT` | `http://<DB_TS_IP>:9000` | `backend-secrets` (OpenBao `minio-app` → ESO) | 비움 → AWS SDK 기본 엔드포인트 |
+  | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `MINIO_APP_ACCESS_KEY` / `MINIO_APP_SECRET_KEY` | `backend-secrets` (OpenBao `minio-app` → ESO) | 넣지 않음 (IAM 역할) |
   | `S3_REGION` | `ap-northeast-2` (고정 — MinIO 에서는 의미 없지만 SDK 서명에 필요) | gitops `envs/dev/values.yaml` env | 실제 리전 |
   | `S3_BUCKET` | `room-images` | gitops env | (미정) |
   | `S3_FORCE_PATH_STYLE` | `true` | gitops env | `false` |
   | `IMAGE_BASE_URL` | `http://<DB_TS_IP>:9000/room-images` (path-style 이라 버킷 이름까지. `db.yml` 마지막 출력에 값이 나옴) | gitops env | `https://<도메인>` (CloudFront) |
 
 - **반영 순서** (gitops seed 는 레포를 처음 만들 때만 들어가므로 기존 레포는 직접 커밋)
-  1. `.env` 에 `MINIO_APP_*` · `DB_TS_IP` 확인 → `ansible-playbook k8s-cicd.yml -K --tags backend_secrets`
+  1. OpenBao `minio-app` 에 값이 있는지(`db.yml` 이 이관, 16-3), gitops `envs/dev/backend-secrets.yaml` 에 `minio-app` 매핑이 있는지 확인 → `backend-secrets` 에 `S3_*` key 확인
   2. 그다음 GitLab `team04/infra/backend-gitops` 의 `envs/dev/values.yaml` 에 아래를 커밋 → ArgoCD sync (env 가 바뀌어 hotel-service Pod 가 새로 뜸).
      순서를 바꾸면 Secret 에 key 가 없어 hotel-service 가 `CreateContainerConfigError` 로 멈춥니다.
 
@@ -808,6 +808,7 @@ ArgoCD (온프레미스, argocd ns) ◀── poll 최대 3분
 | 파이프라인 | `.gitlab-ci.yml` (레포 루트) | GitHub → 미러 |
 | Helm 차트 | `backend-deploy/charts/backend` | GitHub → 미러 |
 | dev values · 이미지 태그 · Application | GitLab `team04/infra/backend-gitops` 의 `envs/dev/values.yaml`, `apps/dev/backend.yaml` | 태그 · 차트 revision 은 CI `deploy-dev`, values 는 MR (초기본: `backend-deploy/gitops-seed`) |
+| dev Secret 매핑 · Application | 같은 레포의 `envs/dev/backend-secrets.yaml`, `apps/dev/backend-secrets.yaml` (차트 `backend-deploy/charts/backend-secrets`) | MR — 값은 OpenBao, 차트 revision 은 커밋 SHA 고정으로 사람이 갱신 (16절) |
 | prod values · 이미지 태그 | GitHub 별도 prod gitops 레포 | PR 로만 변경 (보호 규칙) — GitLab 은 관여하지 않음 |
 | ArgoCD · AppProject · root app · 네임스페이스 · Secret | 온프레미스 클러스터 | Ansible `k8s-cicd.yml` |
 
@@ -825,7 +826,7 @@ ArgoCD (온프레미스, argocd ns) ◀── poll 최대 3분
 `gitlab.yml` 이 Container Registry(`<fqdn>:5050`)를 켜고, `gitlab_bootstrap` role 이 REST API 로 아래를 멱등하게 맞춥니다.
 
 - 그룹 `team04`, `team04/infra` / 프로젝트 `team04/hotel`(미러), `team04/infra/backend-gitops`
-- gitops 레포(dev 전용) 초기 내용 커밋(레포가 비어 있을 때만: `envs/dev/values.yaml`, `apps/dev/backend.yaml`)과 `apps/dev/README.md`(매번 동기화)
+- gitops 레포(dev 전용) 초기 내용 커밋(레포가 비어 있을 때만: `envs/dev/values.yaml`, `apps/dev/backend.yaml`, `envs/dev/backend-secrets.yaml`, `apps/dev/backend-secrets.yaml`)과 `apps/dev/README.md`(매번 동기화)
 - 그룹 Deploy Token — `k8s-registry-pull`(`read_registry`, 클러스터 imagePullSecret), `argocd-repo-read`(`read_repository`, ArgoCD), `payment-node`(결제 노드)
 - `team04/hotel` CI 변수: `GITOPS_PUSH_TOKEN`(gitops 레포 Project Access Token), `SMOKE_DB_*`, `SMOKE_REDIS_*`, `GHCR_USER` · `GHCR_TOKEN`(GHCR 봇 계정, 12-4) (모두 protected)
 - 미러용 Project Access Token, `main`/`develop` 보호 브랜치(force push 허용), 레지스트리 cleanup policy(`ci-*` 후보 태그·kaniko 캐시 7일)
@@ -853,12 +854,13 @@ ansible-playbook gitlab.yml -K --tags bootstrap  # 부트스트랩만 다시
 cd infra/ansible
 set -a; source .env; source .secrets/openbao.env; set +a
 ansible-playbook k8s-cicd.yml -K
-ansible-playbook k8s-cicd.yml -K --tags backend_secrets   # ESO · ExternalSecret 만 다시
+ansible-playbook k8s-cicd.yml -K --tags backend_secrets   # ESO · 네임스페이스 · registry Secret 만 다시
 ansible-playbook k8s-cicd.yml -K --tags argocd            # ArgoCD 만 다시
 ```
 
 - GitLab 주소 · Deploy Token 은 OpenBao `gitlab-k8s`(`gitlab.yml --tags bootstrap` 이 저장)에서 읽습니다. OpenBao 도입 전에는 `source .secrets/gitlab-k8s.env` 로 넣습니다.
-- `backend` 네임스페이스와 Secret `gitlab-registry`(Deploy Token)를 만들고, External Secrets Operator 를 설치한 뒤 `backend-secrets` 를 **ExternalSecret**(OpenBao → ESO, 운영과 같은 구조 — 16절)으로 만듭니다. key 목록은 `group_vars/all.yml` 의 `backend_external_secret_data` 입니다. 차트 · ArgoCD 는 네임스페이스와 Secret 을 만들지 않습니다 (`CreateNamespace=false`).
+- `backend` 네임스페이스와 Secret `gitlab-registry`(Deploy Token)를 만들고 External Secrets Operator · ClusterSecretStore `openbao` 를 설치합니다. `backend-secrets` · `seed-admin` 은 ArgoCD `backend-secrets` 앱이 **ExternalSecret**(OpenBao → ESO, 운영과 같은 구조 — 16절)으로 만들고, key 매핑은 gitops `envs/dev/backend-secrets.yaml` 입니다. ArgoCD 는 네임스페이스를 만들지 않습니다 (`CreateNamespace=false`).
+  - 새 클러스터에서는 backend 앱의 마이그레이션 hook 이 `backend-secrets` 보다 먼저 돌아 실패할 수 있습니다. backend 앱의 sync retry(3회, 최대 5분) 안에 Secret 이 생기면 저절로 이어집니다. 넘기면 ArgoCD UI 에서 backend 앱을 다시 Sync 합니다.
 - `backend-secrets` 는 Pod 기동 때만 읽힙니다. OpenBao 값을 바꿨으면 ESO 반영(16-4) 뒤 `kubectl -n backend rollout restart deployment` 로 재기동합니다 (selfHeal 이 되돌리지 않음).
 - ArgoCD 설치 · 구성은 12-9 입니다. 전환 전 클러스터에 남아 있는 GitLab Agent(agentk) · `cicd-deployer` Role 은 `argocd` role 이 지웁니다 (없으면 건너뜀).
 - **결제**: payment-service · 결제 DB · ElasticMQ 는 클러스터 밖 **결제 서버 노드**([14절](#14-결제-서버-노드-결제-db--payment-service--elasticmq))에서 운영합니다. 그래서 `backend-secrets` 에는 `PAYMENT_DB_*` 를 넣지 않고(OpenBao `payment-db` 는 결제 노드만 읽음), gitops `envs/dev/values.yaml` 에서 `services.payment-service.enabled` 와 `migrations.payment.enabled` 는 `false` 로 둡니다(초기 seed 에 반영됨).
@@ -1312,7 +1314,7 @@ sudo docker logs --tail 20 payment-webhook-receiver
 | Vertex AI 호출용 서비스 계정 `llm-service-dev` · `roles/aiplatform.user` | GCP | `infra/gcp-terraform/dev` |
 | 서비스 계정 키(JSON) | `infra/ansible/.secrets/` (gitignore) | gcloud (`infra/gcp-terraform/README.md` 의 키 발급) |
 | 대화 이력 DynamoDB Local · RAG 인덱스 버킷 | DB 노드 | `db.yml` (7-7) |
-| `backend-secrets` 의 챗봇 key | 클러스터 | OpenBao `gcp-sa` · `minio-rag` · `dynamodb` · `n8n` → ESO (`k8s-cicd.yml`, 16절) |
+| `backend-secrets` 의 챗봇 key | 클러스터 | OpenBao `gcp-sa` · `minio-rag` · `dynamodb` · `n8n` → ESO (매핑: gitops `envs/dev/backend-secrets.yaml`, 16절) |
 | llm-service · n8n Deployment | 클러스터 | ArgoCD (차트 + gitops values, 15-3) |
 
 ### 15-1. 값 설정 (`infra/ansible/.env`)
@@ -1333,9 +1335,8 @@ sudo docker logs --tail 20 payment-webhook-receiver
 # 2) DB 노드: DynamoDB Local · RAG 버킷 · 대화 이력 테이블
 cd infra/ansible && set -a; source .env; set +a
 ansible-playbook db.yml -K
-# 3) 클러스터: backend-secrets 에 챗봇 key 반영 (OpenBao → ESO)
-set -a; source .env; source .secrets/openbao.env; set +a
-ansible-playbook k8s-cicd.yml -K --tags backend_secrets
+# 3) 클러스터: backend-secrets 에 챗봇 key 가 있는지 확인 (OpenBao → ESO, 매핑은 gitops envs/dev/backend-secrets.yaml)
+kubectl -n backend get secret backend-secrets -o json | jq '.data | keys'   # GCP_SA_KEY_JSON · VECTOR_OBJECT_* · DYNAMODB_ENDPOINT · N8N_INIT_OWNER_PASSWORD
 # 4) 배포 일정에: deploy-dev ▶ (llm-service · n8n 이 있는 차트 버전) → gitops values MR merge (15-3) → ArgoCD sync
 # 5) RAG 인덱스는 배포 때 llm-ingest Job 이 자동 적재 (gitops values llmIngest.enabled). 수동으로 다시 돌릴 때만:
 kubectl -n backend exec deploy/llm-service -- python -m scripts.ingest
@@ -1385,7 +1386,7 @@ kubectl -n backend logs job -l app.kubernetes.io/name=llm-ingest --tail=5       
 
 ### 15-5. 트러블슈팅
 
-- **llm-service 가 `CreateContainerConfigError`**: `backend-secrets` 에 `GCP_SA_KEY_JSON` 등이 없는 경우 → 15-2 의 3) 재실행.
+- **llm-service 가 `CreateContainerConfigError`**: `backend-secrets` 에 `GCP_SA_KEY_JSON` 등이 없는 경우 → OpenBao 원본(16-3)과 gitops `envs/dev/backend-secrets.yaml` 매핑 확인 (16-6).
 - **챗봇이 "AI 응답 생성에 실패"**: `kubectl -n backend logs deploy/llm-service` — Vertex `403`(키·권한), `429`(쿼터. 채팅은 `VERTEX_CHAT_LOCATION=global`), `UNAUTHENTICATED`(키 폐기·교체 직후 전파 지연) 를 확인합니다.
 - **RAG 근거 없이 답변**: llm-service 로그의 `벡터 인덱스 로드` / `임베딩 모델 ... 달라` 를 확인하고 ingest 를 다시 실행합니다.
 - **대화가 이어지지 않음**: chat-bot-service 로그에서 DynamoDB 접속 오류 → DB 노드 `dynamodb` 컨테이너, ufw 8000, Tailscale ACL 확인.
@@ -1394,10 +1395,12 @@ kubectl -n backend logs job -l app.kubernetes.io/name=llm-ingest --tail=5       
 
 dev 비밀값의 **단일 소스**를 DB 노드의 [OpenBao](https://openbao.org)(Vault 호환 오픈소스)로 두고, 클러스터는 운영과 같은 **External Secrets Operator(ESO)** 로 `backend-secrets` 를 만듭니다. 팀원끼리 `.env` 를 주고받는 대신 OpenBao 에서 읽습니다.
 
+**값은 OpenBao, 매핑(어떤 Secret key 를 어느 경로 · 속성에서)은 gitops** 입니다. ExternalSecret `backend-secrets` · `seed-admin` 은 ArgoCD `backend-secrets` 앱(차트 `backend-deploy/charts/backend-secrets`, values = gitops `envs/dev/backend-secrets.yaml`)이 만들고, Ansible 은 ESO · ClusterSecretStore · ESO 읽기 정책만 맞춥니다. 운영의 `infra/gitops/prod/backend-secrets` 앱과 같은 구조입니다.
+
 ```
-운영: Secrets Manager team04-hotel/prod/* ──ESO(aws provider)───┐
-                                                              ├─> Secret backend/backend-secrets ─> Pod env
-dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
+운영: Secrets Manager team04-hotel/prod/* ──ESO(aws provider)───┐   매핑: infra/gitops/prod/backend-secrets
+                                                              ├─> Secret backend/backend-secrets ─> Pod env (차트 secretEnv)
+dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘   매핑: gitops envs/dev/backend-secrets.yaml (ArgoCD backend-secrets 앱)
       └─ db.yml · payment.yml · gitlab-runner.yml · gitlab.yml 도 같은 값을 직접 읽음 (roles/openbao_kv)
 ```
 
@@ -1408,7 +1411,7 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | 주소 | `http://<DB 노드 Tailscale IP>:8200` (TLS 없음 — tailnet 안에서만, ufw `tailscale0`) · UI `/ui` |
 | 스토리지 / unseal | raft 단일 노드 / **static seal**(32바이트 키 파일로 자동 unseal) |
 | KV | `secret/` (v2) — 경로 `team04-hotel/dev/<이름>`, 운영 Secrets Manager 이름과 env 만 다름 |
-| 정책 | `eso-dev`: ESO 가 `backend-secrets` 원본 경로만 읽기 / `ansible-dev`: playbook 이 `team04-hotel/dev/*` 읽기·쓰기 |
+| 정책 | `eso-dev`: ESO 가 `group_vars/all.yml` 의 `eso_read_paths` 경로만 읽기 / `ansible-dev`: playbook 이 `team04-hotel/dev/*` 읽기·쓰기 |
 | ESO | chart `external-secrets` 2.13.0(운영과 같은 버전), ClusterSecretStore `openbao`, Kubernetes auth role `external-secrets` |
 
 **경로**
@@ -1419,6 +1422,7 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `main-valkey` | host, port, password | ESO, db.yml, gitlab.yml(smoke) |
 | `backend-app` | jwt_access_secret, jwt_refresh_secret, mock_pg_secret | ESO |
 | `kakao-login` | client_id, client_secret (카카오 dev 앱 REST API 키 · Client Secret, 운영과 같은 이름) | ESO |
+| `backend-env` | **새 backend 비밀값을 두는 곳** — 속성 이름 = 환경변수 이름 권장 (16-4 "새 비밀 추가") | ESO |
 | `minio-app` · `minio-rag` | endpoint, access_key, secret_key | ESO, db.yml |
 | `dynamodb` | endpoint | ESO |
 | `n8n` | init_owner_password | ESO |
@@ -1431,8 +1435,8 @@ dev : OpenBao secret/team04-hotel/dev/*  ──ESO(vault provider)─┘
 | `grafana` | admin_user, admin_password (없으면 monitoring.yml 이 생성, 17절) | ESO(`monitoring/grafana-admin`) |
 | `gitlab-k8s` · `payment-node` · `github-mirror` · `gitlab-runner` · `argocd` · `k8s-join` · `k8s-admin` | `.secrets/*.env` 와 같은 변수 이름 (k8s-admin 은 kubeconfig) | k8s-cicd.yml, payment.yml, gitlab-runner.yml, gitlab.yml (16-7) |
 
-- `backend-secrets` 의 key ↔ 경로 · 속성은 `group_vars/all.yml` 의 `backend_external_secret_data` 하나가 기준입니다. `eso-dev` 정책은 이 목록과 `eso_extra_read_paths`(backend-secrets 밖에서 ESO 가 읽는 경로 — `grafana`, `seed-admin`)로 만듭니다.
-  - 경로를 추가하면 OpenBao 관리자가 `db.yml --tags openbao` 로 `eso-dev` 정책을 갱신해야 ESO 가 읽을 수 있습니다. 그다음 `db.yml --tags openbao_import`(값 이관), `k8s-cicd.yml --tags backend_secrets` 순서로 실행합니다.
+- `backend-secrets` 의 key ↔ 경로 · 속성은 gitops `envs/dev/backend-secrets.yaml` 이 기준입니다 (초기본: `backend-deploy/gitops-seed/envs/dev/backend-secrets.yaml`). `seed-admin` 은 매핑 없이 경로의 속성을 이름 그대로 전부 가져옵니다.
+- `eso-dev` 정책은 `group_vars/all.yml` 의 `eso_read_paths` 로 만듭니다. **경로를 새로 만들 때만** 여기에 추가하고 OpenBao 관리자가 `db.yml --tags openbao` 로 정책을 갱신합니다. 새 backend 비밀값은 이미 열려 있는 `backend-env` 에 넣으면 이 단계가 필요 없습니다.
 - 모든 playbook 은 `OPENBAO_ADDR` 이 비어 있으면 OpenBao 를 건너뛰고 예전처럼 `.env` · `backend/.env` · `.secrets/*.env` 를 읽습니다 (`k8s-cicd.yml` 은 ESO 때문에 OpenBao 필수).
 - OpenBao 호출은 Ansible 을 실행하는 PC 가 아니라 **play 대상 노드**에서 합니다 (PC 는 Tailnet 에 없을 수 있음). 그래서 1-1 의 `→ tag:db tcp:8200` grant 가 필요합니다.
 
@@ -1450,7 +1454,7 @@ cd infra/ansible
 set -a; source .env; set +a
 ansible-playbook db.yml -K        # OpenBao 기동 · init · mount · 정책 → .env 값 이관(16-3) → DB 스택
 set -a; source .secrets/openbao.env; set +a
-ansible-playbook k8s-cicd.yml -K  # ESO → OpenBao Kubernetes auth · ClusterSecretStore → backend-secrets(ExternalSecret)
+ansible-playbook k8s-cicd.yml -K  # ESO → OpenBao Kubernetes auth · ClusterSecretStore → ArgoCD (backend-secrets 앱이 ExternalSecret 생성)
 ansible-playbook payment.yml -K   # 결제 노드도 OpenBao 값으로
 ```
 
@@ -1476,7 +1480,7 @@ ansible-playbook db.yml -K --tags openbao_import
 
 - 이관 뒤에는 OpenBao 가 원본입니다. `.env` · `backend/.env` 의 같은 값은 지워도 되고, 바꿔도 반영되지 않습니다 (`backend/.env` 는 로컬 docker compose 용으로 남겨 둠).
 - `main-db.host` · `main-valkey.host` · `*.endpoint` 는 DB 노드 Tailscale IP 로 채워집니다 (예전 `DB_TS_IP` 역할).
-- ESO 로 전환할 때 `k8s-cicd.yml` 은 Ansible 이 만들던 `backend-secrets` 를 지우고 ExternalSecret 이 다시 만들게 합니다 (실행 중인 Pod 는 영향 없음). 전환 전후로 `kubectl -n backend get secret backend-secrets -o json | jq -S .data | sha256sum` 이 같으면 key · 값이 모두 같습니다. 다르면 `jq -S '.data | keys'` 로 key 부터 비교합니다.
+- Secret 구성을 옮기거나 바꿀 때 전후로 `kubectl -n backend get secret backend-secrets -o json | jq -S .data | sha256sum` 이 같으면 key · 값이 모두 같습니다. 다르면 `jq -S '.data | keys'` 로 key 부터 비교합니다.
 
 ### 16-4. 값 바꾸기
 
@@ -1490,9 +1494,19 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 | 바꾼 값 | 이어서 할 일 |
 |---|---|
 | DB · Valkey · MinIO 계정 (`main-db`, `main-valkey`, `minio-*`) | `db.yml` 재실행 (계정 · 비밀번호 맞춤) → 아래 ESO 반영 |
-| `backend-secrets` 원본 | ESO 가 1h 안에 반영. 바로: `kubectl -n backend annotate externalsecret backend-secrets force-sync=$(date +%s) --overwrite` → `kubectl -n backend rollout restart deployment` |
+| `backend-secrets` 원본 (이미 매핑된 key 의 값) | ESO 가 1h 안에 반영. 바로: `kubectl -n backend annotate externalsecret backend-secrets force-sync=$(date +%s) --overwrite` → `kubectl -n backend rollout restart deployment` |
+| `backend-secrets` 에 key 추가 · 삭제 | 아래 "새 비밀 추가" — `force-sync` 만으로는 key 가 생기지 않음 (매핑이 gitops 에 있음) |
 | 결제 (`payment-db`, `toss-payments`) | `payment.yml` 재실행 (`--tags deploy`) |
 | `main-db-root` · `payment-db-root` | 자동화하지 않음 — DB 에서 `ALTER USER` 후 OpenBao 값을 바꿈 (7-3, 14-3) |
+
+**새 비밀 추가** (Ansible · root token 불필요)
+
+1. OpenBao `team04-hotel/dev/backend-env` 에 속성 추가 — UI 에서 `backend-env` → *Create new version* (처음이면 *Create secret*), 또는 `bao kv patch secret/team04-hotel/dev/backend-env NEW_API_KEY=-`(stdin). 경로가 아직 없으면 `bao kv put`
+2. gitops `envs/dev/backend-secrets.yaml` 의 `data.backend-env` 에 `NEW_API_KEY: NEW_API_KEY`(Secret key: 속성) 추가 → MR merge → ArgoCD `backend-secrets` 앱이 ExternalSecret 갱신
+3. gitops `envs/dev/values.yaml` 의 그 서비스 `secretEnv` 에 이름 추가 → MR merge → 새 Pod 가 env 로 받음
+
+- 순서를 지킵니다. 1 보다 2 가 먼저면 원본이 없어 ExternalSecret 전체가 `SecretSyncedError`(기존 Secret 은 유지), 2 보다 3 이 먼저면 새 Pod 가 `CreateContainerConfigError`(기존 Pod 는 유지)입니다.
+- 확인: `kubectl -n backend get secret backend-secrets -o json | jq '.data | keys'`
 
 ### 16-5. 백업 · 복구
 
@@ -1507,7 +1521,8 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 | playbook 이 `OpenBao … 읽기 실패 (HTTP -1)` | 노드 → `tag:db tcp:8200` ACL, DB 노드 `docker ps` 의 `openbao`, ufw 8200 |
 | `HTTP 403` | `OPENBAO_TOKEN` 만료 · 오타 → 16-2 로 재발급 |
 | ClusterSecretStore `openbao` 가 Ready 아님 (`permission denied`) | `tag:db → tag:k8s-node tcp:6443` ACL, `kubectl get clusterrolebinding external-secrets-openbao-auth-delegator`, `docker logs openbao` |
-| ExternalSecret `backend-secrets` 가 `SecretSyncedError` | 원본 경로 · 속성 누락 — `bao kv get secret/team04-hotel/dev/<경로>`, `kubectl -n backend describe externalsecret backend-secrets` |
+| ExternalSecret `backend-secrets` 가 `SecretSyncedError` | 원본 경로 · 속성 누락 — `bao kv get secret/team04-hotel/dev/<경로>`, `kubectl -n backend describe externalsecret backend-secrets`. `permission denied` 면 그 경로가 `eso_read_paths` 에 없음 → `db.yml --tags openbao` |
+| Secret 에 새 key 가 안 생김 | gitops `envs/dev/backend-secrets.yaml` 에 매핑이 없거나 ArgoCD `backend-secrets` 앱이 OutOfSync — `kubectl -n backend get externalsecret backend-secrets -o jsonpath='{.spec.data[*].secretKey}'` |
 | 컨테이너가 `sealed` 로 남음 | `docker logs openbao` 의 static seal 오류 — 키 파일 · `current_key_id`(키 sha256 앞 16자) 불일치 |
 
 ### 16-7. `.secrets/` 정리
@@ -1582,7 +1597,7 @@ bao kv patch secret/team04-hotel/dev/backend-app jwt_access_secret=<새 값>
 cd infra/ansible
 set -a; source .env; source .secrets/openbao.env; set +a
 
-# 1) OpenBao 관리자: eso-dev 정책에 grafana 경로 추가 (eso_extra_read_paths)
+# 1) OpenBao 관리자: eso-dev 정책에 grafana 경로 추가 (eso_read_paths)
 ansible-playbook db.yml -K --tags openbao
 
 # 2) CP 담당자: metrics-server → kube-prometheus-stack → 대시보드 → tailscale serve
