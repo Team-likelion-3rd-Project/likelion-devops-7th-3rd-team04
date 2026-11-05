@@ -215,12 +215,21 @@ set -a; . /etc/load-generator/config.env; set +a
 aws s3 cp result/ "s3://$RESULT_BUCKET/${RESULT_PREFIX}$(date -u +%F)/" --recursive --exclude .gitkeep
 ```
 
+
+Prometheus 지표는 destroy 하면 사라진다 (저장소 emptyDir). **destroy 전에 노트북에서** 테스트 구간 지표를 내려받아 같은 버킷 `load-test/<날짜>/prometheus/` 에 올린다:
+
+```bash
+load-test/scripts/export-prometheus.sh 2026-11-04T01:30:00Z                 # 시작(UTC) ~ 지금
+load-test/scripts/export-prometheus.sh <시작 UTC> <끝 UTC> <이름>            # 구간을 나눌 때
+```
+
 - **테스트 날은 `run --all apply` · `73` apply 마다 `TF_VAR_enable_load_generator=true` 를 같이 준다.** 빼고 apply 하면 테스트 중에 생성기 · EIP 가 삭제되고 WAF 예외도 비워진다. 터미널에 export 해 두는 것을 권장한다
 - 노드 수: 평소 2대, Cluster Autoscaler 가 Pending Pod 를 보고 최대 4대까지 늘린다 (`72` `node_min_size` ~ `node_max_size`). `node_desired_size` 는 노드 그룹을 처음 만들 때만 쓰이고 이후 apply 는 노드 수를 바꾸지 않는다 (`ignore_changes`)
 - 노드 수를 고정해야 하는 측정은 `72` 를 `TF_VAR_node_min_size=N TF_VAR_node_max_size=N` 으로 apply 한다. **노드 수가 바뀌면 그 위의 Pod 가 옮겨지고, Prometheus 가 옮겨지면 그날 지표가 사라진다** (저장소 emptyDir). 바꾸기 전에 Grafana 스냅샷 · 필요한 지표를 먼저 남긴다
 - 기준선은 평소 구성(노드 2대 · main values)에서 먼저 잰다. 노드 4대 고정 결과는 피크 상한으로만 쓴다
 - 결제는 테스트 브랜치로 바뀌지 않는다. 결제 서버는 SSM `/team04-hotel/prod/payment/release` 를 읽고, 이 파라미터는 gitops main 이 바뀔 때만 갱신된다. 테스트 시작 전 `PAYMENT_PROVIDER` 를 `MOCK` 으로 바꾸고(k6 의 mock 결제 키는 TOSS 에서 전부 거절됨), **끝나면 `TOSS` 로 되돌린다** (`11-registry` 소속이라 destroy 해도 남는다)
 - 하루 테스트로 가까운 날짜(14일 이내) 재고가 빠르게 찬다 (11-04: stress · load 7회에 81%). 매진 비율이 1% 를 넘으면 결과가 무효이므로 측정 사이에 확인한다
+
 - 생성기 CPU · 메모리는 테스트 중에 `top` 으로 본다. `dropped_iterations > 0` 인데 생성기 CPU 가 80% 를 넘으면 생성기 부족이다 → `instance_type` 을 올린다 (버스터블 t* 는 쓰지 않는다)
 - 생성기를 다시 만들면(`instance_type` 변경 등) 인스턴스는 교체되지만 EIP 는 그대로라 `80` 을 다시 apply 할 필요가 없다. 켜고 끌 때만 `80` 도 apply 한다
 - 끄기: 위 명령에서 `TF_VAR_enable_load_generator` 를 빼고 다시 실행 (인스턴스 · EIP 삭제, WAF 예외 비움). 매일 destroy 에도 포함된다. 결과를 올리기 전에 끄면 결과 파일도 사라진다
