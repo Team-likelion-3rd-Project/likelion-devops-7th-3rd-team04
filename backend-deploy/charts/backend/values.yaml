@@ -51,11 +51,12 @@ probes:
     failureThreshold: 40      # 최대 2분 (DB 연결 대기 포함)
   readiness:
     periodSeconds: 5
+    timeoutSeconds: 3         # 기본값 1초는 CPU 포화 시 이벤트 루프 지연으로 실패 → 남은 Pod 로 부하가 쏠려 연쇄 503
     failureThreshold: 3
   liveness:
     periodSeconds: 10
-    failureThreshold: 3
-    timeoutSeconds: 3
+    timeoutSeconds: 5
+    failureThreshold: 6       # 약 60초 동안 응답이 없을 때만 재시작 (바쁜 Pod 를 죽이지 않음)
 
 defaultResources:
   requests:

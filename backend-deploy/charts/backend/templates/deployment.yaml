@@ -116,6 +116,7 @@ spec:
               path: /health
               port: {{ $svc.healthPort }}
             periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ $.Values.probes.readiness.timeoutSeconds }}
             failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}
           livenessProbe:
             httpGet:
