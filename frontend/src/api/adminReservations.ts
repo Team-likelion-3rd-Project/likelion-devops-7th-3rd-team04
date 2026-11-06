@@ -97,9 +97,10 @@ export async function fetchLinkedBookings(rootReservationId: number): Promise<Ad
   return (await fetchAdminBookings({ linkedTo: rootReservationId })).bookings
 }
 
-// GET /api/payments/users/{userId} (관리자 전용) - 회원의 결제 목록 (결제 상태·금액·환불 시각)
-export async function fetchAdminUserPayments(userId: number): Promise<Payment[]> {
-  const res = await authedFetch(`/api/payments/users/${userId}`)
+// GET /api/payments/users/{userId}?reservationIds= (관리자 전용) - 회원의 결제 중 이 예약들의 결제 (결제 상태·금액·환불 시각).
+// 지금 페이지에 보이는 예약만 넘긴다 — 회원 결제 전체를 받지 않는다 (부하 테스트 11-06). 최대 100개
+export async function fetchAdminUserPayments(userId: number, reservationIds: number[]): Promise<Payment[]> {
+  const res = await authedFetch(`/api/payments/users/${userId}?reservationIds=${reservationIds.join(',')}`)
   const data = await parseAdminResponse<{ payments?: Payment[] }>(res)
   return data.payments ?? []
 }

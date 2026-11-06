@@ -55,7 +55,7 @@ export async function createBooking(payload: CreateBookingRequest, idempotencyKe
 }
 
 // GET /api/bookings/me/{reservationId} — 본인 예약 한 건 (없으면 null). 예약완료 페이지를 새로고침하거나
-// 직접 접근했을 때(전달받은 state가 없을 때) 쓴다. 목록 전체 조회는 gateway.ts의 fetchMyBookings.
+// 직접 접근했을 때(전달받은 state가 없을 때) 쓴다. 목록은 gateway.ts의 fetchMyBookingsPage.
 export { fetchMyBooking } from './gateway'
 
 // GET /api/bookings/{reservationId}/facilities — 해당 예약에 연결된 편의시설(수영장/라운지 등)

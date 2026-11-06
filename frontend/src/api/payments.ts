@@ -1,4 +1,4 @@
-import { ApiError, authorizedFetch, fetchMyBooking, parseJsonResponse } from './gateway'
+import { ApiError, MY_LIST_PAGE_SIZE, authorizedFetch, fetchMyBooking, parseJsonResponse } from './gateway'
 import type { Booking } from './gateway'
 import { displayableServerMessage, httpFallbackMessage } from './apiError'
 
@@ -18,12 +18,12 @@ export interface Payment {
   refundedAt?: string
 }
 
-// GET /api/payments/me — 로그인한 사용자 본인의 결제 목록을 조회한다 (인증 필요).
-// payment-service가 paidAt 최신순으로 정렬해서 내려준다.
-export async function fetchMyPayments(): Promise<Payment[]> {
-  const res = await authorizedFetch('/api/payments/me')
-  const data = await parseJsonResponse<{ payments: Payment[] }>(res)
-  return data.payments
+// GET /api/payments/me?page=&size= — 로그인한 사용자 본인의 결제 목록 한 페이지 (인증 필요).
+// payment-service가 paidAt 최신순으로 정렬해서 내려준다. 예전처럼 전체를 받지 않는다 (부하 테스트 3일차 11-06).
+export async function fetchMyPaymentsPage(page: number): Promise<{ items: Payment[]; total: number }> {
+  const res = await authorizedFetch(`/api/payments/me?page=${page}&size=${MY_LIST_PAGE_SIZE}`)
+  const data = await parseJsonResponse<{ payments: Payment[]; total?: number }>(res)
+  return { items: data.payments, total: data.total ?? data.payments.length }
 }
 
 // GET /api/payments/me/{paymentId} — 본인 결제 한 건. 없거나 남의 결제(404)·잘못된 번호(400)면 null

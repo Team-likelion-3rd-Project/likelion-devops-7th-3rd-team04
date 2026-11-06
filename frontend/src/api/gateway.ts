@@ -480,13 +480,16 @@ export interface ReservationFacility {
   totalAmount: number
 }
 
-// api-gateway(GET /api/bookings/me) -> booking-service(gRPC)로 로그인한 사용자 본인의 예약 목록을 조회한다.
-// 조건 없이 부르면 전체라서, 예약 하나·결제 대기만 필요한 화면은 아래 fetchMyBooking·fetchMyBookingsByStatus를 쓴다
-// (부하 테스트 3일차 11-06 — 예약이 쌓일수록 전체 조회가 느려진다).
-export async function fetchMyBookings(): Promise<Booking[]> {
-  const res = await authorizedFetch('/api/bookings/me')
-  const data = await parseJsonResponse<{ bookings: Booking[] }>(res)
-  return data.bookings
+// 내 예약 목록 한 페이지 크기
+export const MY_LIST_PAGE_SIZE = 20
+
+// api-gateway(GET /api/bookings/me?page=&size=) -> booking-service(gRPC)로 로그인한 사용자 본인의 예약 목록을
+// 한 페이지씩 조회한다 (최신순). 예전처럼 전체를 받지 않는다 (부하 테스트 3일차 11-06 — 예약이 쌓일수록 전체 조회가 느려진다).
+// 예약 하나·결제 대기만 필요한 화면은 아래 fetchMyBooking·fetchMyBookingsByStatus를 쓴다.
+export async function fetchMyBookingsPage(page: number): Promise<{ items: Booking[]; total: number }> {
+  const res = await authorizedFetch(`/api/bookings/me?page=${page}&size=${MY_LIST_PAGE_SIZE}`)
+  const data = await parseJsonResponse<{ bookings: Booking[]; total?: number }>(res)
+  return { items: data.bookings, total: data.total ?? data.bookings.length }
 }
 
 // GET /api/bookings/me/{reservationId} — 본인 예약 한 건. 없거나 남의 예약(404)·잘못된 번호(400)면 null
