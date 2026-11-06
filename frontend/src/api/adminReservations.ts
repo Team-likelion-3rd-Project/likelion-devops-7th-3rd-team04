@@ -97,6 +97,14 @@ export async function fetchLinkedBookings(rootReservationId: number): Promise<Ad
   return (await fetchAdminBookings({ linkedTo: rootReservationId })).bookings
 }
 
+// GET /api/bookings/{userId} (관리자 전용) - 그 회원의 예약. 지점 계정이면 서버가 자기 지점 예약만 돌려준다.
+// page 없이 부르므로 최신순 앞쪽 100건까지만 온다 (부하 테스트 11-06 상한)
+export async function fetchAdminUserBookings(userId: string | number): Promise<AdminBooking[]> {
+  const res = await authedFetch(`/api/bookings/${userId}`)
+  const data = await parseAdminResponse<{ bookings?: AdminBooking[] }>(res)
+  return data.bookings ?? []
+}
+
 // GET /api/payments/users/{userId}?reservationIds= (관리자 전용) - 회원의 결제 중 이 예약들의 결제 (결제 상태·금액·환불 시각).
 // 지금 페이지에 보이는 예약만 넘긴다 — 회원 결제 전체를 받지 않는다 (부하 테스트 11-06). 최대 100개
 export async function fetchAdminUserPayments(userId: number, reservationIds: number[]): Promise<Payment[]> {
