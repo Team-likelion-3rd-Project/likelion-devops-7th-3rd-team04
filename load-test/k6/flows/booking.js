@@ -71,7 +71,8 @@ export function booking(data) {
   const confirmedAt = Date.now();
   think();
 
-  const mine = get('/api/bookings/me', 'GET /bookings/me', 'write', token);
+  // 결제 성공 화면은 예약 단건으로 확정을 확인한다 (예전에는 목록 전체 — 부하 테스트 3일차 11-06)
+  const mine = get(`/api/bookings/me/${reservationId}`, 'GET /bookings/me/:id', 'write', token);
   check(mine, { 'C 내 예약 200': (r) => r.status === 200 });
 
   if (approved && Math.random() < data.confirmLagSample) {
@@ -79,19 +80,18 @@ export function booking(data) {
   }
 }
 
-// RESERVED 가 보일 때까지 /bookings/me 재조회 (kind: poll — SLO 제외). 해상도는 CONFIRM_LAG_POLL_SECONDS
+// RESERVED 가 보일 때까지 /bookings/me/:id 재조회 (kind: poll — SLO 제외). 해상도는 CONFIRM_LAG_POLL_SECONDS
 function measureConfirmLag(token, reservationId, confirmedAt, firstRes) {
   let res = firstRes;
   for (let i = 0; i <= CONFIRM_LAG_MAX_POLLS; i++) {
-    const body = json(res);
-    const found = body && body.bookings ? body.bookings.find((b) => b.reservationId === reservationId) : null;
+    const found = res.status === 200 ? json(res) : null;
     if (found && found.status === 'RESERVED') {
       bookingConfirmLag.add(Date.now() - confirmedAt);
       return;
     }
     if (i === CONFIRM_LAG_MAX_POLLS) break;
     sleep(CONFIRM_LAG_POLL_SECONDS);
-    res = get('/api/bookings/me', 'GET /bookings/me (poll)', 'poll', token);
+    res = get(`/api/bookings/me/${reservationId}`, 'GET /bookings/me/:id (poll)', 'poll', token);
   }
   bookingConfirmTimeout.add(1);
 }
