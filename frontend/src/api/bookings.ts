@@ -54,14 +54,9 @@ export async function createBooking(payload: CreateBookingRequest, idempotencyKe
   return parseJsonResponse<Booking>(res)
 }
 
-// GET /api/bookings/me — 로그인한 사용자 본인의 예약 목록을 조회한다 (인증 필요).
-// 예약완료 페이지를 새로고침하거나 직접 접근했을 때(전달받은 state가 없을 때) 예약 정보를 다시
-// 조회하는 용도로 쓴다 — 단건 조회 API가 따로 없어 목록에서 reservationId로 찾아 쓴다.
-export async function fetchMyBookings(): Promise<Booking[]> {
-  const res = await authorizedFetch('/api/bookings/me')
-  const data = await parseJsonResponse<{ bookings: Booking[] }>(res)
-  return data.bookings
-}
+// GET /api/bookings/me/{reservationId} — 본인 예약 한 건 (없으면 null). 예약완료 페이지를 새로고침하거나
+// 직접 접근했을 때(전달받은 state가 없을 때) 쓴다. 목록 전체 조회는 gateway.ts의 fetchMyBookings.
+export { fetchMyBooking } from './gateway'
 
 // GET /api/bookings/{reservationId}/facilities — 해당 예약에 연결된 편의시설(수영장/라운지 등)
 // 이용 내역을 조회한다 (인증 필요, 본인 예약이 아니면 403).

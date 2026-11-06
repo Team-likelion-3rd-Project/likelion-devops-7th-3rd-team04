@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
   cancelBooking,
-  fetchMyBookings,
+  fetchMyBookingsByStatus,
   isUnauthorized,
   refreshAccessToken,
   type Booking,
@@ -142,9 +142,14 @@ function BookCard({ action }: { action: ChatAction }) {
 
 type LoadState = 'loading' | 'ready' | 'error' | 'unauthorized'
 
-// 본인 예약 + roomId -> {호텔, 객실} 맵을 불러온다. 새로고침 직후엔 액세스 토큰이 메모리에 없을 수 있어
+// 카드별로 서버에서 받아 올 예약 상태 (모듈 상수 — useMyBookings의 effect가 렌더마다 다시 돌지 않게)
+const PAY_STATUSES: Booking['status'][] = ['PENDING_PAYMENT']
+const CANCEL_STATUSES: Booking['status'][] = ['PENDING_PAYMENT', 'RESERVED']
+
+// 본인 예약 중 statuses 상태만 + roomId -> {호텔, 객실} 맵을 불러온다. 카드에 필요한 상태만 서버에서 거른다
+// (예약 내역 전체를 받지 않는다 — 부하 테스트 11-06). 새로고침 직후엔 액세스 토큰이 메모리에 없을 수 있어
 // 401이면 리프레시 토큰으로 한 번 재발급한 뒤 다시 조회한다(PaymentsPendingPage와 같은 방식).
-function useMyBookings() {
+function useMyBookings(statuses: Booking['status'][]) {
   const [bookings, setBookings] = useState<Booking[]>([])
   const [roomLookup, setRoomLookup] = useState<Map<number, RoomWithHotel>>(new Map())
   const [state, setState] = useState<LoadState>('loading')
@@ -154,11 +159,11 @@ function useMyBookings() {
 
     const loadBookings = async () => {
       try {
-        return await fetchMyBookings()
+        return await fetchMyBookingsByStatus(statuses)
       } catch (err) {
         if (!isUnauthorized(err)) throw err
         await refreshAccessToken()
-        return fetchMyBookings()
+        return fetchMyBookingsByStatus(statuses)
       }
     }
 
@@ -176,7 +181,7 @@ function useMyBookings() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [statuses])
 
   return { bookings, setBookings, roomLookup, state }
 }
@@ -217,7 +222,7 @@ function LoadStatus({ state }: { state: LoadState }) {
 
 function PayCard() {
   const navigate = useNavigate()
-  const { bookings, setBookings, roomLookup, state } = useMyBookings()
+  const { bookings, setBookings, roomLookup, state } = useMyBookings(PAY_STATUSES)
   const [paying, setPaying] = useState<Booking | null>(null)
 
   const pending = bookings.filter((b) => b.status === 'PENDING_PAYMENT')
@@ -282,7 +287,7 @@ function PayCard() {
 
 function CancelCard() {
   const navigate = useNavigate()
-  const { bookings, setBookings, roomLookup, state } = useMyBookings()
+  const { bookings, setBookings, roomLookup, state } = useMyBookings(CANCEL_STATUSES)
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const [submittingId, setSubmittingId] = useState<number | null>(null)
   const [cancelledIds, setCancelledIds] = useState<number[]>([])
