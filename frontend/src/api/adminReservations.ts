@@ -39,6 +39,8 @@ export interface AdminCreateBookingRequest {
   guestCount: number
   poolGuestCount?: number
   loungeGuestCount?: number
+  poolChildGuestCount?: number
+  loungeChildGuestCount?: number
 }
 
 // 오류 코드별 안내 (#172 에러 코드 + 좌형님 정리). 서버 message보다 먼저 보여준다 — 직원이 다음에 할 일을 알 수 있게.
