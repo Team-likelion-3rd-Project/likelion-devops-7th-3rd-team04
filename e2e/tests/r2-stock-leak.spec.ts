@@ -23,10 +23,6 @@ async function remainingCount(page: Page, roomId: string, date: string): Promise
 }
 
 test('R2: 편의시설 단계에서 예약이 실패하면 남은 객실 수가 그대로여야 한다', async ({ page }) => {
-  // 알려진 버그 (2026-11-05 확인: 3/3회 남은 객실 5 → 4, 화면은 503 "예약 서비스에 연결할 수 없습니다").
-  // 고쳐지면 이 테스트가 통과하면서 빨간불이 켜진다 → 그때 이 줄을 지운다.
-  test.fail(true, '재고 차감 뒤 예약이 실패해도 재고를 되돌리지 않는다')
-
   await signUp(page)
   await goToOptions(page)
 

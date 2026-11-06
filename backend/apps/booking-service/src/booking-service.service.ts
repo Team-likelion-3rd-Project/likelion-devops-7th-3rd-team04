@@ -355,6 +355,53 @@ export class BookingServiceService implements OnModuleInit {
       );
     }
 
+    // 편의시설은 재고를 차감하기 전에 확인한다 (LDP-239). 차감 뒤에 확인하면 여기서 실패할 때
+    // 줄인 재고가 그대로 남는다 — 예약 행이 없어 만료 배치도 돌려주지 못한다.
+    const facilitySelections = [
+      { name: FACILITY_NAME_INDOOR_POOL, guestCount: data.poolGuestCount ?? 0 },
+      { name: FACILITY_NAME_LOUNGE, guestCount: data.loungeGuestCount ?? 0 },
+    ].filter((selection) => selection.guestCount > 0);
+
+    let facilityAmount = 0;
+    const reservationFacilityInputs: {
+      facilityId: number;
+      facilityName: string;
+      guestCount: number;
+      totalAmount: number;
+    }[] = [];
+
+    if (facilitySelections.length > 0) {
+      const { facilities } = await firstValueFrom(
+        this.hotelService.getFacilities({ hotelId: data.hotelId }),
+      ).catch(() => {
+        throw fail(
+          503,
+          'HOTEL_SERVICE_UNAVAILABLE',
+          '편의시설 정보를 확인할 수 없습니다.',
+          true,
+        );
+      });
+
+      for (const selection of facilitySelections) {
+        const facility = facilities.find((f) => f.name === selection.name);
+        if (!facility) {
+          throw fail(
+            409,
+            'FACILITY_NOT_AVAILABLE',
+            `해당 호텔에 등록되지 않은 편의시설입니다: ${selection.name}`,
+          );
+        }
+        const amount = facility.price * selection.guestCount;
+        facilityAmount += amount;
+        reservationFacilityInputs.push({
+          facilityId: facility.facilityId,
+          facilityName: facility.name,
+          guestCount: selection.guestCount,
+          totalAmount: amount,
+        });
+      }
+    }
+
     const lastNightDate = addDays(data.checkOutDate, -1);
 
     const { totalAmount: roomAmount } = await firstValueFrom(
@@ -388,50 +435,7 @@ export class BookingServiceService implements OnModuleInit {
       );
     });
 
-    const facilitySelections = [
-      { name: FACILITY_NAME_INDOOR_POOL, guestCount: data.poolGuestCount ?? 0 },
-      { name: FACILITY_NAME_LOUNGE, guestCount: data.loungeGuestCount ?? 0 },
-    ].filter((selection) => selection.guestCount > 0);
-
-    let totalAmount = roomAmount;
-    const reservationFacilityInputs: {
-      facilityId: number;
-      facilityName: string;
-      guestCount: number;
-      totalAmount: number;
-    }[] = [];
-
-    if (facilitySelections.length > 0) {
-      const { facilities } = await firstValueFrom(
-        this.hotelService.getFacilities({ hotelId: data.hotelId }),
-      ).catch(() => {
-        throw fail(
-          503,
-          'HOTEL_SERVICE_UNAVAILABLE',
-          '편의시설 정보를 확인할 수 없습니다.',
-          true,
-        );
-      });
-
-      for (const selection of facilitySelections) {
-        const facility = facilities.find((f) => f.name === selection.name);
-        if (!facility) {
-          throw fail(
-            409,
-            'FACILITY_NOT_AVAILABLE',
-            `해당 호텔에 등록되지 않은 편의시설입니다: ${selection.name}`,
-          );
-        }
-        const facilityAmount = facility.price * selection.guestCount;
-        totalAmount += facilityAmount;
-        reservationFacilityInputs.push({
-          facilityId: facility.facilityId,
-          facilityName: facility.name,
-          guestCount: selection.guestCount,
-          totalAmount: facilityAmount,
-        });
-      }
-    }
+    const totalAmount = roomAmount + facilityAmount;
 
     const reservation = this.reservationRepository.create({
       userId: data.userId,
@@ -453,7 +457,15 @@ export class BookingServiceService implements OnModuleInit {
       createdByAdminId: admin?.createdByAdminId ?? null,
       createdByAdminName: admin?.createdByAdminName ?? null,
     });
-    const saved = await this.reservationRepository.save(reservation);
+    // 재고는 이미 차감했다 — 예약을 저장하지 못하면 차감한 재고를 돌려놓고 원래 오류를 그대로 던진다 (LDP-239).
+    // 저장 뒤의 실패(편의시설 내역 등)는 예약 행이 있으므로 만료 배치가 재고를 돌려준다.
+    let saved: Reservation;
+    try {
+      saved = await this.reservationRepository.save(reservation);
+    } catch (error) {
+      await this.releaseRoomAvailability(reservation, '예약 저장 실패');
+      throw error;
+    }
 
     for (const input of reservationFacilityInputs) {
       await this.reservationFacilityService.createReservationFacility({
@@ -1322,8 +1334,12 @@ export class BookingServiceService implements OnModuleInit {
         }),
       );
     } catch (error) {
+      // 저장 전 예약(LDP-239)은 예약번호가 없어 객실·날짜로 남긴다 — 수동 복구할 때 찾을 수 있게
+      const target = reservation.reservationId
+        ? `예약(#${reservation.reservationId})`
+        : `저장 전 예약(roomId=${reservation.roomId}, ${reservation.checkInDate}~${reservation.checkOutDate})`;
       this.logger.error(
-        `예약(#${reservation.reservationId}) ${reason} 후 room_availabilities 복구 요청 실패`,
+        `[알람] ${target} ${reason} 후 room_availabilities 복구 요청 실패 — 재고 수동 확인 필요`,
         errorTrace(error),
       );
     }
