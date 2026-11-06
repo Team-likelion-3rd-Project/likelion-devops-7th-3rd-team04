@@ -37,6 +37,7 @@ export interface UserPaymentListQuery {
   reservationId?: number;
   page?: number;
   size?: number;
+  reservationIds?: number[];
 }
 
 // proto의 ApprovePaymentResponse와 1:1 대응
@@ -498,17 +499,20 @@ export class PaymentServiceService {
 
   // 특정 유저의 결제 목록 조회. /me(본인 조회)와 /{userId}(관리자 조회) 양쪽에서 재사용된다.
   // reservationId를 주면 그 예약의 결제만 — 실패·재시도 결제까지 여러 건일 수 있어 목록으로 돌려준다 (환불 상태 표시용).
+  // reservationIds를 주면 그 예약들의 결제만 (관리자 화면이 지금 페이지의 예약만 · 지점 범위). 둘 다 주면 reservationId.
   // page가 1 이상이면 그 페이지만, 0이면 예전처럼 전체. total은 조건에 맞는 전체 개수.
   async getPaymentsByUserId(
     query: UserPaymentListQuery,
   ): Promise<{ payments: PaymentGrpcResponse[]; total: number }> {
     const page = query.page && query.page > 0 ? query.page : 0;
     const size = query.size && query.size > 0 ? query.size : 20;
+    const reservationFilter = query.reservationId
+      ? { reservationId: query.reservationId }
+      : query.reservationIds?.length
+        ? { reservationId: In(query.reservationIds) }
+        : {};
     const [payments, total] = await this.paymentRepository.findAndCount({
-      where: {
-        userId: query.userId,
-        ...(query.reservationId ? { reservationId: query.reservationId } : {}),
-      },
+      where: { userId: query.userId, ...reservationFilter },
       order: { paidAt: 'DESC', paymentId: 'DESC' },
       ...(page ? { skip: (page - 1) * size, take: size } : {}),
     });

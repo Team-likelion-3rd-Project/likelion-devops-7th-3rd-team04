@@ -10,7 +10,7 @@ import {
 } from './entities/payment.entity';
 import { PgMockClient } from './pg-mock/pg-mock.client';
 import { TossPaymentsClient } from './pg/toss-payments.client';
-import { DataSource, QueryFailedError } from 'typeorm';
+import { DataSource, In, QueryFailedError } from 'typeorm';
 import {
   PaymentOutbox,
   PaymentOutboxEventType,
@@ -460,6 +460,17 @@ describe('PaymentServiceService', () => {
         order: { paidAt: 'DESC', paymentId: 'DESC' },
         skip: 10,
         take: 10,
+      });
+    });
+
+    it('예약 여러 개를 주면 그 예약들의 결제만 (관리자 화면 · 지점 범위)', async () => {
+      findAndCountMock.mockResolvedValue([[], 0]);
+
+      await service.getPaymentsByUserId({ userId: 1, reservationIds: [3, 4] });
+
+      expect(findAndCountMock).toHaveBeenCalledWith({
+        where: { userId: 1, reservationId: In([3, 4]) },
+        order: { paidAt: 'DESC', paymentId: 'DESC' },
       });
     });
 

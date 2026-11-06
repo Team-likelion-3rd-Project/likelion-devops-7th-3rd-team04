@@ -3,10 +3,10 @@ import { Transform, Type } from 'class-transformer';
 import { IsArray, IsIn, IsInt, IsOptional, Max, Min } from 'class-validator';
 import { RESERVATION_STATUSES } from './admin-booking.dto';
 
-// GET /api/bookings/me 조건. 아무것도 주지 않으면 예전처럼 전체 목록 (부하 테스트 11-06 — 단계적으로 페이지 적용)
+// GET /api/bookings/me · 관리자 GET /api/bookings/{userId} 조건. 전체를 한 번에 돌려주지 않는다 (부하 테스트 11-06, list-page.ts)
 export class MyBookingListQueryDto {
   /**
-   * 페이지 (1부터). 생략하면 페이지를 나누지 않고 조건에 맞는 전체
+   * 페이지 (1부터). 생략하면 최신순 앞쪽 size건(기본·최대 100) — 더 있는지는 total로 안다
    * @example 1
    */
   @IsOptional()

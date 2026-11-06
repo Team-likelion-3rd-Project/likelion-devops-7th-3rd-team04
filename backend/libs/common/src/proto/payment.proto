@@ -80,6 +80,7 @@ message GetPaymentsByUserIdRequest {
   int32 reservationId = 2; // 0이 아니면 이 예약의 결제만 (실패·재시도 결제까지 여러 건일 수 있다)
   int32 page = 3; // 1부터. 0 = 페이지를 나누지 않고 전체
   int32 size = 4; // 한 페이지 개수 (page가 1 이상일 때, 기본 20)
+  repeated int32 reservationIds = 5; // 비어 있지 않으면 이 예약들의 결제만 (관리자 화면 · 지점 범위용)
 }
 
 message GetMyPaymentRequest {

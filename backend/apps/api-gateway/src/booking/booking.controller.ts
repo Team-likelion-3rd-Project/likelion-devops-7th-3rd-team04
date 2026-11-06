@@ -47,9 +47,7 @@ import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 import { AssignRoomUnitDto } from './dto/assign-room-unit.dto';
 import { MyBookingListQueryDto } from './dto/my-booking-list.dto';
 import { parseIdempotencyKey } from './idempotency-key';
-
-// 내 예약 목록 페이지 크기 기본값 (page를 줄 때만 쓰인다)
-const DEFAULT_PAGE_SIZE = 20;
+import { listPage } from '../list-page';
 
 // 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
 const BOOKING_UNAVAILABLE = {
@@ -235,12 +233,6 @@ export function toBookingLookupError(err: unknown): Error {
   });
 }
 
-function toBookings({ bookings = [] }: { bookings?: BookingDto[] }): {
-  bookings: BookingDto[];
-} {
-  return { bookings: bookings.map(toBooking) };
-}
-
 @ApiTags('BookingService')
 @ApiCommonResponses()
 @Controller('api/bookings')
@@ -286,7 +278,7 @@ export class BookingController implements OnModuleInit {
     summary: '내 예약 목록 조회',
     description:
       '유효한 액세스 토큰을 가진 사용자 본인의 예약 목록을 조회합니다. 최신순. ' +
-      'status(쉼표로 여러 개)로 상태를 거르고, page를 주면 그 페이지만 돌려줍니다. ' +
+      'status(쉼표로 여러 개)로 상태를 거르고, page를 주면 그 페이지만, 생략하면 최신순 앞쪽 100건까지 돌려줍니다. ' +
       'total은 조건에 맞는 전체 개수입니다 — 결제 대기 건수만 필요하면 status=PENDING_PAYMENT&page=1&size=1의 total을 씁니다.',
   })
   @ApiResponse({
@@ -302,8 +294,7 @@ export class BookingController implements OnModuleInit {
       this.bookingService.getBookingsByUserId({
         userId: user.userId,
         statuses: query.status ?? [],
-        page: query.page ?? 0,
-        size: query.size ?? DEFAULT_PAGE_SIZE,
+        ...listPage(query),
       }),
     ).catch((err) => {
       throw toBookingHttpError(err);
@@ -382,11 +373,12 @@ export class BookingController implements OnModuleInit {
   @ApiOperation({
     summary: '특정 유저 예약 목록 조회 (관리자 전용)',
     description:
-      '관리자 권한을 가진 사용자만 호출할 수 있습니다. userId로 특정 유저의 예약 목록을 조회합니다.',
+      '관리자 권한을 가진 사용자만 호출할 수 있습니다. userId로 특정 유저의 예약 목록을 조회합니다. ' +
+      'status(쉼표로 여러 개)로 상태를 거르고, page를 주면 그 페이지만, 생략하면 최신순 앞쪽 100건까지 돌려줍니다. 지점 관리자·직원에게는 자기 지점 예약만 돌려줍니다.',
   })
   @ApiResponse({
     status: 200,
-    description: '예약 목록 조회 성공',
+    description: '{ bookings, total }',
   })
   @ApiResponse({
     status: 403,
@@ -395,19 +387,20 @@ export class BookingController implements OnModuleInit {
   async getBookingsByUserId(
     @CurrentUser() admin: AuthenticatedUser,
     @Param('userId', ParseIntPipe) userId: number,
-  ): Promise<{ bookings: BookingDto[] }> {
-    const result = toBookings(
-      await firstValueFrom(this.bookingService.getBookingsByUserId({ userId })),
-    );
-    // 지점 관리자·직원에게는 자기 지점 예약만 (LDP-178)
-    const scope = adminHotelScope(admin);
-    return scope === null
-      ? result
-      : {
-          bookings: result.bookings.filter(
-            (booking) => booking.hotelId === scope,
-          ),
-        };
+    @Query() query: MyBookingListQueryDto = {},
+  ): Promise<{ bookings: BookingDto[]; total: number }> {
+    // 지점 관리자·직원에게는 자기 지점 예약만 (LDP-178) — booking-service 조회 조건으로 넘겨 페이지·total이 맞게
+    const { bookings = [], total = 0 } = await firstValueFrom(
+      this.bookingService.getBookingsByUserId({
+        userId,
+        hotelId: adminHotelScope(admin) ?? 0,
+        statuses: query.status ?? [],
+        ...listPage(query),
+      }),
+    ).catch((err) => {
+      throw toBookingHttpError(err);
+    });
+    return { bookings: bookings.map(toBooking), total };
   }
 
   /**

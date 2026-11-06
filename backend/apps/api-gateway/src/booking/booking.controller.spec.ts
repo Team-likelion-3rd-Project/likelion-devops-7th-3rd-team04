@@ -95,7 +95,7 @@ describe('BookingController', () => {
   });
 
   describe('getMyBookings', () => {
-    it('조건이 없으면 예전처럼 전체(page 0)를 돌려준다', async () => {
+    it('page 없이 부르면 전체가 아니라 최신순 앞쪽 100건 (11-06 상한)', async () => {
       getBookingsByUserId.mockReturnValue(of({ bookings: [] }));
 
       expect(await controller.getMyBookings(user)).toEqual({
@@ -105,8 +105,8 @@ describe('BookingController', () => {
       expect(getBookingsByUserId).toHaveBeenCalledWith({
         userId: 10,
         statuses: [],
-        page: 0,
-        size: 20,
+        page: 1,
+        size: 100,
       });
     });
 
@@ -142,6 +142,41 @@ describe('BookingController', () => {
 
       expect((await responseOf(controller.getMyBookings(user))).status).toBe(
         503,
+      );
+    });
+  });
+
+  // 관리자 회원 예약 조회 — 지점 범위를 booking-service 조회 조건으로 (부하 테스트 11-06)
+  describe('getBookingsByUserId (관리자)', () => {
+    it('본사 관리자는 전 지점, 조건 · 페이지를 넘긴다', async () => {
+      getBookingsByUserId.mockReturnValue(of({ bookings: [], total: 3 }));
+
+      const result = await controller.getBookingsByUserId(
+        { userId: 1 } as AuthenticatedUser,
+        7,
+        { page: 2, size: 10 },
+      );
+
+      expect(getBookingsByUserId).toHaveBeenCalledWith({
+        userId: 7,
+        hotelId: 0,
+        statuses: [],
+        page: 2,
+        size: 10,
+      });
+      expect(result.total).toBe(3);
+    });
+
+    it('지점 관리자는 자기 지점만 조회 조건으로 넘긴다', async () => {
+      getBookingsByUserId.mockReturnValue(of({ bookings: [] }));
+
+      await controller.getBookingsByUserId(
+        { userId: 2, adminRole: 'MANAGER', hotelId: 3 } as AuthenticatedUser,
+        7,
+      );
+
+      expect(getBookingsByUserId).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 7, hotelId: 3 }),
       );
     });
   });

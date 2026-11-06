@@ -40,10 +40,11 @@ import {
 } from '@app/common';
 import { toBookingLookupError } from '../booking/booking.controller';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
-import { MyPaymentListQueryDto } from './dto/my-payment-list.dto';
-
-// 내 결제 목록 페이지 크기 기본값 (page를 줄 때만 쓰인다)
-const DEFAULT_PAGE_SIZE = 20;
+import {
+  AdminUserPaymentListQueryDto,
+  MyPaymentListQueryDto,
+} from './dto/my-payment-list.dto';
+import { listPage } from '../list-page';
 
 // 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
 const PAYMENT_UNAVAILABLE = {
@@ -92,6 +93,7 @@ interface PaymentService {
     reservationId?: number;
     page?: number;
     size?: number;
+    reservationIds?: number[];
   }): Observable<{ payments?: PaymentDto[]; total?: number }>;
   getMyPayment(data: {
     userId: number;
@@ -106,6 +108,7 @@ interface BookingLookupService {
   }): Observable<{ hotelId: number }>;
   getBookingsByUserId(data: {
     userId: number;
+    hotelId?: number;
   }): Observable<{ bookings?: { reservationId: number; hotelId: number }[] }>;
 }
 
@@ -226,8 +229,7 @@ export class PaymentController implements OnModuleInit {
       this.paymentService.getPaymentsByUserId({
         userId: user.userId,
         reservationId: query.reservationId ?? 0,
-        page: query.page ?? 0,
-        size: query.size ?? DEFAULT_PAGE_SIZE,
+        ...listPage(query),
       }),
     ).catch((err) => {
       throw grpcErrorToHttp(err, {
@@ -290,37 +292,48 @@ export class PaymentController implements OnModuleInit {
   @ApiOperation({
     summary: '특정 유저 결제 목록 조회 (관리자 전용)',
     description:
-      '관리자 권한을 가진 사용자만 호출할 수 있습니다. userId로 특정 유저의 결제 목록을 조회합니다.',
+      '관리자 권한을 가진 사용자만 호출할 수 있습니다. userId로 특정 유저의 결제 목록을 조회합니다. ' +
+      'reservationIds로 예약을 고르고, page를 주면 그 페이지만, 생략하면 최신순 앞쪽 100건까지 돌려줍니다. total은 조건에 맞는 전체 개수입니다.',
   })
-  @ApiResponse({ status: 200, description: '결제 목록 조회 성공' })
+  @ApiResponse({ status: 200, description: '{ payments, total }' })
   @ApiResponse({ status: 403, description: '관리자 권한이 없음' })
   async getPaymentsByUserId(
     @CurrentUser() admin: AuthenticatedUser,
     @Param('userId', ParseIntPipe) userId: number,
-  ): Promise<{ payments: PaymentDto[] }> {
-    const result = await firstValueFrom(
-      this.paymentService.getPaymentsByUserId({ userId }),
-    );
-    // 지점 관리자·직원에게는 자기 지점 예약의 결제만 (LDP-178). 결제에는 지점이 없어 회원의 예약으로 거른다
+    @Query() query: AdminUserPaymentListQueryDto = {},
+  ): Promise<{ payments: PaymentDto[]; total: number }> {
+    let reservationIds = query.reservationIds ?? [];
+    // 지점 관리자·직원에게는 자기 지점 예약의 결제만 (LDP-178). 결제에는 지점이 없어 회원의 예약으로 거른다 —
+    // 예약 전체를 받아 gateway에서 거르지 않고, 그 지점 예약 번호만 받아 결제 조회 조건으로 넘긴다 (부하 테스트 11-06)
     const scope = adminHotelScope(admin);
-    if (scope === null) {
-      return { payments: result.payments ?? [] };
+    if (scope !== null) {
+      const { bookings = [] } = await firstValueFrom(
+        this.bookingService.getBookingsByUserId({ userId, hotelId: scope }),
+      ).catch((err) => {
+        throw toBookingLookupError(err);
+      });
+      const scoped = bookings.map((booking) => booking.reservationId);
+      reservationIds =
+        reservationIds.length > 0
+          ? reservationIds.filter((id) => scoped.includes(id))
+          : scoped;
+      if (reservationIds.length === 0) {
+        return { payments: [], total: 0 };
+      }
     }
-    const { bookings = [] } = await firstValueFrom(
-      this.bookingService.getBookingsByUserId({ userId }),
+    const { payments = [], total = 0 } = await firstValueFrom(
+      this.paymentService.getPaymentsByUserId({
+        userId,
+        reservationIds,
+        ...listPage(query),
+      }),
     ).catch((err) => {
-      throw toBookingLookupError(err);
+      throw grpcErrorToHttp(err, {
+        code: 'PAYMENT_SERVICE_UNAVAILABLE',
+        message: '결제 내역을 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.',
+      });
     });
-    const reservationIds = new Set(
-      bookings
-        .filter((booking) => booking.hotelId === scope)
-        .map((booking) => booking.reservationId),
-    );
-    return {
-      payments: (result.payments ?? []).filter((payment) =>
-        reservationIds.has(payment.reservationId),
-      ),
-    };
+    return { payments, total };
   }
 
   /**
