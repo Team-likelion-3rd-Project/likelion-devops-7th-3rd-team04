@@ -12,6 +12,7 @@ import { CalendarIcon, PersonIcon, PinIcon, RefreshIcon } from '../components/re
 import { addDays, diffDays, formatDate, formatDateISO, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { parseReservationSearchParams, toReservationSearchParams } from '../utils/reservationQuery'
 import { currentLoginState } from '../utils/loginRedirect'
+import { bookingIdempotencyKey, clearBookingIdempotencyKey } from '../utils/bookingIdempotency'
 import './ReservationOptionsPage.css'
 
 type LoadStatus = 'loading' | 'success' | 'error'
@@ -147,16 +148,21 @@ function ReservationOptionsPage() {
 
     setBookingStatus('submitting')
     setBookingError('')
+    // 503 등으로 실패한 뒤 다시 누르면 같은 키가 나간다 → 서버가 이미 만든 예약을 돌려준다 (LDP-240)
+    const conditions = {
+      roomId,
+      checkInDate: formatDateISO(search.checkIn),
+      checkOutDate: formatDateISO(search.checkOut),
+      guestCount: totalGuests,
+      poolGuestCount: optionCounts.pool ?? 0,
+      loungeGuestCount: optionCounts.lounge ?? 0,
+    }
     try {
-      const booking = await createBooking({
-        roomId,
-        hotelId: hotel.hotelId,
-        checkInDate: formatDateISO(search.checkIn),
-        checkOutDate: formatDateISO(search.checkOut),
-        guestCount: totalGuests,
-        poolGuestCount: optionCounts.pool ?? 0,
-        loungeGuestCount: optionCounts.lounge ?? 0,
-      })
+      const booking = await createBooking(
+        { ...conditions, hotelId: hotel.hotelId },
+        bookingIdempotencyKey(conditions),
+      )
+      clearBookingIdempotencyKey(conditions)
       // 예약 완료 페이지로 이동하면서, 이미 가진 정보(호텔/객실/투숙인원)를 함께 실어 보내
       // 완료 페이지가 다시 조회하지 않고도 바로 렌더링할 수 있게 한다.
       navigate(`/reservation/complete/${booking.reservationId}`, {
