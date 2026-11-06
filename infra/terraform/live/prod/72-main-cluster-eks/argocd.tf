@@ -32,8 +32,10 @@ resource "helm_release" "argocd" {
     sync_timeout_seconds = var.argocd_sync_timeout_seconds
   })]
 
+  # ArgoCD 는 platform 노드에만 뜬다 (argocd-values nodeSelector · tolerations)
   depends_on = [
     aws_eks_access_policy_association.admin,
+    aws_eks_node_group.platform,
     aws_eks_addon.coredns,
     aws_eks_pod_identity_association.app,
     aws_eks_pod_identity_association.lb_controller,

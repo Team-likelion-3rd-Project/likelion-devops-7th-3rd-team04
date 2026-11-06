@@ -54,6 +54,9 @@ spec:
         - maxSkew: {{ $.Values.topologySpread.maxSkew }}
           topologyKey: {{ $.Values.topologySpread.topologyKey }}
           whenUnsatisfiable: {{ $.Values.topologySpread.whenUnsatisfiable }}
+          {{- with $.Values.topologySpread.nodeTaintsPolicy }}
+          nodeTaintsPolicy: {{ . }}
+          {{- end }}
           labelSelector:
             matchLabels:
               {{- include "backend.selectorLabels" $ctx | nindent 14 }}

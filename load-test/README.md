@@ -226,8 +226,8 @@ load-test/scripts/export-prometheus.sh <시작 UTC> <끝 UTC> <이름>          
 ```
 
 - **테스트 날은 `run --all apply` · `73` apply 마다 `TF_VAR_enable_load_generator=true` 를 같이 준다.** 빼고 apply 하면 테스트 중에 생성기 · EIP 가 삭제되고 WAF 예외도 비워진다. 터미널에 export 해 두는 것을 권장한다
-- 노드 수: 평소 2대, Cluster Autoscaler 가 Pending Pod 를 보고 최대 4대까지 늘린다 (`72` `node_min_size` ~ `node_max_size`). `node_desired_size` 는 노드 그룹을 처음 만들 때만 쓰이고 이후 apply 는 노드 수를 바꾸지 않는다 (`ignore_changes`)
-- 노드 수를 고정해야 하는 측정은 `72` 를 `TF_VAR_node_min_size=N TF_VAR_node_max_size=N` 으로 apply 한다. **노드 수가 바뀌면 그 위의 Pod 가 옮겨지고, Prometheus 가 옮겨지면 그날 지표가 사라진다** (저장소 emptyDir). 바꾸기 전에 Grafana 스냅샷 · 필요한 지표를 먼저 남긴다
+- 노드: platform 1대 고정(운영 도구 · 챗봇) + 가용 영역별 앱 노드 그룹 `app-a` · `app-b`. Cluster Autoscaler 가 Pending Pod 를 보고 영역당 1–3대(`72` `app_node_min_per_az` ~ `app_node_max_per_az`) 안에서 늘리고, 두 영역을 비슷하게 맞춘다. `app_node_desired_per_az` 는 노드 그룹을 처음 만들 때만 쓰이고 이후 apply 는 노드 수를 바꾸지 않는다 (`ignore_changes`)
+- 노드 수를 고정해야 하는 측정은 `72` 를 `TF_VAR_app_node_min_per_az=N TF_VAR_app_node_max_per_az=N` 으로 apply 한다 (영역당 값). min 을 지금 desired 보다 크게(max 를 작게) 바꾸면 EKS 가 거절하므로 `eks update-nodegroup-config` 로 desired 를 먼저 맞춘다. Prometheus 는 EBS(PVC)라 노드가 바뀌어도 지표가 남는다 (LDP-248). 측정 묶음마다 `export-prometheus.sh` 로 내보내는 절차는 그대로 둔다
 - 기준선은 평소 구성(노드 2대 · main values)에서 먼저 잰다. 노드 4대 고정 결과는 피크 상한으로만 쓴다
 - 결제는 테스트 브랜치로 바뀌지 않는다. 결제 서버는 SSM `/team04-hotel/prod/payment/release` 를 읽고, 이 파라미터는 gitops main 이 바뀔 때만 갱신된다. 테스트 시작 전 `PAYMENT_PROVIDER` 를 `MOCK` 으로 바꾸고(k6 의 mock 결제 키는 TOSS 에서 전부 거절됨), **끝나면 `TOSS` 로 되돌린다** (`11-registry` 소속이라 destroy 해도 남는다)
 - 하루 테스트로 가까운 날짜(14일 이내) 재고가 빠르게 찬다 (11-04: stress · load 7회에 81%). 매진 비율이 1% 를 넘으면 결과가 무효이므로 측정 사이에 확인한다
