@@ -69,7 +69,8 @@ test('R7(현재 동작 기록): Retry-After가 30초보다 길면 기다리지 �
   // 프론트 대기 예산은 30초라 이 경우 재시도 없이 바로 오류 화면이 된다 → 발견 목록 2번의 근거.
   await signUp(page)
   let calls = 0
-  await page.route('**/api/bookings/me', async (route) => {
+  // 예약 내역은 페이지 조회(?page=), 마이페이지 배지는 상태 조회(?status=)라 쿼리가 붙은 목록 요청을 모두 막는다
+  await page.route(/\/api\/bookings\/me(\?|$)/, async (route) => {
     calls += 1
     await route.fulfill({ ...THROTTLED, headers: { 'Retry-After': '57' } })
   })

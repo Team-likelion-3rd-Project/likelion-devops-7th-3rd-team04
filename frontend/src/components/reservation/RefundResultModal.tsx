@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { fetchMyPayments, type Payment } from '../../api/payments'
+import { fetchMyPaymentsByReservation, type Payment } from '../../api/payments'
 import { PAYMENT_METHOD_LABEL, findRefundPayment, formatPaidAt, isRefundAboutToChange } from '../../utils/payment'
 import { CheckIcon } from './icons'
 import '../../pages/MyPage.css'
@@ -19,7 +19,7 @@ type View =
   | { kind: 'manual'; payment: Payment } // 자동 환불을 멈춤 (REFUND_MANUAL_REQUIRED) — 문의 안내
 
 // 예약 취소 직후 띄우는 환불 결과 창 (LDP-139). 결제 결과 화면(PaymentSuccessPage)과 같은 카드 모양으로
-// "환불 처리 중 → 환불이 완료되었습니다" 흐름을 보여준다. 결과는 내 결제 목록(GET /api/payments/me)에서 확인한다.
+// "환불 처리 중 → 환불이 완료되었습니다" 흐름을 보여준다. 결과는 이 예약의 내 결제(GET /api/payments/me?reservationId=)에서 확인한다.
 function RefundResultModal({ reservationId, onClose }: { reservationId: number; onClose: () => void }) {
   const [view, setView] = useState<View>({ kind: 'checking' })
 
@@ -32,7 +32,7 @@ function RefundResultModal({ reservationId, onClose }: { reservationId: number; 
       polls++
       let payment: Payment | null
       try {
-        payment = findRefundPayment(await fetchMyPayments(), reservationId)
+        payment = findRefundPayment(await fetchMyPaymentsByReservation(reservationId), reservationId)
       } catch {
         // 조회만 실패한 것 — 취소는 끝났으므로 다시 확인해 보고, 끝내 안 되면 내역에서 확인하게 한다
         if (cancelled) return

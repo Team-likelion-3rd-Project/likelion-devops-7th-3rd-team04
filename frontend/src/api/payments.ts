@@ -1,7 +1,6 @@
-import { ApiError, authorizedFetch, fetchMyBookings as fetchMyGatewayBookings, parseJsonResponse } from './gateway'
+import { ApiError, MY_LIST_PAGE_SIZE, authorizedFetch, fetchMyBooking, parseJsonResponse } from './gateway'
 import type { Booking } from './gateway'
 import { displayableServerMessage, httpFallbackMessage } from './apiError'
-import { fetchMyBookings } from './bookings'
 
 // proto의 Payment 메시지 / gateway PaymentDto와 1:1 대응
 export interface Payment {
@@ -19,10 +18,30 @@ export interface Payment {
   refundedAt?: string
 }
 
-// GET /api/payments/me — 로그인한 사용자 본인의 결제 목록을 조회한다 (인증 필요).
-// payment-service가 paidAt 최신순으로 정렬해서 내려준다.
-export async function fetchMyPayments(): Promise<Payment[]> {
-  const res = await authorizedFetch('/api/payments/me')
+// GET /api/payments/me?page=&size= — 로그인한 사용자 본인의 결제 목록 한 페이지 (인증 필요).
+// payment-service가 paidAt 최신순으로 정렬해서 내려준다. 예전처럼 전체를 받지 않는다 (부하 테스트 3일차 11-06).
+export async function fetchMyPaymentsPage(page: number): Promise<{ items: Payment[]; total: number }> {
+  const res = await authorizedFetch(`/api/payments/me?page=${page}&size=${MY_LIST_PAGE_SIZE}`)
+  const data = await parseJsonResponse<{ payments: Payment[]; total?: number }>(res)
+  return { items: data.payments, total: data.total ?? data.payments.length }
+}
+
+// GET /api/payments/me/{paymentId} — 본인 결제 한 건. 없거나 남의 결제(404)·잘못된 번호(400)면 null
+// (부하 테스트 3일차 11-06 — 결제 상세가 목록 전체를 받아 찾던 것을 대신한다).
+export async function fetchMyPayment(paymentId: number | string): Promise<Payment | null> {
+  if (!/^\d+$/.test(String(paymentId))) return null
+  try {
+    const res = await authorizedFetch(`/api/payments/me/${paymentId}`)
+    return await parseJsonResponse<Payment>(res)
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 404 || err.status === 400)) return null
+    throw err
+  }
+}
+
+// GET /api/payments/me?reservationId= — 이 예약의 내 결제들 (실패·재시도 결제까지 여러 건일 수 있다). 환불 상태 표시용.
+export async function fetchMyPaymentsByReservation(reservationId: number): Promise<Payment[]> {
+  const res = await authorizedFetch(`/api/payments/me?reservationId=${reservationId}`)
   const data = await parseJsonResponse<{ payments: Payment[] }>(res)
   return data.payments
 }
@@ -217,19 +236,19 @@ export function formatPaymentDue(paymentDueAt?: string, now = Date.now()): strin
 
 // 결제하기를 누른 순간의 최신 예약 상태. 화면이 들고 있는 예약 정보는 오래됐을 수 있어서
 // (다른 탭에서 승인을 요청했거나 화면을 오래 켜 둔 경우) 결제 준비 직전에 한 번 더 확인한다.
-// 목록에 없거나 조회에 실패하면 null — 이때는 서버의 결제 준비 검증에 맡긴다.
+// 없거나 조회에 실패하면 null — 이때는 서버의 결제 준비 검증에 맡긴다.
 export async function fetchLatestBooking(reservationId: number): Promise<Booking | null> {
   if (IS_PAYMENT_FAKE) return null
   try {
-    const bookings = await fetchMyGatewayBookings()
-    return bookings.find((b) => b.reservationId === reservationId) ?? null
+    return await fetchMyBooking(reservationId)
   } catch {
     return null
   }
 }
 
 // 결과 다시 확인 (1초 간격으로 호출).
-// 내 예약 목록(GET /api/bookings/me)에서 해당 예약 상태를 본다. 결제 결과는 결제 서버 → SQS → booking-service로
+// 내 예약 단건(GET /api/bookings/me/{reservationId})으로 해당 예약 상태를 본다 — 목록 전체를
+// 1초마다 받지 않는다 (부하 테스트 11-06). 결제 결과는 결제 서버 → SQS → booking-service로
 // 비동기 전달되므로, 승인(APPROVED) 응답을 받은 뒤에도 예약이 RESERVED로 바뀌었는지 여기서 확인한다 (명세 5.9).
 export type PaymentProgress = 'APPROVED' | 'FAILED' | 'PENDING'
 
@@ -242,8 +261,7 @@ export async function fetchPaymentProgress(reservationId: number): Promise<Payme
     return 'PENDING'
   }
 
-  const bookings = await fetchMyBookings()
-  const booking = bookings.find((b) => b.reservationId === reservationId)
+  const booking = await fetchMyBooking(reservationId)
   if (booking?.status === 'RESERVED') return 'APPROVED'
   if (booking?.status === 'PAYMENT_FAILED' || booking?.status === 'EXPIRED') return 'FAILED'
   return 'PENDING'

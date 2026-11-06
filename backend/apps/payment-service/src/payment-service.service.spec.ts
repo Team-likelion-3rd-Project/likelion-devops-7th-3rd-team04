@@ -1,4 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { RpcException } from '@nestjs/microservices';
+import { status as GrpcStatus } from '@grpc/grpc-js';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { PaymentServiceService } from './payment-service.service';
 import {
@@ -8,7 +10,7 @@ import {
 } from './entities/payment.entity';
 import { PgMockClient } from './pg-mock/pg-mock.client';
 import { TossPaymentsClient } from './pg/toss-payments.client';
-import { DataSource, QueryFailedError } from 'typeorm';
+import { DataSource, In, QueryFailedError } from 'typeorm';
 import {
   PaymentOutbox,
   PaymentOutboxEventType,
@@ -19,6 +21,7 @@ describe('PaymentServiceService', () => {
 
   const cancelMock = jest.fn();
   const findOneMock = jest.fn();
+  const findAndCountMock = jest.fn();
   const createMock = jest.fn();
   const saveMock = jest.fn();
   const pgMockConfirmMock = jest.fn();
@@ -41,6 +44,7 @@ describe('PaymentServiceService', () => {
           provide: getRepositoryToken(Payment),
           useValue: {
             findOne: findOneMock,
+            findAndCount: findAndCountMock,
             create: createMock,
             save: saveMock,
             update: repoUpdateMock,
@@ -412,6 +416,82 @@ describe('PaymentServiceService', () => {
       });
 
       expect((await service.getPaymentById(3)).refundedAt).toBe('');
+    });
+  });
+
+  // 부하 테스트 3일차(11-06): 내 결제 목록 조건·페이지와 단건 조회
+  describe('내 결제 조회', () => {
+    const payment = {
+      paymentId: 7,
+      reservationId: 12,
+      amount: 1000,
+      paymentMethod: 'CARD',
+      status: PaymentStatus.APPROVED,
+      paidAt: null,
+      userId: 1,
+      rawResponse: null,
+    };
+
+    it('조건이 없으면 회원 결제 전체를 최신순으로, 페이지를 나누지 않는다', async () => {
+      findAndCountMock.mockResolvedValue([[payment], 1]);
+
+      const result = await service.getPaymentsByUserId({ userId: 1 });
+
+      expect(findAndCountMock).toHaveBeenCalledWith({
+        where: { userId: 1 },
+        order: { paidAt: 'DESC', paymentId: 'DESC' },
+      });
+      expect(result.total).toBe(1);
+      expect(result.payments[0].paymentId).toBe(7);
+    });
+
+    it('예약 조건과 페이지를 건다', async () => {
+      findAndCountMock.mockResolvedValue([[], 0]);
+
+      await service.getPaymentsByUserId({
+        userId: 1,
+        reservationId: 12,
+        page: 2,
+        size: 10,
+      });
+
+      expect(findAndCountMock).toHaveBeenCalledWith({
+        where: { userId: 1, reservationId: 12 },
+        order: { paidAt: 'DESC', paymentId: 'DESC' },
+        skip: 10,
+        take: 10,
+      });
+    });
+
+    it('예약 여러 개를 주면 그 예약들의 결제만 (관리자 화면 · 지점 범위)', async () => {
+      findAndCountMock.mockResolvedValue([[], 0]);
+
+      await service.getPaymentsByUserId({ userId: 1, reservationIds: [3, 4] });
+
+      expect(findAndCountMock).toHaveBeenCalledWith({
+        where: { userId: 1, reservationId: In([3, 4]) },
+        order: { paidAt: 'DESC', paymentId: 'DESC' },
+      });
+    });
+
+    it('단건은 결제 번호와 회원으로 함께 찾는다', async () => {
+      findOneMock.mockResolvedValue(payment);
+
+      expect((await service.getMyPayment(1, 7)).paymentId).toBe(7);
+      expect(findOneMock).toHaveBeenCalledWith({
+        where: { paymentId: 7, userId: 1 },
+      });
+    });
+
+    it('없거나 남의 결제면 NOT_FOUND', async () => {
+      findOneMock.mockResolvedValue(null);
+
+      const error = (await service
+        .getMyPayment(2, 7)
+        .catch((e: unknown) => e)) as RpcException;
+
+      expect(error).toBeInstanceOf(RpcException);
+      expect(error.getError()).toMatchObject({ code: GrpcStatus.NOT_FOUND });
     });
   });
 

@@ -480,11 +480,43 @@ export interface ReservationFacility {
   totalAmount: number
 }
 
-// api-gateway(GET /api/bookings/me) -> booking-service(gRPC)로 로그인한 사용자 본인의 예약 목록을 조회한다.
-export async function fetchMyBookings(): Promise<Booking[]> {
-  const res = await authorizedFetch('/api/bookings/me')
+// 내 예약 목록 한 페이지 크기
+export const MY_LIST_PAGE_SIZE = 20
+
+// api-gateway(GET /api/bookings/me?page=&size=) -> booking-service(gRPC)로 로그인한 사용자 본인의 예약 목록을
+// 한 페이지씩 조회한다 (최신순). 예전처럼 전체를 받지 않는다 (부하 테스트 3일차 11-06 — 예약이 쌓일수록 전체 조회가 느려진다).
+// 예약 하나·결제 대기만 필요한 화면은 아래 fetchMyBooking·fetchMyBookingsByStatus를 쓴다.
+export async function fetchMyBookingsPage(page: number): Promise<{ items: Booking[]; total: number }> {
+  const res = await authorizedFetch(`/api/bookings/me?page=${page}&size=${MY_LIST_PAGE_SIZE}`)
+  const data = await parseJsonResponse<{ bookings: Booking[]; total?: number }>(res)
+  return { items: data.bookings, total: data.total ?? data.bookings.length }
+}
+
+// GET /api/bookings/me/{reservationId} — 본인 예약 한 건. 없거나 남의 예약(404)·잘못된 번호(400)면 null
+// (예전에 목록에서 find로 못 찾았을 때와 같은 결과).
+export async function fetchMyBooking(reservationId: number | string): Promise<Booking | null> {
+  if (!/^\d+$/.test(String(reservationId))) return null
+  try {
+    const res = await authorizedFetch(`/api/bookings/me/${reservationId}`)
+    return await parseJsonResponse<Booking>(res)
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 404 || err.status === 400)) return null
+    throw err
+  }
+}
+
+// GET /api/bookings/me?status=... — 본인 예약 중 이 상태들만 (최신순).
+export async function fetchMyBookingsByStatus(statuses: Booking['status'][]): Promise<Booking[]> {
+  const res = await authorizedFetch(`/api/bookings/me?status=${encodeURIComponent(statuses.join(','))}`)
   const data = await parseJsonResponse<{ bookings: Booking[] }>(res)
   return data.bookings
+}
+
+// 결제 대기 예약 수 — 한 건만 받고 응답의 total(조건에 맞는 전체 개수)을 쓴다.
+export async function fetchMyPendingPaymentCount(): Promise<number> {
+  const res = await authorizedFetch('/api/bookings/me?status=PENDING_PAYMENT&page=1&size=1')
+  const data = await parseJsonResponse<{ total?: number }>(res)
+  return data.total ?? 0
 }
 
 // api-gateway(PUT /api/bookings/{reservationId}) -> booking-service(gRPC)로 예약을 취소한다.

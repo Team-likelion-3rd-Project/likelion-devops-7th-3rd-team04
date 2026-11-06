@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { fetchMyBookings, isUnauthorized, refreshAccessToken, type Booking } from '../api/gateway'
+import { fetchMyBooking, isUnauthorized, refreshAccessToken, type Booking } from '../api/gateway'
 import type { Room } from '../api/hotels'
 import type { Hotel } from '../data/hotels'
-import { fetchMyPayments, type Payment } from '../api/payments'
+import { fetchMyPayment, type Payment } from '../api/payments'
 import { CalendarIcon } from '../components/reservation/icons'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import {
@@ -25,7 +25,7 @@ interface PaymentDetailLocationState {
 
 // 결제 내역 목록(PaymentsPage)에서 카드를 클릭하면 넘어오는 상세 페이지.
 // 목록에서 state로 넘겨준 payment가 있으면 그대로 쓰고, 새로고침/직접 URL 접근 등으로
-// state가 없을 때만 내 결제 목록을 다시 조회해 해당 paymentId를 찾는다.
+// state가 없을 때만 내 결제 단건(GET /api/payments/me/{paymentId})을 다시 조회한다.
 function PaymentDetailPage() {
   const { paymentId } = useParams<{ paymentId: string }>()
   const navigate = useNavigate()
@@ -52,18 +52,17 @@ function PaymentDetailPage() {
       setIsLoading(true)
       setNotFound(false)
       setLoadError('')
-      const findMine = (payments: Payment[]) =>
-        payments.find((p) => String(p.paymentId) === paymentId) ?? null
+      // 본인 결제 한 건만 조회한다 (없거나 남의 결제면 null) — 목록 전체를 받아 찾지 않는다 (부하 테스트 11-06)
+      const loadMine = () => fetchMyPayment(paymentId ?? '')
 
       try {
-        const data = await fetchMyPayments()
+        const found = await loadMine()
         if (cancelled) return
-        const found = findMine(data)
         if (found) setPayment(found)
         else setNotFound(true)
       } catch (err) {
         if (cancelled) return
-        // fetchMyPayments()는 429 등을 이미 내부에서(요청 자체) 예산껏 재시도했다. 진짜 로그인이
+        // fetchMyPayment()는 429 등을 이미 내부에서(요청 자체) 예산껏 재시도했다. 진짜 로그인이
         // 필요한 상태(401)가 아니면 재발급을 또 시도하지 않는다 — 안 그러면 이미 몰린 요청에
         // 부하만 배가된다.
         if (!isUnauthorized(err)) {
@@ -74,9 +73,8 @@ function PaymentDetailPage() {
         // 리프레시 토큰(쿠키)으로 한 번 재발급을 시도한 뒤 다시 조회한다.
         try {
           await refreshAccessToken()
-          const data = await fetchMyPayments()
+          const found = await loadMine()
           if (cancelled) return
-          const found = findMine(data)
           if (found) setPayment(found)
           else setNotFound(true)
         } catch (err2) {
@@ -102,19 +100,18 @@ function PaymentDetailPage() {
     if (!payment) return
     let cancelled = false
 
-    const applyBookings = (bookings: Booking[], lookup: Awaited<ReturnType<typeof fetchRoomLookup>>) => {
+    const applyBooking = (found: Booking | null, lookup: Awaited<ReturnType<typeof fetchRoomLookup>>) => {
       if (cancelled) return
-      const found = bookings.find((b) => b.reservationId === payment.reservationId) ?? null
       setBooking(found)
       setRoomInfo(found ? (lookup.get(found.roomId) ?? null) : null)
     }
 
     const load = async () => {
       try {
-        const [bookings, lookup] = await Promise.all([fetchMyBookings(), fetchRoomLookup()])
-        applyBookings(bookings, lookup)
+        const [found, lookup] = await Promise.all([fetchMyBooking(payment.reservationId), fetchRoomLookup()])
+        applyBooking(found, lookup)
       } catch (err) {
-        // fetchMyBookings()는 429 등을 이미 내부에서 예산껏 재시도했다. 진짜 401이 아니면 재발급을
+        // fetchMyBooking()은 429 등을 이미 내부에서 예산껏 재시도했다. 진짜 401이 아니면 재발급을
         // 또 시도하지 않는다 — 이 정보(이용 기간/객실 썸네일)는 참고용이라 실패해도 조용히 비워둔다.
         if (!isUnauthorized(err)) {
           if (!cancelled) {
@@ -127,8 +124,8 @@ function PaymentDetailPage() {
         // 리프레시 토큰(쿠키)으로 한 번 재발급을 시도한 뒤 다시 조회한다.
         try {
           await refreshAccessToken()
-          const [bookings, lookup] = await Promise.all([fetchMyBookings(), fetchRoomLookup()])
-          applyBookings(bookings, lookup)
+          const [found, lookup] = await Promise.all([fetchMyBooking(payment.reservationId), fetchRoomLookup()])
+          applyBooking(found, lookup)
         } catch {
           if (!cancelled) {
             setBooking(null)

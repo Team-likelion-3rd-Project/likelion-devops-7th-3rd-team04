@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { fetchMyBookings, isUnauthorized, refreshAccessToken } from '../api/gateway'
+import { fetchMyPendingPaymentCount, isUnauthorized, refreshAccessToken } from '../api/gateway'
 import { customerAuth } from '../api/tokenStore'
 import './AccountLayout.css'
 
@@ -34,20 +34,18 @@ function AccountLayout() {
   const isSocialUser = !!customerAuth.useUser()?.socialProvider
 
   // 결제 대기(PENDING_PAYMENT) 예약 개수 — 사이드바의 "결제대기" 항목 옆 뱃지용.
+  // 목록 전체 대신 결제 대기 한 건 + total(전체 개수)만 받는다 (부하 테스트 11-06).
   const [pendingCount, setPendingCount] = useState<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
 
-    const countPending = (bookings: Awaited<ReturnType<typeof fetchMyBookings>>) =>
-      bookings.filter((b) => b.status === 'PENDING_PAYMENT').length
-
     const load = async () => {
       try {
-        const bookings = await fetchMyBookings()
-        if (!cancelled) setPendingCount(countPending(bookings))
+        const count = await fetchMyPendingPaymentCount()
+        if (!cancelled) setPendingCount(count)
       } catch (err) {
-        // fetchMyBookings()는 429 등을 이미 내부에서 예산껏 재시도했다. 진짜 401이 아니면 재발급을
+        // fetchMyPendingPaymentCount()는 429 등을 이미 내부에서 예산껏 재시도했다. 진짜 401이 아니면 재발급을
         // 또 시도하지 않는다 — 뱃지는 부가 정보라 실패하면 조용히 숨긴다.
         if (!isUnauthorized(err)) {
           if (!cancelled) setPendingCount(null)
@@ -58,8 +56,8 @@ function AccountLayout() {
         // 재시도까지 실패하면 조용히 숨긴다(로그인 여부는 각 페이지가 자체적으로 처리한다).
         try {
           await refreshAccessToken()
-          const bookings = await fetchMyBookings()
-          if (!cancelled) setPendingCount(countPending(bookings))
+          const count = await fetchMyPendingPaymentCount()
+          if (!cancelled) setPendingCount(count)
         } catch {
           if (!cancelled) setPendingCount(null)
         }

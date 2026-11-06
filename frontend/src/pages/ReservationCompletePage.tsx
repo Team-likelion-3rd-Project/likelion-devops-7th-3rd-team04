@@ -4,7 +4,7 @@ import { getHotels } from '../data/hotelStore'
 import type { Hotel } from '../data/hotels'
 import { fetchRoom } from '../api/hotels'
 import type { Room } from '../api/hotels'
-import { fetchMyBookings, fetchReservationFacilities } from '../api/bookings'
+import { fetchMyBooking, fetchReservationFacilities } from '../api/bookings'
 import type { Booking, ReservationFacility } from '../api/bookings'
 import { isUnauthorized, refreshAccessToken } from '../api/gateway'
 import { PAYMENT_BLOCK_MESSAGE, formatPaymentDue, paymentBlockReason } from '../api/payments'
@@ -59,14 +59,13 @@ function ReservationCompletePage() {
   }, [reservationId, navigate])
 
   // state로 예약 정보가 전달되지 않은 경우(새로고침, 북마크/직접 접근 등) — 로그인한 사용자 본인의
-  // 예약 목록에서 reservationId로 다시 찾아온다. 단건 조회 API가 없어 목록 조회로 대체한다.
+  // 예약 단건(GET /api/bookings/me/{reservationId})을 다시 조회한다.
   useEffect(() => {
     if (booking || !reservationId) return
 
     let cancelled = false
 
-    const applyFound = async (bookings: Booking[]) => {
-      const found = bookings.find((b) => b.reservationId === reservationId)
+    const applyFound = async (found: Booking | null) => {
       if (!found) {
         if (!cancelled) setStatus('error')
         return
@@ -89,10 +88,10 @@ function ReservationCompletePage() {
       if (!cancelled) setStatus('success')
     }
 
-    fetchMyBookings()
+    fetchMyBooking(reservationId)
       .then(applyFound)
       .catch(async (err) => {
-        // fetchMyBookings()는 429 등을 이미 내부에서 예산껏 재시도했다. 진짜 401이 아니면 재발급을
+        // fetchMyBooking()은 429 등을 이미 내부에서 예산껏 재시도했다. 진짜 401이 아니면 재발급을
         // 또 시도하지 않는다 — 안 그러면 이미 몰린 요청에 부하만 배가된다.
         if (!isUnauthorized(err)) {
           if (!cancelled) setStatus('error')
@@ -102,9 +101,9 @@ function ReservationCompletePage() {
         // 리프레시 토큰(쿠키)으로 한 번 재발급을 시도한 뒤 다시 조회한다.
         try {
           await refreshAccessToken()
-          const bookings = await fetchMyBookings()
+          const found = await fetchMyBooking(reservationId)
           if (cancelled) return
-          await applyFound(bookings)
+          await applyFound(found)
         } catch {
           if (!cancelled) setStatus('error')
         }
