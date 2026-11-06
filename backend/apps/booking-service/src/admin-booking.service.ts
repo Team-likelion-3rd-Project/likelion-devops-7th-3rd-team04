@@ -39,6 +39,8 @@ export class AdminBookingService {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    poolChildGuestCount?: number;
+    loungeChildGuestCount?: number;
     adminId: number;
     adminName: string;
     idempotencyKey?: string;

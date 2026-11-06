@@ -242,11 +242,19 @@
   "facilities": [
     {
       "name": "수영장",
-      "price": 30000
+      "price": 77000
+    },
+    {
+      "name": "수영장 소인",
+      "price": 44000
     },
     {
       "name": "라운지",
-      "price": 50000
+      "price": 80000
+    },
+    {
+      "name": "라운지 소인",
+      "price": 30000
     }
   ],
   "notices": [

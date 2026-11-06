@@ -27,6 +27,8 @@ function AdminProxyBookingForm({ hotels, roomsByHotel, onCreated, onClose }: Adm
   const [guestCount, setGuestCount] = useState('2')
   const [poolGuestCount, setPoolGuestCount] = useState('0')
   const [loungeGuestCount, setLoungeGuestCount] = useState('0')
+  const [poolChildGuestCount, setPoolChildGuestCount] = useState('0')
+  const [loungeChildGuestCount, setLoungeChildGuestCount] = useState('0')
   const [isSaving, setIsSaving] = useState(false)
   const [formError, setFormError] = useState('')
 
@@ -66,6 +68,8 @@ function AdminProxyBookingForm({ hotels, roomsByHotel, onCreated, onClose }: Adm
     const guests = Number(guestCount)
     const pool = Number(poolGuestCount || 0)
     const lounge = Number(loungeGuestCount || 0)
+    const poolChild = Number(poolChildGuestCount || 0)
+    const loungeChild = Number(loungeChildGuestCount || 0)
     if (userId === '' || hotelId === '' || roomId === '') {
       setFormError('회원, 지점, 객실 종류를 골라 주세요.')
       return
@@ -78,8 +82,12 @@ function AdminProxyBookingForm({ hotels, roomsByHotel, onCreated, onClose }: Adm
       setFormError(`투숙 인원은 1~${selectedRoom?.capacity ?? ''}명으로 입력해 주세요.`)
       return
     }
-    if (![pool, lounge].every((n) => Number.isInteger(n) && n >= 0 && n <= guests)) {
-      setFormError('수영장·라운지 인원은 0 이상, 투숙 인원 이하로 입력해 주세요.')
+    if (
+      ![pool, lounge, poolChild, loungeChild].every((n) => Number.isInteger(n) && n >= 0) ||
+      pool + poolChild > guests ||
+      lounge + loungeChild > guests
+    ) {
+      setFormError('수영장·라운지 인원은 시설별로 성인과 소인을 합쳐 투숙 인원 이하로 입력해 주세요.')
       return
     }
 
@@ -93,6 +101,8 @@ function AdminProxyBookingForm({ hotels, roomsByHotel, onCreated, onClose }: Adm
       guestCount: guests,
       poolGuestCount: pool,
       loungeGuestCount: lounge,
+      poolChildGuestCount: poolChild,
+      loungeChildGuestCount: loungeChild,
     }
 
     setIsSaving(true)
@@ -108,6 +118,8 @@ function AdminProxyBookingForm({ hotels, roomsByHotel, onCreated, onClose }: Adm
           guestCount: guests,
           poolGuestCount: pool || undefined,
           loungeGuestCount: lounge || undefined,
+          poolChildGuestCount: poolChild || undefined,
+          loungeChildGuestCount: loungeChild || undefined,
         },
         bookingIdempotencyKey(conditions),
       )
@@ -222,16 +234,34 @@ function AdminProxyBookingForm({ hotels, roomsByHotel, onCreated, onClose }: Adm
             />
           </label>
           <label className="admin-form-row">
-            <span>수영장 인원 (선택)</span>
+            <span>수영장 성인 (선택)</span>
             <input type="number" min={0} value={poolGuestCount} onChange={(e) => setPoolGuestCount(e.target.value)} />
           </label>
           <label className="admin-form-row">
-            <span>라운지 인원 (선택)</span>
+            <span>라운지 성인 (선택)</span>
             <input
               type="number"
               min={0}
               value={loungeGuestCount}
               onChange={(e) => setLoungeGuestCount(e.target.value)}
+            />
+          </label>
+          <label className="admin-form-row">
+            <span>수영장 소인 (선택)</span>
+            <input
+              type="number"
+              min={0}
+              value={poolChildGuestCount}
+              onChange={(e) => setPoolChildGuestCount(e.target.value)}
+            />
+          </label>
+          <label className="admin-form-row">
+            <span>라운지 소인 (선택)</span>
+            <input
+              type="number"
+              min={0}
+              value={loungeChildGuestCount}
+              onChange={(e) => setLoungeChildGuestCount(e.target.value)}
             />
           </label>
         </div>

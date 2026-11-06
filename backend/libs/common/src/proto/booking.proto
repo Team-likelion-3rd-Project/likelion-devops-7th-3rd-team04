@@ -134,6 +134,9 @@ message CreateBookingRequest {
   // 같은 회원·같은 키의 예약이 이미 있으면 새로 만들지 않고 그 예약을 돌려준다. 빈 값이면 예전처럼 항상 새로 만든다.
   // 5·6번은 예전 필드였을 수 있어 다시 쓰지 않는다.
   string idempotencyKey = 11;
+  // 소인 이용 인원수 (LDP-247). poolGuestCount · loungeGuestCount는 성인 인원이다.
+  int32 poolChildGuestCount = 12;
+  int32 loungeChildGuestCount = 13;
 }
 
 // 편의시설(수영장/라운지 등) 이용 여부/인원수는 여기 담지 않는다 — reservation_facilities가
@@ -172,6 +175,9 @@ message CreateAdminBookingRequest {
   int32 loungeGuestCount = 8;
   int32 adminId = 9; // 만든 직원 (JWT)
   string adminName = 10; // 만든 직원 이름 (api-gateway가 user-service에서 조회)
+  // 소인 이용 인원수 (LDP-247). poolGuestCount · loungeGuestCount는 성인 인원이다.
+  int32 poolChildGuestCount = 12;
+  int32 loungeChildGuestCount = 13;
   // 멱등 키 (LDP-243, Idempotency-Key 헤더). 503 뒤 다시 누르면 같은 키 → 처음 만든 예약을 돌려준다. 빈 값 = 키 없음
   string idempotencyKey = 11;
 }

@@ -144,6 +144,8 @@ interface BookingService {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    poolChildGuestCount?: number;
+    loungeChildGuestCount?: number;
     idempotencyKey?: string;
   }): Observable<BookingDto>;
   getReservationFacilitiesByReservationId(data: {

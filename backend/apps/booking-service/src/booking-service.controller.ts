@@ -70,6 +70,8 @@ export class BookingServiceController {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    poolChildGuestCount?: number;
+    loungeChildGuestCount?: number;
     idempotencyKey?: string;
   }) {
     return this.bookingServiceService.createBooking(data);
@@ -159,6 +161,8 @@ export class BookingServiceController {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    poolChildGuestCount?: number;
+    loungeChildGuestCount?: number;
     adminId: number;
     adminName: string;
     idempotencyKey?: string;
