@@ -10,7 +10,7 @@ export { browse } from './flows/browse.js';
 export { search } from './flows/search.js';
 export { booking } from './flows/booking.js';
 export { mypage } from './flows/mypage.js';
-export { apiHotels, apiAvailability, apiBooking, apiLogin, apiConfirm } from './flows/api.js';
+export { apiHotels, apiRooms, apiSearch, apiAvailability, apiBooking, apiLogin, apiConfirm } from './flows/api.js';
 
 const profile = buildProfile(TEST);
 

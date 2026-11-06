@@ -99,7 +99,7 @@ k6 run -e TEST=fault --out csv=result/fault-$(date -u +%H%M).csv.gz ... main.js 
 | `TARGET_RPS` | `100` | 목표 부하 (ALB 요청/초). load · fault · soak |
 | `STAGES` | `50,100,150` | tune · api 단계 (요청/초). 1일차 한계 앞뒤로 |
 | `STAGE_SECONDS` | `100` | tune · api 단계 길이 (초, 앞 15초는 상승) |
-| `API` | | `hotels` · `availability` · `booking` · `login` · `confirm` |
+| `API` | | `hotels` · `rooms` · `search` · `availability` · `booking` · `login` · `confirm` |
 | `LOAD_MINUTES` | `15` | load 유지 시간 |
 | `STRESS_START` · `STRESS_STEP` · `STRESS_MAX` · `STRESS_STEP_SECONDS` | `50` · `50` · `500` · `120` | stress 단계 |
 | `SPIKE_BASE_RPS` · `SPIKE_FACTOR` · `SPIKE_HOLD_MINUTES` | `50` · `5` · `5` | spike |
@@ -139,12 +139,14 @@ hotel-service 는 호텔 · 객실 · 편의시설 · 공지를 Valkey 에 캐�
 
 ```bash
 kubectl -n backend logs deploy/hotel-service | grep '조회 캐시'
-k6 run -e TEST=api -e API=hotels -e STAGES=50,100,150 -e NOTE=cache-off ... main.js       # ON 은 NOTE=cache-on
+k6 run -e TEST=api -e API=rooms -e STAGES=50,100,150 -e NOTE=cache-off ... main.js        # ON 은 NOTE=cache-on
+k6 run -e TEST=api -e API=search -e STAGES=50,100,150 -e NOTE=cache-off ... main.js
 k6 run -e TEST=api -e API=availability -e STAGES=50,100,150 -e NOTE=cache-off ... main.js
 ```
 
 - 두 번은 같은 `TEST` · `API` · `STAGES`(또는 `TARGET_RPS`) · hotel-service 파드 수로 연달아 돌린다. 결과 JSON 은 `NOTE` · `GITOPS_SHA` 로 구분한다
-- 효과가 드러나는 곳: 흐름 A · B (`API=hotels` · `availability`, `TEST=load` 의 read p95). 흐름 C 는 예약 생성 때 편의시설 조회만, 흐름 D(마이페이지)는 캐시 대상이 아니다
+- 캐시 효과는 API 단독으로 잰다. 사용자 흐름(`tune` · `stress`)은 노드 CPU 등 다른 병목과 캐시 대상이 아닌 흐름이 섞여 효과가 묻힌다 (11-05: 노드 2대 stress 병목이 노드 CPU, hotel-service 는 그중 약 0.6코어)
+- 효과가 큰 순서: `API=search`(쿼리 4 → 1) · `rooms`(3 → 0~1) · `availability`(2 → 1) · `hotels`(1 → 0), 흐름으로는 A · B. 흐름 C 는 예약 생성 때 편의시설 조회만, 흐름 D(마이페이지)는 캐시 대상이 아니다
 - 값을 바꾸면 hotel-service 가 재시작되고 캐시가 빈 채로 뜬다 — 테스트 도중에 바꾸지 않고, 바꾼 직후 1 – 2분은 측정에서 뺀다
 - 같은 시간 범위로 Grafana 에서 비교한다 (`service="hotel-service"`)
 
