@@ -41,10 +41,14 @@ export interface ReservationFacility {
 
 // POST /api/bookings — 로그인한 사용자 본인 명의로 신규 예약을 생성한다 (인증 필요).
 // checkInDate~checkOutDate 전날까지 해당 객실이 예약 가능해야 하며, 금액은 서버가 자동 계산한다.
-export async function createBooking(payload: CreateBookingRequest): Promise<Booking> {
+// idempotencyKey: 같은 예약 시도면 같은 키 → 서버가 처음 만든 예약을 돌려준다 (LDP-240, utils/bookingIdempotency.ts)
+export async function createBooking(payload: CreateBookingRequest, idempotencyKey?: string): Promise<Booking> {
   const res = await authorizedFetch('/api/bookings', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+    },
     body: JSON.stringify(payload),
   })
   return parseJsonResponse<Booking>(res)

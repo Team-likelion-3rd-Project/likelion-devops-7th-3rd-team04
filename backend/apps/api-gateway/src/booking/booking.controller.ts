@@ -5,6 +5,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Headers,
   HttpCode,
   Inject,
   NotFoundException,
@@ -23,6 +24,7 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiHeader,
   ApiParam,
 } from '@nestjs/swagger';
 import { ApiCommonResponses } from '@app/common/decorators/api-response.decorator';
@@ -42,6 +44,7 @@ import {
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 import { AssignRoomUnitDto } from './dto/assign-room-unit.dto';
+import { parseIdempotencyKey } from './idempotency-key';
 
 // 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
 const BOOKING_UNAVAILABLE = {
@@ -130,6 +133,7 @@ interface BookingService {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    idempotencyKey?: string;
   }): Observable<BookingDto>;
   getReservationFacilitiesByReservationId(data: {
     reservationId: number;
@@ -422,10 +426,20 @@ export class BookingController implements OnModuleInit {
       '해당 객실 타입이 판매 중이고 남은 방이 1개 이상이어야 하며, 예약 생성과 동시에 ' +
       '해당 기간의 날짜별 예약 수(booked_count)가 1씩 늘어납니다. 예약 금액은 해당 기간의 일별 가격 합계로 자동 계산됩니다.',
   })
-  @ApiResponse({ status: 201, description: '예약 생성 성공' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description:
+      '예약 시도마다 화면이 만드는 키(영문·숫자·-·_ 1~64자). 같은 키로 다시 보내면 새로 만들지 않고 처음 만든 예약을 돌려준다 (LDP-240).',
+  })
+  @ApiResponse({
+    status: 201,
+    description: '예약 생성 성공 (같은 Idempotency-Key면 처음 만든 예약)',
+  })
   @ApiResponse({
     status: 400,
-    description: '체크아웃 날짜가 체크인 날짜보다 이르거나 같음',
+    description:
+      '체크아웃 날짜가 체크인 날짜보다 이르거나 같음 / INVALID_IDEMPOTENCY_KEY',
   })
   @ApiResponse({ status: 404, description: '존재하지 않는 객실' })
   @ApiResponse({
@@ -441,14 +455,20 @@ export class BookingController implements OnModuleInit {
   async createBooking(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreateBookingDto,
+    @Headers('idempotency-key') rawIdempotencyKey?: string,
   ): Promise<BookingDto> {
+    const idempotencyKey = parseIdempotencyKey(rawIdempotencyKey);
     if (dto.checkInDate >= dto.checkOutDate) {
       throw new BadRequestException(
         'checkOutDate는 checkInDate보다 이후여야 합니다.',
       );
     }
     const booking = await firstValueFrom(
-      this.bookingService.createBooking({ userId: user.userId, ...dto }),
+      this.bookingService.createBooking({
+        userId: user.userId,
+        ...dto,
+        idempotencyKey,
+      }),
     ).catch((err) => {
       throw toBookingHttpError(err, {
         404: 'ROOM_NOT_FOUND',

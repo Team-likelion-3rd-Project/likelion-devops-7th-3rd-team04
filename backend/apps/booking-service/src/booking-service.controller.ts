@@ -63,6 +63,7 @@ export class BookingServiceController {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    idempotencyKey?: string;
   }) {
     return this.bookingServiceService.createBooking(data);
   }

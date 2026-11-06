@@ -234,6 +234,14 @@ function todayKst(): string {
   return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+// DB UNIQUE 제약 위반 (MariaDB ER_DUP_ENTRY)
+function isDuplicateKeyError(error: unknown): boolean {
+  return (
+    error instanceof QueryFailedError &&
+    (error.driverError as { code?: string })?.code === 'ER_DUP_ENTRY'
+  );
+}
+
 // 서버 기준 오늘 날짜를 'YYYY-MM-DD'로 반환한다 (UTC 기준 — addDays/dayBefore와 동일한 원칙).
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -333,6 +341,7 @@ export class BookingServiceService implements OnModuleInit {
       guestCount: number;
       poolGuestCount?: number;
       loungeGuestCount?: number;
+      idempotencyKey?: string;
     },
     admin?: AdminBookingOptions,
   ): Promise<BookingGrpcResponse> {
@@ -353,6 +362,20 @@ export class BookingServiceService implements OnModuleInit {
         'INVALID_BOOKING_DATES',
         '체크아웃 날짜는 체크인 날짜보다 이후여야 합니다.',
       );
+    }
+
+    // 멱등 키 (LDP-240): 화면이 예약 시도마다 만들어 보낸다. 503을 받고 다시 누르면 같은 키가 온다.
+    // 같은 회원·같은 키의 예약이 이미 있으면 재고를 건드리지 않고 그 예약을 돌려준다.
+    // 관리자 대리·연장 예약은 키를 보내지 않는다 (빈 값 → 예전처럼 항상 새로 만든다).
+    const idempotencyKey = admin ? '' : (data.idempotencyKey ?? '').trim();
+    if (idempotencyKey) {
+      const existing = await this.findByIdempotencyKey(
+        data.userId,
+        idempotencyKey,
+      );
+      if (existing) {
+        return this.replayIdempotentBooking(existing, data);
+      }
     }
 
     // 편의시설은 재고를 차감하기 전에 확인한다 (LDP-239). 차감 뒤에 확인하면 여기서 실패할 때
@@ -456,6 +479,7 @@ export class BookingServiceService implements OnModuleInit {
       linkedReservationId: admin?.linkedReservationId ?? null,
       createdByAdminId: admin?.createdByAdminId ?? null,
       createdByAdminName: admin?.createdByAdminName ?? null,
+      idempotencyKey: idempotencyKey || null,
     });
     // 재고는 이미 차감했다 — 예약을 저장하지 못하면 차감한 재고를 돌려놓고 원래 오류를 그대로 던진다 (LDP-239).
     // 저장 뒤의 실패(편의시설 내역 등)는 예약 행이 있으므로 만료 배치가 재고를 돌려준다.
@@ -463,7 +487,22 @@ export class BookingServiceService implements OnModuleInit {
     try {
       saved = await this.reservationRepository.save(reservation);
     } catch (error) {
-      await this.releaseRoomAvailability(reservation, '예약 저장 실패');
+      // 같은 키의 요청 두 개가 거의 동시에 오면 둘 다 위의 조회를 통과하고 재고를 줄인다.
+      // 두 번째 저장은 UNIQUE (user_id, idempotency_key)에 막히므로, 줄인 재고를 돌려놓고 먼저 저장된 예약을 돌려준다.
+      const duplicate = !!idempotencyKey && isDuplicateKeyError(error);
+      await this.releaseRoomAvailability(
+        reservation,
+        duplicate ? '같은 멱등 키 예약이 먼저 저장됨' : '예약 저장 실패',
+      );
+      if (duplicate) {
+        const existing = await this.findByIdempotencyKey(
+          data.userId,
+          idempotencyKey,
+        );
+        if (existing) {
+          return this.replayIdempotentBooking(existing, data);
+        }
+      }
       throw error;
     }
 
@@ -478,6 +517,40 @@ export class BookingServiceService implements OnModuleInit {
     }
 
     return this.toGrpcResponse(saved);
+  }
+
+  private findByIdempotencyKey(
+    userId: number,
+    idempotencyKey: string,
+  ): Promise<Reservation | null> {
+    return this.reservationRepository.findOne({
+      where: { userId, idempotencyKey },
+    });
+  }
+
+  // 같은 멱등 키로 다시 온 예약 요청 (LDP-240). 처음 만든 예약을 그대로 돌려준다.
+  // 키는 같은데 객실·날짜가 다르면 다른 예약을 같은 키로 보낸 것이라 거절한다 — 화면은 조건이 바뀌면 새 키를 만든다.
+  private replayIdempotentBooking(
+    existing: Reservation,
+    data: { roomId: number; checkInDate: string; checkOutDate: string },
+  ): BookingGrpcResponse {
+    if (
+      existing.roomId !== data.roomId ||
+      existing.checkInDate !== data.checkInDate ||
+      existing.checkOutDate !== data.checkOutDate
+    ) {
+      throw apiRpcException({
+        status: 409,
+        code: 'IDEMPOTENCY_KEY_REUSED',
+        message:
+          '이전 예약 요청과 조건이 다릅니다. 화면을 새로고침한 뒤 다시 예약해 주세요.',
+        retryable: false,
+      });
+    }
+    this.logger.log(
+      `같은 멱등 키의 예약 요청 — 새로 만들지 않고 예약(#${existing.reservationId})을 돌려줍니다 (userId=${existing.userId})`,
+    );
+    return this.toGrpcResponse(existing);
   }
 
   // 전체 예약 목록 조회 (관리자 전용, 권한 검증은 api-gateway에서 수행)

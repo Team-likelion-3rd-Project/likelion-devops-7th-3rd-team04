@@ -96,6 +96,17 @@ export class Reservation {
   })
   cancelReason?: string | null;
 
+  // 예약 생성 멱등 키 (V16 · LDP-240). 화면이 예약 시도마다 만들어 보내고, 다시 누르면 같은 키가 온다.
+  // UNIQUE (user_id, idempotency_key) — 같은 회원·같은 키면 새로 만들지 않고 기존 예약을 돌려준다.
+  // NULL = 키 없이 만든 예약 (기존 행, 관리자 대리·연장 예약)
+  @Column({
+    name: 'idempotency_key',
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+  })
+  idempotencyKey?: string | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 

@@ -10,18 +10,15 @@ import { goToOptions, signUp } from './helpers'
 // 재현: 첫 POST /api/bookings 는 서버로 그대로 보내고(예약 생성됨), 브라우저에는 503만 돌려준다.
 
 test('R1: 503 응답 뒤 다시 누르면 예약은 1건이어야 한다', async ({ page }) => {
-  // 알려진 버그 (2026-11-05 확인: 3/3회 결제 대기 예약 2건 생성).
-  // test.fail = "지금은 실패하는 게 정상"으로 표시해 전체 실행은 통과로 둔다.
-  // 예약 생성 멱등 키 등으로 고쳐지면 이 테스트가 통과하면서 오히려 빨간불이 켜진다 → 그때 이 줄을 지운다.
-  test.fail(true, '예약 생성에 멱등 키가 없어 503 뒤 재클릭 시 중복 예약이 생긴다')
-
   await signUp(page)
   await goToOptions(page)
 
   let createCalls = 0
+  const idempotencyKeys: (string | undefined)[] = []
   await page.route('**/api/bookings', async (route) => {
     if (route.request().method() !== 'POST') return route.continue()
     createCalls += 1
+    idempotencyKeys.push(route.request().headers()['idempotency-key'])
     if (createCalls > 1) return route.continue()
 
     // 서버로는 실제로 보낸다 → 예약이 만들어진다
@@ -51,6 +48,9 @@ test('R1: 503 응답 뒤 다시 누르면 예약은 1건이어야 한다', async
   await reserveButton.click()
   await expect(page).toHaveURL(/\/reservation\/complete\/\d+/)
   expect(createCalls).toBe(2)
+  // 다시 누른 요청도 같은 멱등 키를 보낸다 → 서버가 처음 만든 예약을 돌려준다 (LDP-240)
+  expect(idempotencyKeys[0]).toBeTruthy()
+  expect(idempotencyKeys[1]).toBe(idempotencyKeys[0])
 
   // 3) 새 회원이라 예약 목록의 "결제 대기"는 모두 이 테스트가 만든 것이다
   await page.goto('/mypage/reservations')
