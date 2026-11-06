@@ -1,0 +1,141 @@
+# 재고 잠금 집중 테스트 준비 Job (LDP-242) — 운영 클러스터에서 hotspot-prep.sql 을 메인 DB 에 1회 실행
+#
+# loadtest-seed-job.yaml 과 같은 구조 (SQL 파일 · ConfigMap 이름만 다름). loadtest-seed Job 을 먼저 실행한 뒤 쓴다.
+# ArgoCD 가 관리하지 않는 일회성 리소스. 실행 전 같은 네임스페이스에 아래를 만든다
+#   ConfigMap loadtest-hotspot-sql : hotspot-prep.sql
+#   Secret    loadtest-seed        : (시드 Job 과 같은 Secret 재사용 — 이 SQL 은 해시를 쓰지 않지만 앞에 SET 으로 넣는다)
+#   ConfigMap amazon-root-ca       : AmazonRootCA1.pem (ElastiCache Valkey 서버 인증서 검증)
+# 순서: initContainer seed(SQL) → container clear-cache(hotel-service 조회 캐시 비우기 — 새 객실 「집중 성공룸」이 바로 보이도록)
+# 재고 초기화 뒤에는 매진 날짜가 풀리므로 다시 실행한다 (Job 을 지우고 다시 apply, SQL 은 멱등)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadtest-hotspot-prep
+  namespace: backend
+  labels:
+    app.kubernetes.io/name: loadtest-hotspot-prep
+    app.kubernetes.io/part-of: loadtest
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loadtest-hotspot-prep
+        app.kubernetes.io/part-of: loadtest
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999   # 이미지의 mysql 사용자
+        runAsGroup: 999
+      initContainers:
+        - name: seed
+          image: mariadb:11.8   # 클라이언트만 사용. 운영 RDS 와 같은 메이저 · 마이너
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              {
+                echo "SET @lt_password_hash = '${LT_PASSWORD_HASH}';"
+                echo "SET @lt_units = ${LT_UNITS};"
+                echo "SET @lt_days = ${LT_DAYS};"
+                echo "SET @lt_users = ${LT_USERS};"
+                cat /sql/hotspot-prep.sql
+              } | mariadb \
+                --host="${DB_HOST}" --user="${DB_USERNAME}" \
+                --ssl-ca=/certs/us-east-1-bundle.pem --ssl-verify-server-cert \
+                --connect-timeout=10 --table \
+                "${DB_DATABASE}"
+          env:
+            # 위키 「성능 테스트」 테스트 데이터 규모
+            - name: LT_UNITS
+              value: "300"
+            - name: LT_DAYS
+              value: "365"
+            - name: LT_USERS
+              value: "500"
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: DB_HOST }
+            - name: DB_DATABASE
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: DB_DATABASE }
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: DB_USERNAME }
+            # 명령줄 인자 대신 환경 변수로 넘겨 프로세스 목록에 비밀번호가 보이지 않게 한다
+            - name: MYSQL_PWD
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: DB_PASSWORD }
+            - name: LT_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef: { name: loadtest-seed, key: LT_PASSWORD_HASH }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+              readOnly: true
+            - name: rds-ca
+              mountPath: /certs
+              readOnly: true
+      containers:
+        # SQL 이 성공한 뒤에만 실행된다 (initContainer 가 실패하면 Job 실패)
+        - name: clear-cache
+          image: valkey/valkey:9.1.2   # valkey-cli 만 사용
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              # ElastiCache 는 전송 암호화 required — Amazon Root CA 로 서버 인증서 검증
+              CLI="valkey-cli --tls --cacert /redis-ca/AmazonRootCA1.pem -h ${REDIS_HOST} -p 6379"
+              if [ "$($CLI ping)" != "PONG" ]; then
+                echo "Valkey 접속 실패 — 캐시는 TTL(5분) 뒤 맞춰지므로 그만큼 기다린 뒤 테스트한다" >&2
+                exit 1
+              fi
+              keys=$($CLI --scan --pattern 'cache:hotel-service:*' --count 500)
+              if [ -n "$keys" ]; then
+                printf '%s\n' "$keys" | xargs -n 100 $CLI unlink > /dev/null
+              fi
+              echo "hotel-service 조회 캐시 비움: 키 $(printf '%s' "$keys" | grep -c . || true)개"
+          env:
+            - name: REDIS_HOST
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: REDIS_HOST }
+            # 명령줄 인자 대신 환경 변수로 넘겨 프로세스 목록에 비밀번호가 보이지 않게 한다 (Redis 호환 이름도 같이)
+            - name: VALKEYCLI_AUTH
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: REDIS_PASSWORD }
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef: { name: backend-secrets, key: REDIS_PASSWORD }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: redis-ca
+              mountPath: /redis-ca
+              readOnly: true
+      volumes:
+        - name: sql
+          configMap:
+            name: loadtest-hotspot-sql
+        - name: rds-ca
+          configMap:
+            name: rds-ca-bundle
+        - name: redis-ca
+          configMap:
+            name: amazon-root-ca
