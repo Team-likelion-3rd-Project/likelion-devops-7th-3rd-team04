@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { fetchMyPayments, type Payment } from '../../api/payments'
+import { fetchMyPaymentsByReservation, type Payment } from '../../api/payments'
 import {
   PAYMENT_METHOD_LABEL,
   PAYMENT_STATUS_LABEL,
@@ -17,7 +17,8 @@ const POLL_INTERVAL_MS = 3000
 const MAX_POLLS = 10
 
 // 취소·만료·결제 실패 예약의 환불 진행 상황 (LDP-139).
-// 예약 응답에는 환불 정보가 없어서 내 결제 목록(GET /api/payments/me)에서 같은 예약의 결제를 찾는다.
+// 예약 응답에는 환불 정보가 없어서 이 예약의 내 결제(GET /api/payments/me?reservationId=)에서 환불 관련 결제를 찾는다
+// (결제 목록 전체를 3초마다 받지 않는다 — 부하 테스트 11-06).
 // 환불은 결제 서버에서 비동기로 진행되므로, 처리 중이면 3초 간격으로 최대 10번 다시 확인한다.
 function RefundStatusSection({ reservationId }: { reservationId: number }) {
   const [payment, setPayment] = useState<Payment | null>(null)
@@ -31,7 +32,7 @@ function RefundStatusSection({ reservationId }: { reservationId: number }) {
 
     const load = async () => {
       try {
-        const payments = await fetchMyPayments()
+        const payments = await fetchMyPaymentsByReservation(reservationId)
         if (cancelled) return
         const found = findRefundPayment(payments, reservationId)
         setPayment(found)
