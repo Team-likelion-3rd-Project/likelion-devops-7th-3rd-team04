@@ -1,6 +1,9 @@
 import { Controller } from '@nestjs/common';
 import { GrpcMethod } from '@nestjs/microservices';
-import { PaymentServiceService } from './payment-service.service';
+import {
+  PaymentServiceService,
+  UserPaymentListQuery,
+} from './payment-service.service';
 
 @Controller()
 export class PaymentServiceController {
@@ -33,13 +36,16 @@ export class PaymentServiceController {
     return this.paymentServiceService.getPaymentById(data.paymentId);
   }
 
-  // 특정 유저의 결제 목록 조회 (/me, /{userId} 양쪽에서 재사용)
+  // 특정 유저의 결제 목록 조회 (/me, /{userId} 양쪽에서 재사용) — 예약 조건, 페이지
   @GrpcMethod('PaymentService', 'GetPaymentsByUserId')
-  async getPaymentsByUserId(data: { userId: number }) {
-    const payments = await this.paymentServiceService.getPaymentsByUserId(
-      data.userId,
-    );
-    return { payments };
+  async getPaymentsByUserId(data: UserPaymentListQuery) {
+    return this.paymentServiceService.getPaymentsByUserId(data);
+  }
+
+  // 본인 결제 단건 조회 (GET /api/payments/me/{paymentId})
+  @GrpcMethod('PaymentService', 'GetMyPayment')
+  async getMyPayment(data: { userId: number; paymentId: number }) {
+    return this.paymentServiceService.getMyPayment(data.userId, data.paymentId);
   }
 
   // 결제 승인. booking-service의 ConfirmPayment(위키 API 명세 5.9)가 호출한다. REST로는 노출되지 않는다.

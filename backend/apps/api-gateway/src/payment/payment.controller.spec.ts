@@ -12,6 +12,7 @@ describe('PaymentController', () => {
   const getHelloMock = jest.fn();
   const handlePaymentWebhookMock = jest.fn();
   const getPaymentsByUserIdMock = jest.fn();
+  const getMyPaymentMock = jest.fn();
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -27,6 +28,7 @@ describe('PaymentController', () => {
               getHello: getHelloMock,
               handlePaymentWebhook: handlePaymentWebhookMock,
               getPaymentsByUserId: getPaymentsByUserIdMock,
+              getMyPayment: getMyPaymentMock,
             }),
           },
         },
@@ -41,6 +43,68 @@ describe('PaymentController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  describe('getMyPayments 조건', () => {
+    it('조건이 없으면 예전처럼 전체(page 0)', async () => {
+      getPaymentsByUserIdMock.mockReturnValue(of({}));
+
+      expect(await controller.getMyPayments({ userId: 1 } as never)).toEqual({
+        payments: [],
+        total: 0,
+      });
+      expect(getPaymentsByUserIdMock).toHaveBeenCalledWith({
+        userId: 1,
+        reservationId: 0,
+        page: 0,
+        size: 20,
+      });
+    });
+
+    it('예약별 결제 조회 — reservationId를 넘기고 total을 돌려준다', async () => {
+      getPaymentsByUserIdMock.mockReturnValue(
+        of({ payments: [{ paymentId: 7, reservationId: 12 }], total: 1 }),
+      );
+
+      const result = await controller.getMyPayments({ userId: 1 } as never, {
+        reservationId: 12,
+      });
+
+      expect(getPaymentsByUserIdMock).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 1, reservationId: 12 }),
+      );
+      expect(result).toMatchObject({ total: 1, payments: [{ paymentId: 7 }] });
+    });
+  });
+
+  describe('getMyPayment', () => {
+    it('본인 결제 한 건을 돌려준다', async () => {
+      getMyPaymentMock.mockReturnValue(of({ paymentId: 7 }));
+
+      expect(await controller.getMyPayment({ userId: 1 } as never, 7)).toEqual({
+        paymentId: 7,
+      });
+      expect(getMyPaymentMock).toHaveBeenCalledWith({
+        userId: 1,
+        paymentId: 7,
+      });
+    });
+
+    it('없거나 남의 결제면 404 PAYMENT_NOT_FOUND', async () => {
+      getMyPaymentMock.mockReturnValue(
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 결제내역입니다.',
+        })),
+      );
+
+      await expect(
+        controller.getMyPayment({ userId: 1 } as never, 7),
+      ).rejects.toMatchObject({
+        status: 404,
+        response: { code: 'PAYMENT_NOT_FOUND' },
+      });
+    });
   });
 
   // LDP-198: catch가 없어 500으로 나가던 것을 일시 장애(503)로

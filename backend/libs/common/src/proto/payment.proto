@@ -14,7 +14,11 @@ service PaymentService {
   rpc GetPaymentById (GetPaymentByIdRequest) returns (Payment);
 
   // 특정 유저의 결제 목록 조회. /me(본인 조회)와 /{userId}(관리자 조회) 양쪽에서 재사용된다.
+  // 예약 조건과 페이지를 줄 수 있다. 조건이 없고 page가 0이면 예전처럼 전체. total은 조건에 맞는 전체 개수
   rpc GetPaymentsByUserId (GetPaymentsByUserIdRequest) returns (PaymentListResponse);
+
+  // 본인 결제 단건 조회 (GET /api/payments/me/{paymentId}). 결제가 없거나 다른 회원의 결제면 둘 다 NOT_FOUND
+  rpc GetMyPayment (GetMyPaymentRequest) returns (Payment);
 
   // 예약 취소 시 booking-service가 호출하는 내부용 환불 RPC (ERD "환불: 요청은 PrivateLink, 결과는 SQS").
   // REST로는 노출되지 않는다 — 환불은 별도 API가 아니라 예약취소의 부수효과로만 일어난다.
@@ -73,6 +77,14 @@ message GetPaymentByIdRequest {
 
 message GetPaymentsByUserIdRequest {
   int32 userId = 1;
+  int32 reservationId = 2; // 0이 아니면 이 예약의 결제만 (실패·재시도 결제까지 여러 건일 수 있다)
+  int32 page = 3; // 1부터. 0 = 페이지를 나누지 않고 전체
+  int32 size = 4; // 한 페이지 개수 (page가 1 이상일 때, 기본 20)
+}
+
+message GetMyPaymentRequest {
+  int32 userId = 1; // 본인 확인용 (api-gateway가 JWT에서 추출해 넘긴다)
+  int32 paymentId = 2;
 }
 
 message RefundPaymentRequest {
@@ -111,4 +123,5 @@ message Payment {
 
 message PaymentListResponse {
   repeated Payment payments = 1;
+  int32 total = 2; // 조건에 맞는 전체 개수 (페이지와 무관)
 }
