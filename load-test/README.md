@@ -6,10 +6,13 @@
 load-test/
 ├── seed/
 │   ├── loadtest-seed.sql        # 부하용 호텔 · 호실 · 예약 가능일 · 테스트 사용자 (멱등)
-│   └── loadtest-seed-job.yaml   # 운영 클러스터에서 위 SQL 을 실행하는 일회성 Job
+│   ├── loadtest-seed-job.yaml   # 운영 클러스터에서 위 SQL 을 실행하는 일회성 Job
+│   ├── hotspot-prep.sql         # 재고 잠금 집중 준비 — 매진 날짜 · 999실 객실 (멱등, 6절)
+│   └── hotspot-prep-job.yaml    # 위 SQL 을 실행하는 일회성 Job
 └── k6/
     ├── main.js                  # 진입점 (-e TEST= 로 테스트 유형 선택)
     ├── concurrency.js           # 동시 예약 (테스트 4)
+    ├── hotspot.js               # 재고 잠금 집중 (6절)
     ├── lib/                     # 설정 · HTTP 태그 · 데이터 선택 · setup · 지표 · 결과 기록
     ├── flows/                   # A browse · B search · C booking · D mypage · API 단독(api.js)
     ├── profiles/                # 테스트 유형별 부하 형태 · thresholds
@@ -235,3 +238,44 @@ load-test/scripts/export-prometheus.sh <시작 UTC> <끝 UTC> <이름>          
 - 생성기 CPU · 메모리는 테스트 중에 `top` 으로 본다. `dropped_iterations > 0` 인데 생성기 CPU 가 80% 를 넘으면 생성기 부족이다 → `instance_type` 을 올린다 (버스터블 t* 는 쓰지 않는다)
 - 생성기를 다시 만들면(`instance_type` 변경 등) 인스턴스는 교체되지만 EIP 는 그대로라 `80` 을 다시 apply 할 필요가 없다. 켜고 끌 때만 `80` 도 apply 한다
 - 끄기: 위 명령에서 `TF_VAR_enable_load_generator` 를 빼고 다시 실행 (인스턴스 · EIP 삭제, WAF 예외 비움). 매일 destroy 에도 포함된다. 결과를 올리기 전에 끄면 결과 파일도 사라진다
+
+## 6. 재고 잠금 집중 (`hotspot.js`, LDP-242)
+
+예약 생성은 hotel-service 가 **같은 객실 종류 × 날짜의 `room_availabilities` 행을 배타 잠금**으로 잡고 재고를 확인한다
+(`reserveRoomAvailability`). 같은 객실 · 같은 날짜에 예약이 몰리면 한 건씩 차례로 처리된다. 일반 흐름(`main.js`)은 날짜 · 객실을
+넓게 흩어 예약하고, 동시 예약(4절)은 정확성만 보므로 이 처리 상한은 따로 잰다.
+
+매진이어도 잠금을 먼저 잡고 거절하므로, 매진 상태로 만들어 두면 재고 소진 없이 몇 분씩 잴 수 있다. spread 와 hot 은 둘 다 거절 경로라
+처리 내용이 같고, 바뀌는 변수는 **행이 몰리는지** 하나뿐이다.
+
+| `MODE` | 대상 | 부하 (기본) | 판정 |
+|---|---|---|---|
+| `spread` | 「동시예약 전용룸」(1실, 매진) — 날짜 `SPREAD_DAYS`(150)일에 분산, 1박 | `STAGES` 20,50,100,200 예약/초, 단계당 5초 상승 + `STAGE_SECONDS` | 성공 0 (전부 매진 응답), 예상 밖 응답 0 |
+| `hot` | 같은 객실, **같은 날짜 하나** (`HOT_OFFSET` 30일 뒤) | spread 와 같음 | spread 와 같음 + spread 와 지연 비교 |
+| `burst` | 「집중 성공룸」(999실, 가용) — 같은 날짜 (`BURST_OFFSET` 10일 뒤) | `BURST_RPS` 200 × `BURST_SECONDS` 6초 | 사후 남은 방 0 (성공이 보유 수량을 넘지 않음) |
+
+준비 (시드 Job 다음, 운영):
+
+```bash
+kubectl -n backend create configmap loadtest-hotspot-sql --from-file=load-test/seed/hotspot-prep.sql \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n backend delete job loadtest-hotspot-prep --ignore-not-found
+kubectl apply -f load-test/seed/hotspot-prep-job.yaml
+kubectl -n backend wait --for=condition=complete job/loadtest-hotspot-prep --timeout=5m
+kubectl -n backend logs job/loadtest-hotspot-prep -c seed          # 두 객실 종류의 total_count · 매진 일수 · 가용 일수
+```
+
+실행:
+
+```bash
+cd load-test/k6
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=spread -e STAGE_SECONDS=60 hotspot.js
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=hot -e STAGE_SECONDS=60 hotspot.js
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=burst hotspot.js
+```
+
+- **다른 측정을 모두 끝낸 뒤 실행한다.** 「집중 성공룸」이 부하용 호텔에 생기면 `main.js` 흐름이 이 객실도 예약 · 조회 대상으로 쓴다
+- 「동시예약 전용룸」을 매진시키므로 준비 뒤에는 **동시 예약(4절)이 날짜를 찾지 못한다.** 동시 예약은 준비 전에 하거나, 재고 초기화 뒤에 한다
+- 재고 초기화(부하용 호텔 `booked_count` 0)를 하면 매진이 풀린다 → 준비 Job 을 다시 실행한다. spread · hot 의 setup 은 대상 날짜가 모두 매진이 아니면 바로 실패한다
+- 같이 볼 지표: InnoDB 행 잠금 대기(`mysql_global_status_innodb_row_lock_waits` · `_time`), hotel-service gRPC `ReserveRoomAvailability` 처리 시간, DB 커넥션 대기, k6 `POST /bookings` p95 · p99
+- burst 는 DB 로 교차 확인한다 (4절 SQL 에서 `rt.name = '집중 성공룸'`) — `booked_count` = 활성 예약 수 = 999
