@@ -172,6 +172,8 @@ message CreateAdminBookingRequest {
   int32 loungeGuestCount = 8;
   int32 adminId = 9; // 만든 직원 (JWT)
   string adminName = 10; // 만든 직원 이름 (api-gateway가 user-service에서 조회)
+  // 멱등 키 (LDP-243, Idempotency-Key 헤더). 503 뒤 다시 누르면 같은 키 → 처음 만든 예약을 돌려준다. 빈 값 = 키 없음
+  string idempotencyKey = 11;
 }
 
 message AdminCancelBookingRequest {

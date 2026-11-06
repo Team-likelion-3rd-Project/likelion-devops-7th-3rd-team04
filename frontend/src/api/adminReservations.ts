@@ -124,8 +124,19 @@ export function latestPaymentByReservation(payments: Payment[]): Map<number, Pay
 }
 
 // POST /api/bookings/admin (관리자 전용) - 대리 예약 생성 (만든 직원이 기록됨)
-export async function createAdminBooking(input: AdminCreateBookingRequest): Promise<AdminBooking> {
-  const res = await authedJsonFetch('/api/bookings/admin', 'POST', input)
+// idempotencyKey: 같은 대리 예약 시도면 같은 키 → 서버가 처음 만든 예약을 돌려준다 (LDP-243, utils/bookingIdempotency.ts)
+export async function createAdminBooking(
+  input: AdminCreateBookingRequest,
+  idempotencyKey?: string,
+): Promise<AdminBooking> {
+  const res = await authedFetch('/api/bookings/admin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+    },
+    body: JSON.stringify(input),
+  })
   return parseAdminResponse<AdminBooking>(res)
 }
 

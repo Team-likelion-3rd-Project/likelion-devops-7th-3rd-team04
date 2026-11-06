@@ -5,6 +5,7 @@
 // - 키는 "예약 조건"(객실·날짜·인원·옵션)마다 하나. 조건이 바뀌면 다른 예약이므로 새 키를 만든다.
 // - 새로고침해도 같은 키를 쓰도록 이 탭의 sessionStorage에 둔다 (탭을 닫으면 사라짐).
 // - 예약이 성공하면 지운다 — 같은 조건으로 일부러 한 번 더 예약할 때는 새 키가 나가야 한다.
+// - 관리자 대리 예약(LDP-243)은 forUserId(예약 대상 회원)까지 조건에 넣는다 — 다른 회원이면 다른 예약이다.
 
 export interface BookingConditions {
   roomId: number
@@ -13,13 +14,16 @@ export interface BookingConditions {
   guestCount: number
   poolGuestCount: number
   loungeGuestCount: number
+  /** 관리자 대리 예약의 대상 회원. 손님 본인 예약이면 비워 둔다 */
+  forUserId?: number
 }
 
 const STORAGE_PREFIX = 'booking-idempotency:'
 
 function storageKey(conditions: BookingConditions): string {
-  const { roomId, checkInDate, checkOutDate, guestCount, poolGuestCount, loungeGuestCount } = conditions
-  return `${STORAGE_PREFIX}${roomId}|${checkInDate}|${checkOutDate}|${guestCount}|${poolGuestCount}|${loungeGuestCount}`
+  const { roomId, checkInDate, checkOutDate, guestCount, poolGuestCount, loungeGuestCount, forUserId } = conditions
+  const owner = forUserId === undefined ? '' : `user-${forUserId}|`
+  return `${STORAGE_PREFIX}${owner}${roomId}|${checkInDate}|${checkOutDate}|${guestCount}|${poolGuestCount}|${loungeGuestCount}`
 }
 
 function newKey(): string {

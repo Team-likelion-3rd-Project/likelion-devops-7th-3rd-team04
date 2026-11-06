@@ -161,6 +161,7 @@ export class BookingServiceController {
     loungeGuestCount?: number;
     adminId: number;
     adminName: string;
+    idempotencyKey?: string;
   }) {
     return this.adminBookingService.createProxyBooking(data);
   }

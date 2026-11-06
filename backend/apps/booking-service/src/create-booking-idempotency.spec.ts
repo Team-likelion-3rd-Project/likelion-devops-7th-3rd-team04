@@ -166,11 +166,40 @@ describe('createBooking — 멱등 키', () => {
     );
   });
 
-  it('관리자 대리 예약은 키가 와도 쓰지 않는다', async () => {
+  // LDP-243: 관리자 대리 예약도 폼이 키를 보낸다. 키는 예약 대상 회원(userId) 기준
+  it('관리자 대리 예약도 키가 오면 대상 회원 기준으로 조회하고 키를 함께 저장한다', async () => {
     await service.createBooking(
       { ...request, idempotencyKey: KEY },
       { createdByAdminId: 1, createdByAdminName: '직원' },
     );
+
+    expect(findOne).toHaveBeenCalledWith({
+      where: { userId: 10, idempotencyKey: KEY },
+    });
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: KEY, createdByAdminId: 1 }),
+    );
+  });
+
+  it('관리자 대리 예약을 같은 키로 다시 보내면 재고를 건드리지 않고 처음 만든 예약을 돌려준다', async () => {
+    findOne.mockResolvedValue({ ...existing, createdByAdminId: 1 });
+
+    const result = await service.createBooking(
+      { ...request, idempotencyKey: KEY },
+      { createdByAdminId: 1, createdByAdminName: '직원' },
+    );
+
+    expect(result.reservationId).toBe(36);
+    expect(reserveRoomAvailability).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('키 없는 관리자 예약(연장 예약)은 예전처럼 조회 없이 새로 만든다', async () => {
+    await service.createBooking(request, {
+      createdByAdminId: 1,
+      createdByAdminName: '직원',
+      linkedReservationId: 30,
+    });
 
     expect(findOne).not.toHaveBeenCalled();
     expect(save).toHaveBeenCalledWith(
