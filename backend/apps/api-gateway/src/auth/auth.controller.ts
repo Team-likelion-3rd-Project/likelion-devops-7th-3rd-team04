@@ -34,6 +34,7 @@ import {
   grpcErrorToHttp,
   parseApiRpcError,
   toHttpException,
+  grpcServerErrorToHttp,
 } from '@app/common';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -41,6 +42,13 @@ import { RefreshDto } from './dto/refresh.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { SocialSignupDto } from './dto/social-signup.dto';
+
+// 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
+const AUTH_UNAVAILABLE = {
+  code: 'AUTH_SERVICE_UNAVAILABLE',
+  message:
+    '인증 서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+};
 
 interface AuthTokenResponse {
   accessToken: string;
@@ -202,6 +210,8 @@ export class AuthController implements OnModuleInit {
         if (payload) {
           throw toHttpException(payload);
         }
+        const unavailable = grpcServerErrorToHttp(err, AUTH_UNAVAILABLE);
+        if (unavailable) throw unavailable;
         throw new BadRequestException(
           err?.details || err?.message || '회원가입에 실패했습니다.',
         );
@@ -279,6 +289,8 @@ export class AuthController implements OnModuleInit {
   ) {
     const tokens = await firstValueFrom(this.authService.adminLogin(dto)).catch(
       (err) => {
+        const unavailable = grpcServerErrorToHttp(err, AUTH_UNAVAILABLE);
+        if (unavailable) throw unavailable;
         throw new UnauthorizedException(
           err?.details || err?.message || '로그인에 실패했습니다.',
         );
@@ -299,6 +311,8 @@ export class AuthController implements OnModuleInit {
     const tokens = await firstValueFrom(
       this.authService.refresh({ refreshToken }),
     ).catch((err) => {
+      const unavailable = grpcServerErrorToHttp(err, AUTH_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new UnauthorizedException(
         err?.details || err?.message || '토큰 재발급에 실패했습니다.',
       );
@@ -404,6 +418,8 @@ export class AuthController implements OnModuleInit {
     await firstValueFrom(
       this.authService.logout({ userId: user.userId, type: user.type }),
     ).catch((err) => {
+      const unavailable = grpcServerErrorToHttp(err, AUTH_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new BadRequestException(
         err?.details || err?.message || '로그아웃에 실패했습니다.',
       );
@@ -453,6 +469,8 @@ export class AuthController implements OnModuleInit {
       if (payload) {
         throw toHttpException(payload);
       }
+      const unavailable = grpcServerErrorToHttp(err, AUTH_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new UnauthorizedException(
         err?.details || err?.message || '비밀번호 변경에 실패했습니다.',
       );

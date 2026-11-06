@@ -35,9 +35,17 @@ import {
   adminHotelScope,
   assertAdminHotel,
   grpcErrorToHttp,
+  grpcServerErrorToHttp,
 } from '@app/common';
 import { toBookingLookupError } from '../booking/booking.controller';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
+
+// 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
+const PAYMENT_UNAVAILABLE = {
+  code: 'PAYMENT_SERVICE_UNAVAILABLE',
+  message:
+    '결제 서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+};
 
 const DEFAULT_MOCK_PG_SECRET = 'mock-pg-secret';
 
@@ -173,6 +181,8 @@ export class PaymentController implements OnModuleInit {
       }),
     ).catch((err: unknown) => {
       const grpcErr = err as GrpcErrorLike;
+      const unavailable = grpcServerErrorToHttp(err, PAYMENT_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new BadGatewayException(
         grpcErr.details || grpcErr.message || '웹훅 처리에 실패했습니다.',
       );
@@ -283,6 +293,8 @@ export class PaymentController implements OnModuleInit {
       this.paymentService.getPaymentById({ paymentId }),
     ).catch((err: unknown) => {
       const grpcErr = err as GrpcErrorLike;
+      const unavailable = grpcServerErrorToHttp(err, PAYMENT_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       const message =
         grpcErr.details || grpcErr.message || '결제 상세 조회에 실패했습니다.';
       if (message.includes('존재하지 않는 결제내역')) {

@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';
-import { NotFoundException } from '@nestjs/common';
+import { HttpException, NotFoundException } from '@nestjs/common';
 import { UserController } from './user.controller';
 
 describe('UserController', () => {
@@ -109,8 +109,35 @@ describe('UserController', () => {
       });
     });
 
+    it('user-service 장애는 404가 아니라 503이고 내부 주소를 노출하지 않는다 (LDP-238)', async () => {
+      getUserByIdMock.mockReturnValue(
+        throwError(() => ({
+          code: 14,
+          details: 'Name resolution failed for target dns:user-service:3001',
+        })),
+      );
+      const user = {
+        userId: 1,
+        email: 'user@example.com',
+        role: 'USER',
+        type: 'USER' as const,
+      };
+
+      const error = await controller.getMe(user).catch((e: unknown) => e);
+
+      expect((error as HttpException).getStatus()).toBe(503);
+      expect((error as HttpException).getResponse()).toMatchObject({
+        code: 'USER_SERVICE_UNAVAILABLE',
+      });
+      expect(
+        JSON.stringify((error as HttpException).getResponse()),
+      ).not.toContain('dns:');
+    });
+
     it('should throw NotFoundException when the profile is missing', async () => {
-      getUserByIdMock.mockReturnValue(throwError(() => ({ message: '존재하지 않는 유저입니다.' })));
+      getUserByIdMock.mockReturnValue(
+        throwError(() => ({ code: 5, details: '존재하지 않는 유저입니다.' })),
+      );
       const user = { userId: 999, email: 'ghost@example.com', role: 'USER', type: 'USER' as const };
 
       await expect(controller.getMe(user)).rejects.toThrow(NotFoundException);
@@ -139,7 +166,9 @@ describe('UserController', () => {
     });
 
     it('should throw NotFoundException when the profile is missing', async () => {
-      updateUserMock.mockReturnValue(throwError(() => ({ message: '존재하지 않는 유저입니다.' })));
+      updateUserMock.mockReturnValue(
+        throwError(() => ({ code: 5, details: '존재하지 않는 유저입니다.' })),
+      );
       const user = { userId: 999, email: 'ghost@example.com', role: 'USER', type: 'USER' as const };
       const dto = { name: '김철수', phoneNumber: '010-9999-9999' };
 
@@ -158,7 +187,9 @@ describe('UserController', () => {
     });
 
     it('should throw NotFoundException when the profile is missing', async () => {
-      withdrawMock.mockReturnValue(throwError(() => ({ message: '존재하지 않는 유저입니다.' })));
+      withdrawMock.mockReturnValue(
+        throwError(() => ({ code: 5, details: '존재하지 않는 유저입니다.' })),
+      );
       const user = { userId: 999, email: 'ghost@example.com', role: 'USER', type: 'USER' as const };
 
       await expect(controller.deleteMe(user)).rejects.toThrow(NotFoundException);
@@ -181,7 +212,9 @@ describe('UserController', () => {
     });
 
     it('should throw NotFoundException when the user does not exist', async () => {
-      getUserByIdMock.mockReturnValue(throwError(() => ({ message: '존재하지 않는 유저입니다.' })));
+      getUserByIdMock.mockReturnValue(
+        throwError(() => ({ code: 5, details: '존재하지 않는 유저입니다.' })),
+      );
 
       await expect(controller.getUserById(999)).rejects.toThrow(NotFoundException);
     });
