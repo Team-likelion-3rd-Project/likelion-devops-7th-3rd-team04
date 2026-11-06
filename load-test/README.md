@@ -250,7 +250,7 @@ load-test/scripts/export-prometheus.sh <시작 UTC> <끝 UTC> <이름>          
 
 | `MODE` | 대상 | 부하 (기본) | 판정 |
 |---|---|---|---|
-| `spread` | 「동시예약 전용룸」(1실, 매진) — 날짜 `SPREAD_DAYS`(150)일에 분산, 1박 | `STAGES` 20,50,100,200 예약/초, 단계당 5초 상승 + `STAGE_SECONDS` | 성공 0 (전부 매진 응답), 예상 밖 응답 0 |
+| `spread` | 「동시예약 전용룸」(1실, 매진) — 날짜 `SPREAD_DAYS`(150)일에 분산, 1박 | `STAGES` 50,100,150 예약/초, 단계당 5초 상승 + `STAGE_SECONDS`(60) | 성공 0 (전부 매진 응답), 예상 밖 응답 0 |
 | `hot` | 같은 객실, **같은 날짜 하나** (`HOT_OFFSET` 30일 뒤) | spread 와 같음 | spread 와 같음 + spread 와 지연 비교 |
 | `burst` | 「집중 성공룸」(999실, 가용) — 같은 날짜 (`BURST_OFFSET` 10일 뒤) | `BURST_RPS` 200 × `BURST_SECONDS` 6초 | 사후 남은 방 0 (성공이 보유 수량을 넘지 않음) |
 
@@ -269,10 +269,16 @@ kubectl -n backend logs job/loadtest-hotspot-prep -c seed          # 두 객실 
 
 ```bash
 cd load-test/k6
-k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=spread -e STAGE_SECONDS=60 hotspot.js
-k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=hot -e STAGE_SECONDS=60 hotspot.js
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=spread hotspot.js
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=hot hotspot.js
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=hot -e STAGES=300,400,480 hotspot.js   # 한계 탐색
 k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=burst hotspot.js
 ```
+
+- 단계 기본값은 `hotspot.js` 안에 따로 둔다 (50,100,150 예약/초 × 60초). 공용 `STAGES` · `STAGE_SECONDS` 기본값(tune 용)과 섞이지 않는다
+- 상한: 앱 요청 제한(`THROTTLE_LIMIT`)이 IP + 경로별이라, 테스트 브랜치 30000/분이면 `POST /bookings` 한 경로가 **500 예약/초**에서 429 로 막힌다 — 그 이상은 측정할 수 없다
+- 매진 응답은 지금 **409** (`ROOM_NOT_AVAILABLE`). 404 매진 문구도 매진으로 받는다 (`lib/booking-result.js`)
+- 3차(11-06) 결과: spread · hot 은 150 까지 p95 같음(43–55ms), hot 300 에서 처리 255/초 · p95 6.4초 · hotel 커넥션 풀 대기 3.3초 (한 행 상한 약 250/초), burst 성공 999 = 보유 수량 (위키 「성능 테스트 — 3차」)
 
 - **다른 측정을 모두 끝낸 뒤 실행한다.** 「집중 성공룸」이 부하용 호텔에 생기면 `main.js` 흐름이 이 객실도 예약 · 조회 대상으로 쓴다
 - 「동시예약 전용룸」을 매진시키므로 준비 뒤에는 **동시 예약(4절)이 날짜를 찾지 못한다.** 동시 예약은 준비 전에 하거나, 재고 초기화 뒤에 한다

@@ -1,5 +1,5 @@
 // 재고 잠금 집중 테스트 (LDP-242, 부하 테스트 3차) — 같은 객실 종류 × 날짜 행에 예약이 몰릴 때의 처리 상한
-//   k6 run -e BASE_URL=... -e LT_PASSWORD=... -e MODE=spread|hot|burst [-e STAGES=20,50,100,200] [-e STAGE_SECONDS=60] hotspot.js
+//   k6 run -e BASE_URL=... -e LT_PASSWORD=... -e MODE=spread|hot|burst [-e STAGES=50,100,150] [-e STAGE_SECONDS=60] hotspot.js
 //
 // hotel-service reserveRoomAvailability 는 객실 종류 × 날짜 행을 배타 잠금으로 잡은 뒤 재고를 확인한다.
 // 매진이어도 잠금을 먼저 잡으므로, 매진 상태에서 "같은 행"과 "흩어진 행"을 같은 부하로 비교하면
@@ -18,9 +18,12 @@ import { collectCatalog, loginUsers, assertTokenLifetime } from './lib/setup.js'
 import { userFor } from './lib/data.js';
 import { summarize } from './lib/summary.js';
 import { CREATE_EXPECTED, classifyCreate } from './lib/booking-result.js';
-import { STAGES, STAGE_SECONDS } from './lib/config.js';
 
 const MODE = __ENV.MODE || 'hot';
+// 단계 (예약/초) · 단계 길이(초). 공용 STAGES · STAGE_SECONDS(tune 용 기본값)와 따로 둔다 — 3차(11-06) 측정 기준
+// 앱 요청 제한(THROTTLE_LIMIT)은 IP + 경로별이라 테스트 브랜치 30000/분이면 한 경로 500/초가 상한 (그 이상은 429)
+const STAGES = (__ENV.STAGES || '50,100,150').split(',').map(Number);
+const STAGE_SECONDS = Number(__ENV.STAGE_SECONDS || 60);
 const SPREAD_DAYS = Number(__ENV.SPREAD_DAYS || 150); // 매진 준비 200일 안
 const HOT_OFFSET = Number(__ENV.HOT_OFFSET || 30);
 const BURST_OFFSET = Number(__ENV.BURST_OFFSET || 10);
