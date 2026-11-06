@@ -147,3 +147,15 @@ export function grpcErrorToHttp(
   }
   return toHttpException({ status: 503, ...unavailable, retryable: true });
 }
+
+// 서버 쪽 장애(연결 실패·시간 초과·예상 못 한 오류)일 때만 503 예외를 돌려주고, 아니면 null (LDP-238).
+// 호출부의 기존 4xx 상태·문구를 그대로 두면서 내부 주소가 담긴 오류 원문이 응답으로 나가는 것만 막는다.
+export function grpcServerErrorToHttp(
+  err: unknown,
+  unavailable: { code: string; message: string },
+): HttpException | null {
+  if (parseApiRpcError(err) || HTTP_STATUS_BY_GRPC[grpcStatusOf(err)]) {
+    return null;
+  }
+  return toHttpException({ status: 503, ...unavailable, retryable: true });
+}

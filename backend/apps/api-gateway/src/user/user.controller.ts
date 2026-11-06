@@ -25,9 +25,17 @@ import {
   AuthenticatedUser,
   parseApiRpcError,
   toHttpException,
+  grpcServerErrorToHttp,
 } from '@app/common';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { UserListQueryDto } from './dto/user-list-query.dto';
+
+// 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
+const USER_UNAVAILABLE = {
+  code: 'USER_SERVICE_UNAVAILABLE',
+  message:
+    '회원 서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+};
 
 // proto의 User 메시지와 1:1 대응되는 응답 형태
 interface UserResponse {
@@ -143,6 +151,8 @@ export class UserController implements OnModuleInit {
   })
   async getMe(@CurrentUser() user: AuthenticatedUser): Promise<UserResponse> {
     return firstValueFrom(this.userService.getUserById({ id: user.userId })).catch((err) => {
+      const unavailable = grpcServerErrorToHttp(err, USER_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new NotFoundException(err?.details || err?.message || '유저 정보를 찾을 수 없습니다.');
     });
   }
@@ -173,6 +183,8 @@ export class UserController implements OnModuleInit {
     return firstValueFrom(
       this.userService.updateUser({ id: user.userId, ...dto }),
     ).catch((err) => {
+      const unavailable = grpcServerErrorToHttp(err, USER_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new NotFoundException(err?.details || err?.message || '유저 정보를 찾을 수 없습니다.');
     });
   }
@@ -212,6 +224,8 @@ export class UserController implements OnModuleInit {
       if (payload) {
         throw toHttpException(payload);
       }
+      const unavailable = grpcServerErrorToHttp(err, USER_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new NotFoundException(err?.details || err?.message || '회원 탈퇴에 실패했습니다.');
     });
     return { message: '회원 탈퇴가 완료되었습니다.' };
@@ -245,6 +259,8 @@ export class UserController implements OnModuleInit {
   })
   async getUserById(@Param('userId', ParseIntPipe) userId: number): Promise<UserResponse> {
     return firstValueFrom(this.userService.getUserById({ id: userId })).catch((err) => {
+        const unavailable = grpcServerErrorToHttp(err, USER_UNAVAILABLE);
+        if (unavailable) throw unavailable;
       throw new NotFoundException(err?.details || err?.message || '유저 정보를 찾을 수 없습니다.');
     });
   }

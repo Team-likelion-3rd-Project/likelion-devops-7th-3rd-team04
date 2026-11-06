@@ -30,6 +30,7 @@ import {
   JwtAuthGuard,
   RolesGuard,
   Roles,
+  grpcServerErrorToHttp,
 } from '@app/common';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateRoomImageUploadUrlDto } from './dto/create-room-image-upload-url.dto';
@@ -37,6 +38,13 @@ import { UpdateRoomDto } from './dto/update-room.dto';
 import { RoomAvailabilityQueryDto } from './dto/room-availability-query.dto';
 import { RoomSearchQueryDto } from './dto/room-search-query.dto';
 import { UpdateHotelDto } from './dto/update-hotel.dto';
+
+// 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
+const HOTEL_UNAVAILABLE = {
+  code: 'HOTEL_SERVICE_UNAVAILABLE',
+  message:
+    '호텔 서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+};
 
 // proto의 Hotel 메시지와 1:1 대응되는 응답 형태
 interface HotelDto {
@@ -493,6 +501,8 @@ export class HotelController implements OnModuleInit {
     return firstValueFrom(
       this.hotelService.createRoomImageUploadUrl({ hotelId, roomId, ...dto }),
     ).catch((err: { details?: string; message?: string }) => {
+      const unavailable = grpcServerErrorToHttp(err, HOTEL_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       const message = err?.details || err?.message || '';
       if (message.includes('존재하지 않는 객실')) {
         throw new NotFoundException(message);
@@ -545,6 +555,8 @@ export class HotelController implements OnModuleInit {
     return firstValueFrom(
       this.hotelService.updateRoom({ hotelId, roomId, ...dto }),
     ).catch((err: { details?: string; message?: string }) => {
+      const unavailable = grpcServerErrorToHttp(err, HOTEL_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       const message = err?.details || err?.message || '';
       if (!message || message.includes('존재하지 않는')) {
         throw new NotFoundException(message || '존재하지 않는 객실입니다.');

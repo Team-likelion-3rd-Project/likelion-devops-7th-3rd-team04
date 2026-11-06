@@ -37,10 +37,17 @@ import {
   grpcErrorToHttp,
   parseApiRpcError,
   toHttpException,
+  grpcServerErrorToHttp,
 } from '@app/common';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 import { AssignRoomUnitDto } from './dto/assign-room-unit.dto';
+
+// 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
+const BOOKING_UNAVAILABLE = {
+  code: 'BOOKING_SERVICE_UNAVAILABLE',
+  message: '예약 서비스에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+};
 
 // proto의 Booking 메시지와 1:1 대응되는 응답 형태. 편의시설(수영장/라운지) 이용 여부/인원수는
 // 여기 담기지 않는다 — reservation_facilities가 유일한 소스이며, GET /api/bookings/:reservationId/facilities로
@@ -386,6 +393,8 @@ export class BookingController implements OnModuleInit {
       if (payload) {
         throw toHttpException(payload);
       }
+      const unavailable = grpcServerErrorToHttp(err, BOOKING_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       const message =
         err?.details || err?.message || '예약 취소에 실패했습니다.';
       if (message.includes('본인의 예약만')) {
@@ -639,6 +648,8 @@ export class BookingController implements OnModuleInit {
     const booking = await firstValueFrom(
       this.bookingService.getBookingById({ reservationId }),
     ).catch((err) => {
+      const unavailable = grpcServerErrorToHttp(err, BOOKING_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new NotFoundException(
         err?.details || err?.message || '존재하지 않는 예약입니다.',
       );
