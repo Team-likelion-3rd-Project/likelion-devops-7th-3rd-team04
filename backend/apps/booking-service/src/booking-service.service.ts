@@ -366,8 +366,9 @@ export class BookingServiceService implements OnModuleInit {
 
     // 멱등 키 (LDP-240): 화면이 예약 시도마다 만들어 보낸다. 503을 받고 다시 누르면 같은 키가 온다.
     // 같은 회원·같은 키의 예약이 이미 있으면 재고를 건드리지 않고 그 예약을 돌려준다.
-    // 관리자 대리·연장 예약은 키를 보내지 않는다 (빈 값 → 예전처럼 항상 새로 만든다).
-    const idempotencyKey = admin ? '' : (data.idempotencyKey ?? '').trim();
+    // 관리자 대리 예약도 폼이 키를 보낸다 (LDP-243) — 키는 예약 대상 회원(userId) 기준으로 겹치지 않으면 된다.
+    // 키가 없으면(연장 예약, 예전 클라이언트) 예전처럼 항상 새로 만든다.
+    const idempotencyKey = (data.idempotencyKey ?? '').trim();
     if (idempotencyKey) {
       const existing = await this.findByIdempotencyKey(
         data.userId,

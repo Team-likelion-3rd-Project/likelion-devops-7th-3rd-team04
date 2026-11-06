@@ -64,6 +64,7 @@ WSL에서 `missing dependencies` 오류가 나면 `sudo npx playwright install-d
 | `smoke.spec.ts` | 메인 화면이 열린다 |
 | `booking-happy-path.spec.ts` | 가입 → 예약 → 결제 → 예약 확정 / 결제 후 취소 → 환불 완료 |
 | `r1-duplicate-booking.spec.ts` | R1: 예약 응답이 503인데 서버는 예약을 만든 경우, 다시 누르면 예약이 1건인가 |
+| `r1-admin-duplicate-booking.spec.ts` | R1-관리자: 대리 예약 응답이 503인데 서버는 예약을 만든 경우, 직원이 다시 누르면 예약이 1건인가 |
 | `r2-stock-leak.spec.ts` | R2: 재고를 잡은 뒤 예약이 실패하면 재고가 돌아오는가 |
 | `r3-last-room.spec.ts` | R3: 마지막 객실 1개를 3명이 동시에 예약하면 1명만 성공하는가 |
 | `r4-r6-repeat-actions.spec.ts` | R4~R6: 결제 버튼 연타·두 탭 동시 결제·성공 화면 새로고침·취소 연타·다른 탭 재취소 |
@@ -74,11 +75,12 @@ WSL에서 `missing dependencies` 오류가 나면 `sudo npx playwright install-d
 
 ## 알려진 실패 (`test.fail`)
 
-지금은 없습니다. 아래 두 버그는 E2E로 재현한 뒤 고쳤고, 고친 뒤 `test.fail` 표시를 지웠습니다.
+지금은 없습니다. 아래 버그들은 E2E로 재현한 뒤 고쳤고, 고친 뒤 `test.fail` 표시를 지웠습니다.
 
 | 시나리오 | 고치기 전 | 고친 이슈 |
 |---|---|---|
 | R1 | 503 뒤 재클릭 → 결제 대기 예약 2건 | LDP-240 (예약 생성 멱등 키) |
+| R1-관리자 | 대리 예약 503 뒤 재클릭 → 결제 대기 예약 2건 | LDP-243 (대리 예약에도 멱등 키) |
 | R2 | 예약 실패 → 남은 객실 5 → 4 | LDP-239 (실패 시 재고 반환) |
 
 새 버그를 재현하는 테스트를 먼저 넣을 때는 `test.fail(true, '이유')`로 표시해 두면 전체 실행은 통과로 나오고, 버그가 고쳐지면 그 테스트가 **통과하면서 빨간불**이 됩니다. 그때 `test.fail` 줄을 지웁니다.

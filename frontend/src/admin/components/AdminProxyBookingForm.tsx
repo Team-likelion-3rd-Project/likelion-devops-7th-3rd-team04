@@ -4,6 +4,7 @@ import { searchAdminUsers } from '../../api/adminApi'
 import type { AdminHotel, AdminRoom, AdminUser } from '../../api/adminApi'
 import { adminReservationErrorMessage, createAdminBooking } from '../../api/adminReservations'
 import type { AdminBooking } from '../../api/adminReservations'
+import { bookingIdempotencyKey, clearBookingIdempotencyKey } from '../../utils/bookingIdempotency'
 import { openDatePicker } from '../../utils/date'
 
 interface AdminProxyBookingFormProps {
@@ -82,19 +83,35 @@ function AdminProxyBookingForm({ hotels, roomsByHotel, onCreated, onClose }: Adm
       return
     }
 
+    // 멱등 키 (LDP-243): 503을 받고 같은 내용으로 다시 누르면 같은 키 → 서버가 처음 만든 예약을 돌려준다.
+    // 회원·객실·날짜·인원·옵션 중 하나라도 바꾸면 다른 예약이라 새 키가 나간다.
+    const conditions = {
+      forUserId: userId,
+      roomId,
+      checkInDate,
+      checkOutDate,
+      guestCount: guests,
+      poolGuestCount: pool,
+      loungeGuestCount: lounge,
+    }
+
     setIsSaving(true)
     setFormError('')
     try {
-      const created = await createAdminBooking({
-        userId,
-        hotelId,
-        roomId,
-        checkInDate,
-        checkOutDate,
-        guestCount: guests,
-        poolGuestCount: pool || undefined,
-        loungeGuestCount: lounge || undefined,
-      })
+      const created = await createAdminBooking(
+        {
+          userId,
+          hotelId,
+          roomId,
+          checkInDate,
+          checkOutDate,
+          guestCount: guests,
+          poolGuestCount: pool || undefined,
+          loungeGuestCount: lounge || undefined,
+        },
+        bookingIdempotencyKey(conditions),
+      )
+      clearBookingIdempotencyKey(conditions)
       onCreated(created, selectedUser ? `${selectedUser.name} (${selectedUser.email})` : `회원 #${userId}`)
     } catch (err) {
       setFormError(adminReservationErrorMessage(err, '대리 예약을 만들지 못했습니다.'))

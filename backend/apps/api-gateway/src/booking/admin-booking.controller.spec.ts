@@ -284,6 +284,7 @@ describe('AdminBookingController', () => {
       ...dto,
       adminId: 3,
       adminName: '김직원',
+      idempotencyKey: '',
     });
     expect(result).toMatchObject({
       roomUnitId: null,
@@ -293,6 +294,26 @@ describe('AdminBookingController', () => {
       cancelledByAdminId: null,
       cancelReason: '',
     });
+  });
+
+  // LDP-243: 503 뒤 다시 누를 때 같은 키 → booking-service가 처음 만든 예약을 돌려준다
+  it('Idempotency-Key 헤더를 앞뒤 공백을 지워 booking-service로 넘긴다', async () => {
+    await controller.createAdminBooking(admin, dto, '  admin-key_1  ');
+
+    expect(booking.createAdminBooking).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'admin-key_1' }),
+    );
+  });
+
+  it('형식이 틀린 키면 400 INVALID_IDEMPOTENCY_KEY — 회원 확인도 예약도 하지 않는다', async () => {
+    const { status, body } = await httpError(
+      controller.createAdminBooking(admin, dto, '한글 키'),
+    );
+
+    expect(status).toBe(400);
+    expect(body.code).toBe('INVALID_IDEMPOTENCY_KEY');
+    expect(user.getUserById).not.toHaveBeenCalled();
+    expect(booking.createAdminBooking).not.toHaveBeenCalled();
   });
 
   it('없는 회원이면 404 USER_NOT_FOUND (예약하지 않음)', async () => {
