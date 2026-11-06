@@ -16,7 +16,7 @@
 ```
 infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── Chart.yaml · values.yaml · templates/ · files/   root 앱 차트 (앱 정의 → Application, 배포 결과 알림)
-├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080)
+├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080, 2개 · 노드마다 1개)
 ├── aws-load-balancer-controller/ chart.yaml · values.yaml   18  EKS 만. TargetGroupBinding 컨트롤러 (LB 를 만들지 않음)
 ├── cluster-autoscaler/    chart.yaml · values.yaml          18  EKS 만. Pending Pod 를 보고 워커 노드 그룹 2 ~ 4대 조절 (Terraform 72)
 ├── traefik-target-group/  chart.yaml · chart/               19  EKS 만. Traefik 파드 IP → 80-main-edge eks Target Group
@@ -34,6 +34,21 @@ infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── kube-prometheus-stack/ chart.yaml · values.yaml          60  Prometheus · Alertmanager · Grafana · kube-state-metrics · node-exporter
 └── frontend/              values.yaml                       —   프론트 version(main SHA) · 빌드 설정 (앱 정의 아님, Terraform 13-frontend)
 ```
+
+## Pod 배치 (분산)
+
+같은 서비스 Pod 와 Traefik 을 노드마다 나눕니다 (LDP-227 · LDP-237). 노드가 늘어나도 기존 Pod 는 옮겨지지 않으므로, 새로 만들어지는 Pod(HPA 확장 · 롤아웃 · 노드 교체)가 빈 노드로 가게 하는 규칙입니다.
+
+| 대상 | 설정 | 규칙 |
+|------|------|------|
+| backend 서비스 (gateway · hotel · booking · auth · user · chat-bot · llm) | `backend/values.yaml` `topologySpread` (차트 템플릿) | 노드(`kubernetes.io/hostname`)별 같은 서비스 Pod 개수 차이 1 이하, **`DoNotSchedule`** |
+| Traefik | `traefik/values.yaml` `topologySpreadConstraints` | 노드마다 1개, `DoNotSchedule` |
+
+- `DoNotSchedule` = 지킬 수 없으면 배치하지 않고 Pending → Cluster Autoscaler 가 노드를 늘립니다. 차트 기본 `ScheduleAnyway` 는 자리가 없으면 규칙을 무시해, 롤아웃 · HPA 때 한 노드에 몰렸습니다.
+- 근거 (11-05 부하 테스트 2일차, load 350 요청/초 × 15분): 쏠림 조회 p95 334ms(실패) → 분산 64ms. 지연은 앱이 아니라 포화된 노드의 Traefik → gateway 구간에서 생겼습니다.
+- 롤아웃 중 옛 버전 Pod 는 세지 않습니다 (`matchLabelKeys: pod-template-hash`). 그래서 surge Pod 가 규칙 때문에 막히지 않습니다.
+- **노드 그룹 max(Terraform 72 `node_max_size`)에 닿은 상태**에서는 HPA 확장 Pod · 롤아웃 surge Pod 가 Pending 으로 남을 수 있습니다 (CA 가 더 늘릴 수 없음). `kubectl get pods -A --field-selector=status.phase=Pending` 으로 확인합니다.
+- 막지 못하는 것: 서로 다른 서비스 Pod 가 한 노드에 모이는 것, 이미 배치된 Pod 의 재배치 (descheduler 미도입). n8n 은 별도 템플릿이라 규칙이 없습니다.
 
 ## IRSA · 비밀값
 
