@@ -207,6 +207,15 @@ export interface BookingListQuery {
   keywordRoomUnitIds?: number[];
 }
 
+// 회원 예약 목록 조건 (proto GetBookingsByUserIdRequest). 비어 있는 칸은 조건 없음
+export interface UserBookingListQuery {
+  userId: number;
+  statuses?: string[];
+  page?: number;
+  size?: number;
+  hotelId?: number;
+}
+
 // 끝난 예약 중 환불이 남아 있을 수 있는 상태 — 여기에 취소를 다시 요청하면 환불 상태를 확인해 알려 준다 (LDP-97).
 // 만료·결제 실패도 "예약이 끝난 뒤 승인"이 오면 자동 환불 대상이 된다.
 const REFUNDABLE_CLOSED_STATUSES = [
@@ -620,12 +629,53 @@ export class BookingServiceService implements OnModuleInit {
 
   // 특정 유저의 예약 목록 조회. userId가 이 서비스의 DB에 존재하지 않아도(유저 존재 여부는
   // 검증할 수 없음, 서비스 간 DB 분리 원칙) 빈 배열을 그대로 반환한다.
-  async getBookingsByUserId(userId: number): Promise<BookingGrpcResponse[]> {
-    const reservations = await this.reservationRepository.find({
-      where: { userId },
-      order: { createdAt: 'DESC' },
+  // 상태·지점 조건과 페이지(부하 테스트 11-06 — 예약이 쌓일수록 전체 조회가 느려짐)는 getBookings와 같은 방식.
+  // 조건이 없고 page가 0이면 예전처럼 전체.
+  async getBookingsByUserId(
+    query: UserBookingListQuery,
+  ): Promise<{ bookings: BookingGrpcResponse[]; total: number }> {
+    const qb = this.reservationRepository
+      .createQueryBuilder('r')
+      .where('r.userId = :userId', { userId: query.userId });
+    if (query.statuses?.length) {
+      qb.andWhere('r.status IN (:...statuses)', { statuses: query.statuses });
+    }
+    if (query.hotelId) {
+      qb.andWhere('r.hotelId = :hotelId', { hotelId: query.hotelId });
+    }
+    qb.orderBy('r.createdAt', 'DESC').addOrderBy('r.reservationId', 'DESC');
+    if (query.page && query.page > 0) {
+      const size = query.size && query.size > 0 ? query.size : 20;
+      qb.skip((query.page - 1) * size).take(size);
+    }
+
+    const [reservations, total] = await qb.getManyAndCount();
+    return {
+      bookings: await this.toGrpcResponsesWithLastAttempt(reservations),
+      total,
+    };
+  }
+
+  // 본인 예약 단건 조회 (GET /api/bookings/me/{reservationId}). 결제 확정 대기·예약 상세가 목록 전체 대신 쓴다.
+  // 목록과 같은 응답(결제 시도 상태 포함 — CONFIRMING이면 결제 버튼을 막는다)이라 getBookingById와 따로 둔다.
+  // 남의 예약도 "없음"과 같은 404로 답한다 — 다른 회원의 예약 번호가 있는지 알 수 없게.
+  async getMyBooking(
+    userId: number,
+    reservationId: number,
+  ): Promise<BookingGrpcResponse> {
+    const reservation = await this.reservationRepository.findOne({
+      where: { reservationId, userId },
     });
-    return this.toGrpcResponsesWithLastAttempt(reservations);
+    if (!reservation) {
+      throw apiRpcException({
+        status: 404,
+        code: 'RESERVATION_NOT_FOUND',
+        message: '존재하지 않는 예약입니다.',
+        retryable: false,
+      });
+    }
+    const [response] = await this.toGrpcResponsesWithLastAttempt([reservation]);
+    return response;
   }
 
   // 회원의 이용 예정 예약 수 (LDP-95) — 1건 이상이면 auth-service가 탈퇴를 거절한다.

@@ -14,6 +14,7 @@ import {
   ParseIntPipe,
   Put,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
@@ -44,7 +45,11 @@ import {
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 import { AssignRoomUnitDto } from './dto/assign-room-unit.dto';
+import { MyBookingListQueryDto } from './dto/my-booking-list.dto';
 import { parseIdempotencyKey } from './idempotency-key';
+
+// 내 예약 목록 페이지 크기 기본값 (page를 줄 때만 쓰인다)
+const DEFAULT_PAGE_SIZE = 20;
 
 // 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
 const BOOKING_UNAVAILABLE = {
@@ -118,7 +123,15 @@ interface BookingService {
   getHello(data: {}): Observable<{ message: string }>;
   getBookingsByUserId(data: {
     userId: number;
-  }): Observable<{ bookings: BookingDto[] }>;
+    statuses?: string[];
+    page?: number;
+    size?: number;
+    hotelId?: number;
+  }): Observable<{ bookings?: BookingDto[]; total?: number }>;
+  getMyBooking(data: {
+    userId: number;
+    reservationId: number;
+  }): Observable<BookingDto>;
   getBookingById(data: { reservationId: number }): Observable<BookingDto>;
   cancelBooking(data: {
     reservationId: number;
@@ -264,7 +277,7 @@ export class BookingController implements OnModuleInit {
 
   /**
    * GET http://localhost:3000/api/bookings/me
-   * 로그인한 사용자 본인의 예약 목록을 조회합니다.
+   * 로그인한 사용자 본인의 예약 목록을 조회합니다. 상태 조건·페이지를 줄 수 있습니다.
    */
   @Get('me')
   @UseGuards(JwtAuthGuard)
@@ -272,20 +285,63 @@ export class BookingController implements OnModuleInit {
   @ApiOperation({
     summary: '내 예약 목록 조회',
     description:
-      '유효한 액세스 토큰을 가진 사용자 본인의 예약 목록을 조회합니다.',
+      '유효한 액세스 토큰을 가진 사용자 본인의 예약 목록을 조회합니다. 최신순. ' +
+      'status(쉼표로 여러 개)로 상태를 거르고, page를 주면 그 페이지만 돌려줍니다. ' +
+      'total은 조건에 맞는 전체 개수입니다 — 결제 대기 건수만 필요하면 status=PENDING_PAYMENT&page=1&size=1의 total을 씁니다.',
   })
   @ApiResponse({
     status: 200,
-    description: '내 예약 목록 조회 성공',
+    description: '{ bookings, total }',
   })
+  @ApiResponse({ status: 400, description: '조건 값이 잘못됨' })
   async getMyBookings(
     @CurrentUser() user: AuthenticatedUser,
-  ): Promise<{ bookings: BookingDto[] }> {
-    return toBookings(
+    @Query() query: MyBookingListQueryDto = {},
+  ): Promise<{ bookings: BookingDto[]; total: number }> {
+    const { bookings = [], total = 0 } = await firstValueFrom(
+      this.bookingService.getBookingsByUserId({
+        userId: user.userId,
+        statuses: query.status ?? [],
+        page: query.page ?? 0,
+        size: query.size ?? DEFAULT_PAGE_SIZE,
+      }),
+    ).catch((err) => {
+      throw toBookingHttpError(err);
+    });
+    return { bookings: bookings.map(toBooking), total };
+  }
+
+  /**
+   * GET http://localhost:3000/api/bookings/me/{reservationId}
+   * 로그인한 사용자 본인의 예약 한 건 — 결제 확정 대기·예약 상세가 목록 전체 대신 씁니다 (부하 테스트 11-06).
+   */
+  @Get('me/:reservationId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiParam({
+    name: 'reservationId',
+    description: '조회할 예약 PK ID',
+    type: Number,
+  })
+  @ApiOperation({
+    summary: '내 예약 단건 조회',
+    description:
+      '목록과 같은 형태(결제 시도 상태·방 번호 포함)로 예약 한 건을 돌려줍니다. 다른 회원의 예약이면 없는 예약과 같이 404입니다.',
+  })
+  @ApiResponse({ status: 200, description: '내 예약 단건 조회 성공' })
+  @ApiResponse({ status: 404, description: 'RESERVATION_NOT_FOUND' })
+  async getMyBooking(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('reservationId', ParseIntPipe) reservationId: number,
+  ): Promise<BookingDto> {
+    return toBooking(
       await firstValueFrom(
-        this.bookingService.getBookingsByUserId({ userId: user.userId }),
+        this.bookingService.getMyBooking({
+          userId: user.userId,
+          reservationId,
+        }),
       ).catch((err) => {
-        throw toBookingHttpError(err);
+        throw toBookingHttpError(err, { 404: 'RESERVATION_NOT_FOUND' });
       }),
     );
   }

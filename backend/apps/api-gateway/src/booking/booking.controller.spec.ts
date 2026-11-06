@@ -8,6 +8,7 @@ import { CreateBookingDto } from './dto/create-booking.dto';
 describe('BookingController', () => {
   const createBooking = jest.fn();
   const getBookingsByUserId = jest.fn();
+  const getMyBooking = jest.fn();
   let controller: BookingController;
 
   const user = { userId: 10 } as AuthenticatedUser;
@@ -29,7 +30,7 @@ describe('BookingController', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     controller = new BookingController({
-      getService: () => ({ createBooking, getBookingsByUserId }),
+      getService: () => ({ createBooking, getBookingsByUserId, getMyBooking }),
     } as never);
     controller.onModuleInit();
   });
@@ -94,11 +95,44 @@ describe('BookingController', () => {
   });
 
   describe('getMyBookings', () => {
-    it('본인 예약 목록을 돌려준다', async () => {
+    it('조건이 없으면 예전처럼 전체(page 0)를 돌려준다', async () => {
       getBookingsByUserId.mockReturnValue(of({ bookings: [] }));
 
-      expect(await controller.getMyBookings(user)).toEqual({ bookings: [] });
-      expect(getBookingsByUserId).toHaveBeenCalledWith({ userId: 10 });
+      expect(await controller.getMyBookings(user)).toEqual({
+        bookings: [],
+        total: 0,
+      });
+      expect(getBookingsByUserId).toHaveBeenCalledWith({
+        userId: 10,
+        statuses: [],
+        page: 0,
+        size: 20,
+      });
+    });
+
+    it('상태 조건·페이지를 넘기고 total을 돌려준다 (결제 대기 건수 = size 1의 total)', async () => {
+      getBookingsByUserId.mockReturnValue(
+        of({ bookings: [{ reservationId: 3, roomUnitId: 0 }], total: 4 }),
+      );
+
+      const result = await controller.getMyBookings(user, {
+        status: ['PENDING_PAYMENT'],
+        page: 1,
+        size: 1,
+      });
+
+      expect(getBookingsByUserId).toHaveBeenCalledWith({
+        userId: 10,
+        statuses: ['PENDING_PAYMENT'],
+        page: 1,
+        size: 1,
+      });
+      expect(result.total).toBe(4);
+      // gRPC의 0은 null로
+      expect(result.bookings[0]).toMatchObject({
+        reservationId: 3,
+        roomUnitId: null,
+      });
     });
 
     it('booking-service 장애면 503 (예전에는 500)', async () => {
@@ -107,6 +141,44 @@ describe('BookingController', () => {
       );
 
       expect((await responseOf(controller.getMyBookings(user))).status).toBe(
+        503,
+      );
+    });
+  });
+
+  describe('getMyBooking', () => {
+    it('본인 예약 한 건을 돌려준다', async () => {
+      getMyBooking.mockReturnValue(of({ reservationId: 5, roomUnitId: 0 }));
+
+      const result = await controller.getMyBooking(user, 5);
+
+      expect(getMyBooking).toHaveBeenCalledWith({
+        userId: 10,
+        reservationId: 5,
+      });
+      expect(result).toMatchObject({ reservationId: 5, roomUnitId: null });
+    });
+
+    it('없거나 남의 예약이면 404 RESERVATION_NOT_FOUND', async () => {
+      getMyBooking.mockReturnValue(
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 예약입니다.',
+        })),
+      );
+
+      expect(await responseOf(controller.getMyBooking(user, 5))).toMatchObject({
+        status: 404,
+        body: { code: 'RESERVATION_NOT_FOUND' },
+      });
+    });
+
+    it('booking-service 장애면 503', async () => {
+      getMyBooking.mockReturnValue(
+        throwError(() => ({ code: GrpcStatus.UNAVAILABLE })),
+      );
+
+      expect((await responseOf(controller.getMyBooking(user, 5))).status).toBe(
         503,
       );
     });
