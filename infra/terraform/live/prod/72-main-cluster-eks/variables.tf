@@ -28,6 +28,11 @@ variable "worker_subnet_ids" {
   type        = list(string)
 }
 
+variable "worker_subnet_ids_by_az" {
+  description = "20-network main.subnet_ids_by_az.worker (AZ 접미사 → 서브넷 ID). 노드 그룹을 가용 영역마다 하나씩 만든다 (LDP-248)"
+  type        = map(string)
+}
+
 variable "worker_sg_id" {
   description = "30-security sg_ids.main_worker. 70 과 같은 SG 라 RDS · Valkey · PrivateLink · ALB 규칙을 그대로 쓴다"
   type        = string
@@ -80,22 +85,33 @@ variable "node_instance_type" {
   default     = "t3a.large"
 }
 
-variable "node_desired_size" {
-  description = "노드 그룹을 처음 만들 때의 노드 대수. 이후는 Cluster Autoscaler 가 바꾸고 apply 는 되돌리지 않는다 (ignore_changes)"
-  type        = number
-  default     = 2
+variable "platform_az" {
+  description = "platform 노드(운영 도구 · 챗봇, 1대 고정)를 둘 가용 영역 접미사. Prometheus EBS 도 이 영역에 생긴다"
+  type        = string
+  default     = "a"
+
+  validation {
+    condition     = contains(keys(var.worker_subnet_ids_by_az), var.platform_az)
+    error_message = "platform_az 는 worker_subnet_ids_by_az 의 키(가용 영역 접미사) 중 하나여야 합니다."
+  }
 }
 
-variable "node_min_size" {
-  description = "노드 최소 대수 (Cluster Autoscaler 축소 하한)"
+variable "app_node_desired_per_az" {
+  description = "앱 노드 그룹(가용 영역마다 하나)을 처음 만들 때의 노드 대수. 이후는 Cluster Autoscaler 가 바꾸고 apply 는 되돌리지 않는다 (ignore_changes)"
   type        = number
-  default     = 2
+  default     = 1
 }
 
-variable "node_max_size" {
-  description = "노드 최대 대수 (Cluster Autoscaler 증설 상한)"
+variable "app_node_min_per_az" {
+  description = "가용 영역당 앱 노드 최소 대수 (Cluster Autoscaler 축소 하한). 2개 영역이면 앱 노드 합계 하한은 2배"
   type        = number
-  default     = 4
+  default     = 1
+}
+
+variable "app_node_max_per_az" {
+  description = "가용 영역당 앱 노드 최대 대수 (Cluster Autoscaler 증설 상한). 기본 3 → 앱 합계 6 + platform 1 = 전체 7"
+  type        = number
+  default     = 3
 }
 
 variable "node_root_volume_size" {

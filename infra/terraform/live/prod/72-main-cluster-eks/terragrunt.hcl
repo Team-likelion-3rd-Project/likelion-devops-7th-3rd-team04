@@ -31,6 +31,9 @@ dependency "network" {
       subnet_ids = {
         worker = ["subnet-00000000000000003", "subnet-00000000000000004"]
       }
+      subnet_ids_by_az = {
+        worker = { a = "subnet-00000000000000003", b = "subnet-00000000000000004" }
+      }
     }
   }
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan", "destroy"]
@@ -66,6 +69,8 @@ dependency "pod_roles" {
 inputs = {
   vpc_id            = dependency.network.outputs.main.vpc_id
   worker_subnet_ids = dependency.network.outputs.main.subnet_ids.worker
+  # 노드 그룹을 가용 영역마다 하나씩 (LDP-248)
+  worker_subnet_ids_by_az = dependency.network.outputs.main.subnet_ids_by_az.worker
   worker_sg_id      = dependency.security.outputs.sg_ids.main_worker
   pod_role_bindings = dependency.pod_roles.outputs.pod_role_bindings
 }
