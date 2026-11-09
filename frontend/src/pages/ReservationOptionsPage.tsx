@@ -258,9 +258,12 @@ function ReservationOptionsPage() {
 
               <p className="reservation-options-notice-group-title">수영장 이용 시 유의사항</p>
               <ul className="reservation-options-note">
-                <li>이용 가능 시간은 06:00 ~ 22:00이며, 시설 점검 등의 사유로 사전 공지 없이 변경될 수 있습니다.</li>
+                <li>
+                  이용 시간은 09:00 ~ 22:00(4부제, 회차 사이 휴식 시간)이며, 멤버십 회원은 07:00부터 이용할 수 있습니다. 시즌과
+                  시설 점검 등의 사유로 변경될 수 있습니다.
+                </li>
                 <li>수영모 착용은 필수이며, 미착용 시 이용이 제한될 수 있습니다.</li>
-                <li>만 12세 이하 어린이는 보호자 동반 하에만 이용 가능합니다.</li>
+                <li>13세 이하 어린이는 보호자 동반 시 이용 가능합니다.</li>
                 <li>우천 또는 기상 악화 시 야외 시설 이용이 제한될 수 있습니다.</li>
               </ul>
 
