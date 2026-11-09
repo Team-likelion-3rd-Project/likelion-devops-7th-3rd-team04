@@ -50,8 +50,19 @@ export interface AdminRoom {
   hotelId: number
   name: string
   capacity: number
+  // 보유 수량 = ACTIVE 호실 수 (점검 중 호실 제외). gRPC 기본값 0은 응답에서 빠질 수 있어 선택으로 둔다.
+  totalCount?: number
   description: string
   images: AdminRoomImage[]
+}
+
+// 오늘 객실 점유율 = 오늘 숙박 중인 예약 건수 ÷ 지점 전체 호실 수(객실 종류별 보유 수량의 합).
+// 객실 종류 수(rooms.length)로 나누면 종류 4개 × 5실인 지점에서 2건만 예약해도 50%가 된다 (LDP-254).
+// 호실이 하나도 없으면 계산할 수 없어 '—%'.
+export function formatOccupancy(occupiedRoomsToday: number, rooms: AdminRoom[] | null): string {
+  const totalUnits = (rooms ?? []).reduce((sum, room) => sum + (room.totalCount ?? 0), 0)
+  if (totalUnits === 0) return '—%'
+  return `${Math.round((occupiedRoomsToday / totalUnits) * 100)}%`
 }
 
 // 객실 사진으로 올릴 수 있는 형식 (hotel-service RoomImageStorage와 같은 목록)
