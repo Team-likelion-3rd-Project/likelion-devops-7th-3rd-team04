@@ -35,19 +35,19 @@ describe('getGrpcOptions', () => {
     expect(serviceConfig.loadBalancingConfig).toEqual([{ round_robin: {} }]);
   });
 
-  it('서버 연결 수명 기본값: 5분, 정리 대기 30초', () => {
+  it('서버 연결 수명 기본값: 1분, 정리 대기 30초', () => {
     expect(grpcChannelOptions()).toMatchObject({
-      'grpc.max_connection_age_ms': 300000,
+      'grpc.max_connection_age_ms': 60000,
       'grpc.max_connection_age_grace_ms': 30000,
     });
   });
 
   it('연결 수명은 환경변수로 바꿀 수 있고, 잘못된 값이면 기본값', () => {
-    process.env.GRPC_MAX_CONNECTION_AGE_MS = '60000';
+    process.env.GRPC_MAX_CONNECTION_AGE_MS = '120000';
     process.env.GRPC_MAX_CONNECTION_AGE_GRACE_MS = 'abc';
 
     expect(grpcChannelOptions()).toMatchObject({
-      'grpc.max_connection_age_ms': 60000,
+      'grpc.max_connection_age_ms': 120000,
       'grpc.max_connection_age_grace_ms': 30000,
     });
   });

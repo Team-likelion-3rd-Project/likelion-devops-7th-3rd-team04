@@ -144,6 +144,18 @@ terragrunt output -raw api_url
 - `run --all apply · destroy` 는 대상 스택 목록을 보여주고 확인을 받습니다. 확인 없이 진행하려면 `--non-interactive` 를 붙입니다.
 - **destroy 전에 토스 웹훅 큐 `payment-webhook` · `payment-webhook-dlq` 가 비었는지 확인합니다.** 토스에 200 을 응답한 뒤 큐에 남은 메시지는 destroy 하면 사라지고 재전송도 없습니다. 스택이 내려가 있는 동안의 웹훅은 토스 재전송(최대 7회, 약 3일 19시간)으로 받습니다.
 - `run --all apply` 는 🔒 `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 도 포함합니다. 변경이 없으면 No changes 로 끝납니다.
+- **가용성은 기본으로 켭니다** (LDP-259, 아키텍처 도면 기준). 비용을 줄이려고 끈 채로 재생성할 때는 `TF_VAR_` 로 끕니다 — `run --all` 은 같은 이름 변수를 가진 스택 모두에 넣으므로, 41 · 42 둘 다 쓰는 `db_multi_az` 는 함께 꺼집니다.
+
+  | 변수 | 기본 | 스택 | 끄면 |
+  |---|---|---|---|
+  | `db_multi_az` | `true` | 41 · 42 | RDS Single-AZ (대기 인스턴스 비용 · 생성 시간 절약) |
+  | `enable_payment_network_firewall` | `true` | 20 | 결제 egress 가 NAT 로 바로 (8절) |
+  | `valkey_num_nodes` | `2` | 41 | `1` 이면 Valkey 1대, 자동 장애 조치 없음 |
+  | `db_instance_class` | 41 `db.t4g.medium` · 42 `db.t4g.micro` | 41 · 42 | (가용성 아님, 참고) 같은 이름 변수라 `TF_VAR_` 로 `run --all` 에 넣으면 결제 RDS 도 바뀝니다 — 바꿀 때는 해당 스택 디렉터리에서만 |
+
+  ```bash
+  TF_VAR_db_multi_az=false TF_VAR_enable_payment_network_firewall=false AWS_PROFILE=team04 terragrunt run --all apply
+  ```
 - `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
 - `10-global` 의 GitHub OIDC 공급자(`token.actions.githubusercontent.com`)는 URL 이 고정이라 **계정에 하나뿐인 공용 리소스**입니다 (공유 계정의 다른 팀도 같은 공급자를 씀). 지우거나 audience 를 바꾸지 않습니다 (`prevent_destroy`). 다른 팀이 먼저 만들었으면 `create_github_oidc_provider = false` 로 기존 공급자를 씁니다.
   같은 공급자로 gitops 레포 main 의 `team04-hotel-gitops-ssm-sync` 와 모노레포 main 의 `team04-hotel-release`(`.github/workflows/release.yml` — GHCR → ECR 복사 · 프론트 업로드 · gitops PR, 운영 전환 권한 없음)를 받습니다. 두 Role 모두 신뢰 정책이 immutable subject 형식 `sub` 의 `refs/heads/main` 만 허용합니다.
@@ -409,10 +421,10 @@ NAT 응답  ─ public RT <app · lb 서브넷 CIDR> ─▶ 같은 NFW 엔드포
 ```
 
 - VPC 엔드포인트(ECR · SSM · SQS · Secrets Manager · Logs), S3 게이트웨이(prefix list), 결제 DB 는 더 구체적인 경로라 NFW 를 거치지 않습니다.
-- **`enable_payment_network_firewall` 기본값은 `false`(개발 기간 비용 절감) 입니다.** 끄면 app · lb 가 NAT 로 바로 나가고 DNS Firewall · SG 만 남습니다 (IP 직접 접속은 막지 못함). firewall 서브넷 · 라우트 테이블은 무료라 남겨 둡니다. rc.3 전에 기본값을 `true` 로 바꿉니다.
+- **`enable_payment_network_firewall` 기본값은 `true` 입니다** (LDP-259, 엔드포인트 1개 시간당 $0.395). 끄면 app · lb 가 NAT 로 바로 나가고 DNS Firewall · SG 만 남습니다 (IP 직접 접속은 막지 못함). firewall 서브넷 · 라우트 테이블은 무료라 남겨 둡니다.
   ```bash
-  # 그날만 켜서 검증 (다음 재생성 때 기본값으로 꺼짐). 켜기 약 5분
-  AWS_PROFILE=team04 terragrunt apply -var enable_payment_network_firewall=true
+  # 비용을 줄이려고 끈 채로 재생성 (run --all 이면 20 만 이 변수를 씀)
+  TF_VAR_enable_payment_network_firewall=false AWS_PROFILE=team04 terragrunt run --all apply
   ```
 - **켜진 상태에서 `false` 로 바로 apply 하면 실패합니다** (`DeleteFirewall ... VPC endpoint(s) still exist in route table(s)`). Terraform 이 private 라우트를 NAT 로 바꾸기 전에 NFW 삭제를 먼저 시도하기 때문입니다 (의존 리소스 수정과 의존 대상 삭제 사이의 순서를 보장하지 않음). 매일 destroy 로 내려가는 경우는 라우트가 먼저 삭제되므로 문제없습니다. 그날 바로 꺼야 하면 라우트를 먼저 NAT 로 돌리고 apply 합니다.
   ```bash

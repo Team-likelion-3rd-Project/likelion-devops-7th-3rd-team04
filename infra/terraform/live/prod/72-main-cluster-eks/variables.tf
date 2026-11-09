@@ -85,14 +85,18 @@ variable "node_instance_type" {
   default     = "t3a.large"
 }
 
-variable "platform_az" {
-  description = "platform 노드(운영 도구 · 챗봇, 1대 고정)를 둘 가용 영역 접미사. Prometheus EBS 도 이 영역에 생긴다"
-  type        = string
-  default     = "a"
+variable "platform_azs" {
+  description = <<-EOT
+    platform 노드(운영 도구 · 챗봇)를 둘 가용 영역 접미사 목록. 영역마다 노드 그룹 하나 · 1대 고정 (LDP-259, 아키텍처 도면 기준).
+    운영 도구는 2개 · 영역마다 1개라(gitops values-eks.yaml) 한 영역 장애에도 이어진다. ["a"] 로 줄이면 2개짜리의 두 번째 Pod 가 Pending.
+    Prometheus EBS 는 처음 뜬 platform 노드의 영역에 생긴다
+  EOT
+  type        = list(string)
+  default     = ["a", "b"]
 
   validation {
-    condition     = contains(keys(var.worker_subnet_ids_by_az), var.platform_az)
-    error_message = "platform_az 는 worker_subnet_ids_by_az 의 키(가용 영역 접미사) 중 하나여야 합니다."
+    condition     = length(var.platform_azs) > 0 && alltrue([for az in var.platform_azs : contains(keys(var.worker_subnet_ids_by_az), az)])
+    error_message = "platform_azs 는 worker_subnet_ids_by_az 의 키(가용 영역 접미사) 중에서 하나 이상이어야 합니다."
   }
 }
 

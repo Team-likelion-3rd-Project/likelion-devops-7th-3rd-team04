@@ -32,7 +32,8 @@ resource "helm_release" "argocd" {
     sync_timeout_seconds = var.argocd_sync_timeout_seconds
   })]
 
-  # ArgoCD 는 platform 노드에만 뜬다 (argocd-values nodeSelector · tolerations)
+  # ArgoCD 는 platform 노드에만 뜬다 (argocd-values nodeSelector · tolerations). 영역마다 platform 노드가 있어야
+  # server · repo-server 2개가 영역마다 하나씩 뜨고, 이어지는 root sync 의 운영 도구 2개도 Pending 없이 뜬다
   depends_on = [
     aws_eks_access_policy_association.admin,
     aws_eks_node_group.platform,

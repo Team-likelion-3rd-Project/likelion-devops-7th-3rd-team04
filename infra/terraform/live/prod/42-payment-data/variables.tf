@@ -69,9 +69,9 @@ variable "db_allocated_storage" {
 }
 
 variable "db_multi_az" {
-  description = "RDS Multi-AZ 대기 인스턴스. true 면 비용 2배, 생성 시간 증가"
+  description = "RDS Multi-AZ 대기 인스턴스. 기본 켬(LDP-259) — 끌 때 -var db_multi_az=false. true 면 비용 2배, 생성 시간 증가"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "db_backup_retention_days" {
