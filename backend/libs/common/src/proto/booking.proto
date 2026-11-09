@@ -42,7 +42,7 @@ service BookingService {
   // hotel-service 호출 없이 이 서비스의 reservations 테이블만으로 계산된다.
   rpc GetHotelBookingStats (GetHotelBookingStatsRequest) returns (HotelBookingStats);
 
-  // 결제 준비 (위키 API 명세 5.8). 본인 예약·결제 대기 상태·결제 마감 전·시도 5회 미만을 확인한 뒤
+  // 결제 준비 (위키 API 명세 5.8). 본인 예약·결제 대기 상태·결제 마감 전·승인 요청까지 간 시도 5회 미만을 확인한 뒤
   // payment_attempts에 새 시도(멱등 키, 주문번호)를 기록하고 토스 결제창에 넘길 값을 돌려준다.
   // 실패는 api-error 형식(libs/common/src/grpc/api-error.ts)의 RpcException.
   rpc PreparePayment (PreparePaymentRequest) returns (PreparePaymentResponse);
