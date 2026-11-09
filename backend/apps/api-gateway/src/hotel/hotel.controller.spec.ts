@@ -360,7 +360,10 @@ describe('HotelController', () => {
 
     it('should respond 404 when the room does not exist', async () => {
       createRoomImageUploadUrlMock.mockReturnValue(
-        throwError(() => ({ details: '존재하지 않는 객실입니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.NOT_FOUND,
+          details: '존재하지 않는 객실입니다.',
+        })),
       );
 
       await expect(
@@ -374,6 +377,7 @@ describe('HotelController', () => {
     it('should throw BadRequestException when hotel-service rejects the file', async () => {
       createRoomImageUploadUrlMock.mockReturnValue(
         throwError(() => ({
+          code: GrpcStatus.INVALID_ARGUMENT,
           details: '이미지는 5MB 이하만 올릴 수 있습니다.',
         })),
       );
@@ -438,7 +442,10 @@ describe('HotelController', () => {
 
     it('should throw BadRequestException when hotel-service rejects an image', async () => {
       updateRoomMock.mockReturnValue(
-        throwError(() => ({ details: '이 객실의 사진 경로가 아닙니다.' })),
+        throwError(() => ({
+          code: GrpcStatus.INVALID_ARGUMENT,
+          details: '이 객실의 사진 경로가 아닙니다.',
+        })),
       );
       const dto = {
         name: '디럭스 더블룸',

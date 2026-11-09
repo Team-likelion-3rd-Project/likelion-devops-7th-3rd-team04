@@ -10,7 +10,12 @@ service BookingService {
   rpc GetBookings (GetBookingsRequest) returns (BookingListResponse);
 
   // 특정 유저의 예약 목록 조회. /me(본인 조회)와 /:userId(관리자 조회) 양쪽에서 재사용된다.
+  // 상태·지점 조건과 페이지를 줄 수 있다. 조건이 없고 page가 0이면 예전처럼 전체. total은 조건에 맞는 전체 개수
   rpc GetBookingsByUserId (GetBookingsByUserIdRequest) returns (BookingListResponse);
+
+  // 본인 예약 단건 조회 (GET /api/bookings/me/{reservationId}). 목록과 같은 응답(결제 시도 상태·방 번호 포함).
+  // 예약이 없거나 다른 회원의 예약이면 둘 다 404 RESERVATION_NOT_FOUND — 남의 예약 번호가 있는지 알 수 없게 한다
+  rpc GetMyBooking (GetMyBookingRequest) returns (Booking);
 
   // 본인 예약 취소: status를 CANCELLED로 변경하고, hotel-service에 예약 가능일 복구를 요청한다.
   // (reservationId가 없거나 userId가 예약자 본인이 아니면 에러)
@@ -93,6 +98,15 @@ message GetBookingsRequest {
 
 message GetBookingsByUserIdRequest {
   int32 userId = 1;
+  repeated string statuses = 2; // 비면 전체 상태
+  int32 page = 3; // 1부터. 0 = 페이지를 나누지 않고 전체
+  int32 size = 4; // 한 페이지 개수 (page가 1 이상일 때, 기본 20)
+  int32 hotelId = 5; // 0 = 전체 지점
+}
+
+message GetMyBookingRequest {
+  int32 userId = 1; // 본인 확인용 (api-gateway가 JWT에서 추출해 넘긴다)
+  int32 reservationId = 2;
 }
 
 message GetBookingByIdRequest {
@@ -116,6 +130,13 @@ message CreateBookingRequest {
   int32 hotelId = 8;
   int32 poolGuestCount = 9; // 인도어풀 이용 인원수. 0 또는 미지정이면 미이용.
   int32 loungeGuestCount = 10; // 라운지 이용 인원수. 0 또는 미지정이면 미이용.
+  // 예약 생성 멱등 키 (LDP-240). 화면이 예약 시도마다 만들어 Idempotency-Key 헤더로 보내고 api-gateway가 옮긴다.
+  // 같은 회원·같은 키의 예약이 이미 있으면 새로 만들지 않고 그 예약을 돌려준다. 빈 값이면 예전처럼 항상 새로 만든다.
+  // 5·6번은 예전 필드였을 수 있어 다시 쓰지 않는다.
+  string idempotencyKey = 11;
+  // 소인 이용 인원수 (LDP-247). poolGuestCount · loungeGuestCount는 성인 인원이다.
+  int32 poolChildGuestCount = 12;
+  int32 loungeChildGuestCount = 13;
 }
 
 // 편의시설(수영장/라운지 등) 이용 여부/인원수는 여기 담지 않는다 — reservation_facilities가
@@ -154,6 +175,11 @@ message CreateAdminBookingRequest {
   int32 loungeGuestCount = 8;
   int32 adminId = 9; // 만든 직원 (JWT)
   string adminName = 10; // 만든 직원 이름 (api-gateway가 user-service에서 조회)
+  // 소인 이용 인원수 (LDP-247). poolGuestCount · loungeGuestCount는 성인 인원이다.
+  int32 poolChildGuestCount = 12;
+  int32 loungeChildGuestCount = 13;
+  // 멱등 키 (LDP-243, Idempotency-Key 헤더). 503 뒤 다시 누르면 같은 키 → 처음 만든 예약을 돌려준다. 빈 값 = 키 없음
+  string idempotencyKey = 11;
 }
 
 message AdminCancelBookingRequest {
@@ -207,7 +233,7 @@ message ConfirmPaymentResponse {
 
 message BookingListResponse {
   repeated Booking bookings = 1;
-  int32 total = 2; // GetBookings: 조건에 맞는 전체 개수 (페이지와 무관, LDP-136). 그 밖의 목록은 0
+  int32 total = 2; // GetBookings·GetBookingsByUserId: 조건에 맞는 전체 개수 (페이지와 무관, LDP-136). 그 밖의 목록은 0
 }
 
 message GetReservationFacilitiesByReservationIdRequest {

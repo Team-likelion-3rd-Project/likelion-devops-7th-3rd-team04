@@ -35,7 +35,9 @@
 .account-sidebar {
   flex: 0 0 480px;
 
+  /* 세로 배치에서는 flex-basis가 높이가 되므로 PC용 폭(480px)을 쓰지 않는다 */
   @media (max-width: 767px) {
+    flex: 0 0 auto;
     width: 100%;
   }
 

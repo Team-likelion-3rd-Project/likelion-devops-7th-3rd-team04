@@ -5,6 +5,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Headers,
   HttpCode,
   Inject,
   NotFoundException,
@@ -13,6 +14,7 @@ import {
   ParseIntPipe,
   Put,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
@@ -23,6 +25,7 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiHeader,
   ApiParam,
 } from '@nestjs/swagger';
 import { ApiCommonResponses } from '@app/common/decorators/api-response.decorator';
@@ -37,10 +40,20 @@ import {
   grpcErrorToHttp,
   parseApiRpcError,
   toHttpException,
+  grpcServerErrorToHttp,
 } from '@app/common';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 import { AssignRoomUnitDto } from './dto/assign-room-unit.dto';
+import { MyBookingListQueryDto } from './dto/my-booking-list.dto';
+import { parseIdempotencyKey } from './idempotency-key';
+import { listPage } from '../list-page';
+
+// 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
+const BOOKING_UNAVAILABLE = {
+  code: 'BOOKING_SERVICE_UNAVAILABLE',
+  message: '예약 서비스에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+};
 
 // proto의 Booking 메시지와 1:1 대응되는 응답 형태. 편의시설(수영장/라운지) 이용 여부/인원수는
 // 여기 담기지 않는다 — reservation_facilities가 유일한 소스이며, GET /api/bookings/:reservationId/facilities로
@@ -108,7 +121,15 @@ interface BookingService {
   getHello(data: {}): Observable<{ message: string }>;
   getBookingsByUserId(data: {
     userId: number;
-  }): Observable<{ bookings: BookingDto[] }>;
+    statuses?: string[];
+    page?: number;
+    size?: number;
+    hotelId?: number;
+  }): Observable<{ bookings?: BookingDto[]; total?: number }>;
+  getMyBooking(data: {
+    userId: number;
+    reservationId: number;
+  }): Observable<BookingDto>;
   getBookingById(data: { reservationId: number }): Observable<BookingDto>;
   cancelBooking(data: {
     reservationId: number;
@@ -123,6 +144,9 @@ interface BookingService {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    poolChildGuestCount?: number;
+    loungeChildGuestCount?: number;
+    idempotencyKey?: string;
   }): Observable<BookingDto>;
   getReservationFacilitiesByReservationId(data: {
     reservationId: number;
@@ -211,12 +235,6 @@ export function toBookingLookupError(err: unknown): Error {
   });
 }
 
-function toBookings({ bookings = [] }: { bookings?: BookingDto[] }): {
-  bookings: BookingDto[];
-} {
-  return { bookings: bookings.map(toBooking) };
-}
-
 @ApiTags('BookingService')
 @ApiCommonResponses()
 @Controller('api/bookings')
@@ -253,7 +271,7 @@ export class BookingController implements OnModuleInit {
 
   /**
    * GET http://localhost:3000/api/bookings/me
-   * 로그인한 사용자 본인의 예약 목록을 조회합니다.
+   * 로그인한 사용자 본인의 예약 목록을 조회합니다. 상태 조건·페이지를 줄 수 있습니다.
    */
   @Get('me')
   @UseGuards(JwtAuthGuard)
@@ -261,20 +279,62 @@ export class BookingController implements OnModuleInit {
   @ApiOperation({
     summary: '내 예약 목록 조회',
     description:
-      '유효한 액세스 토큰을 가진 사용자 본인의 예약 목록을 조회합니다.',
+      '유효한 액세스 토큰을 가진 사용자 본인의 예약 목록을 조회합니다. 최신순. ' +
+      'status(쉼표로 여러 개)로 상태를 거르고, page를 주면 그 페이지만, 생략하면 최신순 앞쪽 100건까지 돌려줍니다. ' +
+      'total은 조건에 맞는 전체 개수입니다 — 결제 대기 건수만 필요하면 status=PENDING_PAYMENT&page=1&size=1의 total을 씁니다.',
   })
   @ApiResponse({
     status: 200,
-    description: '내 예약 목록 조회 성공',
+    description: '{ bookings, total }',
   })
+  @ApiResponse({ status: 400, description: '조건 값이 잘못됨' })
   async getMyBookings(
     @CurrentUser() user: AuthenticatedUser,
-  ): Promise<{ bookings: BookingDto[] }> {
-    return toBookings(
+    @Query() query: MyBookingListQueryDto = {},
+  ): Promise<{ bookings: BookingDto[]; total: number }> {
+    const { bookings = [], total = 0 } = await firstValueFrom(
+      this.bookingService.getBookingsByUserId({
+        userId: user.userId,
+        statuses: query.status ?? [],
+        ...listPage(query),
+      }),
+    ).catch((err) => {
+      throw toBookingHttpError(err);
+    });
+    return { bookings: bookings.map(toBooking), total };
+  }
+
+  /**
+   * GET http://localhost:3000/api/bookings/me/{reservationId}
+   * 로그인한 사용자 본인의 예약 한 건 — 결제 확정 대기·예약 상세가 목록 전체 대신 씁니다 (부하 테스트 11-06).
+   */
+  @Get('me/:reservationId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiParam({
+    name: 'reservationId',
+    description: '조회할 예약 PK ID',
+    type: Number,
+  })
+  @ApiOperation({
+    summary: '내 예약 단건 조회',
+    description:
+      '목록과 같은 형태(결제 시도 상태·방 번호 포함)로 예약 한 건을 돌려줍니다. 다른 회원의 예약이면 없는 예약과 같이 404입니다.',
+  })
+  @ApiResponse({ status: 200, description: '내 예약 단건 조회 성공' })
+  @ApiResponse({ status: 404, description: 'RESERVATION_NOT_FOUND' })
+  async getMyBooking(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('reservationId', ParseIntPipe) reservationId: number,
+  ): Promise<BookingDto> {
+    return toBooking(
       await firstValueFrom(
-        this.bookingService.getBookingsByUserId({ userId: user.userId }),
+        this.bookingService.getMyBooking({
+          userId: user.userId,
+          reservationId,
+        }),
       ).catch((err) => {
-        throw toBookingHttpError(err);
+        throw toBookingHttpError(err, { 404: 'RESERVATION_NOT_FOUND' });
       }),
     );
   }
@@ -315,11 +375,12 @@ export class BookingController implements OnModuleInit {
   @ApiOperation({
     summary: '특정 유저 예약 목록 조회 (관리자 전용)',
     description:
-      '관리자 권한을 가진 사용자만 호출할 수 있습니다. userId로 특정 유저의 예약 목록을 조회합니다.',
+      '관리자 권한을 가진 사용자만 호출할 수 있습니다. userId로 특정 유저의 예약 목록을 조회합니다. ' +
+      'status(쉼표로 여러 개)로 상태를 거르고, page를 주면 그 페이지만, 생략하면 최신순 앞쪽 100건까지 돌려줍니다. 지점 관리자·직원에게는 자기 지점 예약만 돌려줍니다.',
   })
   @ApiResponse({
     status: 200,
-    description: '예약 목록 조회 성공',
+    description: '{ bookings, total }',
   })
   @ApiResponse({
     status: 403,
@@ -328,19 +389,20 @@ export class BookingController implements OnModuleInit {
   async getBookingsByUserId(
     @CurrentUser() admin: AuthenticatedUser,
     @Param('userId', ParseIntPipe) userId: number,
-  ): Promise<{ bookings: BookingDto[] }> {
-    const result = toBookings(
-      await firstValueFrom(this.bookingService.getBookingsByUserId({ userId })),
-    );
-    // 지점 관리자·직원에게는 자기 지점 예약만 (LDP-178)
-    const scope = adminHotelScope(admin);
-    return scope === null
-      ? result
-      : {
-          bookings: result.bookings.filter(
-            (booking) => booking.hotelId === scope,
-          ),
-        };
+    @Query() query: MyBookingListQueryDto = {},
+  ): Promise<{ bookings: BookingDto[]; total: number }> {
+    // 지점 관리자·직원에게는 자기 지점 예약만 (LDP-178) — booking-service 조회 조건으로 넘겨 페이지·total이 맞게
+    const { bookings = [], total = 0 } = await firstValueFrom(
+      this.bookingService.getBookingsByUserId({
+        userId,
+        hotelId: adminHotelScope(admin) ?? 0,
+        statuses: query.status ?? [],
+        ...listPage(query),
+      }),
+    ).catch((err) => {
+      throw toBookingHttpError(err);
+    });
+    return { bookings: bookings.map(toBooking), total };
   }
 
   /**
@@ -386,6 +448,8 @@ export class BookingController implements OnModuleInit {
       if (payload) {
         throw toHttpException(payload);
       }
+      const unavailable = grpcServerErrorToHttp(err, BOOKING_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       const message =
         err?.details || err?.message || '예약 취소에 실패했습니다.';
       if (message.includes('본인의 예약만')) {
@@ -413,10 +477,20 @@ export class BookingController implements OnModuleInit {
       '해당 객실 타입이 판매 중이고 남은 방이 1개 이상이어야 하며, 예약 생성과 동시에 ' +
       '해당 기간의 날짜별 예약 수(booked_count)가 1씩 늘어납니다. 예약 금액은 해당 기간의 일별 가격 합계로 자동 계산됩니다.',
   })
-  @ApiResponse({ status: 201, description: '예약 생성 성공' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description:
+      '예약 시도마다 화면이 만드는 키(영문·숫자·-·_ 1~64자). 같은 키로 다시 보내면 새로 만들지 않고 처음 만든 예약을 돌려준다 (LDP-240).',
+  })
+  @ApiResponse({
+    status: 201,
+    description: '예약 생성 성공 (같은 Idempotency-Key면 처음 만든 예약)',
+  })
   @ApiResponse({
     status: 400,
-    description: '체크아웃 날짜가 체크인 날짜보다 이르거나 같음',
+    description:
+      '체크아웃 날짜가 체크인 날짜보다 이르거나 같음 / INVALID_IDEMPOTENCY_KEY',
   })
   @ApiResponse({ status: 404, description: '존재하지 않는 객실' })
   @ApiResponse({
@@ -432,14 +506,20 @@ export class BookingController implements OnModuleInit {
   async createBooking(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreateBookingDto,
+    @Headers('idempotency-key') rawIdempotencyKey?: string,
   ): Promise<BookingDto> {
+    const idempotencyKey = parseIdempotencyKey(rawIdempotencyKey);
     if (dto.checkInDate >= dto.checkOutDate) {
       throw new BadRequestException(
         'checkOutDate는 checkInDate보다 이후여야 합니다.',
       );
     }
     const booking = await firstValueFrom(
-      this.bookingService.createBooking({ userId: user.userId, ...dto }),
+      this.bookingService.createBooking({
+        userId: user.userId,
+        ...dto,
+        idempotencyKey,
+      }),
     ).catch((err) => {
       throw toBookingHttpError(err, {
         404: 'ROOM_NOT_FOUND',
@@ -639,6 +719,8 @@ export class BookingController implements OnModuleInit {
     const booking = await firstValueFrom(
       this.bookingService.getBookingById({ reservationId }),
     ).catch((err) => {
+      const unavailable = grpcServerErrorToHttp(err, BOOKING_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new NotFoundException(
         err?.details || err?.message || '존재하지 않는 예약입니다.',
       );

@@ -863,6 +863,16 @@ describe('HotelServiceController', () => {
       ...overrides,
     });
 
+    // 잠금 안의 판정을 검증하는 묶음이라 사전 확인(LDP-245)은 통과시킨다.
+    // 사전 확인 자체는 room-reserve-precheck.spec.ts에서 검증한다.
+    beforeEach(() => {
+      roomRepository.findOne.mockResolvedValue({ ...room, totalCount: 3 });
+      roomAvailabilityRepository.find.mockResolvedValue([
+        day('2026-09-01'),
+        day('2026-09-02'),
+      ]);
+    });
+
     it('남은 방이 있으면 날짜별 예약 수를 1씩 올리고 가격 합계를 돌려준다 (판매 상태는 그대로)', async () => {
       manager.findOne.mockResolvedValue({ ...room, totalCount: 3 });
       manager.find.mockResolvedValue([

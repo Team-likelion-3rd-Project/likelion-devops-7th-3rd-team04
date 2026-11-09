@@ -3,6 +3,7 @@ import { GrpcMethod } from '@nestjs/microservices';
 import {
   BookingListQuery,
   BookingServiceService,
+  UserBookingListQuery,
 } from './booking-service.service';
 import { ReservationFacilityService } from './reservation-facility.service';
 import { RoomAssignmentService } from './room-assignment.service';
@@ -28,13 +29,19 @@ export class BookingServiceController {
     return this.bookingServiceService.getBookings(data);
   }
 
-  // 특정 유저의 예약 목록 조회 (/me, /:userId 양쪽에서 재사용)
+  // 특정 유저의 예약 목록 조회 (/me, /:userId 양쪽에서 재사용) — 상태·지점 조건, 페이지
   @GrpcMethod('BookingService', 'GetBookingsByUserId')
-  async getBookingsByUserId(data: { userId: number }) {
-    const bookings = await this.bookingServiceService.getBookingsByUserId(
+  async getBookingsByUserId(data: UserBookingListQuery) {
+    return this.bookingServiceService.getBookingsByUserId(data);
+  }
+
+  // 본인 예약 단건 조회 (GET /api/bookings/me/{reservationId})
+  @GrpcMethod('BookingService', 'GetMyBooking')
+  async getMyBooking(data: { userId: number; reservationId: number }) {
+    return this.bookingServiceService.getMyBooking(
       data.userId,
+      data.reservationId,
     );
-    return { bookings };
   }
 
   // 본인 예약 취소
@@ -63,6 +70,9 @@ export class BookingServiceController {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    poolChildGuestCount?: number;
+    loungeChildGuestCount?: number;
+    idempotencyKey?: string;
   }) {
     return this.bookingServiceService.createBooking(data);
   }
@@ -151,8 +161,11 @@ export class BookingServiceController {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    poolChildGuestCount?: number;
+    loungeChildGuestCount?: number;
     adminId: number;
     adminName: string;
+    idempotencyKey?: string;
   }) {
     return this.adminBookingService.createProxyBooking(data);
   }

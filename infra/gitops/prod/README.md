@@ -16,7 +16,7 @@
 ```
 infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── Chart.yaml · values.yaml · templates/ · files/   root 앱 차트 (앱 정의 → Application, 배포 결과 알림)
-├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080)
+├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080, 2개 · 노드마다 1개)
 ├── aws-load-balancer-controller/ chart.yaml · values.yaml   18  EKS 만. TargetGroupBinding 컨트롤러 (LB 를 만들지 않음)
 ├── cluster-autoscaler/    chart.yaml · values.yaml          18  EKS 만. Pending Pod 를 보고 워커 노드 그룹 2 ~ 4대 조절 (Terraform 72)
 ├── traefik-target-group/  chart.yaml · chart/               19  EKS 만. Traefik 파드 IP → 80-main-edge eks Target Group
@@ -34,6 +34,39 @@ infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── kube-prometheus-stack/ chart.yaml · values.yaml          60  Prometheus · Alertmanager · Grafana · kube-state-metrics · node-exporter
 └── frontend/              values.yaml                       —   프론트 version(main SHA) · 빌드 설정 (앱 정의 아님, Terraform 13-frontend)
 ```
+
+## 노드 그룹과 배치 (LDP-248)
+
+Terraform 72 가 노드 그룹을 성격별로 만든다. 배치는 각 앱의 `values-eks.yaml` 에 둔다 (EKS 전용).
+
+| 노드 그룹 | 대수 | 무엇을 두나 | 표시 |
+|---|---|---|---|
+| `platform-a` | 1 고정 (CA 대상 아님) | 모니터링(kube-prometheus-stack) · ArgoCD(72 helm) · cluster-autoscaler · external-secrets · cert-manager · aws-load-balancer-controller · mysql-exporter · 배포 알림 Job · 챗봇(chat-bot · llm · n8n) | label `role=platform`, taint `dedicated=platform:NoSchedule` |
+| `app-a` · `app-b` | 영역당 1–3 (CA, `balance-similar-node-groups`) | 앱 서비스 · traefik · coredns · ebs-csi-controller · metrics-server(2) | label `role=app` |
+
+- platform 에 둘 구성 요소는 `nodeSelector: {role: platform}` + toleration `dedicated=platform:NoSchedule` 를 함께 넣는다. 앱 Pod 는 아무것도 넣지 않는다 (taint 때문에 platform 에 뜨지 않음)
+- DaemonSet 은 모든 노드에 있어야 한다. EKS 애드온(aws-node · kube-proxy · ebs-csi-node · pod-identity-agent) · fluent-bit · node-exporter 는 모든 taint 를 허용해 platform 에도 뜬다. 새 DaemonSet 을 넣을 때도 확인한다
+- taint 를 `CriticalAddonsOnly` 로 하지 않는다 — coredns · ebs-csi-controller 가 허용하는 taint 라 둘 다 platform 1대로 몰릴 수 있다 (그 노드 장애 = 클러스터 DNS 중단)
+- 앱 노드 그룹을 영역마다 두는 이유: 그룹 하나가 두 영역에 걸치면 ASG AZRebalance 가 영역 균형을 맞추려고 노드를 종료한다 (11-06 Prometheus 노드 종료, PDB 도 무시됨). Prometheus 는 EBS(PVC)라 platform 노드 영역에 묶인다
+- PDB: backend 는 2개 이상 뜨는 서비스(`pdb.enabled`, maxUnavailable 1), traefik · metrics-server · cluster-autoscaler 는 각 차트 값. 1개 고정 서비스에는 걸지 않는다 (그 노드를 비울 수 없게 됨)
+- Cluster Autoscaler 축소를 막는 emptyDir Pod 는 `cluster-autoscaler.kubernetes.io/safe-to-evict: "true"` (alertmanager · 배포 알림 · ArgoCD repo-server). Prometheus 는 `"false"` (EBS 영역 때문에 옮기지 않음)
+- platform 1대 장애 시 모니터링 · ArgoCD · 챗봇이 멈춘다 (예약 · 결제는 영향 없음). 매일 재생성 운영이라 감수 — 상시 운영 가정 시 영역별 2대 검토
+
+## Pod 배치 (분산)
+
+같은 서비스 Pod 와 Traefik 을 노드마다 나눕니다 (LDP-227 · LDP-237). 노드가 늘어나도 기존 Pod 는 옮겨지지 않으므로, 새로 만들어지는 Pod(HPA 확장 · 롤아웃 · 노드 교체)가 빈 노드로 가게 하는 규칙입니다.
+
+| 대상 | 설정 | 규칙 |
+|------|------|------|
+| backend 서비스 (gateway · hotel · booking · auth · user · chat-bot · llm) | `backend/values.yaml` `topologySpread` (차트 템플릿) | 노드(`kubernetes.io/hostname`)별 같은 서비스 Pod 개수 차이 1 이하, **`DoNotSchedule`** |
+| Traefik | `traefik/values.yaml` `topologySpreadConstraints` | 노드마다 1개, `DoNotSchedule` |
+
+- `DoNotSchedule` = 지킬 수 없으면 배치하지 않고 Pending → Cluster Autoscaler 가 노드를 늘립니다. 차트 기본 `ScheduleAnyway` 는 자리가 없으면 규칙을 무시해, 롤아웃 · HPA 때 한 노드에 몰렸습니다.
+- 근거 (11-05 부하 테스트 2일차, load 350 요청/초 × 15분): 쏠림 조회 p95 334ms(실패) → 분산 64ms. 지연은 앱이 아니라 포화된 노드의 Traefik → gateway 구간에서 생겼습니다.
+- 롤아웃 중 옛 버전 Pod 는 세지 않습니다 (`matchLabelKeys: pod-template-hash`). 그래서 surge Pod 가 규칙 때문에 막히지 않습니다.
+- **앱 노드 그룹 max(Terraform 72 `app_node_max_per_az`, 영역당)에 닿은 상태**에서는 HPA 확장 Pod · 롤아웃 surge Pod 가 Pending 으로 남을 수 있습니다 (CA 가 더 늘릴 수 없음). `kubectl get pods -A --field-selector=status.phase=Pending` 으로 확인합니다.
+- 막지 못하는 것: 서로 다른 서비스 Pod 가 한 노드에 모이는 것, 이미 배치된 Pod 의 재배치 (descheduler 미도입). n8n 은 별도 템플릿이라 규칙이 없습니다.
+- **platform 노드는 분산 계산에서 뺍니다** (`nodeTaintsPolicy: Honor`, `values-eks.yaml`). 기본값(`Ignore`)이면 Pod 를 놓을 수 없는 platform 노드가 "0개인 노드"로 세어져, 앱 노드마다 1개씩 있어도 더 놓을 곳이 없다고 판단합니다.
 
 ## IRSA · 비밀값
 

@@ -2,6 +2,7 @@ import { status as GrpcStatus } from '@grpc/grpc-js';
 import {
   apiRpcException,
   grpcErrorToHttp,
+  grpcServerErrorToHttp,
   grpcStatusForHttp,
   grpcStatusOf,
   parseApiRpcError,
@@ -174,5 +175,61 @@ describe('grpcErrorToHttp', () => {
         retryable: false,
       },
     });
+  });
+});
+
+describe('grpcServerErrorToHttp', () => {
+  const unavailable = {
+    code: 'USER_SERVICE_UNAVAILABLE',
+    message: '잠시 후 다시 시도해 주세요.',
+  };
+
+  it.each([
+    [
+      '연결 실패',
+      { code: GrpcStatus.UNAVAILABLE, details: 'dns:user-service:3001' },
+    ],
+    [
+      '시간 초과',
+      { code: GrpcStatus.DEADLINE_EXCEEDED, details: 'Deadline exceeded' },
+    ],
+    ['예상 못 한 오류', { code: GrpcStatus.UNKNOWN, details: 'boom' }],
+    ['코드 없음', { message: 'boom' }],
+  ])('%s는 503과 고정 문구로 바꾼다', (_name, err) => {
+    const error = grpcServerErrorToHttp(err, unavailable);
+
+    expect(error?.getStatus()).toBe(503);
+    expect(error?.getResponse()).toEqual({
+      statusCode: 503,
+      error: 'Service Unavailable',
+      code: 'USER_SERVICE_UNAVAILABLE',
+      message: '잠시 후 다시 시도해 주세요.',
+      retryable: true,
+    });
+  });
+
+  it.each([
+    ['없음', GrpcStatus.NOT_FOUND],
+    ['인증 실패', GrpcStatus.UNAUTHENTICATED],
+    ['중복', GrpcStatus.ALREADY_EXISTS],
+    ['값 오류', GrpcStatus.INVALID_ARGUMENT],
+  ])(
+    '요청 쪽 문제(%s)는 호출부가 처리하도록 null을 돌려준다',
+    (_name, code) => {
+      expect(
+        grpcServerErrorToHttp({ code, details: '거절' }, unavailable),
+      ).toBeNull();
+    },
+  );
+
+  it('api-error 형식은 호출부가 처리하도록 null을 돌려준다', () => {
+    const err = apiRpcException({
+      status: 503,
+      code: 'SIGNUP_FAILED',
+      message: '가입 실패',
+      retryable: true,
+    });
+
+    expect(grpcServerErrorToHttp(err.getError(), unavailable)).toBeNull();
   });
 });

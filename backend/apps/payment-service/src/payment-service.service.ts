@@ -31,6 +31,15 @@ import { errorTrace, rpcError } from '@app/common';
 export type ApproveResultType =
   'APPROVED' | 'FAILED' | 'UNKNOWN' | 'PROCESSING';
 
+// 회원 결제 목록 조건 (proto GetPaymentsByUserIdRequest). 0·빈 값은 조건 없음
+export interface UserPaymentListQuery {
+  userId: number;
+  reservationId?: number;
+  page?: number;
+  size?: number;
+  reservationIds?: number[];
+}
+
 // proto의 ApprovePaymentResponse와 1:1 대응
 export interface ApprovePaymentResponse {
   result: ApproveResultType;
@@ -489,12 +498,42 @@ export class PaymentServiceService {
   }
 
   // 특정 유저의 결제 목록 조회. /me(본인 조회)와 /{userId}(관리자 조회) 양쪽에서 재사용된다.
-  async getPaymentsByUserId(userId: number): Promise<PaymentGrpcResponse[]> {
-    const payments = await this.paymentRepository.find({
-      where: { userId },
-      order: { paidAt: 'DESC' },
+  // reservationId를 주면 그 예약의 결제만 — 실패·재시도 결제까지 여러 건일 수 있어 목록으로 돌려준다 (환불 상태 표시용).
+  // reservationIds를 주면 그 예약들의 결제만 (관리자 화면이 지금 페이지의 예약만 · 지점 범위). 둘 다 주면 reservationId.
+  // page가 1 이상이면 그 페이지만, 0이면 예전처럼 전체. total은 조건에 맞는 전체 개수.
+  async getPaymentsByUserId(
+    query: UserPaymentListQuery,
+  ): Promise<{ payments: PaymentGrpcResponse[]; total: number }> {
+    const page = query.page && query.page > 0 ? query.page : 0;
+    const size = query.size && query.size > 0 ? query.size : 20;
+    const reservationFilter = query.reservationId
+      ? { reservationId: query.reservationId }
+      : query.reservationIds?.length
+        ? { reservationId: In(query.reservationIds) }
+        : {};
+    const [payments, total] = await this.paymentRepository.findAndCount({
+      where: { userId: query.userId, ...reservationFilter },
+      order: { paidAt: 'DESC', paymentId: 'DESC' },
+      ...(page ? { skip: (page - 1) * size, take: size } : {}),
     });
-    return payments.map((payment) => this.toGrpcResponse(payment));
+    return {
+      payments: payments.map((payment) => this.toGrpcResponse(payment)),
+      total,
+    };
+  }
+
+  // 본인 결제 단건 조회 (GET /api/payments/me/{paymentId}). 남의 결제도 "없음"과 같은 NOT_FOUND로 답한다.
+  async getMyPayment(
+    userId: number,
+    paymentId: number,
+  ): Promise<PaymentGrpcResponse> {
+    const payment = await this.paymentRepository.findOne({
+      where: { paymentId, userId },
+    });
+    if (!payment) {
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 결제내역입니다.');
+    }
+    return this.toGrpcResponse(payment);
   }
 
   // 환불 (LDP-28, ERD "환불: 요청은 PrivateLink, 결과는 SQS"). 예약 취소 시 booking-service가 항상 호출한다.

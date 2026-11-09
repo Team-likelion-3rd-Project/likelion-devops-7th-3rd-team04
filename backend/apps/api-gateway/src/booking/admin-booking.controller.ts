@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   Inject,
   Logger,
@@ -17,6 +18,7 @@ import { Observable, firstValueFrom } from 'rxjs';
 import { status as GrpcStatus } from '@grpc/grpc-js';
 import {
   ApiBearerAuth,
+  ApiHeader,
   ApiOperation,
   ApiParam,
   ApiResponse,
@@ -46,6 +48,7 @@ import {
   AdminCreateBookingDto,
   CreateExtensionBookingDto,
 } from './dto/admin-booking.dto';
+import { parseIdempotencyKey } from './idempotency-key';
 
 // 페이지 크기 기본값 (LDP-136)
 const DEFAULT_PAGE_SIZE = 20;
@@ -76,8 +79,11 @@ interface AdminBookingGrpcService {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    poolChildGuestCount?: number;
+    loungeChildGuestCount?: number;
     adminId: number;
     adminName: string;
+    idempotencyKey?: string;
   }): Observable<BookingDto>;
   adminCancelBooking(data: {
     reservationId: number;
@@ -371,16 +377,31 @@ export class AdminBookingController implements OnModuleInit {
       '직원이 회원 명의로 예약을 만듭니다. 결제는 손님이 앱에서 하며(손님 앱 "결제 대기"에 보임), ' +
       '결제 마감은 생성한 날 밤 자정(한국 시간, 최소 30분)입니다. 만든 직원이 예약에 기록됩니다.',
   })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description:
+      '대리 예약 시도마다 폼이 만드는 키(영문·숫자·-·_ 1~64자). 503 뒤 다시 누를 때 같은 키를 보내면 ' +
+      '새로 만들지 않고 처음 만든 예약을 돌려줍니다 (LDP-243). 같은 키로 객실·날짜가 다르면 409 IDEMPOTENCY_KEY_REUSED.',
+  })
   @ApiResponse({ status: 201, description: '대리 예약 생성 성공' })
+  @ApiResponse({
+    status: 400,
+    description: 'INVALID_IDEMPOTENCY_KEY',
+  })
   @ApiResponse({ status: 404, description: 'USER_NOT_FOUND' })
   @ApiResponse({
     status: 409,
-    description: 'ROOM_NOT_AVAILABLE / FACILITY_NOT_AVAILABLE',
+    description:
+      'ROOM_NOT_AVAILABLE / FACILITY_NOT_AVAILABLE / IDEMPOTENCY_KEY_REUSED',
   })
   async createAdminBooking(
     @CurrentUser() admin: AuthenticatedUser,
     @Body() dto: AdminCreateBookingDto,
+    @Headers('idempotency-key') rawIdempotencyKey?: string,
   ): Promise<BookingDto> {
+    // 헤더 검사는 다른 확인(권한·회원)보다 먼저 — 잘못된 키면 아무것도 조회하지 않고 400
+    const idempotencyKey = parseIdempotencyKey(rawIdempotencyKey);
     await this.assertRoomInScope(admin, dto.hotelId, dto.roomId);
     await this.assertUserExists(dto.userId);
     const adminName = await this.adminName(admin);
@@ -389,6 +410,7 @@ export class AdminBookingController implements OnModuleInit {
         ...dto,
         adminId: admin.userId,
         adminName,
+        idempotencyKey,
       }),
     ).catch((err) => {
       throw toHttpError(

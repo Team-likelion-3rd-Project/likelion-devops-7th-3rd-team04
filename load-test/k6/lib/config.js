@@ -48,7 +48,7 @@ export const STAGES = list('STAGES', [50, 100, 150]);
 // tune 단계 하나의 길이 (초). 기본 3단계 × 100초 = 5분
 export const STAGE_SECONDS = num('STAGE_SECONDS', 100);
 
-// API 단독 (TEST=api, 또는 TEST=tune 에 붙여 병목 API 만): hotels | availability | booking | login | confirm
+// API 단독 (TEST=api, 또는 TEST=tune 에 붙여 병목 API 만): hotels | rooms | search | availability | booking | login | confirm
 export const API = env.API || '';
 
 // 테스트별 부하 형태 (위키 「테스트 유형」)

@@ -245,7 +245,10 @@ describe('AuthController', () => {
 
     it('should throw UnauthorizedException when the current password is wrong', async () => {
       changePasswordMock.mockReturnValue(
-        throwError(() => ({ message: '현재 비밀번호가 일치하지 않습니다.' })),
+        throwError(() => ({
+          code: 16,
+          details: '현재 비밀번호가 일치하지 않습니다.',
+        })),
       );
       const user = {
         userId: 1,

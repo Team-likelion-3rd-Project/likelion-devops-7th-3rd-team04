@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchMyBookings, isUnauthorized, refreshAccessToken, type Booking } from '../api/gateway'
+import { fetchMyBookingsByStatus, isUnauthorized, refreshAccessToken, type Booking } from '../api/gateway'
 import { PAYMENT_BLOCK_MESSAGE, formatPaymentDue, paymentBlockReason } from '../api/payments'
 import PaymentModal from '../components/reservation/PaymentModal'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
@@ -20,6 +20,7 @@ function formatPeriod(checkInDate: string, checkOutDate: string): string | undef
 
 // 마이페이지 > 결제 대기(/mypage/payments/pending). 예약 내역 중 결제 대기(PENDING_PAYMENT) 상태인
 // 것만 골라 보여주고, 각 항목에서 바로 결제하거나(PaymentModal) 예약 상세로 이동할 수 있게 한다.
+// 서버에서 결제 대기만 받아 온다 — 예약 내역 전체를 받지 않는다 (부하 테스트 11-06).
 function PaymentsPendingPage() {
   const navigate = useNavigate()
 
@@ -39,12 +40,13 @@ function PaymentsPendingPage() {
     const load = async () => {
       setIsLoading(true)
       setLoadError('')
+      const loadPending = () => fetchMyBookingsByStatus(['PENDING_PAYMENT'])
       try {
-        const data = await fetchMyBookings()
+        const data = await loadPending()
         if (!cancelled) setBookings(data)
       } catch (err) {
         if (cancelled) return
-        // fetchMyBookings()는 429 등을 이미 내부에서(요청 자체) 예산껏 재시도했다. 진짜 로그인이
+        // fetchMyBookingsByStatus()는 429 등을 이미 내부에서(요청 자체) 예산껏 재시도했다. 진짜 로그인이
         // 필요한 상태(401)가 아니면 재발급을 또 시도하지 않는다 — 안 그러면 이미 몰린 요청에
         // 부하만 배가된다.
         if (!isUnauthorized(err)) {
@@ -55,7 +57,7 @@ function PaymentsPendingPage() {
         // 리프레시 토큰(쿠키)으로 한 번 재발급을 시도한 뒤 다시 조회한다.
         try {
           await refreshAccessToken()
-          const data = await fetchMyBookings()
+          const data = await loadPending()
           if (!cancelled) setBookings(data)
         } catch (err2) {
           if (cancelled) return
@@ -90,7 +92,7 @@ function PaymentsPendingPage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [retryTick])
 
   const pendingBookings = bookings?.filter((booking) => booking.status === 'PENDING_PAYMENT') ?? null
 

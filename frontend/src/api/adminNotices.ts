@@ -1,6 +1,7 @@
 import { authedFetch, authedJsonFetch } from './adminApi'
 import { adminErrorMessage } from '../admin/adminScope'
 import { ApiError } from './gateway'
+import { apiErrorMessage } from './apiError'
 import type { Notice, NoticeCategory } from './notices'
 
 // ─── 공지사항 관리자 작성·수정·삭제 (LDP-147 #293) ─────────────────────────────────────────
@@ -34,7 +35,7 @@ async function parseNoticeResponse<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => null)
   if (!res.ok) {
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(adminErrorMessage(body?.code, message ?? `${res.status} ${res.statusText}`), res.status, body?.code)
+    throw new ApiError(adminErrorMessage(body?.code, apiErrorMessage(res.status, body?.code, message)), res.status, body?.code)
   }
   return body as T
 }

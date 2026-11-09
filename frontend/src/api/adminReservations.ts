@@ -1,6 +1,7 @@
 import { authedFetch, authedJsonFetch } from './adminApi'
 import { adminErrorMessage } from '../admin/adminScope'
 import { ApiError, type Booking } from './gateway'
+import { apiErrorMessage } from './apiError'
 import type { Payment } from './payments'
 
 // ─── 관리자 예약 관리 — 예약 목록, 대리 예약·직원 취소·투숙 연장 (LDP-90 #172, PR #204) ─────────────
@@ -38,6 +39,8 @@ export interface AdminCreateBookingRequest {
   guestCount: number
   poolGuestCount?: number
   loungeGuestCount?: number
+  poolChildGuestCount?: number
+  loungeChildGuestCount?: number
 }
 
 // 오류 코드별 안내 (#172 에러 코드 + 좌형님 정리). 서버 message보다 먼저 보여준다 — 직원이 다음에 할 일을 알 수 있게.
@@ -69,7 +72,7 @@ async function parseAdminResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다.
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(adminErrorMessage(body?.code, message ?? `${res.status} ${res.statusText}`), res.status, body?.code)
+    throw new ApiError(adminErrorMessage(body?.code, apiErrorMessage(res.status, body?.code, message)), res.status, body?.code)
   }
   return body as T
 }
@@ -96,9 +99,18 @@ export async function fetchLinkedBookings(rootReservationId: number): Promise<Ad
   return (await fetchAdminBookings({ linkedTo: rootReservationId })).bookings
 }
 
-// GET /api/payments/users/{userId} (관리자 전용) - 회원의 결제 목록 (결제 상태·금액·환불 시각)
-export async function fetchAdminUserPayments(userId: number): Promise<Payment[]> {
-  const res = await authedFetch(`/api/payments/users/${userId}`)
+// GET /api/bookings/{userId} (관리자 전용) - 그 회원의 예약. 지점 계정이면 서버가 자기 지점 예약만 돌려준다.
+// page 없이 부르므로 최신순 앞쪽 100건까지만 온다 (부하 테스트 11-06 상한)
+export async function fetchAdminUserBookings(userId: string | number): Promise<AdminBooking[]> {
+  const res = await authedFetch(`/api/bookings/${userId}`)
+  const data = await parseAdminResponse<{ bookings?: AdminBooking[] }>(res)
+  return data.bookings ?? []
+}
+
+// GET /api/payments/users/{userId}?reservationIds= (관리자 전용) - 회원의 결제 중 이 예약들의 결제 (결제 상태·금액·환불 시각).
+// 지금 페이지에 보이는 예약만 넘긴다 — 회원 결제 전체를 받지 않는다 (부하 테스트 11-06). 최대 100개
+export async function fetchAdminUserPayments(userId: number, reservationIds: number[]): Promise<Payment[]> {
+  const res = await authedFetch(`/api/payments/users/${userId}?reservationIds=${reservationIds.join(',')}`)
   const data = await parseAdminResponse<{ payments?: Payment[] }>(res)
   return data.payments ?? []
 }
@@ -114,8 +126,19 @@ export function latestPaymentByReservation(payments: Payment[]): Map<number, Pay
 }
 
 // POST /api/bookings/admin (관리자 전용) - 대리 예약 생성 (만든 직원이 기록됨)
-export async function createAdminBooking(input: AdminCreateBookingRequest): Promise<AdminBooking> {
-  const res = await authedJsonFetch('/api/bookings/admin', 'POST', input)
+// idempotencyKey: 같은 대리 예약 시도면 같은 키 → 서버가 처음 만든 예약을 돌려준다 (LDP-243, utils/bookingIdempotency.ts)
+export async function createAdminBooking(
+  input: AdminCreateBookingRequest,
+  idempotencyKey?: string,
+): Promise<AdminBooking> {
+  const res = await authedFetch('/api/bookings/admin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+    },
+    body: JSON.stringify(input),
+  })
   return parseAdminResponse<AdminBooking>(res)
 }
 

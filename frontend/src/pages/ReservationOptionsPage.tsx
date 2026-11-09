@@ -4,7 +4,7 @@ import { useHotels } from '../data/hotelStore'
 import { fetchRoom, fetchRoomAvailability } from '../api/hotels'
 import type { Room, RoomAvailabilityDay } from '../api/hotels'
 import { createBooking } from '../api/bookings'
-import { refreshAccessToken } from '../api/gateway'
+import { isUnauthorized, refreshAccessToken } from '../api/gateway'
 import { customerAuth } from '../api/tokenStore'
 import ReservationSteps from '../components/reservation/ReservationSteps'
 import { sumGuests } from '../components/reservation/guestTypes'
@@ -12,6 +12,7 @@ import { CalendarIcon, PersonIcon, PinIcon, RefreshIcon } from '../components/re
 import { addDays, diffDays, formatDate, formatDateISO, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { parseReservationSearchParams, toReservationSearchParams } from '../utils/reservationQuery'
 import { currentLoginState } from '../utils/loginRedirect'
+import { bookingIdempotencyKey, clearBookingIdempotencyKey } from '../utils/bookingIdempotency'
 import './ReservationOptionsPage.css'
 
 type LoadStatus = 'loading' | 'success' | 'error'
@@ -23,12 +24,16 @@ interface OptionItem {
   shortName: string
   /** 1인 1회 기준, 부가가치세 포함 금액 */
   price: number
+  /** 이용 인원 상한을 함께 세는 묶음 — 성인 + 소인이 투숙 인원을 넘지 않게 한다 */
+  group: 'pool' | 'lounge'
 }
 
 // 백엔드에 옵션 상품 API가 아직 없어, 요구사항대로 수영장/라운지 이용 두 가지만 프론트에서 고정값으로 둔다.
 const OPTIONS: OptionItem[] = [
-  { key: 'pool', label: '수영장 이용', shortName: '수영장', price: 30000 },
-  { key: 'lounge', label: '라운지 이용', shortName: '라운지', price: 50000 },
+  { key: 'pool', label: '수영장 성인', shortName: '수영장 성인', price: 77000, group: 'pool' },
+  { key: 'poolChild', label: '수영장 소인', shortName: '수영장 소인', price: 44000, group: 'pool' },
+  { key: 'lounge', label: '라운지 성인', shortName: '라운지 성인', price: 80000, group: 'lounge' },
+  { key: 'loungeChild', label: '라운지 소인', shortName: '라운지 소인', price: 30000, group: 'lounge' },
 ]
 
 function ReservationOptionsPage() {
@@ -118,9 +123,16 @@ function ReservationOptionsPage() {
   const optionsTotal = OPTIONS.reduce((sum, opt) => sum + opt.price * (optionCounts[opt.key] ?? 0), 0)
   const grandTotal = roomTotal + optionsTotal
 
-  // 옵션은 인원수를 넘겨 선택할 이유가 없으므로, 총 투숙인원을 상한으로 둔다.
-  const updateOptionCount = (key: string, value: number) => {
-    setOptionCounts((prev) => ({ ...prev, [key]: Math.min(totalGuests, Math.max(0, value)) }))
+  // 36개월 미만(유아)은 무료라 입력하지 않으므로, 시설별 성인 + 소인 상한은 유아를 뺀 투숙 인원이다.
+  const payableGuests = guests.adults + guests.children
+  const groupCount = (group: OptionItem['group'], exceptKey?: string) =>
+    OPTIONS.filter((opt) => opt.group === group && opt.key !== exceptKey).reduce(
+      (sum, opt) => sum + (optionCounts[opt.key] ?? 0),
+      0,
+    )
+  const updateOptionCount = (opt: OptionItem, value: number) => {
+    const max = payableGuests - groupCount(opt.group, opt.key)
+    setOptionCounts((prev) => ({ ...prev, [opt.key]: Math.min(max, Math.max(0, value)) }))
   }
 
   // 예약 - 결제 프로세스 변경: 이 페이지는 결제 없이 예약만 먼저 생성한다(booking-service
@@ -134,30 +146,47 @@ function ReservationOptionsPage() {
       // 그래도 안 되면 로그인 화면으로 보내고, 로그인 후 지금 고른 조건(쿼리 포함) 그대로 이 화면으로 돌아온다.
       try {
         await refreshAccessToken()
-      } catch {
-        navigate('/login', { state: currentLoginState('예약하려면 로그인이 필요합니다.') })
+      } catch (err) {
+        if (isUnauthorized(err)) {
+          navigate('/login', { state: currentLoginState('예약하려면 로그인이 필요합니다.') })
+        } else {
+          setBookingStatus('error')
+          setBookingError(err instanceof Error ? err.message : '예약 생성에 실패했습니다.')
+        }
         return
       }
     }
 
     setBookingStatus('submitting')
     setBookingError('')
+    // 503 등으로 실패한 뒤 다시 누르면 같은 키가 나간다 → 서버가 이미 만든 예약을 돌려준다 (LDP-240)
+    const conditions = {
+      roomId,
+      checkInDate: formatDateISO(search.checkIn),
+      checkOutDate: formatDateISO(search.checkOut),
+      guestCount: totalGuests,
+      poolGuestCount: optionCounts.pool ?? 0,
+      loungeGuestCount: optionCounts.lounge ?? 0,
+      poolChildGuestCount: optionCounts.poolChild ?? 0,
+      loungeChildGuestCount: optionCounts.loungeChild ?? 0,
+    }
     try {
-      const booking = await createBooking({
-        roomId,
-        hotelId: hotel.hotelId,
-        checkInDate: formatDateISO(search.checkIn),
-        checkOutDate: formatDateISO(search.checkOut),
-        guestCount: totalGuests,
-        poolGuestCount: optionCounts.pool ?? 0,
-        loungeGuestCount: optionCounts.lounge ?? 0,
-      })
+      const booking = await createBooking(
+        { ...conditions, hotelId: hotel.hotelId },
+        bookingIdempotencyKey(conditions),
+      )
+      clearBookingIdempotencyKey(conditions)
       // 예약 완료 페이지로 이동하면서, 이미 가진 정보(호텔/객실/투숙인원)를 함께 실어 보내
       // 완료 페이지가 다시 조회하지 않고도 바로 렌더링할 수 있게 한다.
       navigate(`/reservation/complete/${booking.reservationId}`, {
         state: { booking, hotel, room, guestRooms: search.rooms },
       })
     } catch (err) {
+      // 다른 기기 로그인 등으로 세션이 끊기면 다시 로그인한 뒤 고른 조건으로 돌아온다 (LDP-235).
+      if (isUnauthorized(err)) {
+        navigate('/login', { state: currentLoginState('로그인이 만료되었습니다. 다시 로그인해주세요.') })
+        return
+      }
       setBookingStatus('error')
       setBookingError(err instanceof Error ? err.message : '예약 생성에 실패했습니다.')
     }
@@ -196,7 +225,7 @@ function ReservationOptionsPage() {
                     <div className="reservation-option-stepper">
                       <button
                         type="button"
-                        onClick={() => updateOptionCount(opt.key, count - 1)}
+                        onClick={() => updateOptionCount(opt, count - 1)}
                         disabled={count <= 0}
                         aria-label={`${opt.label} 감소`}
                       >
@@ -205,8 +234,8 @@ function ReservationOptionsPage() {
                       <span className="reservation-option-stepper-value">{count}</span>
                       <button
                         type="button"
-                        onClick={() => updateOptionCount(opt.key, count + 1)}
-                        disabled={count >= totalGuests}
+                        onClick={() => updateOptionCount(opt, count + 1)}
+                        disabled={groupCount(opt.group) >= payableGuests}
                         aria-label={`${opt.label} 증가`}
                       >
                         +
@@ -221,6 +250,8 @@ function ReservationOptionsPage() {
               <p className="reservation-options-notice-group-title">공통 안내</p>
               <ul className="reservation-options-note">
                 <li>모든 옵션 요금은 부가가치세 10%가 포함된 금액입니다.</li>
+                <li>소인은 36개월~16세 기준입니다. 36개월 미만은 무료이며 인원을 입력하지 않으셔도 됩니다.</li>
+                <li>시설별 이용 인원은 투숙 인원까지 선택할 수 있습니다. 그 이상은 프런트로 문의해 주세요.</li>
                 <li>옵션 요금은 1인 1회 기준이며, 투숙 인원 수에 맞춰 선택해주시기 바랍니다.</li>
                 <li>선택하신 옵션은 체크인 시 프런트에서 이용권으로 교환해 드립니다.</li>
               </ul>

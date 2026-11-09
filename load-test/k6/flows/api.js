@@ -15,6 +15,25 @@ export function apiHotels() {
   check(res, { '호텔 목록 200': (r) => r.status === 200 });
 }
 
+// GET 객실 목록 — 읽기, 호텔 존재 확인 → 객실 → 이미지 (조회 캐시 대상)
+export function apiRooms(data) {
+  const hotelId = pick(data.hotelIds);
+  const res = get(`/api/hotels/${hotelId}/rooms`, 'GET /hotels/:id/rooms', 'read');
+  check(res, { '객실 목록 200': (r) => r.status === 200 });
+}
+
+// GET 객실 검색 — 읽기, 날짜 범위. 객실 종류는 조회 캐시, 날짜별 재고는 매번 DB
+export function apiSearch(data) {
+  const hotelId = pick(data.hotelIds);
+  const { checkIn, checkOut } = pickStay();
+  const res = get(
+    `/api/hotels/${hotelId}/rooms/search?${query({ checkIn, checkOut, guests: 2 })}`,
+    'GET /hotels/:id/rooms/search',
+    'read',
+  );
+  check(res, { '객실 검색 200': (r) => r.status === 200 });
+}
+
 // GET availability — 읽기, 날짜 범위
 export function apiAvailability(data) {
   const room = pick(data.rooms);
@@ -85,6 +104,8 @@ export function apiConfirm(data) {
 // -e API= 값 → 시나리오 exec 이름 · 이터레이션당 요청 수
 export const APIS = {
   hotels: { exec: 'apiHotels', requests: 1 },
+  rooms: { exec: 'apiRooms', requests: 1 },
+  search: { exec: 'apiSearch', requests: 1 },
   availability: { exec: 'apiAvailability', requests: 1 },
   booking: { exec: 'apiBooking', requests: 1 },
   login: { exec: 'apiLogin', requests: 1 },

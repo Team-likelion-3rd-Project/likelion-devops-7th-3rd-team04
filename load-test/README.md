@@ -6,10 +6,13 @@
 load-test/
 ├── seed/
 │   ├── loadtest-seed.sql        # 부하용 호텔 · 호실 · 예약 가능일 · 테스트 사용자 (멱등)
-│   └── loadtest-seed-job.yaml   # 운영 클러스터에서 위 SQL 을 실행하는 일회성 Job
+│   ├── loadtest-seed-job.yaml   # 운영 클러스터에서 위 SQL 을 실행하는 일회성 Job
+│   ├── hotspot-prep.sql         # 재고 잠금 집중 준비 — 매진 날짜 · 999실 객실 (멱등, 6절)
+│   └── hotspot-prep-job.yaml    # 위 SQL 을 실행하는 일회성 Job
 └── k6/
     ├── main.js                  # 진입점 (-e TEST= 로 테스트 유형 선택)
     ├── concurrency.js           # 동시 예약 (테스트 4)
+    ├── hotspot.js               # 재고 잠금 집중 (6절)
     ├── lib/                     # 설정 · HTTP 태그 · 데이터 선택 · setup · 지표 · 결과 기록
     ├── flows/                   # A browse · B search · C booking · D mypage · API 단독(api.js)
     ├── profiles/                # 테스트 유형별 부하 형태 · thresholds
@@ -99,7 +102,7 @@ k6 run -e TEST=fault --out csv=result/fault-$(date -u +%H%M).csv.gz ... main.js 
 | `TARGET_RPS` | `100` | 목표 부하 (ALB 요청/초). load · fault · soak |
 | `STAGES` | `50,100,150` | tune · api 단계 (요청/초). 1일차 한계 앞뒤로 |
 | `STAGE_SECONDS` | `100` | tune · api 단계 길이 (초, 앞 15초는 상승) |
-| `API` | | `hotels` · `availability` · `booking` · `login` · `confirm` |
+| `API` | | `hotels` · `rooms` · `search` · `availability` · `booking` · `login` · `confirm` |
 | `LOAD_MINUTES` | `15` | load 유지 시간 |
 | `STRESS_START` · `STRESS_STEP` · `STRESS_MAX` · `STRESS_STEP_SECONDS` | `50` · `50` · `500` · `120` | stress 단계 |
 | `SPIKE_BASE_RPS` · `SPIKE_FACTOR` · `SPIKE_HOLD_MINUTES` | `50` · `5` · `5` | spike |
@@ -139,12 +142,14 @@ hotel-service 는 호텔 · 객실 · 편의시설 · 공지를 Valkey 에 캐�
 
 ```bash
 kubectl -n backend logs deploy/hotel-service | grep '조회 캐시'
-k6 run -e TEST=api -e API=hotels -e STAGES=50,100,150 -e NOTE=cache-off ... main.js       # ON 은 NOTE=cache-on
+k6 run -e TEST=api -e API=rooms -e STAGES=50,100,150 -e NOTE=cache-off ... main.js        # ON 은 NOTE=cache-on
+k6 run -e TEST=api -e API=search -e STAGES=50,100,150 -e NOTE=cache-off ... main.js
 k6 run -e TEST=api -e API=availability -e STAGES=50,100,150 -e NOTE=cache-off ... main.js
 ```
 
 - 두 번은 같은 `TEST` · `API` · `STAGES`(또는 `TARGET_RPS`) · hotel-service 파드 수로 연달아 돌린다. 결과 JSON 은 `NOTE` · `GITOPS_SHA` 로 구분한다
-- 효과가 드러나는 곳: 흐름 A · B (`API=hotels` · `availability`, `TEST=load` 의 read p95). 흐름 C 는 예약 생성 때 편의시설 조회만, 흐름 D(마이페이지)는 캐시 대상이 아니다
+- 캐시 효과는 API 단독으로 잰다. 사용자 흐름(`tune` · `stress`)은 노드 CPU 등 다른 병목과 캐시 대상이 아닌 흐름이 섞여 효과가 묻힌다 (11-05: 노드 2대 stress 병목이 노드 CPU, hotel-service 는 그중 약 0.6코어)
+- 효과가 큰 순서: `API=search`(쿼리 4 → 1) · `rooms`(3 → 0~1) · `availability`(2 → 1) · `hotels`(1 → 0), 흐름으로는 A · B. 흐름 C 는 예약 생성 때 편의시설 조회만, 흐름 D(마이페이지)는 캐시 대상이 아니다
 - 값을 바꾸면 hotel-service 가 재시작되고 캐시가 빈 채로 뜬다 — 테스트 도중에 바꾸지 않고, 바꾼 직후 1 – 2분은 측정에서 뺀다
 - 같은 시간 범위로 Grafana 에서 비교한다 (`service="hotel-service"`)
 
@@ -224,8 +229,8 @@ load-test/scripts/export-prometheus.sh <시작 UTC> <끝 UTC> <이름>          
 ```
 
 - **테스트 날은 `run --all apply` · `73` apply 마다 `TF_VAR_enable_load_generator=true` 를 같이 준다.** 빼고 apply 하면 테스트 중에 생성기 · EIP 가 삭제되고 WAF 예외도 비워진다. 터미널에 export 해 두는 것을 권장한다
-- 노드 수: 평소 2대, Cluster Autoscaler 가 Pending Pod 를 보고 최대 4대까지 늘린다 (`72` `node_min_size` ~ `node_max_size`). `node_desired_size` 는 노드 그룹을 처음 만들 때만 쓰이고 이후 apply 는 노드 수를 바꾸지 않는다 (`ignore_changes`)
-- 노드 수를 고정해야 하는 측정은 `72` 를 `TF_VAR_node_min_size=N TF_VAR_node_max_size=N` 으로 apply 한다. **노드 수가 바뀌면 그 위의 Pod 가 옮겨지고, Prometheus 가 옮겨지면 그날 지표가 사라진다** (저장소 emptyDir). 바꾸기 전에 Grafana 스냅샷 · 필요한 지표를 먼저 남긴다
+- 노드: platform 1대 고정(운영 도구 · 챗봇) + 가용 영역별 앱 노드 그룹 `app-a` · `app-b`. Cluster Autoscaler 가 Pending Pod 를 보고 영역당 1–3대(`72` `app_node_min_per_az` ~ `app_node_max_per_az`) 안에서 늘리고, 두 영역을 비슷하게 맞춘다. `app_node_desired_per_az` 는 노드 그룹을 처음 만들 때만 쓰이고 이후 apply 는 노드 수를 바꾸지 않는다 (`ignore_changes`)
+- 노드 수를 고정해야 하는 측정은 `72` 를 `TF_VAR_app_node_min_per_az=N TF_VAR_app_node_max_per_az=N` 으로 apply 한다 (영역당 값). min 을 지금 desired 보다 크게(max 를 작게) 바꾸면 EKS 가 거절하므로 `eks update-nodegroup-config` 로 desired 를 먼저 맞춘다. Prometheus 는 EBS(PVC)라 노드가 바뀌어도 지표가 남는다 (LDP-248). 측정 묶음마다 `export-prometheus.sh` 로 내보내는 절차는 그대로 둔다
 - 기준선은 평소 구성(노드 2대 · main values)에서 먼저 잰다. 노드 4대 고정 결과는 피크 상한으로만 쓴다
 - 결제는 테스트 브랜치로 바뀌지 않는다. 결제 서버는 SSM `/team04-hotel/prod/payment/release` 를 읽고, 이 파라미터는 gitops main 이 바뀔 때만 갱신된다. 테스트 시작 전 `PAYMENT_PROVIDER` 를 `MOCK` 으로 바꾸고(k6 의 mock 결제 키는 TOSS 에서 전부 거절됨), **끝나면 `TOSS` 로 되돌린다** (`11-registry` 소속이라 destroy 해도 남는다)
 - 하루 테스트로 가까운 날짜(14일 이내) 재고가 빠르게 찬다 (11-04: stress · load 7회에 81%). 매진 비율이 1% 를 넘으면 결과가 무효이므로 측정 사이에 확인한다
@@ -233,3 +238,50 @@ load-test/scripts/export-prometheus.sh <시작 UTC> <끝 UTC> <이름>          
 - 생성기 CPU · 메모리는 테스트 중에 `top` 으로 본다. `dropped_iterations > 0` 인데 생성기 CPU 가 80% 를 넘으면 생성기 부족이다 → `instance_type` 을 올린다 (버스터블 t* 는 쓰지 않는다)
 - 생성기를 다시 만들면(`instance_type` 변경 등) 인스턴스는 교체되지만 EIP 는 그대로라 `80` 을 다시 apply 할 필요가 없다. 켜고 끌 때만 `80` 도 apply 한다
 - 끄기: 위 명령에서 `TF_VAR_enable_load_generator` 를 빼고 다시 실행 (인스턴스 · EIP 삭제, WAF 예외 비움). 매일 destroy 에도 포함된다. 결과를 올리기 전에 끄면 결과 파일도 사라진다
+
+## 6. 재고 잠금 집중 (`hotspot.js`, LDP-242)
+
+예약 생성은 hotel-service 가 **같은 객실 종류 × 날짜의 `room_availabilities` 행을 배타 잠금**으로 잡고 재고를 확인한다
+(`reserveRoomAvailability`). 같은 객실 · 같은 날짜에 예약이 몰리면 한 건씩 차례로 처리된다. 일반 흐름(`main.js`)은 날짜 · 객실을
+넓게 흩어 예약하고, 동시 예약(4절)은 정확성만 보므로 이 처리 상한은 따로 잰다.
+
+매진이어도 잠금을 먼저 잡고 거절하므로, 매진 상태로 만들어 두면 재고 소진 없이 몇 분씩 잴 수 있다. spread 와 hot 은 둘 다 거절 경로라
+처리 내용이 같고, 바뀌는 변수는 **행이 몰리는지** 하나뿐이다.
+
+| `MODE` | 대상 | 부하 (기본) | 판정 |
+|---|---|---|---|
+| `spread` | 「동시예약 전용룸」(1실, 매진) — 날짜 `SPREAD_DAYS`(150)일에 분산, 1박 | `STAGES` 50,100,150 예약/초, 단계당 5초 상승 + `STAGE_SECONDS`(60) | 성공 0 (전부 매진 응답), 예상 밖 응답 0 |
+| `hot` | 같은 객실, **같은 날짜 하나** (`HOT_OFFSET` 30일 뒤) | spread 와 같음 | spread 와 같음 + spread 와 지연 비교 |
+| `burst` | 「집중 성공룸」(999실, 가용) — 같은 날짜 (`BURST_OFFSET` 10일 뒤) | `BURST_RPS` 200 × `BURST_SECONDS` 6초 | 사후 남은 방 0 (성공이 보유 수량을 넘지 않음) |
+
+준비 (시드 Job 다음, 운영):
+
+```bash
+kubectl -n backend create configmap loadtest-hotspot-sql --from-file=load-test/seed/hotspot-prep.sql \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n backend delete job loadtest-hotspot-prep --ignore-not-found
+kubectl apply -f load-test/seed/hotspot-prep-job.yaml
+kubectl -n backend wait --for=condition=complete job/loadtest-hotspot-prep --timeout=5m
+kubectl -n backend logs job/loadtest-hotspot-prep -c seed          # 두 객실 종류의 total_count · 매진 일수 · 가용 일수
+```
+
+실행:
+
+```bash
+cd load-test/k6
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=spread hotspot.js
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=hot hotspot.js
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=hot -e STAGES=300,400,480 hotspot.js   # 한계 탐색
+k6 run -e BASE_URL=https://<운영 도메인> -e LT_PASSWORD="$LT_PASSWORD" -e MODE=burst hotspot.js
+```
+
+- 단계 기본값은 `hotspot.js` 안에 따로 둔다 (50,100,150 예약/초 × 60초). 공용 `STAGES` · `STAGE_SECONDS` 기본값(tune 용)과 섞이지 않는다
+- 상한: 앱 요청 제한(`THROTTLE_LIMIT`)이 IP + 경로별이라, 테스트 브랜치 30000/분이면 `POST /bookings` 한 경로가 **500 예약/초**에서 429 로 막힌다 — 그 이상은 측정할 수 없다
+- 매진 응답은 지금 **409** (`ROOM_NOT_AVAILABLE`). 404 매진 문구도 매진으로 받는다 (`lib/booking-result.js`)
+- 3차(11-06) 결과: spread · hot 은 150 까지 p95 같음(43–55ms), hot 300 에서 처리 255/초 · p95 6.4초 · hotel 커넥션 풀 대기 3.3초 (한 행 상한 약 250/초), burst 성공 999 = 보유 수량 (위키 「성능 테스트 — 3차」)
+
+- **다른 측정을 모두 끝낸 뒤 실행한다.** 「집중 성공룸」이 부하용 호텔에 생기면 `main.js` 흐름이 이 객실도 예약 · 조회 대상으로 쓴다
+- 「동시예약 전용룸」을 매진시키므로 준비 뒤에는 **동시 예약(4절)이 날짜를 찾지 못한다.** 동시 예약은 준비 전에 하거나, 재고 초기화 뒤에 한다
+- 재고 초기화(부하용 호텔 `booked_count` 0)를 하면 매진이 풀린다 → 준비 Job 을 다시 실행한다. spread · hot 의 setup 은 대상 날짜가 모두 매진이 아니면 바로 실패한다
+- 같이 볼 지표: InnoDB 행 잠금 대기(`mysql_global_status_innodb_row_lock_waits` · `_time`), hotel-service gRPC `ReserveRoomAvailability` 처리 시간, DB 커넥션 대기, k6 `POST /bookings` p95 · p99
+- burst 는 DB 로 교차 확인한다 (4절 SQL 에서 `rt.name = '집중 성공룸'`) — `booked_count` = 활성 예약 수 = 999

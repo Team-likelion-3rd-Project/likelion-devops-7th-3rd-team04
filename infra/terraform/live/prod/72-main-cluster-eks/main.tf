@@ -73,7 +73,11 @@ resource "aws_eks_cluster" "this" {
     public_access_cidrs     = var.public_access_cidrs
   }
 
-  depends_on = [aws_iam_role_policy_attachment.cluster]
+  # pvc_volume_cleanup(nodes.tf)은 destroy 때 클러스터보다 나중에 돌아야 하므로 클러스터가 그쪽에 의존한다
+  depends_on = [
+    aws_iam_role_policy_attachment.cluster,
+    terraform_data.pvc_volume_cleanup,
+  ]
 }
 
 resource "aws_eks_access_entry" "admin" {
@@ -128,7 +132,7 @@ resource "aws_eks_addon" "coredns" {
   cluster_name = aws_eks_cluster.this.name
   addon_name   = "coredns"
 
-  depends_on = [aws_eks_node_group.worker]
+  depends_on = [aws_eks_node_group.app]
 }
 
 resource "aws_eks_addon" "ebs_csi" {
@@ -141,7 +145,7 @@ resource "aws_eks_addon" "ebs_csi" {
   }
 
   depends_on = [
-    aws_eks_node_group.worker,
+    aws_eks_node_group.app,
     aws_eks_addon.pod_identity_agent,
     aws_iam_role_policy_attachment.ebs_csi,
   ]

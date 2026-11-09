@@ -54,6 +54,9 @@ spec:
         - maxSkew: {{ $.Values.topologySpread.maxSkew }}
           topologyKey: {{ $.Values.topologySpread.topologyKey }}
           whenUnsatisfiable: {{ $.Values.topologySpread.whenUnsatisfiable }}
+          {{- with $.Values.topologySpread.nodeTaintsPolicy }}
+          nodeTaintsPolicy: {{ . }}
+          {{- end }}
           labelSelector:
             matchLabels:
               {{- include "backend.selectorLabels" $ctx | nindent 14 }}
@@ -116,6 +119,7 @@ spec:
               path: /health
               port: {{ $svc.healthPort }}
             periodSeconds: {{ $.Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ $.Values.probes.readiness.timeoutSeconds }}
             failureThreshold: {{ $.Values.probes.readiness.failureThreshold }}
           livenessProbe:
             httpGet:

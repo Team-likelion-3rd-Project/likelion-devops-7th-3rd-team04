@@ -1,0 +1,15 @@
+# E2E 테스트 전용 덮어쓰기 (LDP-232)
+# - 결제: .env가 토스 모드(PAYMENT_PROVIDER=TOSS)여도 가짜 결제(pg-mock-service)를 쓴다.
+#   실제 토스 API를 부르지 않기 위해서다.
+# - 요청 제한: 테스트는 모두 localhost 한 IP에서 나가서 기본 한도(1분 100회)에 금방 걸린다.
+#   E2E는 요청 제한을 시험하지 않으므로 한도를 올린다 (요청 제한은 R7에서 따로 확인).
+#
+# 사용 (e2e/ 폴더에서). 첫 번째 -f 가 backend 쪽이라 빌드 경로·프로젝트 이름은 기존 compose와 같다:
+#   docker compose -f ../backend/docker-compose.yml -f docker-compose.e2e.yml --profile local-infra up -d --build
+services:
+  payment-service:
+    environment:
+      - PAYMENT_PROVIDER=MOCK
+  api-gateway:
+    environment:
+      - THROTTLE_LIMIT=100000

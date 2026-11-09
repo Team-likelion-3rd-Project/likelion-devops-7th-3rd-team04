@@ -34,6 +34,25 @@ function isBookable(row: RoomAvailability, totalCount: number): boolean {
   return row.isAvailable && row.bookedCount < totalCount;
 }
 
+// 예약을 받을 수 있는 기간인지 확인한다: 날짜 행이 빠짐없이 있고, 전부 예약 가능.
+// 사전 확인과 잠금 뒤 최종 판정이 같은 조건 · 같은 오류를 쓰도록 한곳에 둔다.
+function assertDatesReservable(
+  rows: RoomAvailability[],
+  totalCount: number,
+  startDate: string,
+  endDate: string,
+): void {
+  if (
+    rows.length !== countDays(startDate, endDate) ||
+    rows.some((row) => !isBookable(row, totalCount))
+  ) {
+    throw rpcError(
+      GrpcStatus.FAILED_PRECONDITION,
+      '예약 불가능한 날짜가 포함되어 있습니다.',
+    );
+  }
+}
+
 // proto의 RoomImageInput 메시지와 1:1 대응되는 입력 형태.
 // 관리자가 업로드 URL(CreateRoomImageUploadUrl)로 저장소에 먼저 올린 사진의 경로다.
 // 경로에 객실 id가 들어가서(room-types/{roomId}/...) 사진은 객실을 등록한 뒤 수정(UpdateRoom)으로 붙인다.
@@ -536,6 +555,27 @@ export class RoomService {
     startDate: string,
     endDate: string,
   ): Promise<{ totalAmount: number }> {
+    // 잠금 없는 사전 확인 (LDP-245) — 이미 매진이면 잠금 줄에 서서 커넥션을 쥐고 기다리지 않고 바로 거절한다.
+    // 거절만 하고, 통과한 요청은 아래 잠금 안에서 다시 확인하므로 오버부킹은 생기지 않는다.
+    // 트랜잭션 밖에서 읽어 잠금 안의 판정에 영향을 주지 않고(REPEATABLE READ 스냅샷),
+    // 커넥션을 동시에 2개 쓰지 않도록 차례로 읽는다. 호실을 추가한 직후 잘못 거절하지 않도록
+    // 보유 수량은 조회 캐시가 아니라 DB에서 읽는다.
+    const currentRoom = await this.roomRepository.findOne({
+      where: { roomId },
+    });
+    if (!currentRoom) {
+      throw rpcError(GrpcStatus.NOT_FOUND, '존재하지 않는 객실입니다.');
+    }
+    const currentRows = await this.roomAvailabilityRepository.find({
+      where: { roomId, date: Between(startDate, endDate) },
+    });
+    assertDatesReservable(
+      currentRows,
+      currentRoom.totalCount,
+      startDate,
+      endDate,
+    );
+
     return this.dataSource.transaction(async (manager) => {
       const room = await manager.findOne(RoomType, {
         where: { roomId },
@@ -550,16 +590,7 @@ export class RoomService {
         order: { date: 'ASC' },
         lock: { mode: 'pessimistic_write' },
       });
-
-      if (
-        rows.length !== countDays(startDate, endDate) ||
-        rows.some((row) => !isBookable(row, room.totalCount))
-      ) {
-        throw rpcError(
-          GrpcStatus.FAILED_PRECONDITION,
-          '예약 불가능한 날짜가 포함되어 있습니다.',
-        );
-      }
+      assertDatesReservable(rows, room.totalCount, startDate, endDate);
 
       await manager.increment(
         RoomAvailability,

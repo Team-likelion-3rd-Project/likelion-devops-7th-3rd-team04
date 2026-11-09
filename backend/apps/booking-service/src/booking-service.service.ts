@@ -207,6 +207,15 @@ export interface BookingListQuery {
   keywordRoomUnitIds?: number[];
 }
 
+// 회원 예약 목록 조건 (proto GetBookingsByUserIdRequest). 비어 있는 칸은 조건 없음
+export interface UserBookingListQuery {
+  userId: number;
+  statuses?: string[];
+  page?: number;
+  size?: number;
+  hotelId?: number;
+}
+
 // 끝난 예약 중 환불이 남아 있을 수 있는 상태 — 여기에 취소를 다시 요청하면 환불 상태를 확인해 알려 준다 (LDP-97).
 // 만료·결제 실패도 "예약이 끝난 뒤 승인"이 오면 자동 환불 대상이 된다.
 const REFUNDABLE_CLOSED_STATUSES = [
@@ -234,6 +243,14 @@ function todayKst(): string {
   return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+// DB UNIQUE 제약 위반 (MariaDB ER_DUP_ENTRY)
+function isDuplicateKeyError(error: unknown): boolean {
+  return (
+    error instanceof QueryFailedError &&
+    (error.driverError as { code?: string })?.code === 'ER_DUP_ENTRY'
+  );
+}
+
 // 서버 기준 오늘 날짜를 'YYYY-MM-DD'로 반환한다 (UTC 기준 — addDays/dayBefore와 동일한 원칙).
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -244,6 +261,8 @@ function today(): string {
 // 호텔별 facilities 테이블에 아래 이름과 정확히 일치하는 row가 있어야 예약 시 해당 옵션을 선택할 수 있다.
 const FACILITY_NAME_INDOOR_POOL = '수영장';
 const FACILITY_NAME_LOUNGE = '라운지';
+const FACILITY_NAME_INDOOR_POOL_CHILD = '수영장 소인';
+const FACILITY_NAME_LOUNGE_CHILD = '라운지 소인';
 
 // proto의 Booking 메시지와 1:1 대응되는 응답 형태. 편의시설(수영장/라운지) 이용 여부/인원수는
 // 여기 담지 않는다 — reservation_facilities가 유일한 소스이며, 필요하면
@@ -316,7 +335,7 @@ export class BookingServiceService implements OnModuleInit {
   // 예약 row를 저장하기만 하면 된다.
   //
   // 편의시설(수영장/라운지) 요금은 hotel-service의 facilities 테이블에서 실제 단가(1인 1회 기준)를
-  // 조회한 뒤 이용 인원수(poolGuestCount/loungeGuestCount)를 곱해 계산한다 — 예약 전체 인원수
+  // 조회한 뒤 이용 인원수(성인 poolGuestCount/loungeGuestCount, 소인 pool/loungeChildGuestCount)를 곱해 계산한다 — 예약 전체 인원수
   // (guestCount)와 무관하게 시설별로 실제 이용하는 인원만큼만 청구한다. 계산된 금액은
   // reservation_facilities에 시설별로 한 행씩 기록되어 나중에 예약 상세에서 조회할 수 있다
   // ([[facilities-reservation-facilities-design]] 메모리 참고).
@@ -333,6 +352,9 @@ export class BookingServiceService implements OnModuleInit {
       guestCount: number;
       poolGuestCount?: number;
       loungeGuestCount?: number;
+      poolChildGuestCount?: number;
+      loungeChildGuestCount?: number;
+      idempotencyKey?: string;
     },
     admin?: AdminBookingOptions,
   ): Promise<BookingGrpcResponse> {
@@ -353,6 +375,86 @@ export class BookingServiceService implements OnModuleInit {
         'INVALID_BOOKING_DATES',
         '체크아웃 날짜는 체크인 날짜보다 이후여야 합니다.',
       );
+    }
+
+    // 멱등 키 (LDP-240): 화면이 예약 시도마다 만들어 보낸다. 503을 받고 다시 누르면 같은 키가 온다.
+    // 같은 회원·같은 키의 예약이 이미 있으면 재고를 건드리지 않고 그 예약을 돌려준다.
+    // 관리자 대리 예약도 폼이 키를 보낸다 (LDP-243) — 키는 예약 대상 회원(userId) 기준으로 겹치지 않으면 된다.
+    // 키가 없으면(연장 예약, 예전 클라이언트) 예전처럼 항상 새로 만든다.
+    const idempotencyKey = (data.idempotencyKey ?? '').trim();
+    if (idempotencyKey) {
+      const existing = await this.findByIdempotencyKey(
+        data.userId,
+        idempotencyKey,
+      );
+      if (existing) {
+        return this.replayIdempotentBooking(existing, data);
+      }
+    }
+
+    // 편의시설은 재고를 차감하기 전에 확인한다 (LDP-239). 차감 뒤에 확인하면 여기서 실패할 때
+    // 줄인 재고가 그대로 남는다 — 예약 행이 없어 만료 배치도 돌려주지 못한다.
+    // 시설별 이용 인원(성인 + 소인)은 투숙 인원을 넘을 수 없다 (LDP-247). 그 이상은 현장에서 안내한다.
+    const poolAdults = data.poolGuestCount ?? 0;
+    const poolChildren = data.poolChildGuestCount ?? 0;
+    const loungeAdults = data.loungeGuestCount ?? 0;
+    const loungeChildren = data.loungeChildGuestCount ?? 0;
+    if (
+      poolAdults + poolChildren > data.guestCount ||
+      loungeAdults + loungeChildren > data.guestCount
+    ) {
+      throw fail(
+        400,
+        'FACILITY_GUEST_COUNT_EXCEEDED',
+        '수영장 · 라운지 이용 인원은 투숙 인원을 넘을 수 없습니다.',
+      );
+    }
+
+    const facilitySelections = [
+      { name: FACILITY_NAME_INDOOR_POOL, guestCount: poolAdults },
+      { name: FACILITY_NAME_INDOOR_POOL_CHILD, guestCount: poolChildren },
+      { name: FACILITY_NAME_LOUNGE, guestCount: loungeAdults },
+      { name: FACILITY_NAME_LOUNGE_CHILD, guestCount: loungeChildren },
+    ].filter((selection) => selection.guestCount > 0);
+
+    let facilityAmount = 0;
+    const reservationFacilityInputs: {
+      facilityId: number;
+      facilityName: string;
+      guestCount: number;
+      totalAmount: number;
+    }[] = [];
+
+    if (facilitySelections.length > 0) {
+      const { facilities } = await firstValueFrom(
+        this.hotelService.getFacilities({ hotelId: data.hotelId }),
+      ).catch(() => {
+        throw fail(
+          503,
+          'HOTEL_SERVICE_UNAVAILABLE',
+          '편의시설 정보를 확인할 수 없습니다.',
+          true,
+        );
+      });
+
+      for (const selection of facilitySelections) {
+        const facility = facilities.find((f) => f.name === selection.name);
+        if (!facility) {
+          throw fail(
+            409,
+            'FACILITY_NOT_AVAILABLE',
+            `해당 호텔에 등록되지 않은 편의시설입니다: ${selection.name}`,
+          );
+        }
+        const amount = facility.price * selection.guestCount;
+        facilityAmount += amount;
+        reservationFacilityInputs.push({
+          facilityId: facility.facilityId,
+          facilityName: facility.name,
+          guestCount: selection.guestCount,
+          totalAmount: amount,
+        });
+      }
     }
 
     const lastNightDate = addDays(data.checkOutDate, -1);
@@ -388,50 +490,7 @@ export class BookingServiceService implements OnModuleInit {
       );
     });
 
-    const facilitySelections = [
-      { name: FACILITY_NAME_INDOOR_POOL, guestCount: data.poolGuestCount ?? 0 },
-      { name: FACILITY_NAME_LOUNGE, guestCount: data.loungeGuestCount ?? 0 },
-    ].filter((selection) => selection.guestCount > 0);
-
-    let totalAmount = roomAmount;
-    const reservationFacilityInputs: {
-      facilityId: number;
-      facilityName: string;
-      guestCount: number;
-      totalAmount: number;
-    }[] = [];
-
-    if (facilitySelections.length > 0) {
-      const { facilities } = await firstValueFrom(
-        this.hotelService.getFacilities({ hotelId: data.hotelId }),
-      ).catch(() => {
-        throw fail(
-          503,
-          'HOTEL_SERVICE_UNAVAILABLE',
-          '편의시설 정보를 확인할 수 없습니다.',
-          true,
-        );
-      });
-
-      for (const selection of facilitySelections) {
-        const facility = facilities.find((f) => f.name === selection.name);
-        if (!facility) {
-          throw fail(
-            409,
-            'FACILITY_NOT_AVAILABLE',
-            `해당 호텔에 등록되지 않은 편의시설입니다: ${selection.name}`,
-          );
-        }
-        const facilityAmount = facility.price * selection.guestCount;
-        totalAmount += facilityAmount;
-        reservationFacilityInputs.push({
-          facilityId: facility.facilityId,
-          facilityName: facility.name,
-          guestCount: selection.guestCount,
-          totalAmount: facilityAmount,
-        });
-      }
-    }
+    const totalAmount = roomAmount + facilityAmount;
 
     const reservation = this.reservationRepository.create({
       userId: data.userId,
@@ -452,8 +511,32 @@ export class BookingServiceService implements OnModuleInit {
       linkedReservationId: admin?.linkedReservationId ?? null,
       createdByAdminId: admin?.createdByAdminId ?? null,
       createdByAdminName: admin?.createdByAdminName ?? null,
+      idempotencyKey: idempotencyKey || null,
     });
-    const saved = await this.reservationRepository.save(reservation);
+    // 재고는 이미 차감했다 — 예약을 저장하지 못하면 차감한 재고를 돌려놓고 원래 오류를 그대로 던진다 (LDP-239).
+    // 저장 뒤의 실패(편의시설 내역 등)는 예약 행이 있으므로 만료 배치가 재고를 돌려준다.
+    let saved: Reservation;
+    try {
+      saved = await this.reservationRepository.save(reservation);
+    } catch (error) {
+      // 같은 키의 요청 두 개가 거의 동시에 오면 둘 다 위의 조회를 통과하고 재고를 줄인다.
+      // 두 번째 저장은 UNIQUE (user_id, idempotency_key)에 막히므로, 줄인 재고를 돌려놓고 먼저 저장된 예약을 돌려준다.
+      const duplicate = !!idempotencyKey && isDuplicateKeyError(error);
+      await this.releaseRoomAvailability(
+        reservation,
+        duplicate ? '같은 멱등 키 예약이 먼저 저장됨' : '예약 저장 실패',
+      );
+      if (duplicate) {
+        const existing = await this.findByIdempotencyKey(
+          data.userId,
+          idempotencyKey,
+        );
+        if (existing) {
+          return this.replayIdempotentBooking(existing, data);
+        }
+      }
+      throw error;
+    }
 
     for (const input of reservationFacilityInputs) {
       await this.reservationFacilityService.createReservationFacility({
@@ -466,6 +549,40 @@ export class BookingServiceService implements OnModuleInit {
     }
 
     return this.toGrpcResponse(saved);
+  }
+
+  private findByIdempotencyKey(
+    userId: number,
+    idempotencyKey: string,
+  ): Promise<Reservation | null> {
+    return this.reservationRepository.findOne({
+      where: { userId, idempotencyKey },
+    });
+  }
+
+  // 같은 멱등 키로 다시 온 예약 요청 (LDP-240). 처음 만든 예약을 그대로 돌려준다.
+  // 키는 같은데 객실·날짜가 다르면 다른 예약을 같은 키로 보낸 것이라 거절한다 — 화면은 조건이 바뀌면 새 키를 만든다.
+  private replayIdempotentBooking(
+    existing: Reservation,
+    data: { roomId: number; checkInDate: string; checkOutDate: string },
+  ): BookingGrpcResponse {
+    if (
+      existing.roomId !== data.roomId ||
+      existing.checkInDate !== data.checkInDate ||
+      existing.checkOutDate !== data.checkOutDate
+    ) {
+      throw apiRpcException({
+        status: 409,
+        code: 'IDEMPOTENCY_KEY_REUSED',
+        message:
+          '이전 예약 요청과 조건이 다릅니다. 화면을 새로고침한 뒤 다시 예약해 주세요.',
+        retryable: false,
+      });
+    }
+    this.logger.log(
+      `같은 멱등 키의 예약 요청 — 새로 만들지 않고 예약(#${existing.reservationId})을 돌려줍니다 (userId=${existing.userId})`,
+    );
+    return this.toGrpcResponse(existing);
   }
 
   // 전체 예약 목록 조회 (관리자 전용, 권한 검증은 api-gateway에서 수행)
@@ -535,12 +652,53 @@ export class BookingServiceService implements OnModuleInit {
 
   // 특정 유저의 예약 목록 조회. userId가 이 서비스의 DB에 존재하지 않아도(유저 존재 여부는
   // 검증할 수 없음, 서비스 간 DB 분리 원칙) 빈 배열을 그대로 반환한다.
-  async getBookingsByUserId(userId: number): Promise<BookingGrpcResponse[]> {
-    const reservations = await this.reservationRepository.find({
-      where: { userId },
-      order: { createdAt: 'DESC' },
+  // 상태·지점 조건과 페이지(부하 테스트 11-06 — 예약이 쌓일수록 전체 조회가 느려짐)는 getBookings와 같은 방식.
+  // 조건이 없고 page가 0이면 예전처럼 전체.
+  async getBookingsByUserId(
+    query: UserBookingListQuery,
+  ): Promise<{ bookings: BookingGrpcResponse[]; total: number }> {
+    const qb = this.reservationRepository
+      .createQueryBuilder('r')
+      .where('r.userId = :userId', { userId: query.userId });
+    if (query.statuses?.length) {
+      qb.andWhere('r.status IN (:...statuses)', { statuses: query.statuses });
+    }
+    if (query.hotelId) {
+      qb.andWhere('r.hotelId = :hotelId', { hotelId: query.hotelId });
+    }
+    qb.orderBy('r.createdAt', 'DESC').addOrderBy('r.reservationId', 'DESC');
+    if (query.page && query.page > 0) {
+      const size = query.size && query.size > 0 ? query.size : 20;
+      qb.skip((query.page - 1) * size).take(size);
+    }
+
+    const [reservations, total] = await qb.getManyAndCount();
+    return {
+      bookings: await this.toGrpcResponsesWithLastAttempt(reservations),
+      total,
+    };
+  }
+
+  // 본인 예약 단건 조회 (GET /api/bookings/me/{reservationId}). 결제 확정 대기·예약 상세가 목록 전체 대신 쓴다.
+  // 목록과 같은 응답(결제 시도 상태 포함 — CONFIRMING이면 결제 버튼을 막는다)이라 getBookingById와 따로 둔다.
+  // 남의 예약도 "없음"과 같은 404로 답한다 — 다른 회원의 예약 번호가 있는지 알 수 없게.
+  async getMyBooking(
+    userId: number,
+    reservationId: number,
+  ): Promise<BookingGrpcResponse> {
+    const reservation = await this.reservationRepository.findOne({
+      where: { reservationId, userId },
     });
-    return this.toGrpcResponsesWithLastAttempt(reservations);
+    if (!reservation) {
+      throw apiRpcException({
+        status: 404,
+        code: 'RESERVATION_NOT_FOUND',
+        message: '존재하지 않는 예약입니다.',
+        retryable: false,
+      });
+    }
+    const [response] = await this.toGrpcResponsesWithLastAttempt([reservation]);
+    return response;
   }
 
   // 회원의 이용 예정 예약 수 (LDP-95) — 1건 이상이면 auth-service가 탈퇴를 거절한다.
@@ -1322,8 +1480,12 @@ export class BookingServiceService implements OnModuleInit {
         }),
       );
     } catch (error) {
+      // 저장 전 예약(LDP-239)은 예약번호가 없어 객실·날짜로 남긴다 — 수동 복구할 때 찾을 수 있게
+      const target = reservation.reservationId
+        ? `예약(#${reservation.reservationId})`
+        : `저장 전 예약(roomId=${reservation.roomId}, ${reservation.checkInDate}~${reservation.checkOutDate})`;
       this.logger.error(
-        `예약(#${reservation.reservationId}) ${reason} 후 room_availabilities 복구 요청 실패`,
+        `[알람] ${target} ${reason} 후 room_availabilities 복구 요청 실패 — 재고 수동 확인 필요`,
         errorTrace(error),
       );
     }

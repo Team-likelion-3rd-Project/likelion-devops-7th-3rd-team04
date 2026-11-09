@@ -150,7 +150,7 @@ function RoomSelectionPage() {
 
           {resultsStatus === 'loading' && <p className="room-selection-status">객실 정보를 불러오는 중입니다…</p>}
           {resultsStatus === 'error' && (
-            <p className="room-selection-status error">객실 정보를 불러오지 못했습니다: {resultsError}</p>
+            <p className="room-selection-status error">객실 정보를 불러오지 못했습니다. {resultsError}</p>
           )}
           {resultsStatus === 'success' && sortedResults.length === 0 && (
             <p className="room-selection-status">예약 가능한 객실이 없습니다.</p>

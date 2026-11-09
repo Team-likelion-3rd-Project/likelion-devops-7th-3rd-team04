@@ -29,6 +29,7 @@ export class AdminBookingService {
 
   // 대리 예약 생성. 회원 존재 확인과 직원 이름 조회는 api-gateway가 하고 넘긴다.
   // 결제 마감(만든 날 밤 자정, 최소 30분)은 createBooking이 payment-due.ts로 계산한다.
+  // idempotencyKey(LDP-243): 폼이 보낸 멱등 키. 503 뒤 다시 누르면 같은 키가 오고, createBooking이 처음 만든 예약을 돌려준다.
   async createProxyBooking(data: {
     userId: number;
     roomId: number;
@@ -38,8 +39,11 @@ export class AdminBookingService {
     guestCount: number;
     poolGuestCount?: number;
     loungeGuestCount?: number;
+    poolChildGuestCount?: number;
+    loungeChildGuestCount?: number;
     adminId: number;
     adminName: string;
+    idempotencyKey?: string;
   }): Promise<BookingGrpcResponse> {
     const { adminId, adminName, ...booking } = data;
     return this.bookingService.createBooking(booking, {

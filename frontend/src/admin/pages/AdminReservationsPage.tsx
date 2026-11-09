@@ -139,14 +139,28 @@ function AdminReservationsPage() {
   const total = result?.total ?? 0
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
-  // 검색어를 칠 때마다 다시 부르지 않게, 화면에 보이는 회원 묶음이 바뀌거나 새로고침할 때만 결제를 불러온다
-  const visibleUserKey = useMemo(() => [...new Set(visible.map((b) => b.userId))].sort((a, b) => a - b).join(','), [visible])
+  // 검색어를 칠 때마다 다시 부르지 않게, 화면에 보이는 예약 묶음이 바뀌거나 새로고침할 때만 결제를 불러온다.
+  // 회원별로 지금 페이지에 보이는 예약의 결제만 받는다 (회원 결제 전체를 받지 않는다 — 부하 테스트 11-06)
+  const visibleKey = useMemo(
+    () =>
+      visible
+        .map((b) => `${b.userId}:${b.reservationId}`)
+        .sort()
+        .join(','),
+    [visible],
+  )
 
   useEffect(() => {
-    const userIds = visibleUserKey ? visibleUserKey.split(',').map(Number) : []
-    if (userIds.length === 0) return
+    const reservationsByUser = new Map<number, number[]>()
+    for (const pair of visibleKey ? visibleKey.split(',') : []) {
+      const [userId, reservationId] = pair.split(':').map(Number)
+      reservationsByUser.set(userId, [...(reservationsByUser.get(userId) ?? []), reservationId])
+    }
+    if (reservationsByUser.size === 0) return
     let ignore = false
-    Promise.allSettled(userIds.map((id) => fetchAdminUserPayments(id))).then((results) => {
+    Promise.allSettled(
+      [...reservationsByUser].map(([userId, reservationIds]) => fetchAdminUserPayments(userId, reservationIds)),
+    ).then((results) => {
       if (ignore) return
       const all = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []))
       setPaymentsByReservation(latestPaymentByReservation(all))
@@ -154,7 +168,7 @@ function AdminReservationsPage() {
     return () => {
       ignore = true
     }
-  }, [visibleUserKey, reloadKey])
+  }, [visibleKey, reloadKey])
 
   const needsCheck = visible.filter((b) => {
     const p = paymentsByReservation.get(b.reservationId)

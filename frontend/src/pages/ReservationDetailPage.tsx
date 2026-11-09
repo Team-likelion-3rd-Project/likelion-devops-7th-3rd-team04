@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   cancelBooking,
-  fetchMyBookings,
+  fetchMyBooking,
   fetchReservationFacilities,
   isUnauthorized,
   refreshAccessToken,
@@ -19,6 +19,7 @@ import RefundStatusSection from '../components/reservation/RefundStatusSection'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { STATUS_LABEL, fetchRoomLookup } from './reservationHistoryUtils'
 import { currentLoginState } from '../utils/loginRedirect'
+import { facilityLabel, hasFacility } from '../utils/facilityLabel'
 import './MyPage.css'
 import './ReservationDetailPage.css'
 
@@ -32,7 +33,7 @@ const REFUNDABLE_CLOSED_STATUSES: Booking['status'][] = ['CANCELLED', 'EXPIRED',
 
 // 예약 목록(ReservationHistoryPage)에서 카드를 클릭하면 넘어오는 상세 페이지.
 // 목록에서 state로 넘겨준 booking이 있으면 그대로 쓰고, 새로고침/직접 URL 접근 등으로
-// state가 없을 때만 내 예약 목록을 다시 조회해 해당 reservationId를 찾는다.
+// state가 없을 때만 내 예약 단건(GET /api/bookings/me/{reservationId})을 다시 조회한다.
 function ReservationDetailPage() {
   const { reservationId } = useParams<{ reservationId: string }>()
   const navigate = useNavigate()
@@ -67,18 +68,17 @@ function ReservationDetailPage() {
       setIsLoading(true)
       setNotFound(false)
       setLoadError('')
-      const findMine = (bookings: Booking[]) =>
-        bookings.find((b) => String(b.reservationId) === reservationId) ?? null
+      // 본인 예약 한 건만 조회한다 (없거나 남의 예약이면 null) — 목록 전체를 받아 찾지 않는다 (부하 테스트 11-06)
+      const loadMine = () => fetchMyBooking(reservationId ?? '')
 
       try {
-        const data = await fetchMyBookings()
+        const found = await loadMine()
         if (cancelled) return
-        const found = findMine(data)
         if (found) setBooking(found)
         else setNotFound(true)
       } catch (err) {
         if (cancelled) return
-        // fetchMyBookings()는 429 등을 이미 내부에서(요청 자체) 예산껏 재시도했다. 진짜 로그인이
+        // fetchMyBooking()은 429 등을 이미 내부에서(요청 자체) 예산껏 재시도했다. 진짜 로그인이
         // 필요한 상태(401)가 아니면 재발급을 또 시도하지 않는다 — 안 그러면 이미 몰린 요청에
         // 부하만 배가된다.
         if (!isUnauthorized(err)) {
@@ -89,9 +89,8 @@ function ReservationDetailPage() {
         // 리프레시 토큰(쿠키)으로 한 번 재발급을 시도한 뒤 다시 조회한다.
         try {
           await refreshAccessToken()
-          const data = await fetchMyBookings()
+          const found = await loadMine()
           if (cancelled) return
-          const found = findMine(data)
           if (found) setBooking(found)
           else setNotFound(true)
         } catch (err2) {
@@ -192,9 +191,9 @@ function ReservationDetailPage() {
   const checkOut = booking ? parseDateISO(booking.checkOutDate) : null
   const nights = checkIn && checkOut ? diffDays(checkOut, checkIn) : null
 
-  const selectedOptionLabels = facilities.map((f) => `${f.facilityName} ${f.guestCount}인`)
-  const hasPoolFacility = facilities.some((f) => f.facilityName === '수영장')
-  const hasLoungeFacility = facilities.some((f) => f.facilityName === '라운지')
+  const selectedOptionLabels = facilities.map((f) => `${facilityLabel(f.facilityName)} ${f.guestCount}인`)
+  const hasPoolFacility = hasFacility(facilities, '수영장')
+  const hasLoungeFacility = hasFacility(facilities, '라운지')
 
   const thumbnail = roomInfo?.room.images[0]
 

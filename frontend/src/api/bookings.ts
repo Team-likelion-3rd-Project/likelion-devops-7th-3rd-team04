@@ -9,6 +9,8 @@ export interface CreateBookingRequest {
   guestCount: number
   poolGuestCount?: number
   loungeGuestCount?: number
+  poolChildGuestCount?: number
+  loungeChildGuestCount?: number
 }
 
 // proto의 Booking 메시지 / gateway BookingDto와 1:1 대응. 편의시설(수영장/라운지) 이용 여부/인원수는
@@ -41,23 +43,22 @@ export interface ReservationFacility {
 
 // POST /api/bookings — 로그인한 사용자 본인 명의로 신규 예약을 생성한다 (인증 필요).
 // checkInDate~checkOutDate 전날까지 해당 객실이 예약 가능해야 하며, 금액은 서버가 자동 계산한다.
-export async function createBooking(payload: CreateBookingRequest): Promise<Booking> {
+// idempotencyKey: 같은 예약 시도면 같은 키 → 서버가 처음 만든 예약을 돌려준다 (LDP-240, utils/bookingIdempotency.ts)
+export async function createBooking(payload: CreateBookingRequest, idempotencyKey?: string): Promise<Booking> {
   const res = await authorizedFetch('/api/bookings', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+    },
     body: JSON.stringify(payload),
   })
   return parseJsonResponse<Booking>(res)
 }
 
-// GET /api/bookings/me — 로그인한 사용자 본인의 예약 목록을 조회한다 (인증 필요).
-// 예약완료 페이지를 새로고침하거나 직접 접근했을 때(전달받은 state가 없을 때) 예약 정보를 다시
-// 조회하는 용도로 쓴다 — 단건 조회 API가 따로 없어 목록에서 reservationId로 찾아 쓴다.
-export async function fetchMyBookings(): Promise<Booking[]> {
-  const res = await authorizedFetch('/api/bookings/me')
-  const data = await parseJsonResponse<{ bookings: Booking[] }>(res)
-  return data.bookings
-}
+// GET /api/bookings/me/{reservationId} — 본인 예약 한 건 (없으면 null). 예약완료 페이지를 새로고침하거나
+// 직접 접근했을 때(전달받은 state가 없을 때) 쓴다. 목록은 gateway.ts의 fetchMyBookingsPage.
+export { fetchMyBooking } from './gateway'
 
 // GET /api/bookings/{reservationId}/facilities — 해당 예약에 연결된 편의시설(수영장/라운지 등)
 // 이용 내역을 조회한다 (인증 필요, 본인 예약이 아니면 403).

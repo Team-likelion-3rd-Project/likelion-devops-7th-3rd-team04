@@ -87,9 +87,9 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
 
   describe('예약 응답의 lastPaymentAttemptStatus', () => {
     const lastStatusOf = async (latest: Partial<PaymentAttempt>) => {
-      reservationFind.mockResolvedValue([reservation]);
+      reservationFindOne.mockResolvedValue(reservation);
       attemptFind.mockResolvedValue([attempt(latest)]);
-      const [booking] = await service.getBookingsByUserId(10);
+      const booking = await service.getMyBooking(10, 1);
       return booking.lastPaymentAttemptStatus;
     };
 
@@ -116,7 +116,7 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
     });
 
     it('최신 시도가 아니어도 승인 확인 중인 시도가 있으면 CONFIRMING (LDP-85)', async () => {
-      reservationFind.mockResolvedValue([reservation]);
+      reservationFindOne.mockResolvedValue(reservation);
       // attemptId 내림차순: 최신(결제 준비만 함) → 이전(승인 확인 중)
       attemptFind.mockResolvedValue([
         attempt({ attemptId: '4', confirmRequestedAt: null }),
@@ -126,7 +126,7 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
         }),
       ]);
 
-      const [booking] = await service.getBookingsByUserId(10);
+      const booking = await service.getMyBooking(10, 1);
 
       expect(booking.lastPaymentAttemptStatus).toBe('CONFIRMING');
     });

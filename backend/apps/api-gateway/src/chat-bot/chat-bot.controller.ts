@@ -24,8 +24,16 @@ import {
   JwtAuthGuard,
   OptionalCurrentUser,
   OptionalJwtAuthGuard,
+  grpcServerErrorToHttp,
 } from '@app/common';
 import { SendMessageDto } from './dto/send-message.dto';
+
+// 서버 쪽 장애일 때 응답 (LDP-238). 내부 오류 원문 대신 이 문구를 돌려준다.
+const CHAT_BOT_UNAVAILABLE = {
+  code: 'CHAT_BOT_SERVICE_UNAVAILABLE',
+  message:
+    '챗봇 서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+};
 
 // proto의 ChatBotService 스펙과 1:1 대응되는 TS 인터페이스
 interface ChatBotService {
@@ -185,6 +193,8 @@ export class ChatBotController implements OnModuleInit {
         message: dto.message,
       }),
     ).catch((err) => {
+      const unavailable = grpcServerErrorToHttp(err, CHAT_BOT_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new ServiceUnavailableException(
         err?.details || err?.message || '챗봇 응답 생성에 실패했습니다.',
       );
@@ -212,6 +222,8 @@ export class ChatBotController implements OnModuleInit {
     return firstValueFrom(
       this.chatBotService.getHistory({ userId: user.userId }),
     ).catch((err) => {
+      const unavailable = grpcServerErrorToHttp(err, CHAT_BOT_UNAVAILABLE);
+      if (unavailable) throw unavailable;
       throw new ServiceUnavailableException(
         err?.details || err?.message || '대화 이력 조회에 실패했습니다.',
       );

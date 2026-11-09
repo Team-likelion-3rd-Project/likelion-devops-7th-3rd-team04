@@ -44,7 +44,7 @@ function HotelStayPage() {
 
       {status === 'loading' && <p className="hotel-stay-status">객실 정보를 불러오는 중입니다…</p>}
       {status === 'error' && (
-        <p className="hotel-stay-status error">객실 정보를 불러오지 못했습니다: {error}</p>
+        <p className="hotel-stay-status error">객실 정보를 불러오지 못했습니다. {error}</p>
       )}
       {status === 'success' && rooms.length === 0 && (
         <p className="hotel-stay-status">현재 등록된 객실이 없습니다.</p>

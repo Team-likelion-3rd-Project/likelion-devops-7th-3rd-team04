@@ -1,3 +1,5 @@
+import { apiErrorMessage, apiFetch } from './apiError'
+
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
 // ─── 공지사항 (LDP-147 #293 API, 메인 V12 notices) — 고객 화면용 공개 조회 ─────────────────────
@@ -38,8 +40,8 @@ export async function fetchNotices(
   if (size) params.set('size', String(size))
   if (hotelId) params.set('hotelId', String(hotelId))
   const query = params.toString()
-  const res = await fetch(`${BASE_URL}/api/notices${query ? `?${query}` : ''}`)
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  const res = await apiFetch(`${BASE_URL}/api/notices${query ? `?${query}` : ''}`)
+  if (!res.ok) throw new Error(apiErrorMessage(res.status))
   const data = (await res.json()) as { notices?: Notice[]; total?: number }
   return { notices: data.notices ?? [], total: data.total ?? 0 }
 }

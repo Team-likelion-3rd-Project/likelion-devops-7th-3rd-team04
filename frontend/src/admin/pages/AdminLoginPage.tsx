@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { adminLogin } from '../../api/gateway'
+import { adminLogin, isTemporaryFailure } from '../../api/gateway'
 import './AdminLoginPage.css'
 
 interface LocationState {
@@ -29,8 +29,12 @@ function AdminLoginPage() {
       const state = location.state as LocationState | null
       const redirectTo = state?.from?.pathname ?? '/admin'
       navigate(redirectTo, { replace: true })
-    } catch {
-      setError('이메일 또는 비밀번호가 일치하지 않습니다.')
+    } catch (err) {
+      setError(
+        isTemporaryFailure(err)
+          ? '일시적인 문제로 로그인하지 못했습니다. 잠시 후 다시 시도해주세요.'
+          : '이메일 또는 비밀번호가 일치하지 않습니다.',
+      )
     } finally {
       setIsLoading(false)
     }

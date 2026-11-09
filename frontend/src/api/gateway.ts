@@ -1,5 +1,6 @@
 import { customerAuth, adminAuth } from './tokenStore'
 import type { AuthStore } from './tokenStore'
+import { apiErrorMessage, apiFetch } from './apiError'
 
 // 비워 두면 같은 출처의 /api/...로 호출한다 — 로컬 개발에서는 Vite 개발 서버가 /api를 클러스터로 프록시한다.
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
@@ -24,6 +25,11 @@ export class ApiError extends Error {
 // 각 페이지의 재조회 실패 처리에서 "진짜 로그인이 필요한 상태"만 걸러낼 때 쓴다.
 export function isUnauthorized(err: unknown): boolean {
   return err instanceof ApiError && err.status === 401
+}
+
+// 서버 장애·네트워크 오류·요청 제한처럼 입력과 무관한 실패인지 (로그인 화면이 비밀번호 불일치로 안내하지 않게)
+export function isTemporaryFailure(err: unknown): boolean {
+  return !(err instanceof ApiError) || err.status >= 500 || err.status === 429
 }
 
 // 429(Too Many Requests) 자동 재시도 설정. api-gateway의 ThrottlerGuard는 요청이 실제 라우트
@@ -55,7 +61,7 @@ async function fetchWithRateLimitRetry(input: string, init: RequestInit): Promis
   let waitedMs = 0
 
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(input, init)
+    const res = await apiFetch(input, init)
     if (res.status !== 429 || attempt >= MAX_RATE_LIMIT_RETRIES) return res
 
     const retryAfterSec = Number(res.headers.get('Retry-After'))
@@ -121,7 +127,7 @@ async function parseAuthResponse(res: Response, store: AuthStore): Promise<AuthR
     const body = await res.json().catch(() => null)
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다 (필드별 검증 메시지 여러 개).
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(message ?? `${res.status} ${res.statusText}`, res.status, body?.code)
+    throw new ApiError(apiErrorMessage(res.status, body?.code, message), res.status, body?.code)
   }
 
   const data: AuthResponse = await res.json()
@@ -308,7 +314,7 @@ export async function parseJsonResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // ValidationPipe(class-validator) 에러는 message가 문자열 배열로 내려온다 (필드별 검증 메시지 여러 개).
     const message = Array.isArray(body?.message) ? body.message.join(' ') : body?.message
-    throw new ApiError(message ?? `${res.status} ${res.statusText}`, res.status, body?.code)
+    throw new ApiError(apiErrorMessage(res.status, body?.code, message), res.status, body?.code)
   }
   return body as T
 }
@@ -474,11 +480,43 @@ export interface ReservationFacility {
   totalAmount: number
 }
 
-// api-gateway(GET /api/bookings/me) -> booking-service(gRPC)로 로그인한 사용자 본인의 예약 목록을 조회한다.
-export async function fetchMyBookings(): Promise<Booking[]> {
-  const res = await authorizedFetch('/api/bookings/me')
+// 내 예약 목록 한 페이지 크기
+export const MY_LIST_PAGE_SIZE = 20
+
+// api-gateway(GET /api/bookings/me?page=&size=) -> booking-service(gRPC)로 로그인한 사용자 본인의 예약 목록을
+// 한 페이지씩 조회한다 (최신순). 예전처럼 전체를 받지 않는다 (부하 테스트 3일차 11-06 — 예약이 쌓일수록 전체 조회가 느려진다).
+// 예약 하나·결제 대기만 필요한 화면은 아래 fetchMyBooking·fetchMyBookingsByStatus를 쓴다.
+export async function fetchMyBookingsPage(page: number): Promise<{ items: Booking[]; total: number }> {
+  const res = await authorizedFetch(`/api/bookings/me?page=${page}&size=${MY_LIST_PAGE_SIZE}`)
+  const data = await parseJsonResponse<{ bookings: Booking[]; total?: number }>(res)
+  return { items: data.bookings, total: data.total ?? data.bookings.length }
+}
+
+// GET /api/bookings/me/{reservationId} — 본인 예약 한 건. 없거나 남의 예약(404)·잘못된 번호(400)면 null
+// (예전에 목록에서 find로 못 찾았을 때와 같은 결과).
+export async function fetchMyBooking(reservationId: number | string): Promise<Booking | null> {
+  if (!/^\d+$/.test(String(reservationId))) return null
+  try {
+    const res = await authorizedFetch(`/api/bookings/me/${reservationId}`)
+    return await parseJsonResponse<Booking>(res)
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 404 || err.status === 400)) return null
+    throw err
+  }
+}
+
+// GET /api/bookings/me?status=... — 본인 예약 중 이 상태들만 (최신순).
+export async function fetchMyBookingsByStatus(statuses: Booking['status'][]): Promise<Booking[]> {
+  const res = await authorizedFetch(`/api/bookings/me?status=${encodeURIComponent(statuses.join(','))}`)
   const data = await parseJsonResponse<{ bookings: Booking[] }>(res)
   return data.bookings
+}
+
+// 결제 대기 예약 수 — 한 건만 받고 응답의 total(조건에 맞는 전체 개수)을 쓴다.
+export async function fetchMyPendingPaymentCount(): Promise<number> {
+  const res = await authorizedFetch('/api/bookings/me?status=PENDING_PAYMENT&page=1&size=1')
+  const data = await parseJsonResponse<{ total?: number }>(res)
+  return data.total ?? 0
 }
 
 // api-gateway(PUT /api/bookings/{reservationId}) -> booking-service(gRPC)로 예약을 취소한다.

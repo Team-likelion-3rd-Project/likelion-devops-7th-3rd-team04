@@ -4,7 +4,7 @@ import { getHotels } from '../data/hotelStore'
 import type { Hotel } from '../data/hotels'
 import { fetchRoom } from '../api/hotels'
 import type { Room } from '../api/hotels'
-import { fetchMyBookings, fetchReservationFacilities } from '../api/bookings'
+import { fetchMyBooking, fetchReservationFacilities } from '../api/bookings'
 import type { Booking, ReservationFacility } from '../api/bookings'
 import { isUnauthorized, refreshAccessToken } from '../api/gateway'
 import { PAYMENT_BLOCK_MESSAGE, formatPaymentDue, paymentBlockReason } from '../api/payments'
@@ -16,6 +16,7 @@ import { CalendarIcon, CheckIcon, PersonIcon, PinIcon } from '../components/rese
 import PaymentModal from '../components/reservation/PaymentModal'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { STATUS_LABEL } from './reservationHistoryUtils'
+import { facilityLabel, hasFacility } from '../utils/facilityLabel'
 import './ReservationCompletePage.css'
 
 // 예약 상태 코드(PENDING_PAYMENT 등)를 다른 화면과 같은 한글 라벨로 바꾼다. 모르는 값이면 그대로 보여준다.
@@ -59,20 +60,18 @@ function ReservationCompletePage() {
   }, [reservationId, navigate])
 
   // state로 예약 정보가 전달되지 않은 경우(새로고침, 북마크/직접 접근 등) — 로그인한 사용자 본인의
-  // 예약 목록에서 reservationId로 다시 찾아온다. 단건 조회 API가 없어 목록 조회로 대체한다.
+  // 예약 단건(GET /api/bookings/me/{reservationId})을 다시 조회한다.
   useEffect(() => {
     if (booking || !reservationId) return
 
     let cancelled = false
 
-    const applyFound = async (bookings: Booking[]) => {
-      const found = bookings.find((b) => b.reservationId === reservationId)
+    const applyFound = async (found: Booking | null) => {
       if (!found) {
         if (!cancelled) setStatus('error')
         return
       }
       if (cancelled) return
-      setBooking(found)
 
       // Booking 응답엔 roomId만 있고 hotelId가 없어, 등록된 호텔들을 순서대로 시도해 소속 호텔/객실을 찾는다.
       for (const h of getHotels()) {
@@ -86,13 +85,16 @@ function ReservationCompletePage() {
           // 이 호텔 소속 객실이 아님 — 다음 호텔로 계속 시도
         }
       }
-      if (!cancelled) setStatus('success')
+      if (cancelled) return
+      // booking은 이 effect의 의존성이라, 먼저 넣으면 정리 함수가 돌아 위 처리가 취소된다 → 맨 끝에 넣는다
+      setBooking(found)
+      setStatus('success')
     }
 
-    fetchMyBookings()
+    fetchMyBooking(reservationId)
       .then(applyFound)
       .catch(async (err) => {
-        // fetchMyBookings()는 429 등을 이미 내부에서 예산껏 재시도했다. 진짜 401이 아니면 재발급을
+        // fetchMyBooking()은 429 등을 이미 내부에서 예산껏 재시도했다. 진짜 401이 아니면 재발급을
         // 또 시도하지 않는다 — 안 그러면 이미 몰린 요청에 부하만 배가된다.
         if (!isUnauthorized(err)) {
           if (!cancelled) setStatus('error')
@@ -102,9 +104,9 @@ function ReservationCompletePage() {
         // 리프레시 토큰(쿠키)으로 한 번 재발급을 시도한 뒤 다시 조회한다.
         try {
           await refreshAccessToken()
-          const bookings = await fetchMyBookings()
+          const found = await fetchMyBooking(reservationId)
           if (cancelled) return
-          await applyFound(bookings)
+          await applyFound(found)
         } catch {
           if (!cancelled) setStatus('error')
         }
@@ -160,9 +162,9 @@ function ReservationCompletePage() {
   const nights = checkIn && checkOut ? diffDays(checkOut, checkIn) : null
   const guests = state.guestRooms ? sumGuests(state.guestRooms) : null
 
-  const selectedOptionLabels = facilities.map((f) => `${f.facilityName} ${f.guestCount}인`)
-  const hasPoolFacility = facilities.some((f) => f.facilityName === '수영장')
-  const hasLoungeFacility = facilities.some((f) => f.facilityName === '라운지')
+  const selectedOptionLabels = facilities.map((f) => `${facilityLabel(f.facilityName)} ${f.guestCount}인`)
+  const hasPoolFacility = hasFacility(facilities, '수영장')
+  const hasLoungeFacility = hasFacility(facilities, '라운지')
 
   const thumbnail = room?.images[0]
   const greetingName = user ? `${user.name}님, ` : ''
@@ -213,7 +215,7 @@ function ReservationCompletePage() {
             </h2>
             {isPendingPayment && (
               <p className="reservation-complete-guide">
-                {paymentDue ? `결제 기한(${paymentDue}) 안에` : '결제 기한 안에'} 결제를 완료하면 예약이 확정됩니다.
+                {paymentDue ?? '결제 기한 안에'} 결제를 완료하면 예약이 확정됩니다.
               </p>
             )}
             <p className="reservation-complete-number">예약번호 {booking.reservationId}</p>

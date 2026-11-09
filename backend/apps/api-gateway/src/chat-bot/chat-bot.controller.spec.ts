@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';
-import { ServiceUnavailableException } from '@nestjs/common';
+import { HttpException } from '@nestjs/common';
 import { AuthenticatedUser } from '@app/common';
 import { ChatBotController } from './chat-bot.controller';
 
@@ -150,14 +150,26 @@ describe('ChatBotController', () => {
       });
     });
 
-    it('maps a gRPC failure to ServiceUnavailableException', async () => {
+    it('gRPC 장애는 503이고 내부 주소를 노출하지 않는다 (LDP-238)', async () => {
       sendMessageMock.mockReturnValue(
-        throwError(() => ({ message: 'AI 응답 생성에 실패했습니다.' })),
+        throwError(() => ({
+          code: 14,
+          details:
+            'Name resolution failed for target dns:chat-bot-service:3005',
+        })),
       );
 
-      await expect(
-        controller.sendMessage({ message: '안녕' }, null),
-      ).rejects.toThrow(ServiceUnavailableException);
+      const error = await controller
+        .sendMessage({ message: '안녕' }, null)
+        .catch((e: unknown) => e);
+
+      expect((error as HttpException).getStatus()).toBe(503);
+      expect((error as HttpException).getResponse()).toMatchObject({
+        code: 'CHAT_BOT_SERVICE_UNAVAILABLE',
+      });
+      expect(
+        JSON.stringify((error as HttpException).getResponse()),
+      ).not.toContain('dns:');
     });
   });
 
@@ -169,14 +181,14 @@ describe('ChatBotController', () => {
       expect(result).toEqual(historyResponse);
     });
 
-    it('maps a gRPC failure to ServiceUnavailableException', async () => {
+    it('gRPC 장애는 503이다 (LDP-238)', async () => {
       getHistoryMock.mockReturnValue(
-        throwError(() => ({ message: '대화 이력 조회에 실패했습니다.' })),
+        throwError(() => ({ code: 4, details: 'Deadline exceeded' })),
       );
 
-      await expect(controller.getHistory(user)).rejects.toThrow(
-        ServiceUnavailableException,
-      );
+      const error = await controller.getHistory(user).catch((e: unknown) => e);
+
+      expect((error as HttpException).getStatus()).toBe(503);
     });
   });
 });

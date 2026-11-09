@@ -9,6 +9,12 @@
   @media (max-width: 767px) {
     padding: 16px 20px;
   }
+
+  /* 좁은 휴대폰: 로고 · 예약하기 · 로그인(프로필)이 한 줄에 들어가도록 줄인다 */
+  @media (max-width: 480px) {
+    gap: 8px;
+    padding: 14px 16px;
+  }
 }
 
 .site-logo {
@@ -18,6 +24,10 @@
 
   @media (max-width: 640px) {
     height: 32px;
+  }
+
+  @media (max-width: 480px) {
+    height: 26px;
   }
 }
 
@@ -99,6 +109,11 @@
   display: flex;
   align-items: center;
   gap: 12px;
+
+  @media (max-width: 480px) {
+    flex-shrink: 0;
+    gap: 8px;
+  }
 }
 
 .nav-cta {
@@ -109,6 +124,11 @@
   color: var(--bg);
   text-decoration: none;
   white-space: nowrap;
+
+  @media (max-width: 480px) {
+    font-size: 13px;
+    padding: 8px 12px;
+  }
 
   &:hover,
   &:focus-visible {
@@ -128,6 +148,11 @@
   text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
+
+  @media (max-width: 480px) {
+    font-size: 13px;
+    padding: 8px 12px;
+  }
 
   &:hover,
   &:focus-visible {
@@ -155,6 +180,11 @@
   color: var(--text-h);
   cursor: pointer;
   white-space: nowrap;
+
+  @media (max-width: 480px) {
+    gap: 4px;
+    padding: 8px 10px 8px 8px;
+  }
 
   &:hover,
   &:focus-visible {
@@ -186,6 +216,11 @@
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
+
+  /* 좁은 휴대폰은 이름 첫 글자 아이콘만 둔다 (버튼 이름은 aria-label) */
+  @media (max-width: 480px) {
+    display: none;
+  }
 }
 
 .profile-caret {

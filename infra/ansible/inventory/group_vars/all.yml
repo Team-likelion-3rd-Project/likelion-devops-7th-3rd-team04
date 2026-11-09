@@ -64,46 +64,25 @@ openbao_kv: {}
 # ESO 가 로그인하는 OpenBao Kubernetes auth role (db.yml 의 ansible-dev 정책 · k8s-cicd.yml 의 external_secrets role)
 openbao_eso_role: external-secrets
 
-# backend-secrets(ExternalSecret) 의 key ← OpenBao <경로 이름>.<속성>. 운영 infra/gitops/prod/backend-secrets values 와 같은 형식.
-# db.yml 의 eso-dev 정책(읽기 허용 경로)과 k8s-cicd.yml 의 ExternalSecret 이 함께 씀 — key 를 추가하면 차트 secretEnv 와 이관(roles/openbao import)도 맞추기
-backend_external_secret_data:
-  main-db:
-    DB_HOST: host
-    DB_DATABASE: dbname
-    DB_USERNAME: username
-    DB_PASSWORD: password
-  main-valkey:
-    REDIS_HOST: host
-    REDIS_PASSWORD: password
-  backend-app:
-    JWT_ACCESS_SECRET: jwt_access_secret
-    JWT_REFRESH_SECRET: jwt_refresh_secret
-    MOCK_PG_SECRET: mock_pg_secret
-  # 카카오 로그인 dev 앱 키 (운영 team04-hotel/prod/kakao-login 과 같은 속성). Redirect URI 는 gitops envs/dev 의 auth-service env
-  kakao-login:
-    KAKAO_CLIENT_ID: client_id
-    KAKAO_CLIENT_SECRET: client_secret
-  # ── dev 전용 (운영은 S3 · DynamoDB 를 IAM 으로, n8n · llm-service 는 아직 없음) ──
-  minio-app:
-    S3_ENDPOINT: endpoint
-    S3_ACCESS_KEY_ID: access_key
-    S3_SECRET_ACCESS_KEY: secret_key
-  minio-rag:
-    VECTOR_OBJECT_ENDPOINT: endpoint
-    VECTOR_OBJECT_ACCESS_KEY: access_key
-    VECTOR_OBJECT_SECRET_KEY: secret_key
-  dynamodb:
-    DYNAMODB_ENDPOINT: endpoint
-  n8n:
-    N8N_INIT_OWNER_PASSWORD: init_owner_password
-  gcp-sa:
-    GCP_SA_KEY_JSON: key_json_b64
-# OpenBao 에 base64 로 둔 속성 (ESO 가 풀어서 Secret 에 넣음). JSON 문자열은 Ansible 이 dict 로 바꿔 버리므로 base64 로 저장
-backend_external_secret_base64_keys: [GCP_SA_KEY_JSON]
-# backend-secrets 밖에서 ESO 가 읽는 경로 (eso-dev 정책에 함께 들어감). grafana: monitoring/grafana-admin (17절)
-#   seed-admin: backend/seed-admin (차트 seed Job 의 관리자 계정, 7-5) — 경로의 속성을 모두 이름 그대로 가져옴(dataFrom.extract).
-#               속성 이름 = 환경변수 이름(SEED_ADMIN_EMAIL, SEED_SEOUL_MANAGER_PASSWORD …)이라 값 추가 · 변경은 OpenBao 만 (LDP-193)
-eso_extra_read_paths: [grafana, seed-admin]
+# ESO(eso-dev 정책)가 읽을 수 있는 OpenBao 경로 (team04-hotel/dev/<이름>). db.yml --tags openbao 가 정책에 반영 (README 16절)
+# 어떤 경로 · 속성을 어느 Secret key 로 가져올지는 gitops 레포 envs/dev/backend-secrets.yaml (ArgoCD backend-secrets 앱)
+#   backend-secrets: main-db ~ gcp-sa (기존 경로 — db.yml · gitlab.yml · payment.yml 도 직접 읽음), backend-env (새 backend 비밀값은 여기에)
+#   seed-admin     : backend/seed-admin (차트 seed Job 의 관리자 계정, 7-5) — 속성을 모두 이름 그대로 가져옴(dataFrom.extract)
+#   grafana        : monitoring/grafana-admin (17절)
+# root 계정(main-db-root 등) · GitLab 토큰 경로는 넣지 않음. 경로를 새로 만들 때만 여기에 추가 — 기존 경로에 속성을 더할 때는 바꾸지 않음
+eso_read_paths:
+  - main-db
+  - main-valkey
+  - backend-app
+  - kakao-login
+  - minio-app
+  - minio-rag
+  - dynamodb
+  - n8n
+  - gcp-sa
+  - backend-env
+  - seed-admin
+  - grafana
 
 # ── 모니터링 (monitoring.yml · payment.yml · db.yml, README 17절) ──────
 # 메트릭 라벨 env 값 (운영은 prod). 클러스터 Prometheus scrape class · 결제 노드 Alloy 가 함께 씀

@@ -1,6 +1,7 @@
 ---
-# 클러스터 측 CI/CD: External Secrets Operator(OpenBao 연결) → backend 네임스페이스 / Secret → ArgoCD (README 12-3, 16절)
-#   GitLab 토큰 · backend-secrets 원본은 OpenBao (db.yml 로 먼저 구성, .secrets/openbao.env 를 source)
+# 클러스터 측 CI/CD: External Secrets Operator(OpenBao 연결) → backend 네임스페이스 / registry Secret → ArgoCD (README 12-3, 16절)
+#   GitLab 토큰은 OpenBao (db.yml 로 먼저 구성, .secrets/openbao.env 를 source).
+#   backend-secrets · seed-admin 은 ArgoCD backend-secrets 앱(gitops envs/dev/backend-secrets.yaml)이 만듦
 - name: CI/CD 클러스터 측 구성 (ESO + backend 네임스페이스 / Secret + ArgoCD)
   hosts: control_plane
   become: true
