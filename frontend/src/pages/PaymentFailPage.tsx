@@ -19,7 +19,7 @@ function PaymentFailPage() {
           !
         </span>
         <h1>{isCanceled ? '결제를 취소했습니다' : '결제에 실패했습니다'}</h1>
-        <p>{isCanceled ? '결제가 진행되지 않았습니다.' : message || '결제가 완료되지 않았습니다.'}</p>
+        <p>{isCanceled ? '결제가 진행되지 않았고, 결제 시도 횟수에는 포함되지 않습니다.' : message || '결제가 완료되지 않았습니다.'}</p>
         <p>예약은 결제 대기 상태로 남아 있으며, 결제 기한 안에 다시 결제할 수 있습니다.</p>
         <div className="payment-result-actions">
           <Link to="/mypage/payments/pending" className="payment-result-secondary">
