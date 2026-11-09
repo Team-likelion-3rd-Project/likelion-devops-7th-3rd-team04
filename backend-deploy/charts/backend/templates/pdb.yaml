@@ -1,0 +1,21 @@
+{{- if .Values.pdb.enabled }}
+{{- range $name, $svc := .Values.services }}
+{{- $multi := or (and $svc.hpa $svc.hpa.enabled) (ge (int ($svc.replicas | default 1)) 2) }}
+{{- if and $svc.enabled $multi (ne (toString $svc.pdb) "false") }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+# 2개 이상 뜨는 서비스만 (values.yaml pdb 주석). 한 번에 maxUnavailable 개까지만 내보낸다
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "backend.labels" $ctx | nindent 4 }}
+spec:
+  maxUnavailable: {{ $.Values.pdb.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "backend.selectorLabels" $ctx | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}

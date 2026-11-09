@@ -75,6 +75,16 @@ topologySpread:
   maxSkew: 1
   topologyKey: kubernetes.io/hostname
   whenUnsatisfiable: ScheduleAnyway
+  # Honor = Pod 가 허용하지 않는 taint 가 있는 노드를 분산 계산에서 뺀다. 비우면 쿠버네티스 기본값(Ignore)
+  # 운영(prod)은 platform 노드(taint)가 "0개인 노드"로 세어져 확장 Pod 가 막히지 않게 Honor (LDP-248)
+  nodeTaintsPolicy: ""
+
+# PodDisruptionBudget (LDP-248) — 노드 drain · Cluster Autoscaler 축소 · descheduler 가 한 번에 내보내는 Pod 수 제한.
+# 2개 이상 뜨는 서비스(replicas 2 이상 또는 HPA)에만 만든다. 1개 고정 서비스에 걸면 그 노드를 영원히 비울 수 없어 만들지 않는다.
+# services.<이름>.pdb: false 로 뺄 수 있다. HPA 축소 · 롤링 업데이트는 PDB 와 무관 (각각 HPA · Deployment strategy 가 담당)
+pdb:
+  enabled: false
+  maxUnavailable: 1
 
 # gRPC 로드 밸런싱 (LDP-159) — 아래 서비스마다 <이름>-headless Service(clusterIP: None)를 하나 더 만든다.
 # DNS 로 조회하면 Ready 인 Pod 주소 목록이 나와, 클라이언트(round_robin, libs/common grpc-options.ts)가 요청마다 Pod 를 돌아가며 부른다.
@@ -326,6 +336,9 @@ n8n:
     limits:
       cpu: 500m
       memory: 1Gi
+  # 배치 (서비스의 services.<이름>.nodeSelector · tolerations 와 같은 형식). prod 는 platform 노드 (LDP-248)
+  nodeSelector: {}
+  tolerations: []
 
 # api-gateway 외부 노출 (dev: Traefik NodePort 30080, prod: ALB)
 ingress:

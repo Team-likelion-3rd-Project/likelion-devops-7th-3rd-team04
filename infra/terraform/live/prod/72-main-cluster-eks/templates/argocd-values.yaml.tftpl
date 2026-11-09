@@ -1,7 +1,7 @@
 # argo-cd chart values — 72 EKS (argocd.tf). 70 은 Ansible roles/argocd argocd-values-aws.yaml.j2 — 같이 고친다.
 #
-# 70 과 다른 점: EKS 에는 CP 노드가 없어 nodeSelector · tolerations 가 없다.
-# 그래서 cluster-admin 을 가진 application-controller 가 앱 파드와 같은 워커에서 돈다.
+# 70 과 다른 점: EKS 에는 CP 노드가 없어, 운영 도구용 platform 노드 그룹(nodes.tf, LDP-248)에 둔다.
+# cluster-admin 을 가진 application-controller 가 앱 파드와 다른 노드에서 돈다.
 
 configs:
   cm:
@@ -52,6 +52,16 @@ configs:
     # 자동 롤백은 없고 하위 앱은 계속 재시도한다. 첫 sync(재생성)는 전체 설치를 포함하므로 넉넉히 잡는다
     controller.sync.timeout.seconds: "${sync_timeout_seconds}"
 
+# 모든 구성 요소를 platform 노드에 (nodes.tf platform_label · taint 와 같은 값)
+global:
+  nodeSelector:
+    role: platform
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: platform
+      effect: NoSchedule
+
 dex:
   enabled: false
 
@@ -71,6 +81,9 @@ controller:
       memory: 1Gi
 
 repoServer:
+  # git 저장소를 받아 두는 임시 공간(emptyDir)이라 내보내져도 다시 받으면 된다 — Cluster Autoscaler 축소를 막지 않게 (LDP-248)
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
   resources:
     requests:
       cpu: 50m
