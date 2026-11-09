@@ -140,6 +140,8 @@ API 상세 경로와 요청/응답 구조는 Wiki > API Specification 을 따릅
 
 ## 로컬 실행
 
+> 환경별 기동 절차: **로컬 실행**(아래, 개발자 PC) · [온프레미스 dev](#온프레미스-dev-기동-절차) · [AWS prod](#aws-prod-기동-절차)
+
 **사전 요구사항:** Docker(Compose v2), Node 24.19.0 (서비스 이미지는 Node 20으로 빌드)
 
 > Windows는 WSL에서 실행합니다. 저장소를 Windows 폴더(`/mnt/c/...`)에 두면 Vite가 파일 변경을 감지하지 못해, 코드를 고친 뒤 개발 서버를 다시 시작해야 반영됩니다 ([#396](https://github.com/Team-likelion-3rd-Project/likelion-devops-7th-3rd-team04/issues/396)).
@@ -228,6 +230,75 @@ npm run build
 ```
 
 예약 · 결제 핵심 흐름 E2E(Playwright)는 [e2e/README.md](./e2e/README.md)를 참고하세요.
+
+## 온프레미스 dev 기동 절차
+
+팀원 PC의 VM을 Tailscale로 묶은 kubeadm 클러스터에 `develop`을 배포하는 개발 환경입니다. 아래는 큰 순서만 적었습니다. 값 설정 · 검증 · 트러블슈팅은 [infra/ansible/README.md](./infra/ansible/README.md)의 절 번호를 따릅니다.
+
+**사전 준비**
+- Tailscale Tailnet 가입 (ACL · OAuth client는 Tailnet 관리자가 1회 설정, 1절)
+- WSL에 ansible-core, 노드용 Ubuntu 22.04 VM, SSH 키 (2절)
+- `infra/ansible/.env`와 `inventory/hosts.ini` 작성 (`.env.example` · `hosts.example.ini` 복사, 비밀값은 커밋하지 않음)
+
+**1. 클러스터 · 노드 구성 (최초 1회)**
+
+```bash
+cd infra/ansible
+set -a; source .env; set +a
+
+ansible-playbook control-plane.yml -K     # CP 담당: kubeadm init, Calico, join.env 생성 (3절)
+ansible-playbook worker-join.yml -K       # 각 팀원: join.env를 받아 worker 합류 (4절)
+ansible-playbook ingress.yml -K           # Traefik NodePort 30080 → api-gateway (11절)
+ansible-playbook db.yml -K                # DB 노드: MariaDB · Valkey · MinIO · DynamoDB Local · OpenBao (7 · 16절)
+ansible-playbook payment.yml -K           # 결제 노드: 결제 DB · ElasticMQ · payment-service (14절)
+ansible-playbook gitlab.yml -K            # GitLab (8절)
+ansible-playbook gitlab-runner.yml -K     # GitLab Runner (9절)
+ansible-playbook k8s-cicd.yml -K          # ESO(OpenBao 연결) · backend 네임스페이스 · ArgoCD (12절)
+ansible-playbook monitoring.yml -K        # 선택: Prometheus · Grafana (17절)
+```
+
+**2. 배포 (develop)**
+1. `develop`에 merge하면 GitHub → GitLab 미러 후 파이프라인이 test · 이미지 빌드 · smoke test · 레지스트리 push를 실행합니다.
+2. 배포 일정(화 · 목)에 GitLab 파이프라인의 **`deploy-dev` ▶**를 누르면 gitops 커밋이 생기고, ArgoCD가 동기화합니다(Flyway 마이그레이션 → seed Job → 앱).
+3. 결제 노드는 따로 배포합니다: `ansible-playbook payment.yml -K --tags deploy` (14-5절, 순서 주의)
+4. 롤백은 GitLab Run pipeline에 `ROLLBACK_TO=<배포 태그>`를 넣어 실행합니다. **DB가 그 버전의 시드 상태로 초기화**되니 팀에 먼저 알립니다 (12-5절).
+
+**3. 확인 · 접속**
+- 노드 · Pod: `kubectl --kubeconfig .secrets/admin.conf get nodes` · `get pods -n backend`, 배포 결과는 ArgoCD UI의 `backend` 앱
+- 화면: 프론트는 클러스터에 배포하지 않고, 개발자 PC의 Vite로 클러스터 API에 연결합니다([로컬 실행](#로컬-실행) 3번의 온프레미스 방식).
+
+## AWS prod 기동 절차
+
+AWS(`us-east-1`) 운영 환경입니다. 인프라는 Terraform(Terragrunt)으로 만들고, 앱은 릴리스 PR → GitHub Actions → gitops → ArgoCD로 배포합니다. 상세는 [infra/terraform/README.md](./infra/terraform/README.md)(인프라)와 [infra/gitops/prod/README.md](./infra/gitops/prod/README.md)(릴리스 · 배포)를 따릅니다.
+
+**사전 준비**
+- Terraform `>= 1.11`, Terragrunt `>= 1.1`, AWS CLI, gcloud (챗봇 Vertex AI 스택용)
+- 자격 증명: `infra/terraform/aws-login.sh`로 `team04` 프로필에 로그인, `gcloud auth application-default login`
+- **모든 명령에 `AWS_PROFILE=team04`** (빠지면 다른 계정으로 실행됨)
+
+**1. 인프라 생성**
+
+```bash
+export AWS_PROFILE=team04 TG_PROVIDER_CACHE=1
+cd infra/terraform/live/prod
+terragrunt run --all plan
+terragrunt run --all apply      # 스택 의존 순서대로 생성 (같은 단계는 병렬)
+```
+
+- 🔒 최초 1회 스택: `bootstrap`(terraform) · `10-global`(도메인 · 인증서 · OIDC) · `11-registry`(ECR) · `12-secrets`(비밀값, `run --all` 대상이 아니라 값을 넣고 직접 apply) · `13-frontend`(S3 · CloudFront) · `14-gcp-llm` · `15-chatbot-vectors`. 이 스택들은 destroy하지 않습니다.
+- 🔁 매일 재생성 스택: 네트워크(20) → 보안(30) → 데이터 · 메시징(41 – 44) → 웹훅 · Pod 권한(50 · 51) → 결제 서버(60 · 61) → EKS · PrivateLink(71 · 72) → ALB · WAF(80) → 알람(90)
+- `72-main-cluster-eks`가 EKS · 노드 그룹과 함께 **ArgoCD와 root 앱까지 설치**하고, ArgoCD가 gitops 레포 `envs/prod`를 동기화합니다. 메인 DB(RDS)는 매일 새로 만들어지므로 backend 배포 때마다 seed Job이 초기 데이터를 채웁니다.
+- 클러스터 접속: `./eks-kubeconfig.sh` (재생성 후 다시 실행)
+
+**2. 배포 (릴리스)**
+1. dev에서 검증된 `develop` 커밋으로 `release/<버전>` 브랜치를 만들고, `main`으로 릴리스 PR을 올려 승인 후 merge합니다.
+2. GitHub Actions `release.yml`이 바뀐 것만 반영합니다: GHCR 이미지 → ECR 복사(재빌드 없음), 프론트 운영 빌드 → S3 `releases/<SHA>/`, gitops 레포에 릴리스 PR 생성.
+3. gitops 릴리스 PR을 승인 · merge하면 반영됩니다: 백엔드는 ArgoCD(Flyway · seed 포함), 결제 서버는 Parameter Store → pull agent, 프론트는 CloudFront KeyValueStore 버전 전환.
+4. Slack `#deploy` 성공 알림과 https://meomulm.click 에서 확인하고, `main` merge 커밋에 버전 태그(`vX.Y.Z`)를 붙입니다.
+- 롤백: 프론트는 gitops의 frontend `version`, 백엔드는 이전 릴리스 값으로 되돌리는 gitops PR (자동 롤백 없음)
+
+**3. 내리기**
+- `terragrunt run --all destroy` (🔒 스택은 자동 제외). 그 전에 토스 웹훅 큐(`payment-webhook` · DLQ)가 비었는지 확인합니다.
 
 ---
 
