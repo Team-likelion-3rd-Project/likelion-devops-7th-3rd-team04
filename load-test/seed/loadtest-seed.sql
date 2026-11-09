@@ -93,7 +93,7 @@ INSERT INTO facilities (hotel_id, name, price)
 SELECT ho.hotelId, f.name, f.price
 FROM lt_hotel_def h
 JOIN hotels ho ON ho.name = h.name
-CROSS JOIN (SELECT '수영장' name, 30000 price UNION ALL SELECT '라운지', 50000) f
+CROSS JOIN (SELECT '수영장' name, 77000 price UNION ALL SELECT '수영장 소인', 44000 UNION ALL SELECT '라운지', 80000 UNION ALL SELECT '라운지 소인', 30000) f
 WHERE NOT EXISTS (SELECT 1 FROM facilities x WHERE x.hotel_id = ho.hotelId AND x.name = f.name);
 
 -- total_count 는 아래에서 ACTIVE 호실 수로 맞춘다 (보유 수량 = 사용 가능한 호실 수, LDP-82)

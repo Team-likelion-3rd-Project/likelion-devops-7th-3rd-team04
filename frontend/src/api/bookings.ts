@@ -9,6 +9,8 @@ export interface CreateBookingRequest {
   guestCount: number
   poolGuestCount?: number
   loungeGuestCount?: number
+  poolChildGuestCount?: number
+  loungeChildGuestCount?: number
 }
 
 // proto의 Booking 메시지 / gateway BookingDto와 1:1 대응. 편의시설(수영장/라운지) 이용 여부/인원수는

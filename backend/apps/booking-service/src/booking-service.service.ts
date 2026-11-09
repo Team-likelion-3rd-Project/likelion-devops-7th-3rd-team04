@@ -261,6 +261,8 @@ function today(): string {
 // 호텔별 facilities 테이블에 아래 이름과 정확히 일치하는 row가 있어야 예약 시 해당 옵션을 선택할 수 있다.
 const FACILITY_NAME_INDOOR_POOL = '수영장';
 const FACILITY_NAME_LOUNGE = '라운지';
+const FACILITY_NAME_INDOOR_POOL_CHILD = '수영장 소인';
+const FACILITY_NAME_LOUNGE_CHILD = '라운지 소인';
 
 // proto의 Booking 메시지와 1:1 대응되는 응답 형태. 편의시설(수영장/라운지) 이용 여부/인원수는
 // 여기 담지 않는다 — reservation_facilities가 유일한 소스이며, 필요하면
@@ -333,7 +335,7 @@ export class BookingServiceService implements OnModuleInit {
   // 예약 row를 저장하기만 하면 된다.
   //
   // 편의시설(수영장/라운지) 요금은 hotel-service의 facilities 테이블에서 실제 단가(1인 1회 기준)를
-  // 조회한 뒤 이용 인원수(poolGuestCount/loungeGuestCount)를 곱해 계산한다 — 예약 전체 인원수
+  // 조회한 뒤 이용 인원수(성인 poolGuestCount/loungeGuestCount, 소인 pool/loungeChildGuestCount)를 곱해 계산한다 — 예약 전체 인원수
   // (guestCount)와 무관하게 시설별로 실제 이용하는 인원만큼만 청구한다. 계산된 금액은
   // reservation_facilities에 시설별로 한 행씩 기록되어 나중에 예약 상세에서 조회할 수 있다
   // ([[facilities-reservation-facilities-design]] 메모리 참고).
@@ -350,6 +352,8 @@ export class BookingServiceService implements OnModuleInit {
       guestCount: number;
       poolGuestCount?: number;
       loungeGuestCount?: number;
+      poolChildGuestCount?: number;
+      loungeChildGuestCount?: number;
       idempotencyKey?: string;
     },
     admin?: AdminBookingOptions,
@@ -390,9 +394,27 @@ export class BookingServiceService implements OnModuleInit {
 
     // 편의시설은 재고를 차감하기 전에 확인한다 (LDP-239). 차감 뒤에 확인하면 여기서 실패할 때
     // 줄인 재고가 그대로 남는다 — 예약 행이 없어 만료 배치도 돌려주지 못한다.
+    // 시설별 이용 인원(성인 + 소인)은 투숙 인원을 넘을 수 없다 (LDP-247). 그 이상은 현장에서 안내한다.
+    const poolAdults = data.poolGuestCount ?? 0;
+    const poolChildren = data.poolChildGuestCount ?? 0;
+    const loungeAdults = data.loungeGuestCount ?? 0;
+    const loungeChildren = data.loungeChildGuestCount ?? 0;
+    if (
+      poolAdults + poolChildren > data.guestCount ||
+      loungeAdults + loungeChildren > data.guestCount
+    ) {
+      throw fail(
+        400,
+        'FACILITY_GUEST_COUNT_EXCEEDED',
+        '수영장 · 라운지 이용 인원은 투숙 인원을 넘을 수 없습니다.',
+      );
+    }
+
     const facilitySelections = [
-      { name: FACILITY_NAME_INDOOR_POOL, guestCount: data.poolGuestCount ?? 0 },
-      { name: FACILITY_NAME_LOUNGE, guestCount: data.loungeGuestCount ?? 0 },
+      { name: FACILITY_NAME_INDOOR_POOL, guestCount: poolAdults },
+      { name: FACILITY_NAME_INDOOR_POOL_CHILD, guestCount: poolChildren },
+      { name: FACILITY_NAME_LOUNGE, guestCount: loungeAdults },
+      { name: FACILITY_NAME_LOUNGE_CHILD, guestCount: loungeChildren },
     ].filter((selection) => selection.guestCount > 0);
 
     let facilityAmount = 0;

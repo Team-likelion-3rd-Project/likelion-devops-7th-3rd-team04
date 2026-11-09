@@ -16,6 +16,7 @@ import { CalendarIcon, CheckIcon, PersonIcon, PinIcon } from '../components/rese
 import PaymentModal from '../components/reservation/PaymentModal'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { STATUS_LABEL } from './reservationHistoryUtils'
+import { facilityLabel, hasFacility } from '../utils/facilityLabel'
 import './ReservationCompletePage.css'
 
 // 예약 상태 코드(PENDING_PAYMENT 등)를 다른 화면과 같은 한글 라벨로 바꾼다. 모르는 값이면 그대로 보여준다.
@@ -159,9 +160,9 @@ function ReservationCompletePage() {
   const nights = checkIn && checkOut ? diffDays(checkOut, checkIn) : null
   const guests = state.guestRooms ? sumGuests(state.guestRooms) : null
 
-  const selectedOptionLabels = facilities.map((f) => `${f.facilityName} ${f.guestCount}인`)
-  const hasPoolFacility = facilities.some((f) => f.facilityName === '수영장')
-  const hasLoungeFacility = facilities.some((f) => f.facilityName === '라운지')
+  const selectedOptionLabels = facilities.map((f) => `${facilityLabel(f.facilityName)} ${f.guestCount}인`)
+  const hasPoolFacility = hasFacility(facilities, '수영장')
+  const hasLoungeFacility = hasFacility(facilities, '라운지')
 
   const thumbnail = room?.images[0]
   const greetingName = user ? `${user.name}님, ` : ''

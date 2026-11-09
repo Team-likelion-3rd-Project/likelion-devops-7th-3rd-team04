@@ -14,6 +14,8 @@ export interface BookingConditions {
   guestCount: number
   poolGuestCount: number
   loungeGuestCount: number
+  poolChildGuestCount: number
+  loungeChildGuestCount: number
   /** 관리자 대리 예약의 대상 회원. 손님 본인 예약이면 비워 둔다 */
   forUserId?: number
 }
@@ -21,9 +23,19 @@ export interface BookingConditions {
 const STORAGE_PREFIX = 'booking-idempotency:'
 
 function storageKey(conditions: BookingConditions): string {
-  const { roomId, checkInDate, checkOutDate, guestCount, poolGuestCount, loungeGuestCount, forUserId } = conditions
+  const {
+    roomId,
+    checkInDate,
+    checkOutDate,
+    guestCount,
+    poolGuestCount,
+    loungeGuestCount,
+    poolChildGuestCount,
+    loungeChildGuestCount,
+    forUserId,
+  } = conditions
   const owner = forUserId === undefined ? '' : `user-${forUserId}|`
-  return `${STORAGE_PREFIX}${owner}${roomId}|${checkInDate}|${checkOutDate}|${guestCount}|${poolGuestCount}|${loungeGuestCount}`
+  return `${STORAGE_PREFIX}${owner}${roomId}|${checkInDate}|${checkOutDate}|${guestCount}|${poolGuestCount}|${loungeGuestCount}|${poolChildGuestCount}|${loungeChildGuestCount}`
 }
 
 function newKey(): string {

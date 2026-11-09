@@ -41,7 +41,7 @@ export class CreateBookingDto {
   guestCount: number;
 
   /**
-   * 실내 수영장 이용 인원수. 0 또는 미지정이면 미이용.
+   * 수영장 성인 이용 인원수. 0 또는 미지정이면 미이용.
    * @example 0
    */
   @IsOptional()
@@ -50,11 +50,29 @@ export class CreateBookingDto {
   poolGuestCount?: number;
 
   /**
-   * 라운지 이용 인원수. 0 또는 미지정이면 미이용.
+   * 라운지 성인 이용 인원수. 0 또는 미지정이면 미이용.
    * @example 0
    */
   @IsOptional()
   @IsInt()
   @Min(0)
   loungeGuestCount?: number;
+
+  /**
+   * 수영장 소인(36개월~16세) 이용 인원수. 성인과 합쳐 투숙 인원을 넘을 수 없습니다.
+   * @example 0
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  poolChildGuestCount?: number;
+
+  /**
+   * 라운지 소인(36개월~16세) 이용 인원수. 성인과 합쳐 투숙 인원을 넘을 수 없습니다.
+   * @example 0
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  loungeChildGuestCount?: number;
 }

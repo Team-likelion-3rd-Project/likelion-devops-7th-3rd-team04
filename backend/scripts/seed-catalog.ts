@@ -12,8 +12,10 @@ export const WEEKEND_PRICE_RATE = 1.2;
 // booking-service.service.ts의 FACILITY_NAME_INDOOR_POOL/FACILITY_NAME_LOUNGE 상수와
 // name이 정확히 일치해야 createBooking의 편의시설 요금 조회(이름 매칭)가 성공합니다.
 export const FACILITY_SEEDS: Pick<Facility, 'name' | 'price'>[] = [
-  { name: '수영장', price: 30000 },
-  { name: '라운지', price: 50000 },
+  { name: '수영장', price: 77000 },
+  { name: '수영장 소인', price: 44000 },
+  { name: '라운지', price: 80000 },
+  { name: '라운지 소인', price: 30000 },
 ];
 
 // 첫 공지 (LDP-147) — 프론트가 직접 적어 두던 frontend/src/data/notices.ts의 6건 그대로.

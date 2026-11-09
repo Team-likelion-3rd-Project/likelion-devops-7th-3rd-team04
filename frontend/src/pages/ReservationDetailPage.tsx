@@ -19,6 +19,7 @@ import RefundStatusSection from '../components/reservation/RefundStatusSection'
 import { diffDays, formatDateWithWeekday, parseDateISO } from '../utils/date'
 import { STATUS_LABEL, fetchRoomLookup } from './reservationHistoryUtils'
 import { currentLoginState } from '../utils/loginRedirect'
+import { facilityLabel, hasFacility } from '../utils/facilityLabel'
 import './MyPage.css'
 import './ReservationDetailPage.css'
 
@@ -190,9 +191,9 @@ function ReservationDetailPage() {
   const checkOut = booking ? parseDateISO(booking.checkOutDate) : null
   const nights = checkIn && checkOut ? diffDays(checkOut, checkIn) : null
 
-  const selectedOptionLabels = facilities.map((f) => `${f.facilityName} ${f.guestCount}인`)
-  const hasPoolFacility = facilities.some((f) => f.facilityName === '수영장')
-  const hasLoungeFacility = facilities.some((f) => f.facilityName === '라운지')
+  const selectedOptionLabels = facilities.map((f) => `${facilityLabel(f.facilityName)} ${f.guestCount}인`)
+  const hasPoolFacility = hasFacility(facilities, '수영장')
+  const hasLoungeFacility = hasFacility(facilities, '라운지')
 
   const thumbnail = roomInfo?.room.images[0]
 
