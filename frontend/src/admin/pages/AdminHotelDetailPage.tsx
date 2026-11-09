@@ -6,6 +6,7 @@ import {
   fetchAdminHotelById,
   fetchAdminHotelRooms,
   fetchAdminHotelStats,
+  formatOccupancy,
   readImageFileForPreview,
   ROOM_IMAGE_TYPES,
   updateAdminRoom,
@@ -195,9 +196,7 @@ function AdminHotelDetailPage() {
           <div className="admin-card admin-stat-tile">
             <span className="admin-stat-label">오늘 객실 점유율</span>
             <span className="admin-stat-value">
-              {rooms && rooms.length > 0
-                ? `${Math.round((stats.occupiedRoomsToday / rooms.length) * 100)}%`
-                : '—%'}
+              {formatOccupancy(stats.occupiedRoomsToday, rooms)}
             </span>
           </div>
           <div className="admin-card admin-stat-tile">

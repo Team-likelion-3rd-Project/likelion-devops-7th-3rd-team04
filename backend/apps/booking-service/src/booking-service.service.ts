@@ -1677,6 +1677,9 @@ export class BookingServiceService implements OnModuleInit {
   // 관리자 호텔 상세 페이지의 "호텔별 지표" 섹션용 집계. hotelId 스냅샷 컬럼 덕분에 이 서비스의
   // DB만으로 계산되고, hotel-service 호출은 필요 없다 (점유율의 분모인 "총 객실 수"는 프론트가
   // 이미 갖고 있는 hotel-service의 GetRooms 결과를 그대로 재사용한다 — 이 메서드는 분자만 반환).
+  // occupiedRoomsToday는 오늘 밤 숙박 중인 확정 예약 건수다. 예약 1건 = 호실 1개이고, 호실을 아직
+  // 배정하지 않은 예약도 방을 차지하므로 건수로 센다. roomId는 V9 이후 객실 "종류"라서 DISTINCT roomId로
+  // 세면 같은 종류의 예약이 1개로 합쳐진다 (LDP-254). 분모는 객실 종류별 totalCount(ACTIVE 호실 수)의 합.
   // date를 생략하면 서버 기준 오늘로 계산한다.
   // newReservationsToday는 오늘 생성된 예약 전체가 아니라 "오늘 생성되고 결제까지 확정된"(status=RESERVED)
   // 건만 센다 — PENDING_PAYMENT(결제 대기 중)는 아직 확정된 예약이 아니므로 제외.
@@ -1719,8 +1722,7 @@ export class BookingServiceService implements OnModuleInit {
         })
         .andWhere('reservation.checkInDate <= :targetDate', { targetDate })
         .andWhere('reservation.checkOutDate > :targetDate', { targetDate })
-        .select('COUNT(DISTINCT reservation.roomId)', 'count')
-        .getRawOne<{ count: string }>(),
+        .getCount(),
       base()
         .andWhere('reservation.status = :status', {
           status: ReservationStatus.RESERVED,
@@ -1751,9 +1753,7 @@ export class BookingServiceService implements OnModuleInit {
     return {
       checkInsToday,
       checkOutsToday,
-      occupiedRoomsToday: Number(
-        (occupiedRoomsToday as { count: string })?.count ?? 0,
-      ),
+      occupiedRoomsToday,
       newReservationsToday,
       cancellationsToday,
       revenueToday: Number((revenueResult as { sum: string | null })?.sum ?? 0),
