@@ -258,8 +258,8 @@ ansible-playbook monitoring.yml -K        # 선택: Prometheus · Grafana (17절
 ```
 
 **2. 배포 (develop)**
-1. `develop`에 merge하면 GitHub → GitLab 미러 후 파이프라인이 test · 이미지 빌드 · smoke test · 레지스트리 push를 실행합니다.
-2. 배포 일정(화 · 목)에 GitLab 파이프라인의 **`deploy-dev` ▶**를 누르면 gitops 커밋이 생기고, ArgoCD가 동기화합니다(Flyway 마이그레이션 → seed Job → 앱).
+1. `develop`에 push되면 GitHub Actions가 온프레미스 GitLab으로 미러링하고, GitLab Runner가 테스트 · 이미지 빌드 · smoke test · 레지스트리 push를 **자동으로** 실행합니다.
+2. 배포는 **수동 승인**(`when: manual`)입니다. 배포 일정(화 · 목)에 파이프라인의 **`deploy-dev` ▶**를 누르면 배포 상태(이미지 태그 · 차트 revision)가 gitops 레포에 커밋되고, 온프레미스 ArgoCD가 gitops 레포를 sync해서 반영합니다(Flyway 마이그레이션 → seed Job → 앱). pull 방식이라 파이프라인에는 클러스터 자격 증명이 없습니다.
 3. 결제 노드는 따로 배포합니다: `ansible-playbook payment.yml -K --tags deploy` (14-5절, 순서 주의)
 4. 롤백은 GitLab Run pipeline에 `ROLLBACK_TO=<배포 태그>`를 넣어 실행합니다. **DB가 그 버전의 시드 상태로 초기화**되니 팀에 먼저 알립니다 (12-5절).
 
@@ -269,7 +269,7 @@ ansible-playbook monitoring.yml -K        # 선택: Prometheus · Grafana (17절
 
 ## AWS prod 기동 절차
 
-AWS(`us-east-1`) 운영 환경입니다. 인프라는 Terraform(Terragrunt)으로 만들고, 앱은 릴리스 PR → GitHub Actions → gitops → ArgoCD로 배포합니다. 상세는 [infra/terraform/README.md](./infra/terraform/README.md)(인프라)와 [infra/gitops/prod/README.md](./infra/gitops/prod/README.md)(릴리스 · 배포)를 따릅니다.
+AWS(`us-east-1`) 운영 환경입니다. 인프라는 Terraform(Terragrunt)으로 만들고, 앱은 릴리스 PR → GitHub Actions(`release.yml`) → gitops → ArgoCD로 배포합니다. 운영 배포는 GitHub Actions가 맡고, GitLab은 운영에 배포하지 않습니다. 상세는 [infra/terraform/README.md](./infra/terraform/README.md)(인프라)와 [infra/gitops/prod/README.md](./infra/gitops/prod/README.md)(릴리스 · 배포)를 따릅니다.
 
 **사전 준비**
 - Terraform `>= 1.11`, Terragrunt `>= 1.1`, AWS CLI, gcloud (챗봇 Vertex AI 스택용)
