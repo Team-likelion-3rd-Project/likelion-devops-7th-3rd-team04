@@ -33,6 +33,18 @@ def test_room_document_has_weekday_and_weekend_rates():
     assert "144,000원" in room["text"]
 
 
+def test_pool_guide_matches_hotel_waters_page():
+    guide = next(doc for doc in corpus.DOCUMENTS if doc["id"] == "facility-pool-guide")
+    # frontend/src/pages/HotelWatersPage.tsx의 이용시간·요금
+    for expected in ("09:00", "77,000원", "44,000원", "36개월 미만 무료"):
+        assert expected in guide["text"]
+
+
+def test_corpus_has_no_claims_missing_from_hotel_page():
+    assert all("워터파크" not in doc["text"] for doc in corpus.DOCUMENTS)
+    assert "policy-fitness-spa" not in {doc["id"] for doc in corpus.DOCUMENTS}
+
+
 def test_intent_whitelist_follows_catalog():
     assert intent._ROOMS_BY_HOTEL == {
         hotel["slug"]: [room["name"] for room in hotel["rooms"]] for hotel in CATALOG["hotels"]
