@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import BrandLogo from './BrandLogo'
 import { useHotels } from '../data/hotelStore'
@@ -26,6 +26,16 @@ function Header() {
   const navigate = useNavigate()
 
   const closeMenu = () => setOpenMenu(null)
+
+  // 터치에는 마우스 이탈이 없으므로, 프로필 메뉴는 바깥을 누르면 닫는다
+  useEffect(() => {
+    if (openMenu !== 'profile') return
+    const closeOnOutside = (e: PointerEvent) => {
+      if (!(e.target as Element).closest('.profile-item')) setOpenMenu(null)
+    }
+    document.addEventListener('pointerdown', closeOnOutside)
+    return () => document.removeEventListener('pointerdown', closeOnOutside)
+  }, [openMenu])
 
   const handleLogout = async () => {
     closeMenu()
@@ -115,14 +125,22 @@ function Header() {
         {accessToken && user ? (
           <div
             className="nav-item profile-item"
-            onMouseEnter={() => setOpenMenu('profile')}
-            onMouseLeave={closeMenu}
+            // 터치는 탭 한 번에 진입·클릭·이탈이 이어져 메뉴가 바로 닫힌다 → 진입·이탈은 마우스만 쓰고, 터치는 탭으로 열고 닫는다
+            onPointerEnter={(e) => {
+              if (e.pointerType === 'mouse') setOpenMenu('profile')
+            }}
+            onPointerLeave={(e) => {
+              if (e.pointerType === 'mouse') closeMenu()
+            }}
           >
             <button
               type="button"
               className="profile-trigger"
+              aria-label={`${user.name} 님 메뉴`}
               aria-expanded={openMenu === 'profile'}
-              onFocus={() => setOpenMenu('profile')}
+              onFocus={(e) => {
+                if (e.target.matches(':focus-visible')) setOpenMenu('profile')
+              }}
               onClick={() => setOpenMenu((prev) => (prev === 'profile' ? null : 'profile'))}
             >
               <span className="profile-avatar" aria-hidden="true">

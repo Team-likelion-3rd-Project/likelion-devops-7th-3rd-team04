@@ -72,7 +72,6 @@ function ReservationCompletePage() {
         return
       }
       if (cancelled) return
-      setBooking(found)
 
       // Booking 응답엔 roomId만 있고 hotelId가 없어, 등록된 호텔들을 순서대로 시도해 소속 호텔/객실을 찾는다.
       for (const h of getHotels()) {
@@ -86,7 +85,10 @@ function ReservationCompletePage() {
           // 이 호텔 소속 객실이 아님 — 다음 호텔로 계속 시도
         }
       }
-      if (!cancelled) setStatus('success')
+      if (cancelled) return
+      // booking은 이 effect의 의존성이라, 먼저 넣으면 정리 함수가 돌아 위 처리가 취소된다 → 맨 끝에 넣는다
+      setBooking(found)
+      setStatus('success')
     }
 
     fetchMyBooking(reservationId)
