@@ -46,11 +46,11 @@ infra/terraform/
         ├── 43-messaging/            🔁
         ├── 44-payment-endpoints/    🔁
         ├── 50-payment-webhook/      🔁
-        ├── 51-pod-roles/            🔁 메인 클러스터 파드 Role (IRSA · EKS Pod Identity 신뢰, 70 · 72 공용)
-        ├── 72-main-cluster-eks/     🔁 EKS 클러스터 · 노드 그룹(platform 1대 고정 + 가용 영역별 app 1 ~ 3대, Cluster Autoscaler 가 조절 — desired 는 ignore_changes) · 애드온 · Pod Identity Association · ArgoCD root 앱
+        ├── 51-pod-roles/            🔁 메인 클러스터 파드 Role (EKS Pod Identity 신뢰 + 자체 IRSA 신뢰 — IRSA 는 70 정리 때 삭제)
+        ├── 72-main-cluster-eks/     🔁 EKS 클러스터 · 노드 그룹(platform 영역별 1대 고정 + 가용 영역별 app 1 ~ 3대, Cluster Autoscaler 가 조절 — desired 는 ignore_changes) · 애드온 · Pod Identity Association · ArgoCD root 앱
         ├── 60-payment-app/          🔁 결제 서버 · NLB · Endpoint Service
         ├── 61-payment-mock/         🔁 부하 테스트용 pg-mock 인스턴스
-        ├── 70-main-cluster-kubeadm/ 🔁
+        ├── 70-main-cluster-kubeadm/ ⛔ 사용 중단 (EKS 전환 후 exclude · no_run, 코드 삭제 대기)
         ├── 71-payment-link/         🔁 메인 VPC 결제 PrivateLink 엔드포인트 · 고정 이름
         ├── 73-load-generator/       🔁 부하 테스트 k6 생성기 · EIP (기본 꺼짐, 80 WAF rate limit 예외)
         ├── 80-main-edge/            🔁
@@ -178,14 +178,14 @@ bootstrap                                  🔒 최초 1회 (terraform)
 41-main-data   42-payment-data   43-messaging   44-payment-endpoints
 50-payment-webhook   51-pod-roles
 60-payment-app   61-payment-mock
-70-main-cluster-kubeadm   71-payment-link   72-main-cluster-eks   73-load-generator
+71-payment-link   72-main-cluster-eks   73-load-generator
 80-main-edge
 90-observability-alarms
 ```
 
 - 서비스 도메인은 운영 계정 Route53 에서 등록한 `meomulm.click` 이고, `10-global` 의 `domain_name` · `enable_certificate` 기본값에 들어 있습니다. 등록 시 자동 생성된 Zone 을 import 해 씁니다 ([`dns.tf`](live/prod/10-global/dns.tf) 상단 주석 [A] 절차). `domain_name = null` 로 두면 도메인 없이도 apply 할 수 있습니다.
 - `bootstrap`, `10-global`, `11-registry`, `12-secrets`, `13-frontend`, `14-gcp-llm`, `15-chatbot-vectors` 는 **destroy 하지 않습니다.**
-  Hosted Zone 을 다시 만들면 NS 가 바뀌고, CloudFront 는 생성 · 삭제가 느리고 사이트 릴리스 · 객실 사진이 사라지고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고, ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 하고, Workload Identity Pool · Provider 는 삭제 후 30일 동안 같은 ID 를 쓸 수 없습니다.
+  Hosted Zone 을 다시 만들면 NS 가 바뀌고, CloudFront 는 생성 · 삭제가 느리고 사이트 릴리스 · 객실 사진이 사라지고, Object Lock 로그 버킷은 잠긴 객체가 남아 있으면 삭제할 수 없고, OIDC 발급자가 바뀌면 IRSA 신뢰 정책이 깨지고(kubeadm 시기), ECR 을 지우면 이미지가 사라지고, 외부 비밀값은 사람이 다시 발급 · 등록해야 하고, Workload Identity Pool · Provider 는 삭제 후 30일 동안 같은 ID 를 쓸 수 없습니다.
 
 ### 스택별 소요 시간
 
@@ -201,7 +201,7 @@ bootstrap                                  🔒 최초 1회 (terraform)
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
 | `20-network` | `single_nat_gateway = false` · NFW 끔 (NAT 4개, Deployment VPC 포함 5개 · NFW 도입 전 실측) | 2분 27초 | 1분 23초 |
 | `30-security` | SG 14개 · 규칙 61개 (2026-11-10). destroy 는 `50` Lambda 의 VPC ENI 가 지워질 때까지 SG 삭제를 기다림 | 10초 | **6분 29초** |
-| `30-security` | `enable_control_plane = true` (SG 12개, 규칙 39개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
+| `30-security` **(kubeadm 시기)** | `enable_control_plane = true` (SG 12개, 규칙 39개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
 | `41-main-data` | **RDS `db.t4g.medium` Multi-AZ · Valkey 2대 (기본값, 2026-11-10)**. RDS 14분 30초, Valkey 8분 08초 / 삭제 RDS 4분 08초, Valkey 5분 29초 | **14분 38초** | **5분 32초** |
 | `41-main-data` | (아래 실측은 db.t4g.micro. 기본값은 LDP-201 부터 db.t4g.small) RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
 | `42-payment-data` | **결제 RDS `db.t4g.micro` Multi-AZ (기본값, 2026-11-10)**. RDS 14분 30초 / 삭제 3분 58초 | **14분 36초** | **4분 00초** |
@@ -237,7 +237,7 @@ terragrunt run --all apply \
 
 `72-main-cluster-eks` 는 apply 안에서 노드 합류 · 애드온 · ArgoCD 설치까지 끝나고, 그 뒤 ArgoCD 첫 root sync 가 이어집니다 (2026-11-10 14분 00초, 앱 17개 Synced · Healthy). sync 가 끝나야 Traefik 이 eks Target Group 에 등록되어 `api.` 가 응답합니다. 첫 sync 결과는 `kubectl -n argocd get application prod-apps` 로 봅니다 (kubeconfig 는 `live/prod/eks-kubeconfig.sh`).
 
-**(kubeadm 시기)** `70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측, 이전 배포 agent 기준 — ArgoCD 전환 후 다시 잼)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
+**(kubeadm 시기)** `70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다. **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측, 이전 배포 agent 기준 — ArgoCD 전환 후 다시 잼)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함).
 
 `70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분 – 8분** 입니다. `run --all apply` 는 `80` 을 공백 없이 바로 시작하므로 **명령이 끝난 뒤 1분 – 2분 더 지나야 부트스트랩이 끝납니다** (배포 agent 전환 후 실측: 명령 9분 42초, 전체 시작부터 ALB `/whoami` 200 까지 11분 37초 — 전환 전 약 11분 30초와 같음). 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 3분 20초 – 4분.
 
@@ -274,8 +274,8 @@ DB 비밀번호 · 토큰 같은 비밀값은 **state 에 남기지 않습니다
 | `team04-hotel/prod/toss-payments` | `{secret_key}` | 토스페이먼츠 개발자센터 API 키 → 결제위젯 연동 키의 **시크릿 키**(테스트 `test_gsk_*`, 지금은 로컬 `backend/.env` 의 `TOSS_SECRET_KEY` 와 같은 값). 프론트 클라이언트 키(`test_gck_*`)와 같은 줄의 한 쌍 | `60-payment-app` 결제 서버 Role (`TOSS_SECRET_KEY`) |
 | `team04-hotel/prod/github-app` | `{app_id, installation_id, private_key}` | gitops 레포 릴리스 PR 용 GitHub App ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스"). App ID · Installation ID 는 App 설정 화면, 개인 키는 **레포 밖**에 두고(`.env` 의 `GITHUB_APP_PRIVATE_KEY_FILE`) 등록 후 지우거나 비밀번호 관리자로 옮김 | `10-global` 릴리스 Role `team04-hotel-release` (`release.yml` gitops-pr job) |
 | SSM `/team04-hotel/prod/frontend/toss-client-key` (String) | 클라이언트 키 문자열 | 위 시크릿 키와 같은 줄의 **클라이언트 키**(테스트 `test_gck_*`, `.env` 의 `TOSS_CLIENT_KEY`). 브라우저에 노출되는 공개 키라 Secrets Manager 대신 Parameter Store, 레포 · git 이력에 남기지 않으려고 여기에 둠. 시크릿 키 Secret 에 함께 넣으면 릴리스 Role 이 시크릿 키까지 읽게 되므로 분리 | `10-global` 릴리스 Role (`release.yml` plan job 의 `VITE_TOSS_CLIENT_KEY`) |
-| `team04-hotel/prod/seed-admin` | `{email, password, name, seoul_manager_password, busan_manager_password, jeju_manager_password, seoul_staff_password}` | 운영 본사 · 지점 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*` · `SEED_*_PASSWORD`, 비밀번호 12자 이상, 지점 비밀번호는 본사와 다르게). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | `70` ESO Role (`team04-hotel-external-secrets`) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
-| `team04-hotel/prod/grafana-admin` | `{admin_user, admin_password}` | 운영 Grafana admin 계정. 이름은 `admin` 고정, 비밀번호만 사람이 정함(`.env` 의 `GRAFANA_ADMIN_PASSWORD`, 16자 이상). **등록 전에는 운영 Grafana 가 뜨지 않습니다**(서비스 배포에는 영향 없음, [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측") | `70` ESO Role → Secret `grafana-admin` (gitops `monitoring` 앱) |
+| `team04-hotel/prod/seed-admin` | `{email, password, name, seoul_manager_password, busan_manager_password, jeju_manager_password, seoul_staff_password}` | 운영 본사 · 지점 관리자 로그인 계정(사람이 정함, `.env` 의 `SEED_ADMIN_*` · `SEED_*_PASSWORD`, 비밀번호 12자 이상, 지점 비밀번호는 본사와 다르게). 메인 DB 는 매일 새로 만들어지므로 backend 시드 Job 이 배포 때마다 이 값으로 관리자 계정을 다시 만듭니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "운영 시드") | ESO 파드 Role (`team04-hotel-external-secrets`, 51) → Secret `seed-admin` → 시드 Job 의 `SEED_ADMIN_*` |
+| `team04-hotel/prod/grafana-admin` | `{admin_user, admin_password}` | 운영 Grafana admin 계정. 이름은 `admin` 고정, 비밀번호만 사람이 정함(`.env` 의 `GRAFANA_ADMIN_PASSWORD`, 16자 이상). **등록 전에는 운영 Grafana 가 뜨지 않습니다**(서비스 배포에는 영향 없음, [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측") | ESO 파드 Role → Secret `grafana-admin` (gitops `monitoring` 앱) |
 | `team04-hotel/prod/kakao-login` | `{client_id, client_secret}` | 카카오 디벨로퍼스 앱 → 플랫폼 키 → REST API 키 상세(`.env` 의 `KAKAO_CLIENT_*`). 앱 하나를 온프레미스와 함께 쓰므로 재발급 금지. **등록 전에 gitops `backend-secrets` 에 매핑을 넣으면 backend 전체 Secret 동기화가 실패합니다** | ESO Role → Secret `backend-secrets` → auth-service 의 `KAKAO_CLIENT_*` |
 
 처음 등록 · 값 교체 (GitHub App 개인 키 교체 등):
@@ -311,111 +311,78 @@ AWS_PROFILE=team04 terragrunt show -json | jq '[.. | objects | to_entries[] | se
 
 ---
 
-## 6. `70-main-cluster-kubeadm` 부트스트랩 확인
+## 6. `72-main-cluster-eks` 확인
 
-CP 3대와 워커는 apply 가 끝난 뒤 user-data 가 각각 [`aws-control-plane.yml`](../ansible/aws-control-plane.yml), [`aws-worker.yml`](../ansible/aws-worker.yml) 을 실행해 클러스터를 구성합니다 ([Ansible README](../ansible/README.md) 13절). CP-a 는 마지막에 GitOps pull 배포 agent 를 설치하고, agent 가 워커 Ready 후 gitops 레포에서 Traefik · whoami 를 설치합니다 ([`infra/gitops/prod`](../gitops/prod/README.md)).
-**apply 가 성공해도 부트스트랩은 그 뒤 몇 분 더 걸리고, 실패해도 apply 결과에 나타나지 않습니다.**
+`72` 는 apply 안에서 클러스터 · 노드 그룹 · 애드온(vpc-cni · kube-proxy · coredns · eks-pod-identity-agent · aws-ebs-csi-driver) · Pod Identity Association · ArgoCD 설치까지 끝냅니다. 그 뒤 ArgoCD 첫 root sync 가 이어지고, sync 가 끝나야 Traefik 이 eks Target Group 에 등록됩니다 (소요 시간은 4절 표). 노드에 Ansible 을 쓰지 않습니다.
 
 ```bash
-# 인스턴스 ID 확인 → SSM 접속 (SSM 은 키 페어 · 22 포트 없이 접속). CP · 워커 모두 ASG 라 인스턴스 ID 는 교체 때마다 바뀐다
-AWS_PROFILE=team04 aws ec2 describe-instances \
-  --filters Name=tag:Project,Values=team04-hotel Name=tag:Role,Values=control-plane,worker Name=instance-state-name,Values=running \
-  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId]' --output text
-AWS_PROFILE=team04 aws ssm start-session --target <인스턴스 ID>
+cd infra/terraform/live/prod
+./eks-kubeconfig.sh                     # ~/.kube/config 에 context team04-eks 추가 · 전환. 재생성 후마다 다시 실행
 
-# 노드 안에서
-sudo tail -f /var/log/cloud-init-output.log        # user-data · Ansible 출력. 마지막 줄 "[bootstrap] 완료" 면 성공
-cloud-init status --long                           # status: done / error
-sudo kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes -o wide
+kubectl get nodes -L role,topology.kubernetes.io/zone,eks.amazonaws.com/nodegroup   # platform-a · b, app-a · b
+kubectl -n argocd get application prod-apps \
+  -o jsonpath='{.status.sync.status} {.status.health.status} {.status.operationState.phase}{"\n"}'   # Synced Healthy Succeeded
+kubectl -n argocd get applications      # 앱별 SYNC · HEALTH
+kubectl get pods -A --field-selector status.phase=Pending
 ```
 
-- CP-b · c · 워커 로그가 `CA cert hash 기록 대기` 에서 멈춰 있으면 CP-a 의 로그를 먼저 봅니다.
-- CP-a 로그가 `워커 Ready 대기` 에서 멈춰 있으면 워커 로그를 봅니다.
-- Ansible 묶음을 고친 뒤 apply 하면 S3 객체만 바뀌고, 이미 떠 있는 노드에는 반영되지 않습니다 (user-data 는 첫 부팅에만 실행). 다시 확인하려면 스택을 destroy → apply 하거나, 해당 인스턴스를 종료해 ASG 가 새로 띄우게 합니다 (시작 템플릿은 최신 버전을 씀). CP 는 한 번에 1대씩만 종료합니다 (아래 CP 교체).
-- 워커 join 은 CP-b · c 가 etcd 멤버로 추가되는 동안 타임아웃 날 수 있어 reset 후 30초 간격으로 3회까지 다시 시도합니다 (`kubeadm_join_retries`). 그래도 실패하면 아래 수명주기에 따라 ASG 가 교체합니다.
+- **API 접속 조건**: endpoint 는 public + private 이고 public 은 `terraform.tfvars` 의 `public_access_cidrs`(작업자 IP/32)만 허용합니다. 인증은 Access Entry — apply 주체와 `cluster_admin_principal_arns` 가 클러스터 관리자입니다 (`bootstrap_cluster_creator_admin_permissions = false`). 내 IP 가 바뀌면 tfvars 를 고쳐 `72` 만 apply 합니다. `72` 의 helm provider 도 apply 하는 PC 에서 이 endpoint 로 접속하므로, IP 가 맞지 않으면 apply 가 ArgoCD 설치 단계에서 실패합니다.
+- **버전**: 1.35, `upgrade_policy = STANDARD` (연장 지원 요금으로 넘어가지 않게 고정).
+- **파드 권한**: 노드 IMDS hop limit 1 이라 파드는 노드 Role 을 쓰지 못하고 Pod Identity 로만 권한을 받습니다 ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "파드 권한 · 비밀값").
 
-### 워커 수명주기 (교체 · 스케일 인 · 부트스트랩 실패)
+### 노드 그룹
 
-| 상황 | 처리 | 담당 |
+| 노드 그룹 | 대수 | 구분 |
 |---|---|---|
-| 워커 종료 (스케일 인 · 교체 · 수동 종료) | 종료 lifecycle hook 으로 `Terminating:Wait` → cordon · drain → lifecycle action 완료 → 종료 | NTH 큐 모드 (CP-a 가 설치, CP 에 hostNetwork) |
-| 종료된 워커의 Node 객체 | 인스턴스가 사라지면 Node 삭제 → Calico IP 블록 회수 | aws-cloud-controller-manager (CCM) · calico-kube-controllers |
-| 부트스트랩 실패 (`kubeadm_join_retries` 소진 등) | user-data 가 ASG 에 `Unhealthy` 보고 → 교체. aws CLI 설치 전 실패면 인스턴스를 꺼 EC2 헬스체크가 교체 | user-data `trap ERR` |
-| join 은 했지만 트래픽을 못 받음 | `80-main-edge` Target Group(Traefik `/ping`) unhealthy → 교체 | ASG `health_check_type = "ELB"`, 기동 후 600초는 판단 안 함 |
+| `platform-<영역>` (`platform_azs`, 기본 a · b) | 영역마다 1 고정 (min = max = 1) | label `role=platform`, taint `dedicated=platform:NoSchedule` — 운영 도구 · 챗봇 |
+| `app-<영역>` (a · b) | 영역당 `app_node_min_per_az` – `app_node_max_per_az` (기본 1 – 3), Cluster Autoscaler 가 조절 | label `role=app` — 앱 서비스 · Traefik |
 
-- 노드는 kubelet `cloud-provider: external` 로 등록되어 CCM 이 초기화하기 전까지 `node.cloudprovider.kubernetes.io/uninitialized` taint 가 붙습니다. CCM 이 `spec.providerID`(`aws:///<AZ>/<인스턴스 ID>`) 를 넣고 taint 를 지웁니다.
-- NTH 는 `aws-node-termination-handler/managed` 태그가 있는 인스턴스(워커) 만 drain 합니다. drain 최대 120초, hook timeout 300초 (응답이 없으면 그대로 종료).
-- lifecycle hook 은 ASG 와 별도 리소스라 destroy 때 먼저 지워집니다. 스택 destroy 는 hook 을 기다리지 않습니다.
-
-```bash
-# 노드 안에서 (CP)
-K="sudo kubectl --kubeconfig /etc/kubernetes/admin.conf"
-$K get nodes -o custom-columns=NAME:.metadata.name,PROVIDER_ID:.spec.providerID,TAINTS:.spec.taints[*].key
-$K -n kube-system logs ds/aws-cloud-controller-manager | grep -i delet       # Node 삭제
-$K -n kube-system logs deploy/aws-node-termination-handler                   # drain · lifecycle action 완료
-$K get events -A --field-selector source=aws-node-termination-handler       # cordon · drain 이벤트
-```
-
-- **부트스트랩을 디버깅할 때:** 실패한 워커는 바로 교체되어 로그를 볼 시간이 없습니다. 먼저 ASG 교체를 멈추고, 끝나면 다시 켭니다.
+- 모두 AL2023 amd64 `t3a.large`, `cpu_credits = "unlimited"`, `max_pods` 110 (VPC CNI prefix delegation). 노드에 `main_worker` SG 와 클러스터 SG 를 함께 붙입니다.
+- 노드 배치 규칙(taint · 분산 · PDB)은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "노드 그룹과 배치".
+- **노드 수를 고정 · 변경할 때**: `TF_VAR_app_node_min_per_az=N TF_VAR_app_node_max_per_az=N` 으로 `72` 를 apply 합니다. desired 는 Cluster Autoscaler 가 바꾸므로 `ignore_changes` 입니다. 지금 desired 가 새 범위 밖이면 EKS 가 거절하므로(`Minimum capacity N can't be greater than desired size M` 등) 먼저 맞춥니다.
   ```bash
-  AWS_PROFILE=team04 aws autoscaling suspend-processes --auto-scaling-group-name team04-hotel-main-worker --scaling-processes ReplaceUnhealthy
-  AWS_PROFILE=team04 aws autoscaling resume-processes  --auto-scaling-group-name team04-hotel-main-worker --scaling-processes ReplaceUnhealthy
+  AWS_PROFILE=team04 aws eks update-nodegroup-config --cluster-name team04-hotel-main-eks --nodegroup-name app-a \
+    --scaling-config minSize=N,maxSize=N,desiredSize=N
   ```
-  부트스트랩 코드에 버그가 있으면 워커가 교체를 계속 반복하고, Traefik 이 클러스터 전체에서 죽으면 모든 워커가 ELB 헬스체크로 교체될 수 있습니다.
-- **instance refresh 없음 (상시 운영 시 필요):** 시작 템플릿이 바뀌어도 기존 워커는 그대로입니다. 매일 재생성하므로 지금은 다음 apply 때 반영됩니다. 24시간 운영이라면 AMI 패치 · Kubernetes 업그레이드 · 노드 설정 변경을 기존 워커에 반영하기 위해 instance refresh 가 필요하고, 그때는 AMI 고정(지금은 SSM `current` 를 따라가 관계없는 apply 에서도 템플릿이 바뀜), `min_healthy_percentage = 100` (새 워커를 먼저 띄움), warmup, 앱 PodDisruptionBudget, CP 먼저 업그레이드하는 순서를 함께 정합니다. 당일 반영이 필요하면 `aws autoscaling start-instance-refresh` 를 수동으로 실행하거나 워커를 한 대씩 종료합니다 (둘 다 NTH 가 drain).
-
-### CP 교체 (1대)
-
-CP 는 AZ 별 ASG(1대 고정) 입니다. CP 가 종료 · 장애로 사라지면 아래 과정이 자동으로 진행됩니다. etcd 3대 중 2대가 남아 있어 그동안 클러스터는 계속 동작합니다.
-
-| 단계 | 처리 | 담당 |
-|---|---|---|
-| 감지 · 교체 | EC2 상태 이상 → 종료 → 같은 AZ 에 새 CP 기동. 부트스트랩(join) 실패는 user-data 가 `Unhealthy` 보고 | ASG (`health_check_type = "EC2"`) |
-| apiserver 트래픽 | `/readyz` 실패 CP 를 트래픽에서 뺌 (5초 간격 × 2회), 새 CP 는 ASG 연결로 자동 등록 | 내부 NLB |
-| 사라진 CP 의 etcd 멤버 | 멤버 이름(private DNS) 의 pending · running 인스턴스가 없으면 `member remove` | 남은 CP 의 `team04-cp-reconcile.timer` (1분) |
-| `kubeadm-certs` Secret | init 2시간 후 삭제되면 같은 certificate-key 로 다시 올림 → 교체된 CP 가 언제든 join 가능 | 같은 timer |
-| 사라진 CP 의 Node 객체 | 인스턴스가 사라지면 Node 삭제 | CCM |
-| 새 CP join | `ca-cert-hash` 가 있으므로 CP-a 도 init 이 아니라 join | user-data → `aws-control-plane.yml` |
-
-- CP ASG 는 apiserver 헬스체크(ELB)를 쓰지 않습니다. etcd 가 잠시 불안정해 3대의 `/readyz` 가 동시에 실패하면 3대가 함께 교체되어 etcd 데이터가 모두 사라지기 때문입니다.
-- CP 가 사라진 직후 NLB 가 unhealthy 로 판정하기 전까지(수십 초 이내) 그 CP 로 간 연결은 실패합니다. kubelet · 컨트롤러 · kubectl 은 다시 연결하므로 요청이 잠깐 늦어지는 정도입니다.
-- 처리는 "꺼진 뒤" 에만 필요해서(CP 에는 drain 할 앱 파드가 없음) 워커처럼 lifecycle hook · 이벤트를 쓰지 않고 주기 점검(reconcile) 으로 합니다. 이벤트를 놓쳐도 다음 주기에 처리됩니다.
+- `platform_azs = ["a"]` 로 줄이면 운영 도구(2개 · 영역마다 1개, PDB)의 두 번째 Pod 가 Pending 으로 남습니다. 줄이려면 gitops 값도 함께 바꿉니다.
+- 노드 교체 · drain 은 Managed Node Group 이 처리합니다 (EC2 상태 이상은 노드 그룹 ASG 가 교체, 노드 그룹 업데이트 · Cluster Autoscaler 축소는 cordon · drain 후 종료).
+- **destroy**: 클러스터를 통째로 지우면 Prometheus PVC 의 EBS 가 남아, `72` 의 `terraform_data.pvc_volume_cleanup` 이 클러스터 삭제 뒤 태그로 볼륨을 찾아 지웁니다. 노드 그룹 삭제가 최대 약 8분 걸립니다.
 
 ```bash
-# CP 안에서
-sudo journalctl -u team04-cp-reconcile --since "1 hour ago"     # 고친 것이 있을 때만 로그 (멤버 제거, Secret 재업로드)
-sudo crictl exec "$(sudo crictl ps --name '^etcd$' -q)" \
-  etcdctl --endpoints https://127.0.0.1:2379 --cacert /etc/kubernetes/pki/etcd/ca.crt \
-  --cert /etc/kubernetes/pki/etcd/healthcheck-client.crt --key /etc/kubernetes/pki/etcd/healthcheck-client.key \
-  member list -w table                                              # 멤버 3개, 전부 started
+# destroy 뒤 남은 EBS (0 이어야 함)
+AWS_PROFILE=team04 aws ec2 describe-volumes --filters Name=tag:Project,Values=team04-hotel --query 'length(Volumes)'
 ```
 
-- **범위 밖 (EC2 직접 운영의 제약):** CP 2대 이상 동시 장애(etcd 쿼럼 상실) 복구와 etcd 백업 · 복원은 구현하지 않았습니다. 쿼럼을 잃으면 남은 CP 의 `member remove` 도 실패하므로 스택을 destroy → apply 로 다시 만듭니다 (클러스터 상태는 초기화).
-- CP 를 일부러 교체할 때는 **1대씩**, 새 CP 가 `Ready` 이고 etcd 멤버가 3개 `started` 인 것을 확인한 뒤 다음 CP 를 종료합니다.
+> kubeadm 시기(`70`)의 부트스트랩 · 워커 수명주기(NTH · CCM) · CP 교체 절차는 이 절의 git 이력에 있습니다 (70 코드 정리 때 함께 지움).
 
 ---
 
 ## 7. `80-main-edge` 동작 확인
 
-`인터넷 → ALB → 워커 NodePort 30080 → Traefik → 파드` 경로입니다. 워커 ASG 를 Target Group 에 연결하므로 ASG 가 새로 띄운 워커도 자동 등록됩니다.
-Target Group 헬스체크는 Traefik `/ping` 입니다. **Traefik 은 CP-a 부트스트랩 마지막에 ArgoCD 가 설치하므로 `70` apply 직후 `80` 을 apply 하면 부트스트랩이 끝날 때까지 타깃이 unhealthy 로 보입니다.**
+`인터넷 → ALB (WAF) → ip Target Group team04-hotel-main-eks → Traefik 파드 :8000 → 파드` 경로입니다. `80` 은 ALB · 리스너 · Target Group 만 만들고, 대상(Traefik 파드 IP) 등록 · 해제는 클러스터 안 AWS Load Balancer Controller 의 TargetGroupBinding(gitops `traefik-target-group`)이 합니다. 그래서 `80` 은 `72` 에 의존하지 않습니다.
+Target Group 헬스체크는 Traefik `/ping` 입니다. **Traefik 은 ArgoCD 첫 root sync 에서 설치되므로, sync 가 끝날 때까지 Target Group 에 대상이 없습니다** (대상이 없으면 `90` 의 unhealthy 알람도 울리지 않음).
 
 도메인 · 인증서 유무(`10-global` output)에 따라 리스너가 달라집니다.
 
 | `10-global` 상태 | 리스너 | 접속 주소 (`terragrunt output api_url`) |
 |---|---|---|
-| 도메인 구매 전 | 80 → 워커 | `http://<ALB DNS>` |
-| Zone 만 있음 | 80 → 워커, `api.<도메인>` 레코드 | `http://api.<도메인>` |
-| 인증서 발급 후 | 80 → 443 리다이렉트, 443 → 워커 | `https://api.<도메인>` |
+| 도메인 구매 전 | 80 → eks Target Group | `http://<ALB DNS>` |
+| Zone 만 있음 | 80 → eks Target Group, `api.<도메인>` 레코드 | `http://api.<도메인>` |
+| 인증서 발급 후 | 80 → 443 리다이렉트, 443 → eks Target Group | `https://api.<도메인>` |
 
 ```bash
 cd live/prod/80-main-edge
 curl -i "$(AWS_PROFILE=team04 terragrunt output -raw api_url)/whoami"   # 200, X-Forwarded-For 첫 값이 내 공인 IP
 
-# Target Group 상태 (워커 전부 healthy)
+# Target Group 상태 (Traefik 파드 IP 전부 healthy)
 AWS_PROFILE=team04 aws elbv2 describe-target-health \
-  --target-group-arn "$(AWS_PROFILE=team04 aws elbv2 describe-target-groups --names team04-hotel-main-worker --query 'TargetGroups[0].TargetGroupArn' --output text)" \
+  --target-group-arn "$(AWS_PROFILE=team04 aws elbv2 describe-target-groups --names team04-hotel-main-eks --query 'TargetGroups[0].TargetGroupArn' --output text)" \
   --query 'TargetHealthDescriptions[].[Target.Id,TargetHealth.State]' --output text
+
+# 대상이 없거나 unhealthy 일 때 (6절 kubeconfig)
+kubectl get targetgroupbinding -A
+kubectl -n aws-load-balancer-controller logs deploy/aws-load-balancer-controller --tail=50
+kubectl -n traefik get pods -o wide
 ```
 
 - WAF 차단 응답은 403 입니다. IP 당 rate limit 은 기본 60초에 300회(`waf_rate_limit`, `waf_rate_limit_window_sec`)이고, 넘은 뒤 차단까지 수십 초 걸립니다.
@@ -423,7 +390,7 @@ AWS_PROFILE=team04 aws elbv2 describe-target-health \
 - **Grafana (`grafana.<도메인>`)** 는 WAF 규칙 `grafana-ip-allowlist` 가 `grafana_allowed_cidrs` 출발지 외에서 403 으로 막습니다. ALB 는 호스트와 관계없이 Traefik 으로 보내므로 Grafana 를 가리는 곳은 이 규칙 하나입니다 (Host 가 `grafana.` 로 시작하면 도메인 · ALB DNS 와 관계없이 적용). 허용 IP 는 레포에 두지 않고 `80-main-edge/terraform.tfvars`(gitignore)에 `grafana_allowed_cidrs = ["203.0.113.10/32"]` 처럼 둡니다. 비어 있으면 아무도 접속할 수 없습니다. IP 가 바뀌면 tfvars 를 고쳐 `80` 만 apply 합니다 (IP set 만 바뀜, 수십 초).
 - 본문 8KB 초과 요청은 경로와 관계없이 403 입니다 (관리형 규칙 `SizeRestrictions_BODY`). 객실 이미지는 Presigned PUT 으로 S3 에 직접 올리므로 API 본문이 크지 않습니다. 큰 파일은 API 대신 Presigned URL 로 받습니다.
 - 액세스 로그는 `10-global` 로그 버킷 `alb/` 에 5분 단위로 쌓입니다. Object Lock 버킷이라 잠금 기간(7일) 동안 지워지지 않습니다.
-- unhealthy 타깃이 있으면 그 워커가 클러스터에 join 했는지(`kubectl get nodes`) 먼저 봅니다 (6절). join 하지 못한 워커는 kube-proxy 가 없어 NodePort 가 응답하지 않습니다.
+- unhealthy 타깃이 있으면 Traefik 파드 상태와 ALB SG → 워커 SG `8000` 규칙(`30-security` M16)을 봅니다. VPC CNI 파드는 노드 ENI 의 SG(`main_worker`)를 씁니다.
 
 ---
 
@@ -503,7 +470,7 @@ AWS_PROFILE=team04 aws logs filter-log-events \
 - **결제 서버**: Amazon Linux 2023(x86_64) `t3a.small`, 기본 2대(AZ a · b, `desired_capacity = 2`, `min_size = 1`). IMDSv2 hop limit 1 이라 컨테이너는 host 네트워크로 띄워 인스턴스 Role 을 씁니다. Role 이름 `team04-hotel-payment-app` 은 42 · 12 Secret 정책과 43 큐 정책이 참조하므로 바꾸지 않습니다.
 - **배포**: 결제 서버 안의 pull agent 가 합니다 (아래 [결제 서버 배포](#결제-서버-배포-pull-agent)). docker compose 는 AL2023 저장소에 없고 결제 VPC 는 GitHub 로 나갈 수 없어 쓰지 않습니다.
 - **pg-mock**: 결제 서버와 분리한 인스턴스 1대입니다 (ASG 없음). 주소는 `20-network` 가 자동 할당에서 뺀 대역(`10.20.8.16/28`, subnet CIDR reservation) 안의 고정 IP 라 다른 ENI 와 겹치지 않습니다 (`terragrunt output pg_mock_url`). 결제 서버와 같은 release 태그로 스스로 갱신합니다. 필요 없으면 `enable_pg_mock = false`.
-- **`70` 과의 관계**: `71` 은 `70` 과 같은 단계라 서로 참조하지 않습니다. `run --all apply` 에서 `70` 은 `60` · `71` 을 기다리지 않습니다.
+- **`72` 와의 관계**: `71` 은 `72` 와 같은 단계라 서로 참조하지 않습니다. `run --all apply` 에서 `72` 는 `60` · `71` 을 기다리지 않습니다.
 - **알려진 제약**: 메인 → 결제 gRPC 는 평문입니다 (PrivateLink 는 AWS 내부망 · 단방향 · SG 제한). 도메인 구매 후 TLS 를 적용할 때 공인 인증서를 받을 수 있도록 고정 이름을 `payment.<도메인>` 으로 옮기고 gitops values 를 1회 고칩니다.
 
 ```bash
@@ -621,7 +588,7 @@ AWS_PROFILE=team04 aws ssm get-parameter --name /team04-hotel/prod/payment/relea
   ├ 내장 unix(node-exporter) · cadvisor · 127.0.0.1:9464 payment-service /metrics · 내장 mysqld_exporter(결제 RDS, TLS)
   └▶ sigv4 remote_write ─ 44 aps-workspaces 엔드포인트 ─▶ AMP 워크스페이스 team04-hotel-payment (10-global 🔒)
                                                          ├▶ 규칙 → AMP Alertmanager → SNS team04-hotel-alerts → #alerts
-메인 Grafana (IRSA team04-hotel-grafana, amp-read) ◀─────┘   데이터 소스 "AMP (payment)", 대시보드 team04 / 결제 (prod)
+메인 Grafana (team04-hotel-grafana, amp-read) ◀──────────┘   데이터 소스 "AMP (payment)", 대시보드 team04 / 결제 (prod)
 ```
 
 - 수집 대상 · 라벨은 온프레미스 결제 노드(`ansible/roles/node_collectors`)와 같습니다 (`job` = `node-exporter` · `cadvisor` · `payment-service` · `mysql`, `cluster="payment"`). `instance` 는 EC2 인스턴스 ID, `az` 라벨이 더 붙습니다. node-exporter · cAdvisor 이미지를 따로 미러하지 않으려고 Alloy 내장 exporter 를 씁니다.
@@ -679,7 +646,7 @@ https://www.<도메인>/*         → 301 루트 (api-gateway CORS 출처가 루
 ```
 
 - 🔒 상시 유지라 매일 재생성과 무관하게 프론트 · 사진이 남습니다. Zone · 인증서는 같은 1x 단계인 `10-global` 을 dependency 대신 도메인 이름으로 조회합니다.
-- `51-pod-roles`(hotel-service IRSA) 가 `13` 의 output 을 mock 없이 읽으므로 **`13` 을 먼저 apply** 합니다 (`run --all apply` 는 순서대로 처리).
+- `51-pod-roles`(hotel-service 파드 Role) 가 `13` 의 output 을 mock 없이 읽으므로 **`13` 을 먼저 apply** 합니다 (`run --all apply` 는 순서대로 처리).
 - 버킷은 CloudFront(OAC, `aws:SourceArn` = 이 배포)만 읽습니다. 쓰기는 버킷 정책이 릴리스 Role(사이트 `releases/*`) · hotel-service(사진) · apply 주체 외에는 거부합니다.
 - 릴리스 · 롤백 절차는 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "릴리스" — 버전 전환은 gitops merge 후 GitHub Actions 만 합니다 (`release.tf`).
 
@@ -707,14 +674,16 @@ AWS_PROFILE=team04 aws cloudfront-keyvaluestore get-key --key version \
 ## 11. 챗봇 Vertex AI 인증 (`14-gcp-llm`)
 
 ```
-llm-service 파드 projected 토큰 (iss = 메인 클러스터 OIDC 발급자, aud = Provider)
-  → sts.googleapis.com 토큰 교환   Provider 가 발급자의 keys.json 으로 서명 검증, backend 네임스페이스만 허용
-  → llm-service-prod impersonate   backend:llm-service · backend:llm-ingest 만 workloadIdentityUser
+EKS (72, 지금)
+llm-service · llm-ingest 파드 Pod Identity 자격 증명 (Role team04-hotel-llm-service · llm-ingest)
+  → sts.googleapis.com 토큰 교환   AWS Provider main-cluster-aws, 조건 = assumed-role 이 위 Role 이름
+  → llm-service-prod impersonate
   → Vertex AI
 ```
 
-- 서비스 계정 키를 만들지 않습니다. 파드는 output `credential_config`(external_account JSON, 공개 값)와 projected 토큰만으로 인증합니다 (llm-service 는 `GCP_SA_KEY_JSON` 이 없으면 ADC 사용).
-- 발급자는 IRSA 와 같은 `10-global` OIDC 버킷입니다. 같은 1x 단계라 dependency 대신 버킷 이름(`oidc_bucket_name`)으로 주소를 만듭니다.
+- EKS 는 클러스터마다 OIDC 발급자가 바뀌어 OIDC Provider 를 쓸 수 없어 **AWS Provider** 를 씁니다. google-auth 기본 AWS 조회는 Pod Identity 를 읽지 못해 llm-service 가 boto3 자격 증명을 넘깁니다 (`app/llm.py`). gitops `backend/values-eks.yaml` 의 `gcpWorkloadIdentity.provider: aws` · `audience`(output `aws_workload_identity_audience`)로 켭니다.
+- 서비스 계정 키를 만들지 않습니다 (llm-service 는 `GCP_SA_KEY_JSON` 이 없으면 위 경로 또는 ADC 사용).
+- **(kubeadm 시기, 정리 대기)** OIDC Provider `main-cluster` — 파드 projected 토큰을 `10-global` 자체 OIDC 발급자(keys.json)로 검증, output `credential_config`(external_account JSON). 70 을 지울 때 함께 지웁니다 (Provider ID 는 30일 동안 다시 쓸 수 없으니 이름을 재사용하지 않음).
 - 🔒 상시 유지: Pool · Provider 는 삭제 후 30일 동안 같은 ID 를 쓸 수 없습니다.
 - 온프레미스 dev 는 [`infra/gcp-terraform`](../gcp-terraform/README.md) (SA 키 방식) 그대로입니다.
 
@@ -753,13 +722,13 @@ gcloud iam service-accounts keys list --managed-by=user \
 
 ---
 
-## 12. 챗봇 운영 구성 (`15-chatbot-vectors` · 51 IRSA)
+## 12. 챗봇 운영 구성 (`15-chatbot-vectors` · 51 파드 Role)
 
 ```
-프론트 → api-gateway → chat-bot-service ──(IRSA)──→ DynamoDB 대화 테이블 (41, 매일 재생성)
-                           └→ n8n → llm-service ──(IRSA)──→ S3 Vectors 인덱스 조회 (15 🔒)
-                                         └──(GCP WIF)──→ Vertex AI (14 🔒)
-릴리스마다 llm-ingest Job ──(IRSA)──→ S3 Vectors PutVectors   (문서 = llm-service 이미지의 app/corpus.py)
+프론트 → api-gateway → chat-bot-service ──(Pod Identity)──→ DynamoDB 대화 테이블 (41, 매일 재생성)
+                           └→ n8n → llm-service ──(Pod Identity)──→ S3 Vectors 인덱스 조회 (15 🔒)
+                                         └──(GCP WIF AWS Provider)──→ Vertex AI (14 🔒)
+릴리스마다 llm-ingest Job ──(Pod Identity)──→ S3 Vectors PutVectors   (문서 = llm-service 이미지의 app/corpus.py)
 ```
 
 | ServiceAccount (backend) | AWS 권한 (`51-pod-roles`) | GCP |
@@ -771,7 +740,7 @@ gcloud iam service-accounts keys list --managed-by=user \
 - 이미지: `llm-service` 는 develop 파이프라인 GHCR 이미지를 `release.yml` 이 ECR 로 복사(태그 = main SHA), `n8n` 은 `release.yml` 이 Docker Hub 에서 ECR 로 amd64 복사 (태그 = 차트 `n8n.image.tag`, 이미 있으면 건너뜀).
 - RAG 적재는 backend 차트 `llmIngest` Job 이 릴리스마다 실행합니다. 문서 id 가 key 라 다시 넣어도 중복되지 않습니다. corpus 에서 **지운 문서는 인덱스에 남으므로**, 문서를 지우거나 임베딩 모델 · 차원을 바꿀 때는 `vector_index_name` 을 새 이름으로 바꿔 인덱스를 새로 만들고 gitops `VECTOR_INDEX_NAME` 도 함께 바꿉니다.
 - n8n owner 비밀번호(워크플로 활성화용 내부 계정)는 `41` 의 `backend-app` Secret `n8n_owner_password` 입니다 (매일 새 값).
-- pod-identity-webhook 은 **파드를 만들 때만** 자격 증명을 주입합니다. 떠 있는 클러스터에 매핑만 추가하면 기존 파드는 그대로이므로 `kubectl -n backend rollout restart deploy/<서비스>` 로 다시 만듭니다 (매일 재생성 · 이미지 태그가 바뀌는 릴리스에서는 해당 없음).
+- Pod Identity Association 은 **파드를 만들 때** 적용됩니다. 떠 있는 클러스터에 Role 을 새로 연결했으면 `kubectl -n backend rollout restart deploy/<서비스>` 로 다시 만듭니다 (매일 재생성 · 이미지 태그가 바뀌는 릴리스에서는 해당 없음).
 
 확인:
 
@@ -785,7 +754,7 @@ kubectl -n backend logs job/<llm-ingest-...> --tail=3        # "20 documents ind
 ## 13. 클러스터 로그 (`21-observability-base` · Fluent Bit)
 
 ```
-모든 노드(CP 포함) /var/log/containers ─ Fluent Bit DaemonSet (gitops fluent-bit, IRSA) ─┬→ CloudWatch Logs /team04-hotel/prod/cluster/<네임스페이스>  (21, 매일 재생성)
+모든 노드(platform 포함) /var/log/containers ─ Fluent Bit DaemonSet (gitops fluent-bit, Pod Identity) ─┬→ CloudWatch Logs /team04-hotel/prod/cluster/<네임스페이스>  (21, 매일 재생성)
                                                                                          └→ S3 team04-hotel-logs/app-logs/main-cluster/  (10-global 🔒, 90일)
 ```
 
@@ -821,9 +790,9 @@ kubectl -n fluent-bit logs ds/fluent-bit --tail=50 | grep -iE 'error|warn'
 ```
 CloudWatch 알람 ALARM (90) ─────────────────────┬→ SNS team04-hotel-alerts ─┐
 EventBridge 규칙 ALARM → OK 전환만 (10-global) ──┤                           │
-메인 Alertmanager (alertmanager, IRSA) ─────────┤                           │
+메인 Alertmanager (alertmanager, Pod Identity) ─┤                           │
 결제 지표 AMP Alertmanager (10-global, aps) ────┘                           │
-메인 ArgoCD 알림 hook (deploy-notify, IRSA) ────┐                            ├→ AWS Chatbot (us-east-2) → Slack #alerts · #deploy
+메인 ArgoCD 알림 hook (deploy-notify) ──────────┐                            ├→ AWS Chatbot (us-east-2) → Slack #alerts · #deploy
 결제 pull agent (60 Role, 44 sns 엔드포인트) ────┼→ SNS team04-hotel-deploy ──┘
 gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 · Chatbot 은 10-global 🔒, KMS 암호화)
 ```
@@ -846,7 +815,7 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 | `team04-hotel-payment-webhook-dlq` | 토스 웹훅 DLQ 메시지 > 0 | 9절 결제 서버 app 로그에서 처리 실패 원인 확인 → 원인 수정 후 DLQ 메시지를 원래 큐로 재처리(콘솔 "DLQ 재처리") |
 | `team04-hotel-payment-webhook-lambda-errors` | 웹훅 Lambda `Errors` > 0 | 토스가 재전송하므로 웹훅은 유실되지 않음. Lambda 로그(`/aws/lambda/team04-hotel-payment-webhook`), 44 SQS 엔드포인트 · P6 규칙 확인 |
 | `team04-hotel-payment-webhook-api-5xx` | 웹훅 API Gateway `5xx` > 0 | 위와 같음. Lambda 호출 실패 · 비정상 응답 확인 |
-| `team04-hotel-main-alb-5xx-rate` | ALB 5xx 비율 > 5% (1분 3번 중 2번, 요청 20건 이상) | `kubectl -n backend get pods`, api-gateway 로그. ELB 5xx 만 늘면 대상 없음(워커 · Traefik) |
+| `team04-hotel-main-alb-5xx-rate` | ALB 5xx 비율 > 5% (1분 3번 중 2번, 요청 20건 이상) | `kubectl -n backend get pods`, api-gateway 로그. ELB 5xx 만 늘면 대상 없음(Traefik 파드 · TargetGroupBinding, 7절) |
 | `team04-hotel-main-alb-eks-unhealthy` | EKS(72 Traefik 파드 8000) Target Group unhealthy 5분. 대상이 없으면 울리지 않음 | Traefik 파드 · TargetGroupBinding 상태 확인 |
 | `team04-hotel-ec2-cpu-surplus-charged` | 계정 EC2 `CPUSurplusCreditsCharged` 5분 합 > 0 (Metrics Insights) | t3a unlimited 초과 사용이 과금됨. Prometheus 노드 평균 CPU 알람 · 노드 대시보드 확인, 계속되면 고정 성능 타입(m6a) 검토 |
 | `team04-hotel-payment-nlb-unhealthy` | 결제 NLB unhealthy 5분 | 9절 결제 서버 SSM 접속 → `docker ps` · app 로그. ASG 가 교체 중일 수 있음 |
@@ -865,15 +834,15 @@ gitops sync-frontend-version (GitHub OIDC Role) ┘   (토픽 · 키 · 규칙 �
 - **Prometheus 알림**(메인 클러스터 Alertmanager, LDP-179)도 같은 `#alerts` 로 옵니다. 제목은 `🚨 Prometheus 알림 | <규칙>` · `✅ Prometheus 해소 | <규칙>` 이고, 규칙 · 대응은 [`infra/gitops/prod/README.md`](../gitops/prod/README.md) "관측" 에 있습니다. `severity` 가 `warning` · `critical` 인 것만 보냅니다.
 - **결제 지표 Prometheus 알림**(AMP, LDP-181)도 같은 형식으로 `#alerts` 에 옵니다 (`*클러스터* payment (prod, AMP)`). 규칙은 `10-global/metrics.tf`: `PaymentTargetDown`(`up == 0` 5분) · `PaymentDbExporterDown`(`mysql_up == 0` 5분, critical) · `PaymentHostDiskAlmostFull`(< 15%) · `PaymentHostMemoryLow`(< 10%). `absent()` 규칙은 매일 destroy 로 울려서 두지 않습니다 — 결제 서버 자체 장애는 `payment-nlb-unhealthy` 알람이 알립니다.
 - 결제 배포 · MOCK 알람은 이벤트가 생긴 1분만 ALARM 이고 다음 1분에 OK 로 돌아옵니다 ("발생 알림"). 이벤트가 있을 때만 생기는 지표라 `FILL(m, 0)` 수식으로 빈 분을 0 으로 채웁니다 — 채우지 않으면 평가 범위에 남은 마지막 1 때문에 ALARM 이 약 8분 이어집니다 (2026-10-24 실측). ALARM 중에 같은 이벤트가 또 생기면 새 메시지는 없습니다.
-- 매일 재생성 직후 결제 서버 · 워커가 부팅 중이면 unhealthy 알람이 한 번 올 수 있습니다 (5분 넘게 이어질 때만).
-- **DB · 캐시 알람 기준값**(LDP-180, 2026-10-29 db.t4g.micro 실측): `max_connections` 30 (`LEAST({DBInstanceClassMemory/25165760},12000)`), 메인 평소 22. 임계값은 `90-observability-alarms/variables.tf`. `CPUCreditBalance`(잔액 낮음)는 쓰지 않습니다 — 생성 직후 0 에서 시간당 약 6 씩 쌓여 매일 재생성 후 몇 시간 동안 울리고, t4g 는 Unlimited 라 잔액 0 이어도 느려지지 않습니다.
+- 매일 재생성 직후 결제 서버가 부팅 중이거나 첫 root sync 중 Traefik 이 막 등록되면 unhealthy 알람이 한 번 올 수 있습니다 (5분 넘게 이어질 때만).
+- **DB · 캐시 알람 기준값**: `max_connections` = `LEAST({DBInstanceClassMemory/25165760},12000)` — 메인 `db.t4g.medium` 151, 결제 `db.t4g.micro` 30 (실측). 임계값은 `90-observability-alarms/variables.tf` 의 `db_connections_thresholds`(메인 54 · 결제 26). `CPUCreditBalance`(잔액 낮음)는 쓰지 않습니다 — 생성 직후 0 에서 시간당 약 6 씩 쌓여 매일 재생성 후 몇 시간 동안 울리고, t4g 는 Unlimited 라 잔액 0 이어도 느려지지 않습니다.
 - RDS 에러 · 슬로우 쿼리 로그는 `/aws/rds/instance/team04-hotel-{main,payment}/{error,slowquery}` (41 · 42 가 먼저 만들어 보관 7일, destroy 때 삭제). 조회는 Grafana CloudWatch 데이터 소스 또는 Logs Insights ([`infra/gitops/prod/README.md`](../gitops/prod/README.md) "DB · 캐시 지표").
 
 ### `#deploy` 배포 결과
 
 | 출처 | 보내는 때 | 내용 |
 |---|---|---|
-| 메인 클러스터 ArgoCD (root 앱 hook Job) | 새 gitops 커밋의 root sync 성공(모든 앱 Healthy) · 실패(15분 시간 제한 포함, 자동 롤백 없음). 클러스터 생성 직후 첫 sync 는 실패만 | 릴리스 SHA(backend `revision`), gitops SHA · 이전 SHA, 소요 시간, 앱, 실패한 앱 · 메시지 |
+| 메인 클러스터 ArgoCD (root 앱 hook Job) | 새 gitops 커밋의 root sync 성공(모든 앱 Healthy) · 실패(30분 시간 제한 포함, 자동 롤백 없음). 클러스터 생성 직후 첫 sync 는 실패만 | 릴리스 SHA(backend `revision`), gitops SHA · 이전 SHA, 소요 시간, 앱, 실패한 앱 · 메시지 |
 | 결제 서버 pull agent (인스턴스별) | 떠 있는 서버의 release 갱신 결과: `deploy_success` · `deploy_failed`(없는 태그 · Flyway · 헬스) · `invalid_release` · `rollback_*`. 부팅 배포(매일 재생성 · ASG 교체)는 보내지 않음 — 실패는 `#alerts` deploy-failed 알람 | 릴리스 SHA, 인스턴스 · AZ · 실행 방식, PG(`TOSS` · `MOCK`), 사유 |
 | gitops `sync-frontend-version` | KeyValueStore 버전을 바꿨을 때 · 갱신 실패 | 릴리스 SHA, 이전 버전, Actions 실행 링크 |
 
