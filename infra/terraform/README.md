@@ -151,11 +151,14 @@ terragrunt output -raw api_url
   | `db_multi_az` | `true` | 41 · 42 | RDS Single-AZ (대기 인스턴스 비용 · 생성 시간 절약) |
   | `enable_payment_network_firewall` | `true` | 20 | 결제 egress 가 NAT 로 바로 (8절) |
   | `valkey_num_nodes` | `2` | 41 | `1` 이면 Valkey 1대, 자동 장애 조치 없음 |
+  | `single_nat_gateway` | `false` | 20 | `true` 면 NAT 가 VPC 당 1개(a 영역) — 결제 NFW 엔드포인트도 a 하나라, a 영역 장애 때 b 영역 결제 서버의 외부 호출(토스 API)도 막힘 |
   | `db_instance_class` | 41 `db.t4g.medium` · 42 `db.t4g.micro` | 41 · 42 | (가용성 아님, 참고) 같은 이름 변수라 `TF_VAR_` 로 `run --all` 에 넣으면 결제 RDS 도 바뀝니다 — 바꿀 때는 해당 스택 디렉터리에서만 |
 
   ```bash
-  TF_VAR_db_multi_az=false TF_VAR_enable_payment_network_firewall=false AWS_PROFILE=team04 terragrunt run --all apply
+  TF_VAR_db_multi_az=false TF_VAR_enable_payment_network_firewall=false TF_VAR_single_nat_gateway=true TF_VAR_valkey_num_nodes=1 \
+    AWS_PROFILE=team04 terragrunt run --all apply
   ```
+  끈 상태로 만든 날 같은 스택을 다시 apply 할 때도 `TF_VAR_` 를 **매번 같이** 붙입니다. 빠뜨리면 기본값(켬)으로 돌아가고, NFW 가 다시 생기면서 결제 라우트도 바뀝니다.
 - `10-global` · `11-registry` · `13-frontend` · `14-gcp-llm` · `15-chatbot-vectors` 는 `exclude`(destroy) 로 `run --all destroy` 에서 빠지고, `prevent_destroy` 로 스택 디렉터리에서 직접 `terragrunt destroy` 해도 막힙니다.
 - `10-global` 의 GitHub OIDC 공급자(`token.actions.githubusercontent.com`)는 URL 이 고정이라 **계정에 하나뿐인 공용 리소스**입니다 (공유 계정의 다른 팀도 같은 공급자를 씀). 지우거나 audience 를 바꾸지 않습니다 (`prevent_destroy`). 다른 팀이 먼저 만들었으면 `create_github_oidc_provider = false` 로 기존 공급자를 씁니다.
   같은 공급자로 gitops 레포 main 의 `team04-hotel-gitops-ssm-sync` 와 모노레포 main 의 `team04-hotel-release`(`.github/workflows/release.yml` — GHCR → ECR 복사 · 프론트 업로드 · gitops PR, 운영 전환 권한 없음)를 받습니다. 두 Role 모두 신뢰 정책이 immutable subject 형식 `sub` 의 `refs/heads/main` 만 허용합니다.
@@ -186,42 +189,55 @@ bootstrap                                  🔒 최초 1회 (terraform)
 
 ### 스택별 소요 시간
 
-빈 상태에서 apply, 전체 destroy 기준 실측값입니다.
+빈 상태에서 apply, 전체 destroy 기준 실측값입니다. **(kubeadm 시기)** 표시 행은 EKS 전환(2026-11-03) 전 기록입니다.
 
 | 스택 | 조건 | apply | destroy |
 |---|---|---|---|
 | `13-frontend` 🔒 | 최초 1회. 버킷 2개 · CloudFront(2분 49초) · KeyValueStore(1분 24초) · Function · 레코드 4개 (2026-10-22) | 5분 07초 | (destroy 안 함) |
 | `14-gcp-llm` 🔒 | 최초 1회. API 4개(STS 25초) · 서비스 계정 · Pool · Provider · IAM 3개, 사전 작업 때문에 2번 나눠 apply (2026-10-23) | 52초 + 37초 | (destroy 안 함) |
 | `15-chatbot-vectors` 🔒 | 최초 1회. 벡터 버킷 · 인덱스 (각 1초, 2026-10-23) | 약 4초 | (destroy 안 함) |
-| `20-network` | `single_nat_gateway = true` (NAT 2개, 기본값. 시간은 Deployment VPC 포함 3개 때 실측), `enable_payment_network_firewall = false` (기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
+| `20-network` | **AZ별 NAT 4개 + 결제 NFW 엔드포인트 2개 (기본값 — NFW LDP-259 · AZ별 NAT LDP-261, 2026-11-10)**. NAT 1분 27초 – 2분 07초, NFW 생성 5분 22초 / 삭제 4분 01초 | **5분 47초** | **4분 55초** |
+| `20-network` | `single_nat_gateway = true` (NAT 2개, LDP-261 전 기본값. 시간은 Deployment VPC 포함 3개 때 실측), `enable_payment_network_firewall = false` (LDP-259 전 기본값) | 2분 13초 – 2분 35초 | 1분 45초 – 1분 52초 |
 | `20-network` | 위 + `enable_payment_network_firewall = true` (엔드포인트 1개. NFW 생성 4분 52초 – 5분 03초, 삭제 1분 47초) | 5분 20초 – 5분 28초 | 2분 46초 |
-| `20-network` | `single_nat_gateway = false` (NAT 4개, Deployment VPC 포함 5개 · NFW 도입 전 실측. NFW 엔드포인트 2개) | 2분 27초 | 1분 23초 |
+| `20-network` | `single_nat_gateway = false` · NFW 끔 (NAT 4개, Deployment VPC 포함 5개 · NFW 도입 전 실측) | 2분 27초 | 1분 23초 |
+| `30-security` | SG 14개 · 규칙 61개 (2026-11-10). destroy 는 `50` Lambda 의 VPC ENI 가 지워질 때까지 SG 삭제를 기다림 | 10초 | **6분 29초** |
 | `30-security` | `enable_control_plane = true` (SG 12개, 규칙 39개. 시간은 SG 6개 · 규칙 26개 때 실측, 결제 SG 3개 · 규칙 4개 추가 apply 는 19초) | 14초 – 20초 | 14초 – 15초 |
+| `41-main-data` | **RDS `db.t4g.medium` Multi-AZ · Valkey 2대 (기본값, 2026-11-10)**. RDS 14분 30초, Valkey 8분 08초 / 삭제 RDS 4분 08초, Valkey 5분 29초 | **14분 38초** | **5분 32초** |
 | `41-main-data` | (아래 실측은 db.t4g.micro. 기본값은 LDP-201 부터 db.t4g.small) RDS db.t4g.micro Single-AZ, Valkey 노드 1개 (RDS 약 6분 30초 – 7분, Valkey 약 5분 40초) | 6분 40초 – 7분 16초 | 5분 46초 |
+| `42-payment-data` | **결제 RDS `db.t4g.micro` Multi-AZ (기본값, 2026-11-10)**. RDS 14분 30초 / 삭제 3분 58초 | **14분 36초** | **4분 00초** |
 | `42-payment-data` | 결제 RDS db.t4g.micro Single-AZ, Secret | 6분 37초 – 6분 39초 | 2분 13초 |
-| `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 38초 | 2분 10초 |
-| `44-payment-endpoints` | 인터페이스 엔드포인트 9종(AZ 2개, `autoscaling` 포함 — 시간은 8종 때 실측, 1종 추가 apply 55초), S3 게이트웨이 엔드포인트 정책 | 57초 – 1분 04초 | 2분 24초 |
+| `43-messaging` | 결제 결과 FIFO 큐 + DLQ, 큐 정책 (큐 생성 약 30초씩, 정책 약 30초) | 1분 23초 – 1분 38초 | 1분 59초 – 2분 10초 |
+| `44-payment-endpoints` | 인터페이스 엔드포인트(AZ 2개), S3 게이트웨이 엔드포인트 정책. 2026-11-10 실측 1분 44초 / 4분 23초 | 57초 – 1분 44초 | 2분 24초 – 4분 23초 |
+| `50-payment-webhook` | API Gateway HTTP API · 사용자 지정 도메인 · Lambda(결제 VPC) · SQS 웹훅 큐 + DLQ (2026-11-10) | 4분 56초 | 2분 00초 |
+| `51-pod-roles` | 파드 Role 11개 · 정책 (2026-11-10) | 5초 | 4초 |
+| `60-payment-app` | 결제 서버 2대 · NLB · Endpoint Service (2026-11-10, NLB 2분 48초) | 2분 57초 | 1분 00초 |
 | `60-payment-app` | 결제 서버 2대(t4g.small 실측, LDP-173 부터 t3a.small) · 내부 NLB · Endpoint Service (시간은 1대 때 실측). 부팅 후 첫 배포(docker 설치 · pull · Flyway · 기동)까지 약 2분, 2대 동시 교체 후 둘 다 healthy 까지 4분 34초. 갱신 배포는 서버당 약 2분 40초, 2대 순차 약 6분 (AZ 시차 180초) | 2분 57초 – 3분 04초 | 1분 30초 |
 | `61-payment-mock` | pg-mock 인스턴스 1대. SSM 등록은 부팅 후 약 3분 (cloud-init 이 끝난 뒤 에이전트 기동) | 34초 – 42초 | 약 1분 |
 | `71-payment-link` | Interface Endpoint(AZ 2개) · private zone · 레코드 | 1분 44초 – 2분 07초 | 약 2분 |
-| `70-main-cluster-kubeadm` | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
+| `72-main-cluster-eks` | **클러스터 1.35 · 노드 그룹 4개(platform a · b, app a · b) · 애드온 5개 · Pod Identity · ArgoCD (2026-11-10)**. 클러스터 10분 17초 → 노드 그룹 약 2분(병렬) → ArgoCD helm 1분 41초. 삭제는 노드 그룹 4분 12초 – 8분 11초, 클러스터 2분 53초 | **14분 37초** + 첫 root sync 14분 00초 | **11분 54초** |
+| `70-main-cluster-kubeadm` **(kubeadm 시기)** | CP 3대(AZ 별 ASG), 워커 2대 (부트스트랩 포함) | 3분 16초 – 4분 05초 | 1분 40초 – 2분 33초 |
 | `80-main-edge` | 도메인 구매 전 (HTTP, ALB · WAF) | 2분 28초 – 2분 49초 | 26초 – 37초 |
 | `80-main-edge` | 인증서 발급 후 (HTTPS 리스너, `api.<도메인>` 레코드. ALB 3분 17초, 레코드 32초. 2026-10-22) | 4분 05초 | |
+| `80-main-edge` | ALB · WAF · eks Target Group · `api.` · `grafana.` 레코드 (2026-11-10, ALB 2분 15초) | 2분 50초 | 52초 |
+| **`run --all` (EKS, 가용성 · NFW 켬 — 기본값)** | 🔒 No changes + 20 – 90 전체, 73 꺼짐 (2026-11-10). 가장 긴 경로 20 → 30 → 41 · 42 (RDS Multi-AZ) → 51 → 72 | **37분 20초** | **30분 13초** |
+| **`run --all` (EKS, 가용성 · NFW 끔)** | 위 + `TF_VAR_` 4개 (2026-11-10). 20 2분 22초 · 41 8분 13초 · 42 7분 31초 · 72 13분 51초 (클러스터 9분 46초). 가장 긴 경로는 41 RDS Single-AZ(8분 07초) → 51 → 72 | **26분 09초** | 켬과 같은 수준 (NFW · Multi-AZ 삭제분만 짧음) |
 | **`run --all` (10 · 11 포함, 20 · 30 · 70 · 80)** | 위 기본 조건 | **10분 06초** | **5분 01초** (10 · 11 제외) |
 | **`run --all` (10 · 11 포함, 20 · 30 · 40 – 44 · 70 · 80)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-21) | **20분 07초** | **12분 56초** (10 · 11 제외) |
 | **`run --all` (10 포함, 20 · 30 · 41 · 43 · 70 · 80)** | 위 기본 조건, 인증서 발급 후 (2026-10-22, `--filter './80-main-edge...' --filter './41-main-data...' --filter './43-messaging...'`) | **18분 16초** | |
 | **`run --all` (10 포함, 20 · 30 · 41 – 44 · 60 · 61 · 70 · 71, 40 · 80 제외)** | 위 기본 조건 + `enable_payment_network_firewall = true` (2026-10-22, 아래 `--filter`) | **19분 54초 – 21분 02초** | **11분 02초** (10 제외) |
 | **`run --all` (10 포함, 20 · 21 · 30 · 41 – 44 · 60 · 70 · 71 · 80 · 90, 40 · 61 제외)** | 기본 조건 (NFW · Multi-AZ 끔), 로그 · 알림 추가 후 (2026-10-24, `--filter './90-observability-alarms...' --filter './71-payment-link...' --filter './70-main-cluster-kubeadm...'`) | **17분 41초** | **11분 55초** (10 제외) |
 
-결제 쪽(`42` → `60` → `71`)이 메인 쪽(`41` → `70`)과 병렬이라 `60` · `61` · `71` 을 넣어도 전체 시간은 거의 늘지 않습니다. 가장 긴 경로는 `42` RDS(6분 40초 – 10분)에 따라 정해지고, `70` 은 `60` · `71` 을 기다리지 않습니다. 필요한 스택만 올릴 때는 `--filter '<스택>...'`(그 스택과 의존 스택)로 고릅니다.
+결제 쪽(`42` → `60` → `71`)이 메인 쪽(`41` → `51` → `72`)과 병렬이라 `60` · `61` · `71` 을 넣어도 전체 시간은 거의 늘지 않습니다. 가장 긴 경로는 RDS(Single-AZ 약 7분, Multi-AZ 약 14분 30초) 다음 `72`(약 14분 30초)이고, `72` 는 `60` · `71` 을 기다리지 않습니다. destroy 는 `72` 노드 그룹 삭제(최대 약 8분)와 `30` SG 삭제 대기(Lambda VPC ENI)가 길게 걸립니다. 필요한 스택만 올릴 때는 `--filter '<스택>...'`(그 스택과 의존 스택)로 고릅니다.
 
 ```bash
-# 결제 서버 · PrivateLink 검증 범위 (80 ALB 제외). NFW 를 켤 때는 20 만 받는 변수를 환경변수로 넘긴다 (다른 스택은 무시)
-TF_VAR_enable_payment_network_firewall=true terragrunt run --all apply \
-  --filter './71-payment-link...' --filter './61-payment-mock...' --filter './70-main-cluster-kubeadm...'
+# 결제 서버 · PrivateLink 검증 범위 (80 ALB 제외). 가용성 · NFW 를 끌 때는 위 TF_VAR_ 를 같이 넘긴다
+terragrunt run --all apply \
+  --filter './71-payment-link...' --filter './61-payment-mock...' --filter './72-main-cluster-eks...'
 ```
 
-`70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측, 이전 배포 agent 기준 — ArgoCD 전환 후 다시 잼)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
+`72-main-cluster-eks` 는 apply 안에서 노드 합류 · 애드온 · ArgoCD 설치까지 끝나고, 그 뒤 ArgoCD 첫 root sync 가 이어집니다 (2026-11-10 14분 00초, 앱 17개 Synced · Healthy). sync 가 끝나야 Traefik 이 eks Target Group 에 등록되어 `api.` 가 응답합니다. 첫 sync 결과는 `kubectl -n argocd get application prod-apps` 로 봅니다 (kubeconfig 는 `live/prod/eks-kubeconfig.sh`).
+
+**(kubeadm 시기)** `70-main-cluster-kubeadm` 은 apply 가 끝난 뒤에도 노드 부트스트랩이 이어집니다 (6절). **apply 시작부터 노드 5대 Ready 까지 약 6분 – 7분, Traefik · whoami 설치 완료까지 약 7분 – 8분, cert-manager · pod-identity-webhook · External Secrets 까지 포함하면 약 9분 30초 (2026-10-19 실측, 이전 배포 agent 기준 — ArgoCD 전환 후 다시 잼)** (apply 중 내부 NLB 생성이 약 2분 45초 – 3분 20초, 노드 부팅 후 부트스트랩 약 3분 – 5분). 워커 1대 종료 후 교체 워커 Ready 까지 약 2분 30초 – 3분 (종료 전 drain 포함, 6절).
 
 `70` apply 직후 `80` 을 apply 하면 `80` apply 가 끝날 즈음 부트스트랩도 끝나, **`70` apply 시작부터 ALB Target Group 워커 전부 healthy 까지 약 7분 – 8분** 입니다. `run --all apply` 는 `80` 을 공백 없이 바로 시작하므로 **명령이 끝난 뒤 1분 – 2분 더 지나야 부트스트랩이 끝납니다** (배포 agent 전환 후 실측: 명령 9분 42초, 전체 시작부터 ALB `/whoami` 200 까지 11분 37초 — 전환 전 약 11분 30초와 같음). 워커 1대 종료 후 교체 워커가 Target Group 에서 healthy 가 되기까지 약 3분 20초 – 4분.
 
@@ -421,20 +437,20 @@ NAT 응답  ─ public RT <app · lb 서브넷 CIDR> ─▶ 같은 NFW 엔드포
 ```
 
 - VPC 엔드포인트(ECR · SSM · SQS · Secrets Manager · Logs), S3 게이트웨이(prefix list), 결제 DB 는 더 구체적인 경로라 NFW 를 거치지 않습니다.
-- **`enable_payment_network_firewall` 기본값은 `true` 입니다** (LDP-259, 엔드포인트 1개 시간당 $0.395). 끄면 app · lb 가 NAT 로 바로 나가고 DNS Firewall · SG 만 남습니다 (IP 직접 접속은 막지 못함). firewall 서브넷 · 라우트 테이블은 무료라 남겨 둡니다.
+- **`enable_payment_network_firewall` 기본값은 `true` 입니다** (LDP-259, 엔드포인트 1개 시간당 $0.395 — `single_nat_gateway` 기본 `false`(LDP-261)라 a · b 2개). 끄면 app · lb 가 NAT 로 바로 나가고 DNS Firewall · SG 만 남습니다 (IP 직접 접속은 막지 못함). firewall 서브넷 · 라우트 테이블은 무료라 남겨 둡니다.
   ```bash
   # 비용을 줄이려고 끈 채로 재생성 (run --all 이면 20 만 이 변수를 씀)
   TF_VAR_enable_payment_network_firewall=false AWS_PROFILE=team04 terragrunt run --all apply
   ```
 - **켜진 상태에서 `false` 로 바로 apply 하면 실패합니다** (`DeleteFirewall ... VPC endpoint(s) still exist in route table(s)`). Terraform 이 private 라우트를 NAT 로 바꾸기 전에 NFW 삭제를 먼저 시도하기 때문입니다 (의존 리소스 수정과 의존 대상 삭제 사이의 순서를 보장하지 않음). 매일 destroy 로 내려가는 경우는 라우트가 먼저 삭제되므로 문제없습니다. 그날 바로 꺼야 하면 라우트를 먼저 NAT 로 돌리고 apply 합니다.
   ```bash
-  # single_nat_gateway = false 면 AZ 마다 team04-hotel-payment-<az> NAT 로 바꾼다
-  NAT=$(AWS_PROFILE=team04 aws ec2 describe-nat-gateways --filter Name=tag:Name,Values=team04-hotel-payment-a Name=state,Values=available --query 'NatGateways[0].NatGatewayId' --output text)
+  # 각 영역 라우트를 그 영역 NAT 로 (single_nat_gateway = true 면 NAT 가 a 하나라 NAT=team04-hotel-payment-a 로 고정)
   for az in a b; do
+    NAT=$(AWS_PROFILE=team04 aws ec2 describe-nat-gateways --filter Name=tag:Name,Values=team04-hotel-payment-$az Name=state,Values=available --query 'NatGateways[0].NatGatewayId' --output text)
     RT=$(AWS_PROFILE=team04 aws ec2 describe-route-tables --filters Name=tag:Name,Values=team04-hotel-payment-private-$az --query 'RouteTables[0].RouteTableId' --output text)
     AWS_PROFILE=team04 aws ec2 replace-route --route-table-id "$RT" --destination-cidr-block 0.0.0.0/0 --nat-gateway-id "$NAT"
   done
-  AWS_PROFILE=team04 terragrunt apply     # NFW 삭제 약 3분 30초 (firewall 2분 18초 + 정책 · rule group)
+  TF_VAR_enable_payment_network_firewall=false AWS_PROFILE=team04 terragrunt apply     # NFW 삭제 약 3분 30초 – 4분 (2026-11-10 엔드포인트 2개 4분 01초)
   ```
 - 엔드포인트 수는 NAT 와 맞춥니다. `single_nat_gateway = true` 면 a 하나, `false` 면 a · b.
 - Main VPC 는 검사하지 않습니다 (`modules/vpc` 의 `firewall_endpoint_ids` 기본값 `{}`).

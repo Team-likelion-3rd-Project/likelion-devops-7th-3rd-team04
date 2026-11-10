@@ -29,9 +29,9 @@ variable "log_bucket_name" {
 }
 
 variable "single_nat_gateway" {
-  description = "Main / Payment VPC 의 NAT 를 VPC 당 1개로 줄인다. 개발 기간 비용 절감용, 운영 시연 때 false 로 AZ 별 NAT"
+  description = "Main / Payment VPC 의 NAT 를 VPC 당 1개로 줄인다. 기본 false = AZ 별 NAT (LDP-261, 아키텍처 도면 기준 — 한 영역 장애에도 egress 유지, 결제 NFW 엔드포인트도 AZ 별). 줄일 때 -var single_nat_gateway=true"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "enable_payment_network_firewall" {
