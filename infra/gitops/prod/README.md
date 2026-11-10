@@ -41,7 +41,7 @@ Terraform 72 가 노드 그룹을 성격별로 만든다. 배치는 각 앱의 `
 
 | 노드 그룹 | 대수 | 무엇을 두나 | 표시 |
 |---|---|---|---|
-| `platform-a` | 1 고정 (CA 대상 아님) | 모니터링(kube-prometheus-stack) · ArgoCD(72 helm) · cluster-autoscaler · external-secrets · cert-manager · aws-load-balancer-controller · mysql-exporter · 배포 알림 Job · 챗봇(chat-bot · llm · n8n) | label `role=platform`, taint `dedicated=platform:NoSchedule` |
+| `platform-a` · `platform-b` | 영역마다 1 고정 (CA 대상 아님, LDP-259) | 모니터링(kube-prometheus-stack) · ArgoCD(72 helm) · cluster-autoscaler · external-secrets · cert-manager · aws-load-balancer-controller · mysql-exporter · 배포 알림 Job · 챗봇(chat-bot · llm · n8n) | label `role=platform`, taint `dedicated=platform:NoSchedule` |
 | `app-a` · `app-b` | 영역당 1–3 (CA, `balance-similar-node-groups`) | 앱 서비스 · traefik · coredns · ebs-csi-controller · metrics-server(2) | label `role=app` |
 
 - platform 에 둘 구성 요소는 `nodeSelector: {role: platform}` + toleration `dedicated=platform:NoSchedule` 를 함께 넣는다. 앱 Pod 는 아무것도 넣지 않는다 (taint 때문에 platform 에 뜨지 않음)
@@ -49,8 +49,10 @@ Terraform 72 가 노드 그룹을 성격별로 만든다. 배치는 각 앱의 `
 - taint 를 `CriticalAddonsOnly` 로 하지 않는다 — coredns · ebs-csi-controller 가 허용하는 taint 라 둘 다 platform 1대로 몰릴 수 있다 (그 노드 장애 = 클러스터 DNS 중단)
 - 앱 노드 그룹을 영역마다 두는 이유: 그룹 하나가 두 영역에 걸치면 ASG AZRebalance 가 영역 균형을 맞추려고 노드를 종료한다 (11-06 Prometheus 노드 종료, PDB 도 무시됨). Prometheus 는 EBS(PVC)라 platform 노드 영역에 묶인다
 - PDB: backend 는 2개 이상 뜨는 서비스(`pdb.enabled`, maxUnavailable 1), traefik · metrics-server · cluster-autoscaler 는 각 차트 값. 1개 고정 서비스에는 걸지 않는다 (그 노드를 비울 수 없게 됨)
-- Cluster Autoscaler 축소를 막는 emptyDir Pod 는 `cluster-autoscaler.kubernetes.io/safe-to-evict: "true"` (alertmanager · 배포 알림 · ArgoCD repo-server). Prometheus 는 `"false"` (EBS 영역 때문에 옮기지 않음)
-- platform 1대 장애 시 모니터링 · ArgoCD · 챗봇이 멈춘다 (예약 · 결제는 영향 없음). 매일 재생성 운영이라 감수 — 상시 운영 가정 시 영역별 2대 검토
+- Cluster Autoscaler 축소를 막는 emptyDir Pod 는 `cluster-autoscaler.kubernetes.io/safe-to-evict: "true"` (alertmanager · 배포 알림 · ArgoCD repo-server · Traefik · ebs-csi-controller — 뒤의 둘은 4차 CA 로그 `pod with local storage present` 로 발견, LDP-259). Prometheus 는 `"false"` (EBS 영역 때문에 옮기지 않음)
+- **platform 은 영역마다 1대** (LDP-259, 아키텍처 도면 기준). 운영 도구는 2개 · 영역마다 1개(`topology.kubernetes.io/zone` 분산, `DoNotSchedule`, PDB)라 한 영역 장애에도 이어진다: cluster-autoscaler · aws-load-balancer-controller · external-secrets(본체 · webhook · cert-controller) · cert-manager(controller · webhook · cainjector) · ArgoCD(server · repo-server) · Alertmanager · chat-bot · llm
+- 1개로 두는 것과 이유: Prometheus(EBS 가 한 영역에 묶여 2개여도 옮겨 가지 못하고 수집 부하만 2배) · Grafana(여러 개면 공유 DB 필요) · kube-state-metrics · mysql-exporter(같은 지표 중복) · prometheus-operator · n8n(일반 모드는 여러 개 불가) · ArgoCD application-controller · redis(이중화하려면 redis-ha 3개가 노드 3대에 떠야 함). 디스크가 없는 것은 그 영역 장애 때 다른 영역 platform 노드로 옮겨질 때까지(노드 NotReady 뒤 약 5분) 멈추고, Prometheus 는 그 영역이 돌아올 때까지 멈춘다 (예약 · 결제는 영향 없음). 남은 platform 노드 1대에 모두 들어가는지는 재생성 때 확인
+- platform 노드 그룹은 min = max = 1 이라 CA 가 늘리지 않는다. 2개짜리 운영 도구의 두 번째 Pod 는 다른 영역 platform 노드가 있어야 뜬다 — 72 가 platform-b 를 먼저 만들고 ArgoCD 를 설치한다
 
 ## Pod 배치 (분산)
 
@@ -60,12 +62,16 @@ Terraform 72 가 노드 그룹을 성격별로 만든다. 배치는 각 앱의 `
 |------|------|------|
 | backend 서비스 (gateway · hotel · booking · auth · user · chat-bot · llm) | `backend/values.yaml` `topologySpread` (차트 템플릿) | 노드(`kubernetes.io/hostname`)별 같은 서비스 Pod 개수 차이 1 이하, **`DoNotSchedule`** |
 | Traefik | `traefik/values.yaml` `topologySpreadConstraints` | 노드마다 1개, `DoNotSchedule` |
+| hotel · booking · Traefik 서로 (LDP-259) | `backend/values.yaml` `services.<이름>.affinity` (차트 템플릿) · `traefik/values.yaml` `affinity` | 서로 없는 노드 우선, **preferred** (자리가 없으면 그래도 배치) |
 
 - `DoNotSchedule` = 지킬 수 없으면 배치하지 않고 Pending → Cluster Autoscaler 가 노드를 늘립니다. 차트 기본 `ScheduleAnyway` 는 자리가 없으면 규칙을 무시해, 롤아웃 · HPA 때 한 노드에 몰렸습니다.
 - 근거 (11-05 부하 테스트 2일차, load 350 요청/초 × 15분): 쏠림 조회 p95 334ms(실패) → 분산 64ms. 지연은 앱이 아니라 포화된 노드의 Traefik → gateway 구간에서 생겼습니다.
 - 롤아웃 중 옛 버전 Pod 는 세지 않습니다 (`matchLabelKeys: pod-template-hash`). 그래서 surge Pod 가 규칙 때문에 막히지 않습니다.
 - **앱 노드 그룹 max(Terraform 72 `app_node_max_per_az`, 영역당)에 닿은 상태**에서는 HPA 확장 Pod · 롤아웃 surge Pod 가 Pending 으로 남을 수 있습니다 (CA 가 더 늘릴 수 없음). `kubectl get pods -A --field-selector=status.phase=Pending` 으로 확인합니다.
-- 막지 못하는 것: 서로 다른 서비스 Pod 가 한 노드에 모이는 것, 이미 배치된 Pod 의 재배치 (descheduler 미도입). n8n 은 별도 템플릿이라 규칙이 없습니다.
+- 분산 규칙은 같은 서비스끼리만 셉니다. CPU 를 많이 쓰는 hotel · booking · Traefik 이 한 노드에 겹치면 그 노드만 먼저 포화되므로 서로 피하게 합니다 (부하 테스트 4차: 같은 부하에서 겹친 노드 98–100%, gateway 만 있는 노드 45–50%). preferred 라 평소 앱 노드 수가 적을 때는 겹칠 수 있고, HPA 가 늘린 Pod 가 겹치지 않는 노드로 갑니다.
+- **requests 는 고부하 실사용에 맞춥니다.** 스케줄러는 requests 로 자리를 계산해, 실사용보다 작으면(또는 Traefik 처럼 비어 있으면) 한 노드에 과밀 배치합니다 (4차 stress 1회차: 650 요청/초에서 붕괴 → requests 정정 후 1,000 통과).
+- 막지 못하는 것: 이미 배치된 Pod 의 재배치 (descheduler 미도입). n8n 은 별도 템플릿이라 규칙이 없습니다.
+- **자리 맡기** (`overprovisioning`, LDP-259): 우선순위 -1 의 빈 Pod(500m) 1개가 앱 노드에 자리를 잡고 있다가, HPA 확장 Pod 가 오면 밀려나 CA 가 다음 노드를 미리 띄웁니다. `overprovisioning/chart/values.yaml` `replicas: 0` 으로 끕니다. gateway HPA min 4 와 함께 평소 노드는 platform 을 뺀 앱 노드 4대입니다.
 - **platform 노드는 분산 계산에서 뺍니다** (`nodeTaintsPolicy: Honor`, `values-eks.yaml`). 기본값(`Ignore`)이면 Pod 를 놓을 수 없는 platform 노드가 "0개인 노드"로 세어져, 앱 노드마다 1개씩 있어도 더 놓을 곳이 없다고 판단합니다.
 
 ## IRSA · 비밀값

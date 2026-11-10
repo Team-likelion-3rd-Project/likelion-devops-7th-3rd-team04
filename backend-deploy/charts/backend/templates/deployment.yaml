@@ -48,6 +48,11 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- /* services.<이름>.affinity — 다른 서비스와 같은 노드를 피할 때 (topologySpread 는 같은 서비스끼리만 분산) */}}
+      {{- with $svc.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- /* services.<이름>.topologySpread: false 로 뺀 서비스 제외 (metrics 와 같은 방식) */}}
       {{- if and $.Values.topologySpread.enabled (ne (toString $svc.topologySpread) "false") }}
       topologySpreadConstraints:
