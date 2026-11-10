@@ -16,13 +16,13 @@
 ```
 infra/gitops/prod/          (= gitops 레포 envs/prod/)
 ├── Chart.yaml · values.yaml · templates/ · files/   root 앱 차트 (앱 정의 → Application, 배포 결과 알림)
-├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (워커 NodePort 30080, 2개 · 노드마다 1개)
+├── traefik/               chart.yaml · values.yaml          10  Ingress Controller (HPA 2–4, 노드마다 1개. EKS 는 파드 :8000 이 ALB ip Target Group 대상)
 ├── aws-load-balancer-controller/ chart.yaml · values.yaml   18  EKS 만. TargetGroupBinding 컨트롤러 (LB 를 만들지 않음)
-├── cluster-autoscaler/    chart.yaml · values.yaml          18  EKS 만. Pending Pod 를 보고 워커 노드 그룹 2 ~ 4대 조절 (Terraform 72)
+├── cluster-autoscaler/    chart.yaml · values.yaml          18  EKS 만. Pending Pod 를 보고 app 노드 그룹 영역당 1 ~ 3대 조절 (Terraform 72, platform 은 대상 아님)
 ├── traefik-target-group/  chart.yaml · chart/               19  EKS 만. Traefik 파드 IP → 80-main-edge eks Target Group
 ├── prometheus-operator-crds/ chart.yaml                     12  PodMonitor · ServiceMonitor 등 CRD (backend PodMonitor 용)
 ├── cert-manager/          chart.yaml · values.yaml          15  webhook TLS 인증서 발급 · caBundle 주입
-├── pod-identity-webhook/  chart.yaml · values.yaml          20  IRSA 주입 (ns/SA → Role 매핑)
+├── pod-identity-webhook/  chart.yaml · values.yaml          20  kubeadm 만 (`clusters: [kubeadm]`). IRSA 주입 — EKS 는 Pod Identity, 70 정리 때 삭제
 ├── whoami/                chart.yaml · values.yaml · chart/ 20  수직 경로 검증용 테스트 백엔드 (/whoami)
 ├── fluent-bit/            chart.yaml · values.yaml          25  파드 로그 수집 → CloudWatch Logs · 로그 버킷 app-logs/main-cluster/
 ├── metrics-server/        chart.yaml · values.yaml          25  Resource Metrics API (kubectl top · HPA)
@@ -74,35 +74,36 @@ Terraform 72 가 노드 그룹을 성격별로 만든다. 배치는 각 앱의 `
 - **자리 맡기** (`overprovisioning`, LDP-259): 우선순위 -1 의 빈 Pod(500m) 1개가 앱 노드에 자리를 잡고 있다가, HPA 확장 Pod 가 오면 밀려나 CA 가 다음 노드를 미리 띄웁니다. `overprovisioning/chart/values.yaml` `replicas: 0` 으로 끕니다. gateway HPA min 4 와 함께 평소 노드는 platform 을 뺀 앱 노드 4대입니다.
 - **platform 노드는 분산 계산에서 뺍니다** (`nodeTaintsPolicy: Honor`, `values-eks.yaml`). 기본값(`Ignore`)이면 Pod 를 놓을 수 없는 platform 노드가 "0개인 노드"로 세어져, 앱 노드마다 1개씩 있어도 더 놓을 곳이 없다고 판단합니다.
 
-## IRSA · 비밀값
+## 파드 권한 · 비밀값
 
-kubeadm 클러스터라 EKS 의 IRSA 를 직접 구성했습니다.
+파드의 AWS 권한은 **EKS Pod Identity** 로 받습니다 (2026-11-03 EKS 전환).
 
 ```
-Terraform 10-global  OIDC 버킷(발급자 문서) · IAM OIDC 공급자
-Ansible (CP-a init)  kube-apiserver --service-account-issuer = OIDC 버킷 URL, keys.json(SA 서명 공개키) 업로드
-Terraform 51         IRSA Role (51-pod-roles, 신뢰 정책 sub · aud StringEquals)
-pod-identity-webhook ns/SA → Role 매핑(values.yaml) 의 파드에 AWS_ROLE_ARN · 웹 ID 토큰 주입
+Terraform 51  파드 Role (51-pod-roles) + 출력 pod_role_bindings (Role 이름 · ns · SA)
+Terraform 72  pod_role_bindings 마다 aws_eks_pod_identity_association (ns/SA → Role)
+EKS           eks-pod-identity-agent 가 해당 SA 파드에 자격 증명 제공 (SA annotation · 환경 변수 불필요)
 ```
 
-- **IRSA 를 쓰는 앱을 추가할 때**: Terraform `51-pod-roles` 의 `pod_roles` 에 Role(ns · SA) 을, `pod-identity-webhook/values.yaml` 에 같은 ns/SA 매핑을 추가합니다. SA 에 `eks.amazonaws.com/role-arn` annotation 은 달지 않습니다 (ARN 에 계정 ID 가 들어감).
+- **AWS 권한이 필요한 앱을 추가할 때**: Terraform `51-pod-roles` 의 `pod_roles` 에 Role(ns · SA · 정책)을 추가하고 51 → 72 를 apply 합니다. 72 가 `pod_role_bindings` 를 그대로 받아 Association 을 만들므로 72 코드는 고치지 않습니다. SA 에 `eks.amazonaws.com/role-arn` annotation 은 달지 않습니다. EKS 에만 있는 컨트롤러(LB Controller · EBS CSI · Cluster Autoscaler) Role 은 72 안에 있습니다.
+- Association 은 **파드를 만들 때** 적용됩니다. 떠 있는 클러스터에 새로 추가했으면 해당 Deployment 를 `rollout restart` 합니다 (매일 재생성 · 이미지 태그가 바뀌는 릴리스에서는 해당 없음).
+- Role 하나에 신뢰 정책이 둘(Pod Identity · 자체 IRSA)입니다. IRSA 쪽은 kubeadm(70) 용이라 70 정리 때 지웁니다. `pod-identity-webhook` 앱도 `clusters: [kubeadm]` 이라 EKS 에는 뜨지 않습니다.
 - **비밀값**: 앱은 `ExternalSecret` 에서 `ClusterSecretStore` `aws-secrets-manager` 를 참조해 Secrets Manager 값(`team04-hotel/prod/*`)을 받습니다. 읽을 수 있는 Secret 은 ESO Role 정책(`51-pod-roles`)과 Secret 리소스 정책(41-main-data)이 제한합니다.
 - **backend Secret**: `backend-secrets` 앱이 Secret `backend-secrets` 를 만듭니다 (`chart/values.yaml` 의 `data` = Secret key ← Secrets Manager 이름 · 속성). backend 차트의 Flyway hook Job 은 차트의 일반 리소스보다 먼저 돌기 때문에 Secret 을 backend 릴리스 밖에 둡니다. 서비스가 새 `secretEnv` 를 쓰면 여기와 Terraform 41-main-data Secret 에 같이 추가합니다.
-- **backend IRSA**: backend 차트가 서비스마다 같은 이름의 ServiceAccount 를 만듭니다 (`serviceAccounts.create: true`). 매핑은 `backend/<서비스 이름>` 으로 추가합니다.
+- **backend 파드 권한**: backend 차트가 서비스마다 같은 이름의 ServiceAccount 를 만듭니다 (`serviceAccounts.create: true`). 51 `pod_roles` 의 ns · SA 를 `backend/<서비스 이름>` 으로 맞춥니다.
 - **시드 관리자 계정**: `backend-secrets` 앱이 별도 ExternalSecret 으로 Secret `seed-admin` 을 만듭니다 (`chart/values.yaml` 의 `seedAdmin`, 원본 Terraform 12-secrets `team04-hotel/prod/seed-admin`). `backend-secrets` 에 합치지 않아 이 값이 없어도 서비스 Secret 동기화는 영향을 받지 않습니다 (아래 "운영 시드").
-- webhook 은 `failurePolicy: Fail` 입니다. webhook 이 준비되기 전에 만든 파드가 자격 증명 없이 남지 않고, 생성이 거부된 뒤 다시 만들어집니다. 노드 · 네트워크 · 인증서 · ArgoCD 네임스페이스는 호출하지 않습니다 (`values.yaml` namespaceSelector).
+- 챗봇 llm-service · llm-ingest 의 GCP Vertex AI 인증은 GCP WIF AWS Provider 입니다 (`backend/values-eks.yaml` `gcpWorkloadIdentity.provider: aws` — Pod Identity 자격 증명 → GCP STS, [Terraform README](../../terraform/README.md) 11절).
 
 ## 클러스터 값 (`clusterValues`)
 
-public 레포에 둘 수 없는 클러스터 값(계정 ID 등)은 root 앱을 만드는 쪽이 root 의 `valuesObject.clusterValues` 로 넘깁니다 — 70(kubeadm)은 Ansible 이 CP-a 부트스트랩 때 STS 로 조회(`group_vars/aws_control_plane.yml` 의 `argocd_prod_cluster_values`). root 차트는 `chart.yaml` 에 `clusterValues: true` 인 앱에만 그 값을 Application 의 `helm.valuesObject` 로 넘깁니다 (앱 `values.yaml` 보다 우선, 모르는 키를 거부하는 차트 schema 가 있어 모든 앱에 넘기지 않음).
+public 레포에 둘 수 없는 클러스터 값(계정 ID 등)은 root 앱을 만드는 쪽이 root 의 `valuesObject.clusterValues` 로 넘깁니다 — 72 Terraform 이 apply 주체의 STS 로 조회해 `argocd-bootstrap` 차트에 넘깁니다 (`set_sensitive`, plan 에 계정 ID 가 나오지 않음). root 차트는 `chart.yaml` 에 `clusterValues: true` 인 앱에만 그 값을 Application 의 `helm.valuesObject` 로 넘깁니다 (앱 `values.yaml` 보다 우선, 모르는 키를 거부하는 차트 schema 가 있어 모든 앱에 넘기지 않음).
 
 | 키 | 값 |
 |---|---|
-| `global.awsAccountId` | AWS 계정 ID (CP Role 로 STS 조회) |
+| `global.awsAccountId` | AWS 계정 ID (72 apply 때 STS 로 조회) |
 
-**클러스터별 차이** (70 kubeadm · 72 EKS 병행): root 값 `cluster`(기본 kubeadm, 72 Terraform 은 eks)로 나눈다. `chart.yaml` 의 `clusters: [kubeadm]` 은 앱을 고르고(없으면 모든 클러스터), `<앱>/values-<cluster>.yaml` 은 `values.yaml` 위에 더한다. 72 는 한 번만 돌아야 하는 작업(마이그레이션 · seed · llm-ingest · mysql-exporter 계정 Job · 배포 알림 · Alertmanager 발행)을 끈다 — 트래픽을 옮긴 뒤(LDP-202) 72 Terraform `enable_singleton_workloads` 로 켠다 (릴리스 불필요, mysql-exporter 는 `chart.yaml` 의 `clusters` 로 따로 옮김). Git 에 둘 수 없는 앱 전용 값(VPC ID)과 이 토글 값은 root 값 `appValues.<앱>` 으로 받는다.
+**클러스터별 차이**: root 값 `cluster` 로 나눈다. 지금 운영은 72(EKS)만이고 72 Terraform 이 `eks` 를 넘긴다 (root 기본값 `kubeadm` 과 kubeadm 전용 값은 70 정리 때 지움). `chart.yaml` 의 `clusters: [kubeadm]` 은 앱을 고르고(없으면 모든 클러스터), `<앱>/values-<cluster>.yaml` 은 `values.yaml` 위에 더한다. `values-eks.yaml` 은 한 번만 돌아야 하는 작업(마이그레이션 · seed · llm-ingest · 배포 알림 · Alertmanager 발행)을 끄고, 72 Terraform `enable_singleton_workloads`(기본 true)가 켠다 — 70 · 72 병행 기간(LDP-202)에 중복 실행을 막으려던 장치. Git 에 둘 수 없는 앱 전용 값(VPC ID)과 이 토글 값은 root 값 `appValues.<앱>` 으로 받는다.
 
-values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.awsAccountId }}` 로 씁니다 (예: `pod-identity-webhook` 매핑의 `RoleARN`, backend 의 `global.imageRegistry` · `services.*.env`). gitops 레포 `validate.sh` 는 더미 값(`000000000000`)으로 렌더링합니다. 비밀값은 넣지 않습니다.
+values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.awsAccountId }}` 로 씁니다 (예: backend 의 `global.imageRegistry` · `services.*.env`). gitops 레포 `validate.sh` 는 더미 값(`000000000000`)으로 렌더링합니다. 비밀값은 넣지 않습니다.
 
 ## 앱 정의 (`<앱>/chart.yaml`)
 
@@ -124,10 +125,10 @@ values 에서는 차트가 템플릿을 지원하는 곳에 `{{ .Values.global.a
 
 ## 배포 (ArgoCD)
 
-설치는 Ansible `roles/argocd` 의 `tasks/aws.yml` (CP-a 부트스트랩, [Ansible README](../../ansible/README.md) 13절)이 합니다. ArgoCD 와 AppProject `bootstrap`, root 앱 `prod-apps` 를 만들고, 나머지는 모두 이 레포에서 옵니다.
+설치는 Terraform `72-main-cluster-eks` 가 helm provider 로 합니다 (`helm_release.argocd` + 로컬 차트 `argocd-bootstrap`). ArgoCD 와 AppProject `bootstrap`, root 앱 `prod-apps` 를 만들고, 나머지는 모두 이 레포에서 옵니다. root 의 대상 브랜치는 72 변수 `gitops_branch`(기본 `main`) 입니다.
 
 ```
-root 앱 prod-apps (Ansible 이 생성, project bootstrap)
+root 앱 prod-apps (72 Terraform 이 생성, project bootstrap)
   source: gitops 레포 main 의 envs/prod (이 폴더의 Chart.yaml · templates/) ── helm parameter gitopsRevision = $ARGOCD_APP_REVISION
   ├─ wave -1  AppProject prod (하위 앱 전용) · 알림 SA · Role · 스크립트 · CronJob deploy-notify-watch
   ├─ wave 10  Application traefik          ┐ 앱 폴더(chart.yaml) 하나 = Application 하나
@@ -135,30 +136,33 @@ root 앱 prod-apps (Ansible 이 생성, project bootstrap)
   ├─ ...                                   │ 이 레포 소스는 모두 root 와 같은 커밋(gitopsRevision)에 고정
   ├─ wave 50  Application backend          ┘ 앞 wave 가 Healthy(Synced + 그 커밋) 가 되어야 다음 wave
   └─ PostSync Job deploy-notify-success  → #deploy 성공
-CronJob deploy-notify-watch (1분)        → root sync 가 Failed · Error 로 끝나면 #deploy 실패 (15분 시간 제한 초과 포함, sync 당 1회)
+CronJob deploy-notify-watch (1분)        → root sync 가 Failed · Error 로 끝나면 #deploy 실패 (30분 시간 제한 초과 포함, sync 당 1회)
 ```
 
 - **gitops 커밋 하나 = root sync 하나 = 릴리스 하나.** root 가 하위 앱의 이 레포 소스를 자기 커밋에 고정하므로, values 만 바뀐 커밋도 모든 하위 Application spec 이 바뀌어 root 가 sync 합니다. ArgoCD 는 3분마다(기본 reconciliation) 브랜치를 확인합니다.
 - **하위 앱 동기화**: 자동 sync · prune · selfHeal, `ServerSideApply`, `CreateNamespace`. Helm hook 은 ArgoCD hook 으로 바뀝니다 (backend Flyway `pre-install,pre-upgrade` → PreSync, backend 를 sync 할 때마다 실행). 클러스터를 직접 고치면(drift) 되돌립니다. 실패하면 제한 없이 다시 시도합니다(10초부터 2배, 최대 3분) — CRD · webhook · Secret 이 늦게 준비되는 경우를 기다리기 위해서입니다.
-- **자동 롤백은 없습니다.** selfHeal 이 Git 을 따라가므로 클러스터만 이전으로 돌리면 바로 다시 덮어씁니다. 새 이미지가 Ready 가 되지 않으면 Deployment(`maxUnavailable: 0`)가 이전 파드를 유지하고, root sync 가 15분(`argocd_prod_sync_timeout_seconds`, 첫 sync 실측 약 5분의 3배) 안에 끝나지 않으면 실패 알림이 갑니다. 복구는 수정 커밋 또는 gitops 레포에서 릴리스 PR revert 입니다 (아래 "실패했을 때"). Flyway 마이그레이션은 이전에도 되돌려지지 않았습니다.
+- **자동 롤백은 없습니다.** selfHeal 이 Git 을 따라가므로 클러스터만 이전으로 돌리면 바로 다시 덮어씁니다. 새 이미지가 Ready 가 되지 않으면 Deployment(`maxUnavailable: 0`)가 이전 파드를 유지하고, root sync 가 30분(72 `argocd_sync_timeout_seconds` 1800) 안에 끝나지 않으면 실패 알림이 갑니다. 복구는 수정 커밋 또는 gitops 레포에서 릴리스 PR revert 입니다 (아래 "실패했을 때"). Flyway 마이그레이션은 이전에도 되돌려지지 않았습니다.
 - **Ingress 는 status 가 채워져야 Healthy 입니다.** NodePort Traefik 은 채울 주소가 없어 `traefik/values.yaml` 에서 `ingressendpoint.hostname`(API 도메인)을 쓰게 했습니다 (`publishedService` 끔). 다른 Ingress Controller 를 쓰면 같은 설정이 필요합니다.
 - **앱 폴더를 지우면** root 가 Application 을 지우지만 finalizer 가 없어 리소스는 남습니다 (지우는 것은 사람이 함).
-- **결과는 Slack `#deploy` 로 갑니다.** 릴리스 SHA(backend `revision`) · gitops 커밋 · 이전 커밋 · 소요 시간 · 앱(실패면 Synced · Healthy 가 아닌 앱과 사유)을 10-global 배포 토픽에 발행합니다 ([Terraform README](../../terraform/README.md) 14절). 성공은 root 의 PostSync hook Job, 실패는 1분 간격 CronJob `deploy-notify-watch` 가 보냅니다 — SyncFail hook 은 시간 제한 · 사람의 종료로 끝난 sync 에서 실행되지 않아 쓰지 않습니다 (2026-10-27 검증). 같은 sync 의 실패는 ConfigMap `deploy-notify-state` 에 기록해 한 번만 보냅니다. 클러스터 생성 후 첫 sync(매일 재생성)의 성공과 같은 커밋 재sync 의 성공은 보내지 않고, 실패는 첫 sync 여도 보냅니다. Job 은 argocd 네임스페이스라 pod-identity-webhook 대상이 아니어서 IRSA 토큰을 직접 마운트합니다 (Role `team04-hotel-deploy-notify`, 배포 토픽 발행만).
-- **실패 알림은 root 시간 제한(15분) 뒤에 옵니다.** 하위 앱의 실패(apply 오류 · hook 실패 · 이미지 pull 실패)는 하위 앱이 계속 재시도하고 root 는 Healthy 를 기다리므로, root 가 시간 제한으로 끝나야 실패로 판단합니다. 시간 제한은 첫 sync 실측(약 5분, 2026-10-27)의 3배이고 다음 실측으로 다시 정합니다.
-- **알림이 가지 않는 경우**: root sync 가 시작되지 않으면 실패도 없습니다 — root 차트 렌더링 실패(gitops `validate` 의 root 렌더링 단계가 merge 전에 막음), ArgoCD 설치 실패(CP `cloud-init-output.log`), GitHub 접근 실패(`k -n argocd get applications` 의 conditions). 이때 Traefik 이 뜨지 않으면 90 의 ALB Target Group unhealthy 알람이 `#alerts` 로 갑니다.
-- **보안**: application-controller 는 cluster-admin 이고 하위 앱 AppProject `prod` 도 클러스터 범위 리소스를 허용합니다 (CRD · ClusterRole 설치). 읽는 레포는 이 레포(ruleset 보호)와 `chart.yaml` 의 `repo` 로 좁힙니다. root 의 AppProject `bootstrap` 은 argocd 네임스페이스의 Application · AppProject · 알림 리소스만 만들 수 있습니다. ArgoCD 는 앱 파드가 뜨지 않는 CP 에 고정하고 UI · API 는 노출하지 않습니다 (ClusterIP).
+- **결과는 Slack `#deploy` 로 갑니다.** 릴리스 SHA(backend `revision`) · gitops 커밋 · 이전 커밋 · 소요 시간 · 앱(실패면 Synced · Healthy 가 아닌 앱과 사유)을 10-global 배포 토픽에 발행합니다 ([Terraform README](../../terraform/README.md) 14절). 성공은 root 의 PostSync hook Job, 실패는 1분 간격 CronJob `deploy-notify-watch` 가 보냅니다 — SyncFail hook 은 시간 제한 · 사람의 종료로 끝난 sync 에서 실행되지 않아 쓰지 않습니다 (2026-10-27 검증). 같은 sync 의 실패는 ConfigMap `deploy-notify-state` 에 기록해 한 번만 보냅니다. 클러스터 생성 후 첫 sync(매일 재생성)의 성공과 같은 커밋 재sync 의 성공은 보내지 않고, 실패는 첫 sync 여도 보냅니다. Job 의 AWS 권한은 Pod Identity Association(72, SA `argocd/deploy-notify` → Role `team04-hotel-deploy-notify`, 배포 토픽 발행만)으로 받습니다 (kubeadm 은 IRSA 토큰을 직접 마운트, `templates/deploy-notify.yaml`).
+- **실패 알림은 root 시간 제한(30분) 뒤에 옵니다.** 하위 앱의 실패(apply 오류 · hook 실패 · 이미지 pull 실패)는 하위 앱이 계속 재시도하고 root 는 Healthy 를 기다리므로, root 가 시간 제한으로 끝나야 실패로 판단합니다. EKS 첫 sync 실측은 14분 00초 · 8분 27초(2026-11-10), 20분 53초(11-03) 로 들쭉날쭉해 30분으로 둡니다 (15분이면 첫 sync 가 시간 제한에 걸린 적 있음, 11-02).
+- **알림이 가지 않는 경우**: root sync 가 시작되지 않으면 실패도 없습니다 — root 차트 렌더링 실패(gitops `validate` 의 root 렌더링 단계가 merge 전에 막음), ArgoCD 설치 실패(72 apply 오류), GitHub 접근 실패(`k -n argocd get applications` 의 conditions). 이때 Traefik 이 뜨지 않으면 90 의 ALB Target Group unhealthy 알람이 `#alerts` 로 갑니다.
+- **보안**: application-controller 는 cluster-admin 이고 하위 앱 AppProject `prod` 도 클러스터 범위 리소스를 허용합니다 (CRD · ClusterRole 설치). 읽는 레포는 이 레포(ruleset 보호)와 `chart.yaml` 의 `repo` 로 좁힙니다. root 의 AppProject `bootstrap` 은 argocd 네임스페이스의 Application · AppProject · 알림 리소스만 만들 수 있습니다. ArgoCD 는 앱 파드가 뜨지 않는 platform 노드에 두고(server · repo-server 는 영역마다 1개) UI · API 는 노출하지 않습니다 (ClusterIP).
 
-### 확인 · 운영 (CP 에 SSM 접속 후)
+### 확인 · 운영 (작업자 PC 의 kubectl)
+
+72 의 `public_access_cidrs`(작업자 IP/32)에 든 IP 에서, Access Entry 에 등록된 주체(`cluster_admin_principal_arns`, apply 주체)로만 접속합니다. 클러스터를 매일 다시 만들므로 재생성 후 kubeconfig 를 다시 받습니다.
 
 ```bash
-alias k='sudo kubectl --kubeconfig /etc/kubernetes/admin.conf'
+infra/terraform/live/prod/eks-kubeconfig.sh      # ~/.kube/config 에 context team04-eks 추가 · 전환 (KUBECONFIG 지정 시 그 파일)
+alias k=kubectl
 k -n argocd get applications                                   # 앱별 SYNC · HEALTH (root prod-apps 포함)
 k -n argocd get application prod-apps -o jsonpath='{.status.operationState.phase} {.status.operationState.message}{"\n"}'
 k -n argocd get application backend -o jsonpath='{.status.conditions}{"\n"}'   # 앱 오류 사유
 k -n argocd logs job/deploy-notify-success                     # 성공 알림 Job 로그
 k -n argocd get jobs | grep deploy-notify-watch                # 실패 감시 Job (최근 1개, 로그는 logs job/<이름>)
 k -n argocd get configmap deploy-notify-state -o yaml           # 마지막으로 보낸 실패 (시작 시각/커밋)
-# UI: 로컬에서 SSM 포트 포워딩 후 k -n argocd port-forward svc/argocd-server 8080:80, admin 비밀번호는
+# UI: k -n argocd port-forward svc/argocd-server 8080:80 → http://localhost:8080, admin 비밀번호는
 k -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
 ```
 
@@ -167,11 +171,11 @@ k -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}
 | 값이 잘못되어 앱이 계속 실패 | 수정 커밋 또는 릴리스 PR revert 를 gitops 레포에 반영 (하위 앱은 계속 재시도하므로 반영되면 바로 맞춰짐) |
 | root 가 `Failed` 로 끝난 뒤 하위 앱이 나중에 Healthy 가 됨 | 서비스는 정상. root 는 다음 커밋에 다시 sync 합니다 (같은 커밋을 다시 보내려면 아래) |
 | 같은 커밋을 다시 sync 하고 싶음 | `k -n argocd patch application prod-apps --type merge -p '{"operation":{"initiatedBy":{"username":"admin"},"sync":{}}}'` (성공이어도 같은 커밋이라 알림은 가지 않음) |
-| 차트 · 레포를 가져오지 못함 | `k -n argocd get application <앱> -o yaml` 의 conditions. 네트워크면 NAT · CP SG egress |
+| 차트 · 레포를 가져오지 못함 | `k -n argocd get application <앱> -o yaml` 의 conditions. 네트워크면 NAT · 워커 SG egress |
 
 ### 작업 브랜치로 검증
 
-gitops 레포 작업 브랜치에 push 한 뒤, root 의 대상 브랜치를 바꿉니다. **검증이 끝나면 `main` 으로 되돌립니다** (매일 재생성 때도 Ansible `argocd_prod_branch: main` 으로 다시 만들어짐). 하위 앱은 root 가 넘기는 커밋을 따라가므로 root 만 바꾸면 됩니다.
+gitops 레포 작업 브랜치에 push 한 뒤, root 의 대상 브랜치를 바꿉니다. **검증이 끝나면 `main` 으로 되돌립니다** (매일 재생성 때는 72 `gitops_branch` 기본값 `main` 으로 다시 만들어짐. 재생성부터 작업 브랜치로 띄우려면 `TF_VAR_gitops_branch=<브랜치>` 로 72 apply). 하위 앱은 root 가 넘기는 커밋을 따라가므로 root 만 바꾸면 됩니다.
 
 ```bash
 k -n argocd patch application prod-apps --type merge -p '{"spec":{"source":{"targetRevision":"<작업 브랜치>"}}}'
@@ -180,11 +184,11 @@ k -n argocd patch application prod-apps --type merge -p '{"spec":{"source":{"tar
 
 ## 관측 (Prometheus · Grafana · 알림)
 
-메인 클러스터 지표는 클러스터 안 Prometheus 가 모읍니다 (위키 「운영환경 비용 추정」 혼합형 — 결제 서버 지표는 AMP 로 가므로 여기에 없음). 매일 재생성이라 저장소는 emptyDir 이고 **지표 기록은 다음 날로 넘어가지 않습니다**.
+메인 클러스터 지표는 클러스터 안 Prometheus 가 모읍니다 (위키 「운영환경 비용 추정」 혼합형 — 결제 서버 지표는 AMP 로 가므로 여기에 없음). 저장소는 EBS PVC(gp2 10Gi, platform 노드 영역)라 노드가 바뀌어도 지표가 남지만, 매일 destroy 때 함께 지워져 **지표 기록은 다음 날로 넘어가지 않습니다** (72 가 destroy 뒤 남은 볼륨 정리).
 
 ```
 backend 서비스 :9464/metrics (PodMonitor) ┐
-kubelet · cAdvisor · apiserver · CoreDNS   ├→ Prometheus (워커, 보존 2일 · 3GB) ─┬→ Grafana  https://grafana.<도메인> (WAF 허용 IP 만)
+kubelet · cAdvisor · apiserver · CoreDNS   ├→ Prometheus (platform 노드, 보존 2일 · 3GB) ─┬→ Grafana  https://grafana.<도메인> (WAF 허용 IP 만)
 node-exporter (모든 노드) · kube-state-metrics ┘                                └→ Alertmanager → SNS team04-hotel-alerts → Slack #alerts
 ```
 
@@ -197,16 +201,16 @@ node-exporter (모든 노드) · kube-state-metrics ┘                         
 
 - **온프레미스와 values 를 공유하지 않습니다.** 운영은 Alertmanager · 저장소 · 노출 · 결제 지표가 달라 `kube-prometheus-stack/values.yaml` 하나에 둡니다. 다만 `team04.resources` · `team04.app` 규칙은 온프레미스 `infra/ansible/roles/monitoring/files/kube-prometheus-stack-values-common.yaml` 의 사본이라 규칙을 바꿀 때 양쪽을 같이 고칩니다 (`team04.payment-node` · `team04.db` 는 운영에 없음). `team04.nodes` 는 운영에만 있습니다 (EKS 전환 준비, LDP-200).
 - **대시보드**는 온프레미스 `files/dashboards/*.json` 의 사본(`monitoring/chart/dashboards/`, `team04-payment-node` · `team04-db` 제외)입니다. 원본만 고치고 복사합니다 — GitHub CI `Monitoring Dashboard Copies` 가 다르면 실패합니다. 운영 전용 대시보드는 `monitoring/chart/dashboards-prod/` 에 둡니다 (사본 검사 대상 아님): `team04 / DB (prod)`, `team04 / 결제 (prod)`, `team04 / 진입점 (prod)`.
-- **수집 대상 · 라벨**: 모든 대상에 `cluster="main"` · `env="prod"` 를 붙입니다(온프레미스 대시보드 · 규칙 쿼리와 호환). kubeadm 제어부(etcd · scheduler · controller-manager · kube-proxy)는 127.0.0.1 바인딩이라 수집하지 않습니다. backend 는 `backend/values.yaml` `metrics.enabled`(llm-service 제외), 9464 는 Service · Ingress 에 없습니다. Prometheus(워커 파드) → 노드 kubelet 10250 · node-exporter 9100 은 Terraform `30-security` M8 입니다.
+- **수집 대상 · 라벨**: 모든 대상에 `cluster="main"` · `env="prod"` 를 붙입니다(온프레미스 대시보드 · 규칙 쿼리와 호환). EKS 컨트롤 플레인(etcd · scheduler · controller-manager)은 AWS 관리라 수집하지 않습니다. backend 는 `backend/values.yaml` `metrics.enabled`(llm-service 제외), 9464 는 Service · Ingress 에 없습니다. Prometheus(워커 파드) → 노드 kubelet 10250 · node-exporter 9100 은 Terraform `30-security` M8 입니다.
 - **Grafana**: `https://grafana.<도메인>` (ALB → Traefik Ingress). WAF 가 `grafana_allowed_cidrs`(Terraform `80-main-edge/terraform.tfvars`) 외 출발지를 403 으로 막습니다 ([Terraform README](../../terraform/README.md) 7절). 로그인은 `admin` / Secrets Manager `team04-hotel/prod/grafana-admin`(Terraform `12-secrets`, 등록 전에는 Grafana 파드가 Secret 을 기다림). 대시보드 · 데이터소스는 코드로만 관리하고 저장소가 없어, UI 에서 고친 것은 재생성 때 사라집니다.
-- **알림**: Alertmanager 가 `severity` `warning` · `critical` 을 10-global 알림 토픽으로 보냅니다(IRSA `team04-hotel-alertmanager`, 토픽 Publish 만). `info` · `Watchdog` 은 보내지 않습니다. 알람 이름 · 네임스페이스로 묶고 해소도 보내며, 같은 알림은 12시간마다 다시 옵니다. 메시지는 Chatbot 사용자 정의 형식이라 `values.yaml` `alertmanager.templateFiles` 를 고칠 때는 결과가 JSON 인지 `amtool template render` 로 확인합니다 (JSON 이 아니면 Chatbot 이 버림 — 로그 `/aws/chatbot/team04-hotel-alerts`).
+- **알림**: Alertmanager 가 `severity` `warning` · `critical` 을 10-global 알림 토픽으로 보냅니다(파드 Role `team04-hotel-alertmanager`, 토픽 Publish 만). `info` · `Watchdog` 은 보내지 않습니다. 알람 이름 · 네임스페이스로 묶고 해소도 보내며, 같은 알림은 12시간마다 다시 옵니다. 메시지는 Chatbot 사용자 정의 형식이라 `values.yaml` `alertmanager.templateFiles` 를 고칠 때는 결과가 JSON 인지 `amtool template render` 로 확인합니다 (JSON 이 아니면 Chatbot 이 버림 — 로그 `/aws/chatbot/team04-hotel-alerts`).
 - `alertmanager.config` 는 토픽 ARN 의 계정 ID 때문에 helm `tpl` 로 렌더링합니다 (`tplConfig`). config 안에 Alertmanager 템플릿을 쓰려면 `{{ "{{" }}` 로 감쌉니다.
 
 ```bash
-# CP 에 SSM 접속 후 (위 "확인 · 운영" 의 alias k)
+# 위 "확인 · 운영" 의 kubeconfig · alias k
 k top nodes; k top pods -n backend                                     # metrics-server
 k -n monitoring get pods
-k -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090  # 다른 터미널에서 SSM 포트 포워딩 후 /targets · /alerts
+k -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090  # http://localhost:9090/targets · /alerts
 k -n monitoring logs alertmanager-kube-prometheus-stack-alertmanager-0 -c alertmanager | grep -i sns   # 발행 오류
 ```
 
@@ -214,19 +218,19 @@ k -n monitoring logs alertmanager-kube-prometheus-stack-alertmanager-0 -c alertm
 
 ```
 CloudWatch AWS/RDS (메인 · 결제) · AWS/ElastiCache (Valkey) ──┐
-CloudWatch Logs /aws/rds/instance/<식별자>/{error,slowquery} ─┴→ Grafana 데이터 소스 CloudWatch (IRSA team04-hotel-grafana, 읽기만)
+CloudWatch Logs /aws/rds/instance/<식별자>/{error,slowquery} ─┴→ Grafana 데이터 소스 CloudWatch (파드 Role team04-hotel-grafana, 읽기만)
 메인 RDS ← mysqld_exporter (mysql-exporter) ─────────────────────→ Prometheus (쿼리 수 · 락 대기 · 슬로우 쿼리 수)
 ```
 
-- **CloudWatch 데이터 소스**: `kube-prometheus-stack/values.yaml` `grafana.additionalDataSources`. 자격 증명은 IRSA(`monitoring/kube-prometheus-stack-grafana` → `team04-hotel-grafana`, Terraform `51-pod-roles`) — 지표 읽기와 `/aws/rds/instance/team04-hotel-*` · `/team04-hotel/prod/*` 로그 그룹의 Logs Insights 조회만 됩니다. 알람(`#alerts`)은 Terraform `90` 이 만들고 [Terraform README](../../terraform/README.md) 14절에 있습니다.
+- **CloudWatch 데이터 소스**: `kube-prometheus-stack/values.yaml` `grafana.additionalDataSources`. 자격 증명은 Pod Identity(`monitoring/kube-prometheus-stack-grafana` → `team04-hotel-grafana`, Terraform `51-pod-roles`) — 지표 읽기와 `/aws/rds/instance/team04-hotel-*` · `/team04-hotel/prod/*` 로그 그룹의 Logs Insights 조회만 됩니다. 알람(`#alerts`)은 Terraform `90` 이 만들고 [Terraform README](../../terraform/README.md) 14절에 있습니다.
 - **대시보드 `team04 / 진입점 (prod)`** (`monitoring/chart/dashboards-prod/team04-edge-prod.json`, LDP-228): 사용자 기준 요청 · 에러. ALB(CloudWatch — 매일 재생성되어 id 가 바뀌므로 이름 `team04-hotel-main-alb` 로 SEARCH 해 합산) 5xx 비율 · 건수 · 응답 시간 · 정상 대상 수, Traefik(PodMonitor `monitoring/chart/templates/traefik-podmonitor.yaml`, :9100) 응답 코드 · 서비스별 요청 · p95. **앱이 응답하지 못해 Traefik · ALB 가 돌려준 502 · 503 은 앱 지표(`http_server_request_duration_seconds`)에 남지 않으므로** 서비스 개요의 "앱 응답 5xx 비율" 대신 여기서 봅니다. Traefik PodMonitor 를 Traefik 차트가 아니라 monitoring 앱에 두는 이유: Traefik(10)이 PodMonitor CRD(12)보다 먼저 뜬다.
 - **대시보드 `team04 / DB (prod)`** (`monitoring/chart/dashboards-prod/team04-db-prod.json`): 온프레미스 `team04 / DB` 의 운영판입니다. 메인 DB 서버(exporter) · RDS 인스턴스(CloudWatch, 메인 · 결제) · 메인 앱 커넥션 풀(backend db-metrics) · Valkey(CloudWatch — 운영엔 redis exporter 없음) · RDS 슬로우 쿼리 · 에러 로그. 결제 서버의 앱 커넥션 풀은 AMP 로 가서 이 Prometheus 에 없습니다.
 - **슬로우 · 에러 로그**: RDS 파라미터 그룹(41 · 42)의 `log_slow_query`(기준 `db_slow_query_seconds`, 기본 1초) · `innodb_print_all_deadlocks` 를 CloudWatch Logs 로 내보냅니다. Grafana Explore → CloudWatch → Logs 에서 그룹 `/aws/rds/instance/team04-hotel-main/slowquery` 를 고릅니다.
 - **mysqld_exporter**: `mysql-exporter-setup` · `mysql-exporter` 를 **같이** 켜고 끕니다 (`chart.yaml` `enabled`, LDP-228 부터 `true` · `clusters: [eks]` — EKS 전환 때 빠져 대시보드가 비어 있었음). 메인 RDS 만 수집합니다 (결제 RDS 는 Payment VPC 라 닿지 않음 — CloudWatch 만).
   - `mysql-exporter-setup`: ExternalSecret 2개(Job 용 master + exporter / exporter 용 `my.cnf`), RDS CA ConfigMap, 계정 생성 Job(ArgoCD Sync hook — 앱이 sync 할 때 실행: 매일 재생성의 첫 sync, 스크립트 `chart/files/account.sh` · Job 설정 변경). hook 은 ArgoCD 비교 대상이 아니라 Job 만 바뀐 커밋은 sync 를 일으키지 않으므로, 스크립트와 Job spec checksum 을 일반 리소스 ConfigMap `mysql-exporter-account-script` 에 둡니다. 비밀번호는 Terraform 41 이 매일 새로 만들고(`team04-hotel/prod/main-db-exporter`), Job 이 `CREATE USER IF NOT EXISTS` + `ALTER USER` 로 매번 다시 넣습니다. 계정은 `REQUIRE SSL`, `MAX_USER_CONNECTIONS 3`, 권한 `PROCESS` · `REPLICATION CLIENT` · `REPLICA MONITOR` · `SELECT ON performance_schema.*`.
-  - `mysql-exporter`: CA · 호스트 이름을 검증하는 TLS 로 접속합니다(`my.cnf` `ssl-ca`). `performance_schema` 수집기는 끕니다(db.t4g.micro 1 GiB 라 DB 에서 꺼져 있음). `slave_status` 는 복제본이 없어 비어 있지만 읽기 복제본 추가에 대비해 켜 둡니다(MariaDB 는 `REPLICA MONITOR` 권한이 따로 필요 — Job 이 부여). 라벨은 `job="mysql"` · `instance="team04-hotel-main"` (온프레미스 Alloy 와 같은 job).
+  - `mysql-exporter`: CA · 호스트 이름을 검증하는 TLS 로 접속합니다(`my.cnf` `ssl-ca`). `performance_schema` 수집기는 끕니다(DB 파라미터에서 꺼져 있음). `slave_status` 는 복제본이 없어 비어 있지만 읽기 복제본 추가에 대비해 켜 둡니다(MariaDB 는 `REPLICA MONITOR` 권한이 따로 필요 — Job 이 부여). 라벨은 `job="mysql"` · `instance="team04-hotel-main"` (온프레미스 Alloy 와 같은 job).
   - **`compareOptions: ServerSideDiff=true`**: 차트가 memory limit 을 env `GOMEMLIMIT`(`resourceFieldRef`)로 넣고 API 서버가 `divisor: "0"` 을 채워, 기본 diff 로는 영구 OutOfSync 가 됩니다 → root 가 wave 65 를 기다리다 시간 제한으로 실패(2026-10-29 작업 브랜치 검증). 이 앱만 API 서버 기준 비교(Server-Side Diff, ArgoCD Beta)를 씁니다.
-  - **연결 수 주의**: db.t4g.micro `max_connections` 는 30 입니다(2026-10-29 실측). 평소 22(앱 20 + rdsadmin 2)를 쓰고 exporter 가 1 을 더 씁니다. Job 로그에 그날 값(`max_connections` · `Threads_connected`)이 남습니다.
+  - **연결 수 주의**: 메인 RDS 는 `db.t4g.medium` · `max_connections` 151 입니다 (LDP-259, 부하 테스트 4차 최대 77 · HPA 최대 약 135). exporter 는 1 을 씁니다 (`MAX_USER_CONNECTIONS 3`). Job 로그에 그날 값(`max_connections` · `Threads_connected`)이 남습니다.
 
 ```bash
 k -n monitoring logs job/mysql-exporter-account                  # 계정 생성 결과 · max_connections
@@ -239,7 +243,7 @@ k -n monitoring get externalsecret mysql-exporter-setup mysql-exporter-config
 |---|---|---|
 | `ApiGateway5xxRateHigh` | api-gateway 5xx 비율 > 5% 5분 (0.1 rps 이상) | Grafana `team04-service-overview` · api-gateway 로그. ALB 5xx 알람과 같이 오면 워커 · Traefik 쪽 |
 | `NodeEventLoopLagHigh` | 이벤트 루프 지연 p99 > 0.5초 10분 | `team04-nodejs-runtime` 에서 그 파드의 CPU · GC. 동기 작업 · CPU limit |
-| `WorkerCpuAboveT3aBreakEven` (운영 전용 `team04.nodes`) | 워커 평균 CPU(3시간, CP 제외) > 41% 15분 | t3a unlimited 손익분기(m6a.large 대비, 근사치). 노드 대시보드 · Terraform 90 `ec2-cpu-surplus-charged`, 계속되면 워커 인스턴스 타입 검토 |
+| `WorkerCpuAboveT3aBreakEven` (운영 전용 `team04.nodes`) | 워커 평균 CPU(3시간, EKS 는 노드 전부) > 41% 15분 | t3a unlimited 손익분기(m6a.large 대비, 근사치). 노드 대시보드 · Terraform 90 `ec2-cpu-surplus-charged`, 계속되면 워커 인스턴스 타입 검토 |
 | `PodRestartingFrequently` · `ContainerOOMKilled` · `ContainerMemoryNearLimit` | 재시작 · OOM · 메모리 limit 90% | `k -n <ns> describe pod`, 이전 컨테이너 로그(`--previous`), limit 조정 |
 | 기본 규칙 (`Kube*` · `Node*` · `Prometheus*` 등) | kube-prometheus-stack 기본 | 알림 description 의 runbook (`runbook_url` 라벨) |
 
@@ -302,7 +306,7 @@ release/<버전> ──릴리스 PR (merge commit, release-source check · 승�
 3. **release.yml**: 모노레포 Actions 의 `Release` 실행이 Plan → (Frontend build) → Promote → gitops release PR 까지 끝나는지 확인합니다. Plan 요약에 바뀐 컴포넌트 · `I` 가 나옵니다.
 4. **gitops PR**: gitops 레포에 `chore(prod): <바뀐 컴포넌트> → <SHA 8자>` PR 이 생깁니다. 본문의 "이전 릴리스 대비 변경" 링크로 바뀐 내용을 보고, `validate` 통과 확인 후 승인 · merge 합니다.
 5. **반영 확인**
-   - 메인: Slack `#deploy` 에 성공 알림(릴리스 SHA)이 오는지. 오지 않으면 CP 에서 `k -n argocd get applications` 와 `k -n backend get pods` (위 "확인 · 운영")
+   - 메인: Slack `#deploy` 에 성공 알림(릴리스 SHA)이 오는지. 오지 않으면 `k -n argocd get applications` 와 `k -n backend get pods` (위 "확인 · 운영")
    - 결제: gitops 레포 Actions 의 Parameter Store 동기화 workflow 성공 → 결제 서버 pull agent 반영
    - 프론트: gitops 레포 Actions `sync-frontend-version` 성공(로그의 `갱신: <이전> → <SHA>`) → 브라우저 새로고침 후 개발자 도구 Network 에서 `index-*.js` 이름이 바뀌었는지
 6. **태그**: 모노레포 main 의 merge 커밋에 버전 태그를 붙입니다 (`git tag v1.0.0 <SHA> && git push origin v1.0.0`, 리허설은 `v1.0.0-rc.1`).
@@ -350,9 +354,9 @@ amd64 Terraform 과 amd64 이미지는 함께 바뀌어야 합니다 (arm64 노�
 | 관리자 계정 | Secret `seed-admin` ← Secrets Manager `team04-hotel/prod/seed-admin` (Terraform 12-secrets 🔒, 값은 그 디렉터리 `.env` 의 `SEED_ADMIN_*` · 지점 계정 `SEED_*_PASSWORD`) |
 | 객실 사진 | 사진 버킷(13-frontend 🔒, 매일 재생성 안 함)에 고정 키 `room-types/<객실 종류 ID>/seed-<파일>` 로 올림. 같은 키가 있으면 올리지 않고(조건부 쓰기 `If-None-Match`) DB 만 다시 연결 → 매일 재생성해도 객체가 늘지 않음. 관리자가 올린 사진은 기존대로 uuid 키 |
 | DB 접속 | `DB_SSL=true` + RDS CA(`rds-ca-bundle`) — 서버 인증서 · 호스트 이름 검증(`libs/common` `mariaDbSslOptions` 의 `verifyIdentity`, 서비스와 같은 코드). `require_secure_transport` 를 켜도 접속 |
-| 권한 | SA `backend/seed` → IRSA `team04-hotel-seed` (사진 버킷 `room-types/*` PutObject 만, 버킷 정책 쓰기 허용 목록에도 포함) |
+| 권한 | SA `backend/seed` → 파드 Role `team04-hotel-seed` (Pod Identity, 사진 버킷 `room-types/*` PutObject 만, 버킷 정책 쓰기 허용 목록에도 포함) |
 
-확인 (CP 에 SSM 접속 후):
+확인 (위 "확인 · 운영" 의 kubeconfig · alias k):
 
 ```bash
 k -n backend get jobs -l app.kubernetes.io/name=seed     # COMPLETIONS 1/1
