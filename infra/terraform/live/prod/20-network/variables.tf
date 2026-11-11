@@ -29,19 +29,19 @@ variable "log_bucket_name" {
 }
 
 variable "single_nat_gateway" {
-  description = "Main / Payment VPC 의 NAT 를 VPC 당 1개로 줄인다. 개발 기간 비용 절감용, 운영 시연 때 false 로 AZ 별 NAT"
+  description = "Main / Payment VPC 의 NAT 를 VPC 당 1개로 줄인다. 기본 false = AZ 별 NAT (LDP-261, 아키텍처 도면 기준 — 한 영역 장애에도 egress 유지, 결제 NFW 엔드포인트도 AZ 별). 줄일 때 -var single_nat_gateway=true"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "enable_payment_network_firewall" {
   description = <<-EOT
     결제 VPC egress 를 Network Firewall 로 검사한다. false 면 app · lb 가 NAT 로 바로 나간다 (DNS Firewall · SG 는 유지).
-    개발 기간 비용 절감용으로 기본은 끄고(엔드포인트 1개 시간당 $0.395), rc.3 전에 기본값을 true 로 바꾼다.
-    하루만 켜서 검증할 때: terragrunt apply -var enable_payment_network_firewall=true
+    기본 켬(LDP-259, 엔드포인트 1개 시간당 $0.395). 끌 때: -var enable_payment_network_firewall=false
+    (켜진 상태에서 바로 false 로 apply 하면 실패 — README "Network Firewall" 의 라우트 순서. 매일 destroy 뒤 끈 채로 만드는 것은 문제없음)
   EOT
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "enable_control_plane_subnets" {

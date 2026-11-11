@@ -80,7 +80,18 @@ controller:
     limits:
       memory: 1Gi
 
+# server · repo-server 는 2개 · 영역마다 1개 (platform 노드가 영역마다 1대, LDP-259) — 한 영역 장애에도 UI · 매니페스트 생성이 이어진다.
+# application-controller · redis 는 1개 — 이중화하려면 redis-ha 3개가 노드 3대에 떠야 한다. 둘 다 디스크가 없어 영역 장애 때
+# 다른 영역 platform 노드로 옮겨진다. labelSelector 를 비우면 차트가 구성 요소의 selector 를 넣는다
 repoServer:
+  replicas: 2
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+  pdb:
+    enabled: true
+    minAvailable: 1
   # git 저장소를 받아 두는 임시 공간(emptyDir)이라 내보내져도 다시 받으면 된다 — Cluster Autoscaler 축소를 막지 않게 (LDP-248)
   podAnnotations:
     cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
@@ -92,6 +103,14 @@ repoServer:
       memory: 512Mi
 
 server:
+  replicas: 2
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+  pdb:
+    enabled: true
+    minAvailable: 1
   service:
     type: ClusterIP
   resources:

@@ -31,8 +31,8 @@ test('R2: 편의시설 단계에서 예약이 실패하면 남은 객실 수가 
   const checkIn = url.searchParams.get('checkIn') as string
   const before = await remainingCount(page, roomId, checkIn)
 
-  // 편의시설(수영장 1명)을 골라야 ② 단계를 지난다
-  await page.getByRole('button', { name: '수영장 이용 증가' }).click()
+  // 편의시설(수영장 성인 1명)을 골라야 ② 단계를 지난다 — 버튼 이름은 #519(성인·소인 분리)부터 "수영장 성인"
+  await page.getByRole('button', { name: '수영장 성인 증가' }).click()
 
   let serverStatus = 0
   await page.route('**/api/bookings', async (route) => {

@@ -128,10 +128,10 @@ variable "db_free_storage_gib" {
 }
 
 variable "db_connections_thresholds" {
-  description = "RDS DatabaseConnections 임계값 (키 = db_instance_identifiers). 메인 db.t4g.small max_connections 68(11-02 실측)의 80%, 결제 db.t4g.micro 30(10-29 실측)"
+  description = "RDS DatabaseConnections 임계값 (키 = db_instance_identifiers). 메인 db.t4g.medium max_connections 151(LDP-259)의 80% — 부하 테스트 4차 최대 77, HPA 최대 약 135. 결제 db.t4g.micro 30(10-29 실측)의 약 85%. RDS 클래스를 바꾸면 같이 바꾼다"
   type        = map(number)
   default = {
-    main    = 54
+    main    = 120
     payment = 26
   }
 }

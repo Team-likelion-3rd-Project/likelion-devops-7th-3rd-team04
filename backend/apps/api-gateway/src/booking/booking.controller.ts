@@ -610,7 +610,7 @@ export class BookingController implements OnModuleInit {
   @ApiOperation({
     summary: '결제 준비',
     description:
-      '본인 예약·결제 대기 상태·결제 마감 전·결제 시도 5회 미만을 확인한 뒤 새 결제 시도를 기록하고, ' +
+      '본인 예약·결제 대기 상태·결제 마감 전·승인 요청까지 간 결제 시도 5회 미만(결제창을 닫기만 한 시도는 제외, 결제 준비는 예약당 30회까지)을 확인한 뒤 새 결제 시도를 기록하고, ' +
       '토스 결제창에 넘길 주문번호(orderId)·금액(amount)·주문명(orderName)·결제 마감 시각(paymentDueAt)을 돌려줍니다.',
   })
   @ApiResponse({ status: 201, description: '결제 준비 성공' })

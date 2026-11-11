@@ -70,6 +70,7 @@ defaultResources:
 # 노드 자동 확장으로 새 노드가 붙어도 기존 Pod 는 옮겨지지 않으므로, HPA 가 새로 만드는 Pod 가 빈 노드로 가게 하는 용도.
 # ScheduleAnyway = 못 지키면 그래도 배치 (Pending 을 만들지 않음). 기본 꺼짐이라 켜기 전에는 렌더링 결과가 같다.
 # 서비스별로 빼려면 services.<이름>.topologySpread: false
+# 이 분산은 같은 서비스끼리만 센다. 다른 서비스와 같은 노드를 피하려면 services.<이름>.affinity (Pod affinity 그대로, LDP-259)
 topologySpread:
   enabled: false
   maxSkew: 1

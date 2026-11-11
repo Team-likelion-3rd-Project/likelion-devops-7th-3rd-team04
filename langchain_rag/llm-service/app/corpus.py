@@ -6,7 +6,8 @@
      만들어야 합니다(backend CI의 scripts/export-rag-catalog.spec.ts가 어긋나면 실패). 런타임에 DB는 조회하지
      않습니다. 객실 요금은 요금표(평일 기준 · 주말 배율)만 넣고, 날짜별 실제 금액은 예약 화면에서 확인하도록 안내합니다.
   2. 브랜드 소개 — frontend/src/data/brandValues.ts(브랜드 가치 페이지)를 요약해 손으로 적었습니다.
-  3. 호텔 정책 — 체크인/아웃, 반려동물, 취소/환불, 조식/부대시설 안내.
+  3. 수영장 안내 — frontend/src/pages/HotelWatersPage.tsx(호텔 수영장 페이지)를 요약해 손으로 적었습니다.
+  4. 호텔 정책 — 체크인/아웃, 반려동물, 취소/환불, 조식 안내.
 
 모든 문서는 metadata `hotel`에 지점 slug(지점 전용 문서) 또는 "all"(공통 문서)을 가집니다 — 질문에 지점이
 나오면 retrieval이 그 지점 + 공통 문서로만 검색합니다. 각 문서의 `id`는 벡터 스토어의 key라 고정값이어야
@@ -116,7 +117,10 @@ def _facility_document() -> Document:
     fees = ", ".join(f"{facility['name']} {_won(facility['price'])}" for facility in _FACILITIES)
     return {
         "id": "facility-fees",
-        "text": f"부대시설 이용 요금(예약 시 옵션으로 추가 선택, 모든 지점 동일): {fees}.",
+        "text": (
+            f"부대시설 이용 요금(예약 시 옵션으로 추가 선택, 모든 지점 동일): {fees}. "
+            "소인은 36개월~16세이며 36개월 미만은 무료입니다. 요금은 1인 1회 기준이고 부가가치세 10%가 포함되어 있습니다."
+        ),
         "metadata": {"source": "facility", "hotel": ALL_HOTELS},
     }
 
@@ -167,6 +171,36 @@ _BRAND_DOCUMENTS: list[Document] = [
     },
 ]
 
+# frontend/src/pages/HotelWatersPage.tsx(호텔 수영장 페이지) 요약 — 그 파일을 바꾸면 여기도 맞춰 주세요.
+_POOL_DOCUMENTS: list[Document] = [
+    {
+        "id": "facility-pool-guide",
+        "text": (
+            "수영장 이용 안내(모든 지점 공통): 실내 온수 풀과 야외 인피니티 풀로 이루어져 있으며, 크기는 16.0m x 4.2m, "
+            "수심은 1.2m입니다. 기본 이용시간은 1부 09:00-13:00, 2부 14:00-16:30, 3부 17:00-19:00, 4부 19:30-22:00이고, "
+            "부 사이 정비시간(13:00-14:00, 16:30-17:00, 19:00-19:30)에는 입장이 제한됩니다. 운영 시간은 시즌과 영업 방침에 "
+            "따라 달라질 수 있으며, 기간을 정한 운영 연장은 해당 공지 기간에만 적용됩니다. 이용대상은 투숙객과 피트니스 멤버십 "
+            "회원이고, 멤버십 회원 전용 이용 시간은 07:00~09:00입니다. 이용요금은 성인 77,000원, 소인 44,000원(소인은 "
+            "36개월~16세, 36개월 미만 무료)입니다. 투숙객 외 추가 동반 이용객은 별도 요금이 부과되며, 결제 당일에 한해 이용 "
+            "가능합니다. 대여 용품은 구명조끼와 조끼형 튜브입니다."
+        ),
+        "metadata": {"source": "facility", "hotel": ALL_HOTELS},
+    },
+    {
+        "id": "facility-pool-rules",
+        "text": (
+            "수영장 입장 제한 및 이용 규정: 소지품의 도난·분실·손상 책임은 이용객에게 있습니다. 상업적 목적의 촬영이나 다른 "
+            "고객에게 불편을 주는 지나친 촬영은 제한될 수 있습니다. 착용형 구명조끼 외 수영용품(스노클링 장비, 오리발, 물총)과 "
+            "외부 음식물은 반입할 수 없습니다. 수영장에는 별도 샤워시설이 없으니 객실에서 환복하고 샤워한 뒤 입장해주세요. "
+            "13세 이하 어린이는 보호자를 동반해야 하고, 신장 120cm 미만 어린이는 구명조끼를 반드시 착용해야 합니다. 다이빙은 "
+            "금지됩니다. 금속·플라스틱·유리 등 날카롭거나 깨질 수 있는 물건은 반입할 수 없고, 타인에게 상해를 입힐 수 있는 "
+            "액세서리와 안경은 착용을 삼가주세요. 음주 후에는 이용이 제한될 수 있습니다. 공중 위생에 영향을 미치는 감염성 질환이 "
+            "있으면 이용이 제한됩니다. 36개월 미만 어린이는 방수 기저귀를 착용해야 하고, 입수 시에는 수영복을 착용해야 합니다."
+        ),
+        "metadata": {"source": "facility", "hotel": ALL_HOTELS},
+    },
+]
+
 _POLICY_DOCUMENTS: list[Document] = [
     {
         "id": "policy-checkin-checkout",
@@ -199,17 +233,13 @@ _POLICY_DOCUMENTS: list[Document] = [
         ),
         "metadata": {"source": "policy", "topic": "breakfast", "hotel": ALL_HOTELS},
     },
-    {
-        "id": "policy-fitness-spa",
-        "text": "피트니스 센터·스파 안내: 피트니스 센터(헬스장)와 스파는 투숙객이 무료로 이용할 수 있습니다.",
-        "metadata": {"source": "policy", "topic": "fitness-spa", "hotel": ALL_HOTELS},
-    },
 ]
 
 DOCUMENTS: list[Document] = [
     *(_hotel_document(hotel) for hotel in HOTELS),
     *(_room_document(hotel, room) for hotel in HOTELS for room in hotel["rooms"]),
     _facility_document(),
+    *_POOL_DOCUMENTS,
     *_notice_documents(),
     *_BRAND_DOCUMENTS,
     *_POLICY_DOCUMENTS,

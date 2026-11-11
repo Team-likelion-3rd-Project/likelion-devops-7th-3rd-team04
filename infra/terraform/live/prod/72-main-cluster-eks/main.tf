@@ -144,6 +144,16 @@ resource "aws_eks_addon" "ebs_csi" {
     service_account = "ebs-csi-controller-sa"
   }
 
+  # 컨트롤러가 소켓용 emptyDir 을 써서 Cluster Autoscaler 가 "local storage" 로 보고 그 노드 축소를 건너뛴다
+  # (부하 테스트 4차 CA 로그 `pod with local storage present`, LDP-259). 보존할 데이터 없음
+  configuration_values = jsonencode({
+    controller = {
+      podAnnotations = {
+        "cluster-autoscaler.kubernetes.io/safe-to-evict" = "true"
+      }
+    }
+  })
+
   depends_on = [
     aws_eks_node_group.app,
     aws_eks_addon.pod_identity_agent,

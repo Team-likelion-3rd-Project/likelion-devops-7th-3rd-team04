@@ -186,6 +186,40 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
       expect(result).toMatchObject({ amount: 100000 });
       expect(attemptSave).toHaveBeenCalledTimes(1);
     });
+
+    // 승인 요청까지 간 시도 수와 전체 시도 수를 조건별로 돌려준다
+    const mockCounts = (used: number, total: number) =>
+      attemptCount.mockImplementation(
+        (_entity: unknown, options: { where: object }) =>
+          Promise.resolve('confirmRequestedAt' in options.where ? used : total),
+      );
+
+    it('결제창을 닫기만 한 시도는 5회에 들지 않아 계속 결제할 수 있다', async () => {
+      mockCounts(0, 6);
+
+      expect(await prepare()).toMatchObject({ amount: 100000 });
+      expect(attemptSave).toHaveBeenCalledTimes(1);
+    });
+
+    it('승인 요청까지 간 시도가 5회면 409 MAX_PAYMENT_ATTEMPTS_EXCEEDED', async () => {
+      mockCounts(5, 5);
+
+      expect(parseApiRpcError(await prepare())).toMatchObject({
+        status: 409,
+        code: 'MAX_PAYMENT_ATTEMPTS_EXCEEDED',
+        retryable: false,
+      });
+      expect(attemptSave).not.toHaveBeenCalled();
+    });
+
+    it('결제 준비가 30회 쌓이면 승인 요청이 없어도 거절한다', async () => {
+      mockCounts(0, 30);
+
+      expect(parseApiRpcError(await prepare())?.code).toBe(
+        'MAX_PAYMENT_ATTEMPTS_EXCEEDED',
+      );
+      expect(attemptSave).not.toHaveBeenCalled();
+    });
   });
 
   describe('confirmPayment', () => {
@@ -201,6 +235,7 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
     beforeEach(() => {
       reservationFindOne.mockResolvedValue(reservation);
       attemptFindOne.mockResolvedValue(attempt());
+      attemptCount.mockResolvedValue(0);
     });
 
     it('payment-service에 승인을 요청하기 전에 승인 요청 시각을 기록한다 (비어 있을 때만)', async () => {
@@ -278,6 +313,53 @@ describe('BookingServiceService 결제 시도 상태 (CONFIRMING)', () => {
         where: expect.objectContaining({ attemptId: Not('3') }) as unknown,
       });
       expect(approvePayment).toHaveBeenCalledTimes(1);
+    });
+
+    it('다른 시도의 승인 요청이 5회면 승인을 보내지 않고 409 MAX_PAYMENT_ATTEMPTS_EXCEEDED', async () => {
+      attemptCount.mockResolvedValue(5);
+
+      const error = await confirm().catch((e: unknown) => e);
+
+      expect(parseApiRpcError(error)?.code).toBe(
+        'MAX_PAYMENT_ATTEMPTS_EXCEEDED',
+      );
+      expect(approvePayment).not.toHaveBeenCalled();
+    });
+
+    it('승인 요청 횟수를 셀 때 자기 시도는 뺀다 (같은 시도의 재호출은 막지 않는다)', async () => {
+      attemptCount.mockResolvedValue(4);
+      approvePayment.mockReturnValue(of({ result: 'UNKNOWN', message: '' }));
+
+      await confirm();
+
+      expect(attemptCount).toHaveBeenCalledWith(PaymentAttempt, {
+        where: {
+          reservationId: 1,
+          confirmRequestedAt: Not(IsNull()),
+          attemptId: Not('3'),
+        },
+      });
+      expect(approvePayment).toHaveBeenCalledTimes(1);
+    });
+
+    it('승인이 거절돼도 승인 요청 시도가 5회 미만이면 예약을 실패 처리하지 않고 재시도할 수 있다', async () => {
+      attemptCount.mockResolvedValue(1);
+      approvePayment.mockReturnValue(
+        of({
+          result: 'FAILED',
+          retryable: true,
+          code: 'PAYMENT_DECLINED',
+          message: '거절',
+        }),
+      );
+
+      const result = await confirm();
+
+      expect(result).toMatchObject({ result: 'FAILED', retryable: true });
+      // 결제 준비만 한 시도가 많아도 결과가 달라지지 않도록 승인 요청까지 간 시도만 센다
+      expect(attemptCount).toHaveBeenLastCalledWith({
+        where: { reservationId: 1, confirmRequestedAt: Not(IsNull()) },
+      });
     });
 
     it('금액이 다르면 승인 요청을 보내지 않으므로 승인 요청 시각도 남기지 않는다', async () => {

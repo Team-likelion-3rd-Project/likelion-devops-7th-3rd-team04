@@ -107,7 +107,7 @@ export const PAYMENT_ERROR_MESSAGE: Record<string, string> = {
   RESERVATION_NOT_FOUND: '예약을 찾을 수 없습니다.',
   INVALID_RESERVATION_STATUS: '결제할 수 없는 예약 상태입니다. 내 예약에서 상태를 확인해주세요.',
   PAYMENT_DUE_EXPIRED: '결제 가능 시간이 지났습니다. 예약을 다시 진행해 주세요.',
-  MAX_PAYMENT_ATTEMPTS_EXCEEDED: '결제 시도 횟수(5회)를 넘어 더 이상 결제할 수 없습니다.',
+  MAX_PAYMENT_ATTEMPTS_EXCEEDED: '결제 시도 횟수를 모두 사용해 이 예약으로는 더 결제할 수 없습니다.',
   PAYMENT_ATTEMPT_NOT_FOUND: '결제 정보를 찾을 수 없습니다. 다시 결제해 주세요.',
   AMOUNT_MISMATCH: '결제 금액이 일치하지 않아 결제가 취소되었습니다.',
   PAYMENT_DECLINED: '카드 승인이 거절되었습니다. 다른 결제수단으로 다시 시도해 주세요.',
@@ -232,6 +232,13 @@ export function formatPaymentDue(paymentDueAt?: string, now = Date.now()): strin
   const minutes = leftMinutes % 60
   const left = hours > 0 ? `${hours}시간${minutes > 0 ? ` ${minutes}분` : ''}` : `${minutes}분`
   return `${label} (${left} 남음)`
+}
+
+// 결제 시도 횟수를 다 썼을 때의 안내. 시간이 지나도 횟수는 돌아오지 않으므로, 예약이 언제 끝나고 지금 무엇을 할 수 있는지 알려 준다.
+export function maxPaymentAttemptsMessage(paymentDueAt?: string): string {
+  const due = formatPaymentDue(paymentDueAt)
+  const dueGuide = due ? `이 예약은 ${due} 결제 대기로 남고 이후 자동 취소돼요. ` : ''
+  return `결제 시도 횟수를 모두 사용해 이 예약으로는 더 결제할 수 없어요. ${dueGuide}바로 다시 예약하려면 예약 내역에서 이 예약을 취소해 주세요.`
 }
 
 // 결제하기를 누른 순간의 최신 예약 상태. 화면이 들고 있는 예약 정보는 오래됐을 수 있어서

@@ -87,7 +87,7 @@ resource "aws_launch_template" "node" {
 }
 
 # 노드 그룹을 성격별로 나눈다 (LDP-248, 부하 테스트 3차).
-#   platform  운영 도구(모니터링 · ArgoCD · Cluster Autoscaler 등) · 챗봇. 한 영역 1대 고정, taint 로 앱 Pod 를 막는다.
+#   platform  운영 도구(모니터링 · ArgoCD · Cluster Autoscaler 등) · 챗봇. 영역마다 1대 고정(LDP-259), taint 로 앱 Pod 를 막는다.
 #             한 노드에 몰린 시스템 Pod 를 앱 분산 규칙(DoNotSchedule) 계산에서 빼서 확장 Pod Pending · 노드 과다 증설을 없앤다
 #   app       앱 서비스. 가용 영역마다 하나 — 그룹 하나가 두 영역에 걸치면 ASG AZRebalance 가 영역 균형을 맞추려고 노드를
 #             종료한다 (11-06 Prometheus 노드 종료). Cluster Autoscaler balance-similar-node-groups 가 두 그룹을 비슷하게 맞춘다
@@ -104,10 +104,12 @@ locals {
 }
 
 resource "aws_eks_node_group" "platform" {
+  for_each = toset(var.platform_azs)
+
   cluster_name    = aws_eks_cluster.this.name
-  node_group_name = "platform-${var.platform_az}"
+  node_group_name = "platform-${each.key}"
   node_role_arn   = aws_iam_role.node.arn
-  subnet_ids      = [var.worker_subnet_ids_by_az[var.platform_az]]
+  subnet_ids      = [var.worker_subnet_ids_by_az[each.key]]
 
   ami_type       = local.node_common.ami_type
   capacity_type  = local.node_common.capacity_type
@@ -125,7 +127,7 @@ resource "aws_eks_node_group" "platform" {
     version = aws_launch_template.node.latest_version
   }
 
-  # 1대 고정 — min = max 라 Cluster Autoscaler 가 늘리거나 줄이지 않는다
+  # 영역마다 1대 고정 — min = max 라 Cluster Autoscaler 가 늘리거나 줄이지 않는다
   scaling_config {
     desired_size = 1
     min_size     = 1

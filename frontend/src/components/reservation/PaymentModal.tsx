@@ -9,6 +9,7 @@ import {
   PaymentApiError,
   TOSS_CLIENT_KEY,
   fetchLatestBooking,
+  maxPaymentAttemptsMessage,
   paymentBlockReason,
   paymentFailUrl,
   paymentSuccessUrl,
@@ -166,6 +167,11 @@ function PaymentModal({ reservationId, summary, onClose, onBookingChange }: Paym
       // 예약을 다시 불러온다 (화면이 오래돼 승인 확인 중인 걸 몰랐던 경우).
       if (err instanceof PaymentApiError && err.code === 'PAYMENT_CONFIRMING') {
         blockWith(PAYMENT_BLOCK_MESSAGE.CONFIRMING, await fetchLatestBooking(reservationId))
+        return
+      }
+      if (err instanceof PaymentApiError && err.code === 'MAX_PAYMENT_ATTEMPTS_EXCEEDED') {
+        const booking = await fetchLatestBooking(reservationId)
+        blockWith(maxPaymentAttemptsMessage(booking?.paymentDueAt), booking)
         return
       }
       if (err instanceof PaymentApiError && err.code && !err.retryable) {

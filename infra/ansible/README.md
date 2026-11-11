@@ -1040,6 +1040,8 @@ kubectl -n argocd get application backend -o jsonpath='{range .status.resources[
 
 ## 13. AWS Main 클러스터 (user-data 전용)
 
+> **사용 중단 (2026-11-03 EKS 전환).** 운영 메인 클러스터는 Terraform `72-main-cluster-eks` 이고 노드에 Ansible 을 쓰지 않습니다. 이 절과 `aws-*` 역할은 `70-main-cluster-kubeadm` 코드를 지울 때 함께 지웁니다. 아래에서 가리키는 [Terraform README](../terraform/README.md) 6절의 kubeadm 절차는 지금 EKS 확인 절로 바뀌어, git 이력(LDP-262 이전)에서 봅니다.
+
 `aws-control-plane.yml`, `aws-worker.yml` 은 **사람이 실행하지 않습니다.** Terraform `70-main-cluster-kubeadm` 이 이 디렉터리를 S3 에 올리고, CP 3대와 워커 ASG 인스턴스의 user-data 가 받아서 자기 자신에게 `ansible-playbook -c local` 로 실행합니다. 부트스트랩 실패 확인 방법은 [Terraform README](../terraform/README.md) 6절을 봅니다.
 
 - **온프레미스 절차는 그대로입니다.** AWS 차이는 `aws-*.yml`, `inventory/aws.ini`, `group_vars/aws*.yml`, `roles/aws_*`, `roles/argocd` 의 `tasks/aws.yml` · `*-aws.yaml.j2` 에만 둡니다. 공용 role 은 변수만 받고 온프레미스 기본값은 그대로입니다.

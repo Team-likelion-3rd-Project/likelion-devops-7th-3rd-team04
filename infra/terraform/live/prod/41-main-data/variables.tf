@@ -51,9 +51,9 @@ variable "db_engine_version" {
 }
 
 variable "db_instance_class" {
-  description = "RDS 인스턴스 클래스. small 은 70 · 72 병행 기간 연결 수 기준 (클러스터당 풀 상한 50, 평소 20). max_connections 는 메모리에 비례 (micro 30)"
+  description = "RDS 인스턴스 클래스. medium 은 HPA 최대일 때 연결 수 기준 (max_connections 151, 부하 테스트 4차 최대 77 · HPA 최대 약 135, LDP-259). max_connections 는 메모리에 비례"
   type        = string
-  default     = "db.t4g.small"
+  default     = "db.t4g.medium"
 }
 
 variable "db_allocated_storage" {
@@ -63,9 +63,9 @@ variable "db_allocated_storage" {
 }
 
 variable "db_multi_az" {
-  description = "RDS Multi-AZ 대기 인스턴스. true 면 비용 2배, 생성 시간 증가"
+  description = "RDS Multi-AZ 대기 인스턴스. 기본 켬(LDP-259) — 끌 때 -var db_multi_az=false. true 면 비용 2배, 생성 시간 증가"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "db_backup_retention_days" {
@@ -125,9 +125,9 @@ variable "valkey_node_type" {
 }
 
 variable "valkey_num_nodes" {
-  description = "노드 수 (primary 1 + replica). 2 이상이면 자동 장애 조치 · Multi-AZ 를 켠다"
+  description = "노드 수 (primary 1 + replica). 2 이상이면 자동 장애 조치 · Multi-AZ 를 켠다. 기본 2(LDP-259) — 줄일 때 -var valkey_num_nodes=1"
   type        = number
-  default     = 1
+  default     = 2
 
   validation {
     condition     = var.valkey_num_nodes >= 1 && var.valkey_num_nodes <= 6

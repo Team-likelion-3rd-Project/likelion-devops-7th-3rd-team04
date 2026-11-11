@@ -8,6 +8,7 @@ import {
   DataSource,
   Brackets,
   EntityManager,
+  FindOptionsWhere,
   In,
   IsNull,
   MoreThan,
@@ -34,8 +35,11 @@ import {
 } from './entities/payment-result-inbox.entity';
 import { ReservationFacilityService } from './reservation-facility.service';
 import { computePaymentDueAt, PAYMENT_DUE_MINUTES } from './payment-due';
-// 예약 1건당 결제 시도(결제 준비 호출) 최대 횟수 (10/13 프론트 합의, 위키 API 명세 5.8)
+// 예약 1건당 결제 시도 최대 횟수. 승인 요청까지 간 시도만 센다 — 토스 결제창을 열었다 닫기만 한 시도는 돈이 오가지 않으므로 빼는데,
+// 10/13 프론트 합의(위키 API 명세 5.8)의 "결제 준비 호출" 기준에서 바꾼 것이다.
 const MAX_PAYMENT_ATTEMPTS = 5;
+// 예약 1건당 결제 준비 최대 횟수. 위 횟수에 들지 않는 시도가 끝없이 쌓이지 않게 막는 상한이고, 정상 사용으로는 닿지 않는다.
+const MAX_PAYMENT_PREPARES = 30;
 // 승인을 요청한 뒤 결과가 이 시간 안에 확정되지 않으면 CONFIRMING 대신 REQUESTED로 내려 재결제를 허용한다 (LDP-67).
 // 결과를 PG 조회로 확정해 주는 대사 배치가 아직 없어서, 확정되지 않은 시도가 결제 버튼을 계속 막지 않게 하려는 것.
 // 그 사이 재결제로 이중 승인이 나도 payment-service가 ALREADY_PAID로 자동 취소한다.
@@ -1019,7 +1023,8 @@ export class BookingServiceService implements OnModuleInit {
   //  - 시도마다 새 주문번호(pg_order_id)를 써서, 재결제해도 토스 주문번호가 이전 시도와 충돌하지 않는다.
   //  - 멱등 키(idempotency_key)도 시도마다 새로 만들어 payment-service 승인 호출에 쓴다 (프론트는 모름).
   //  - 금액은 예약에 저장된 금액(totalAmount)만 쓴다 — 승인 때 프론트가 보낸 금액과 대조해 위변조를 거른다.
-  // 예약 행을 잠그고(비관적 락) 시도 횟수를 세서, "결제하기"를 동시에 여러 번 눌러도 5회를 넘지 않게 한다.
+  // 예약 행을 잠그고(비관적 락) 횟수를 세서, "결제하기"를 동시에 여러 번 눌러도 상한을 넘지 않게 한다.
+  // 결제창을 닫기만 한 시도는 5회에 들지 않는다 — 5회는 승인 요청까지 간 시도만 세고, 준비 횟수는 MAX_PAYMENT_PREPARES로 따로 막는다.
   // 이전 시도가 승인 확인 중(CONFIRMING)이면 거절한다 (LDP-85) — 돈이 빠졌을 수도 있는데 새 결제를 시작하면
   // 이중 승인이 날 수 있다. 화면도 막고 있지만(PR #145) API를 직접 불러도 막히게 서버에서 확인한다.
   async preparePayment(
@@ -1036,16 +1041,17 @@ export class BookingServiceService implements OnModuleInit {
         throw this.paymentConfirming();
       }
 
-      const attemptCount = await manager.count(PaymentAttempt, {
+      const usedCount = await manager.count(PaymentAttempt, {
+        where: this.usedAttemptsWhere(reservationId),
+      });
+      const preparedCount = await manager.count(PaymentAttempt, {
         where: { reservationId },
       });
-      if (attemptCount >= MAX_PAYMENT_ATTEMPTS) {
-        throw apiRpcException({
-          status: 409,
-          code: 'MAX_PAYMENT_ATTEMPTS_EXCEEDED',
-          message: `결제는 예약당 최대 ${MAX_PAYMENT_ATTEMPTS}번까지 시도할 수 있습니다.`,
-          retryable: false,
-        });
+      if (
+        usedCount >= MAX_PAYMENT_ATTEMPTS ||
+        preparedCount >= MAX_PAYMENT_PREPARES
+      ) {
+        throw this.maxPaymentAttemptsExceeded();
       }
 
       const attempt = await manager.save(
@@ -1153,6 +1159,17 @@ export class BookingServiceService implements OnModuleInit {
       ) {
         throw this.paymentConfirming();
       }
+      // 결제 준비만 받아 둔 시도는 5회에 들지 않으므로, 미리 열어 둔 결제창으로 5회를 넘겨 승인하지 못하게 여기서도 센다.
+      // 자기 시도는 빼서 같은 시도의 재호출(새로고침·중복 클릭)은 막지 않는다.
+      const otherUsedCount = await manager.count(PaymentAttempt, {
+        where: {
+          ...this.usedAttemptsWhere(data.reservationId),
+          attemptId: Not(attempt.attemptId),
+        },
+      });
+      if (otherUsedCount >= MAX_PAYMENT_ATTEMPTS) {
+        throw this.maxPaymentAttemptsExceeded();
+      }
       await manager.update(
         PaymentAttempt,
         {
@@ -1224,10 +1241,10 @@ export class BookingServiceService implements OnModuleInit {
 
     // FAILED
     await this.failAttempt(attempt, approved.code || 'PAYMENT_DECLINED');
-    const attemptCount = await this.paymentAttemptRepository.count({
-      where: { reservationId: data.reservationId },
+    const usedCount = await this.paymentAttemptRepository.count({
+      where: this.usedAttemptsWhere(data.reservationId),
     });
-    if (!approved.retryable || attemptCount >= MAX_PAYMENT_ATTEMPTS) {
+    if (!approved.retryable || usedCount >= MAX_PAYMENT_ATTEMPTS) {
       // 더 시도할 수 없음 → 예약을 PAYMENT_FAILED로 돌리고 재고 반환 (ERD 상태 모델)
       if (approved.code !== 'ALREADY_PAID') {
         await this.failReservation(reservation);
@@ -1543,6 +1560,22 @@ export class BookingServiceService implements OnModuleInit {
     });
   }
 
+  // 결제 시도 횟수에 드는 시도 = 승인 요청까지 간 시도. confirm_requested_at이 비어 있으면 결제 준비만 한 시도다 (V7).
+  private usedAttemptsWhere(
+    reservationId: number,
+  ): FindOptionsWhere<PaymentAttempt> {
+    return { reservationId, confirmRequestedAt: Not(IsNull()) };
+  }
+
+  private maxPaymentAttemptsExceeded(): RpcException {
+    return apiRpcException({
+      status: 409,
+      code: 'MAX_PAYMENT_ATTEMPTS_EXCEEDED',
+      message: '이 예약의 결제 시도 횟수를 모두 사용했습니다.',
+      retryable: false,
+    });
+  }
+
   private notOwner(): RpcException {
     return apiRpcException({
       status: 403,
@@ -1677,6 +1710,9 @@ export class BookingServiceService implements OnModuleInit {
   // 관리자 호텔 상세 페이지의 "호텔별 지표" 섹션용 집계. hotelId 스냅샷 컬럼 덕분에 이 서비스의
   // DB만으로 계산되고, hotel-service 호출은 필요 없다 (점유율의 분모인 "총 객실 수"는 프론트가
   // 이미 갖고 있는 hotel-service의 GetRooms 결과를 그대로 재사용한다 — 이 메서드는 분자만 반환).
+  // occupiedRoomsToday는 오늘 밤 숙박 중인 확정 예약 건수다. 예약 1건 = 호실 1개이고, 호실을 아직
+  // 배정하지 않은 예약도 방을 차지하므로 건수로 센다. roomId는 V9 이후 객실 "종류"라서 DISTINCT roomId로
+  // 세면 같은 종류의 예약이 1개로 합쳐진다 (LDP-254). 분모는 객실 종류별 totalCount(ACTIVE 호실 수)의 합.
   // date를 생략하면 서버 기준 오늘로 계산한다.
   // newReservationsToday는 오늘 생성된 예약 전체가 아니라 "오늘 생성되고 결제까지 확정된"(status=RESERVED)
   // 건만 센다 — PENDING_PAYMENT(결제 대기 중)는 아직 확정된 예약이 아니므로 제외.
@@ -1719,8 +1755,7 @@ export class BookingServiceService implements OnModuleInit {
         })
         .andWhere('reservation.checkInDate <= :targetDate', { targetDate })
         .andWhere('reservation.checkOutDate > :targetDate', { targetDate })
-        .select('COUNT(DISTINCT reservation.roomId)', 'count')
-        .getRawOne<{ count: string }>(),
+        .getCount(),
       base()
         .andWhere('reservation.status = :status', {
           status: ReservationStatus.RESERVED,
@@ -1751,9 +1786,7 @@ export class BookingServiceService implements OnModuleInit {
     return {
       checkInsToday,
       checkOutsToday,
-      occupiedRoomsToday: Number(
-        (occupiedRoomsToday as { count: string })?.count ?? 0,
-      ),
+      occupiedRoomsToday,
       newReservationsToday,
       cancellationsToday,
       revenueToday: Number((revenueResult as { sum: string | null })?.sum ?? 0),

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { fetchAdminHotelRooms, fetchAdminHotelStats, fetchAdminHotels } from '../../api/adminApi'
-import type { AdminHotel, AdminHotelStats } from '../../api/adminApi'
+import { fetchAdminHotelRooms, fetchAdminHotelStats, fetchAdminHotels, formatOccupancy } from '../../api/adminApi'
+import type { AdminHotel, AdminHotelStats, AdminRoom } from '../../api/adminApi'
 import { canAccessArea, useAdminScope } from '../adminScope'
 import './AdminPages.css'
 
@@ -11,7 +11,7 @@ import './AdminPages.css'
 interface HotelSummaryRow {
   hotel: AdminHotel
   stats: AdminHotelStats
-  totalRooms: number
+  rooms: AdminRoom[]
 }
 
 function AdminDashboardPage() {
@@ -32,7 +32,7 @@ function AdminDashboardPage() {
               fetchAdminHotelStats(hotel.hotelId),
               fetchAdminHotelRooms(hotel.hotelId),
             ])
-            return { hotel, stats, totalRooms: rooms.length }
+            return { hotel, stats, rooms }
           }),
         )
         if (!ignore) setRows(summaries)
@@ -70,7 +70,7 @@ function AdminDashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ hotel, stats, totalRooms }) => (
+              {rows.map(({ hotel, stats, rooms }) => (
                 <tr
                   key={hotel.hotelId}
                   onClick={canManageHotels ? () => navigate(`/admin/hotels/${hotel.hotelId}`) : undefined}
@@ -80,7 +80,7 @@ function AdminDashboardPage() {
                     {stats.checkInsToday} / {stats.checkOutsToday}
                   </td>
                   <td>
-                    {totalRooms > 0 ? `${Math.round((stats.occupiedRoomsToday / totalRooms) * 100)}%` : '—%'}
+                    {formatOccupancy(stats.occupiedRoomsToday, rooms)}
                   </td>
                   <td>₩{stats.revenueToday.toLocaleString()}</td>
                   <td>
